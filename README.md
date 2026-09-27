@@ -219,6 +219,12 @@ and loosened zones yellow, and a click on a pore in the list jumps to it.
 
 ![Slice view of an 830 MB scan zoomed onto a shrinkage cavity](docs/images/slice-view.png)
 
+The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis) in the browser:
+"Oberfläche" shades the part surface, "Durchsicht" shows the part translucent with its pores and
+zones inside, and a cut along x opens the part.
+
+![3D view with pores and loosened zones inside the translucent part](docs/images/volume-view.png)
+
 ```sh
 vs-studio --project /data/casting.vsproj --plugins build/release/plugins
 ```

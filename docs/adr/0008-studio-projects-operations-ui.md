@@ -91,3 +91,7 @@ Tiles go to the browser as float32 grey values plus one overlay byte per pixel a
 the browser, so contrast changes need no new requests. For MCP, `view_slice` renders a whole slice
 as a PNG; PNGs are now compressed with zlib through Boost.Iostreams, which was already a
 dependency.
+
+The 3D view loads the finest level whose largest dimension is at most 256 voxels as 8-bit grey
+values plus the overlay (`readVolumePreview`, at most 32 MB) and ray-casts it in WebGL2; on the
+830 MB scan this is level 3 (129 × 97 × 66, 1.6 MB, 40 ms).

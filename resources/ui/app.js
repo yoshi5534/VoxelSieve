@@ -11,6 +11,8 @@ const state = {
   rawPath: null,
   busy: false,
   viewer: null,
+  volume: null,
+  viewMode: 'slice',
   pores: { step: null, list: [] },
 };
 
@@ -645,6 +647,16 @@ function renderViewStage(panel) {
       nextButton('Zum Datensatz', 'dataset'));
     return;
   }
+  const modes = el('div', { className: 'group view-modes' },
+    [['slice', 'Schnitt'], ['3d', '3D']].map(([mode, label]) => el('button', {
+      className: state.viewMode === mode ? 'on' : null,
+      onclick: () => { state.viewMode = mode; render(); },
+    }, label)));
+  panel.append(modes);
+  if (state.viewMode === '3d') {
+    renderVolumeView(panel, dataset);
+    return;
+  }
   const viewer = state.viewer ?? (state.viewer = new SliceViewer());
   const porosity = porosityOf(dataset.step.id);
   loadPores(porosity);
@@ -731,6 +743,49 @@ function renderViewStage(panel) {
 }
 
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
+
+function renderVolumeView(panel, dataset) {
+  const volume = state.volume ?? (state.volume = new VolumeViewer());
+  const porosity = porosityOf(dataset.step.id);
+  const canvas = el('canvas');
+  const status = el('div', { className: 'viewer-status' }, 'Lade Übersicht …');
+  const mode = el('select', {},
+    el('option', { value: 0, selected: volume.mode === 0 }, 'Oberfläche'),
+    el('option', { value: 1, selected: volume.mode === 1 }, 'Durchsicht'));
+  mode.addEventListener('change', () => volume.set({ mode: Number(mode.value) }));
+  const threshold = el('input', { type: 'range', min: 0, max: 1, step: 0.005,
+    title: 'Schwelle Luft/Material' });
+  threshold.addEventListener('input', () => volume.set({ threshold: Number(threshold.value) }));
+  const cut = el('input', { type: 'range', min: 0, max: 1, step: 0.005, value: volume.cut,
+    title: 'Schnitt entlang x' });
+  cut.addEventListener('input', () => volume.set({ cut: Number(cut.value) }));
+  const pores = el('input', { type: 'checkbox', checked: volume.pores,
+    disabled: porosity === null });
+  pores.addEventListener('change', () => volume.set({ pores: pores.checked }));
+  volume.onChange = () => {
+    threshold.value = volume.threshold;
+    const v = volume.volume;
+    if (v) {
+      status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
+        formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
+    }
+  };
+  panel.append(el('div', { className: 'viewer-tools' }, mode,
+    el('label', { className: 'group' }, 'Schwelle', threshold),
+    el('label', { className: 'group' }, 'Schnitt x', cut),
+    el('label', { className: 'group' }, pores, 'Poren und Zonen')),
+  canvas, status);
+  try {
+    volume.attach(canvas);
+  } catch (error) {
+    status.textContent = error.message;
+    return;
+  }
+  volume.load(dataset.step.id, porosity).then(() => volume.onChange()).catch((error) => {
+    status.textContent = error.message;
+  });
+  volume.onChange();
+}
 
 function render() {
   renderHeader();
