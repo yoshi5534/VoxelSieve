@@ -5,6 +5,7 @@ add_executable(voxelsieve_tests
   test_io.cpp
   test_phantom.cpp
   test_porosity.cpp
+  test_report.cpp
   test_sieve.cpp
   test_synthetic.cpp
   test_vdb.cpp
@@ -37,3 +38,9 @@ set_tests_properties(vs_porosity_cli_sieve PROPERTIES DEPENDS vs_synth_cli FIXTU
 add_test(NAME vs_porosity_cli COMMAND vs-porosity ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity)
 set_tests_properties(vs_porosity_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
+add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
+         --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report)
+set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
+add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
+set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Prüfbericht")

@@ -308,9 +308,12 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
     setGridProperties(*grid, 0, info.voxel_size_mm);
     grid->insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
     writeBrick(brickPath(dir, 0, brick), grid);
+    // Counted outside the lock: OpenVDB counts with TBB tasks, and a thread waiting for them may
+    // run another brick of this loop, which would then block on the lock it holds.
+    const auto active = static_cast<std::int64_t>(grid->activeVoxelCount());
     const std::scoped_lock lock(mutex);
     level0.bricks.push_back(brick);
-    info.active_voxel_count += static_cast<std::int64_t>(grid->activeVoxelCount());
+    info.active_voxel_count += active;
   });
   std::sort(level0.bricks.begin(), level0.bricks.end());
   info.levels.push_back(std::move(level0));

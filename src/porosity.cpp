@@ -354,6 +354,48 @@ double PorosityResult::porosity() const {
   return part_volume_mm3 > 0.0 ? (poreVolumeMm3() + zoneVoidVolumeMm3()) / part_volume_mm3 : 0.0;
 }
 
+double PorosityResult::partVolumeMm3(const std::array<std::array<double, 3>, 2>& box_mm) const {
+  // Box in voxel index units; voxel i spans [i - 0.5, i + 0.5].
+  std::array<double, 3> lo{};
+  std::array<double, 3> hi{};
+  for (std::size_t a = 0; a < 3; ++a) {
+    lo[a] = box_mm[0][a] / voxel_size_mm;
+    hi[a] = box_mm[1][a] / voxel_size_mm;
+  }
+  const auto inside = [&](const std::array<double, 3>& p) {
+    for (std::size_t a = 0; a < 3; ++a) {
+      if (p[a] < lo[a] || p[a] >= hi[a]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  double volume = 0.0;
+  if (material_blocks) {
+    for (auto it = material_blocks->cbeginValueOn(); it; ++it) {
+      const Coord block = it.getCoord();
+      double overlap = 1.0;
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        const double begin = block[axis] * static_cast<double>(kBlock) - 0.5;
+        const double length = std::min(hi[axis], begin + kBlock) - std::max(lo[axis], begin);
+        overlap *= std::clamp(length / kBlock, 0.0, 1.0);
+      }
+      volume += overlap * *it;
+    }
+  }
+  for (const DetectedPore& pore : pores) {
+    if (inside(pore.center_voxels)) {
+      volume += pore.volume_mm3;
+    }
+  }
+  for (const PorosityZone& zone : zones) {
+    if (inside(zone.center_voxels)) {
+      volume += zone.void_volume_mm3;
+    }
+  }
+  return volume;
+}
+
 PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& options) {
   const DatasetInfo& info = dataset.info();
   PorosityResult result;
@@ -578,8 +620,11 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   // Part volume: material from the grey values of all kept voxels against the local material
   // level (so cupping does not bias it), plus the voids.
   tbb::combinable<double> material_fractions(0.0);
+  tbb::combinable<openvdb::FloatGrid::Ptr> material_grids(
+      [] { return openvdb::FloatGrid::create(0.0F); });
   dataset.forEachBrick(0, [&](const Index3&, const openvdb::FloatGrid& grid) {
     double sum = 0.0;
+    auto material_acc = material_grids.local()->getAccessor();
     for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
       const double contrast = reference.at(leaf->origin()) - air;
       double leaf_sum = 0.0;
@@ -587,8 +632,15 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
         leaf_sum += *it - air;
       }
       sum += leaf_sum / contrast;
+      material_acc.setValue(blockOf(leaf->origin()),
+                            static_cast<float>(leaf_sum / contrast * voxel_volume));
     }
     material_fractions.local() += sum;
+  });
+  result.material_blocks = openvdb::FloatGrid::create(0.0F);
+  material_grids.combine_each([&](const openvdb::FloatGrid::Ptr& grid) {
+    // Bricks do not share blocks, so the per-thread grids are disjoint.
+    result.material_blocks->tree().merge(grid->tree());
   });
   const double material_fraction_sum = material_fractions.combine(std::plus<>());
   result.part_volume_mm3 =
