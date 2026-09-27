@@ -2,9 +2,11 @@ add_library(voxelsieve
   io.cpp
   mesh.cpp
   phantom.cpp
+  porosity.cpp
   dataset.cpp
   dataset_reader.cpp
   detail/blocks.cpp
+  detail/png.cpp
   sieve.cpp
   source.cpp
   synthetic.cpp
