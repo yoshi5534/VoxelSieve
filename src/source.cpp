@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -36,6 +37,8 @@ void copyRows(const std::uint16_t* data, const std::array<std::int64_t, 3>& dims
   }
 }
 
+std::size_t sampleBytes(SampleType type) { return type == SampleType::kUInt8 ? 1 : 2; }
+
 }  // namespace
 
 void MemorySource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
@@ -49,14 +52,31 @@ struct MappedRawSource::Mapping {
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path,
                                  const std::array<std::int64_t, 3>& dims, double voxel_size_mm)
-    : mapping_(std::make_unique<Mapping>()), dims_(dims), voxel_size_mm_(voxel_size_mm) {
-  static_assert(std::endian::native == std::endian::little,
-                "Raw sources assume a little-endian host.");
-  const auto expected_bytes =
-      static_cast<std::uintmax_t>(dims[0] * dims[1] * dims[2]) * sizeof(std::uint16_t);
-  if (std::filesystem::file_size(path) != expected_bytes) {
-    throw std::runtime_error("File size of " + path.string() + " does not match dimensions (" +
-                             std::to_string(expected_bytes) + " bytes expected)");
+    : MappedRawSource(path, RawLayout{dims, voxel_size_mm, SampleType::kUInt16, std::endian::little,
+                                      std::uint64_t{0}}) {}
+
+MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLayout& layout)
+    : mapping_(std::make_unique<Mapping>()), layout_(layout) {
+  for (const std::int64_t d : layout.dims) {
+    if (d <= 0) {
+      throw std::invalid_argument("Raw volume dimensions must be positive");
+    }
+  }
+  const std::uintmax_t payload =
+      static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]) *
+      sampleBytes(layout.sample_type);
+  const std::uintmax_t file_bytes = std::filesystem::file_size(path);
+  if (file_bytes < payload) {
+    throw std::runtime_error(path.string() + " is smaller than its voxel data (" +
+                             std::to_string(file_bytes) + " < " + std::to_string(payload) +
+                             " bytes); check dimensions and sample type");
+  }
+  header_bytes_ = layout.header_bytes.value_or(file_bytes - payload);
+  if (header_bytes_ + payload > file_bytes) {
+    throw std::runtime_error("Header of " + std::to_string(header_bytes_) +
+                             " bytes plus voxel data "
+                             "exceeds the size of " +
+                             path.string());
   }
   mapping_->file.open(path.string());
   if (!mapping_->file.is_open()) {
@@ -67,10 +87,32 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path,
 MappedRawSource::~MappedRawSource() = default;
 
 void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
-  checkRegion(box, dims_, out);
-  // The mapping is page aligned, so the data pointer is suitably aligned for uint16_t.
-  const auto* data = reinterpret_cast<const std::uint16_t*>(mapping_->file.data());
-  copyRows(data, dims_, box, out);
+  const auto& dims = layout_.dims;
+  checkRegion(box, dims, out);
+  const std::size_t bytes = sampleBytes(layout_.sample_type);
+  const bool swap = layout_.byte_order != std::endian::native;
+  const auto* data = reinterpret_cast<const unsigned char*>(mapping_->file.data()) + header_bytes_;
+  const auto row_length = static_cast<std::size_t>(box.size(0));
+  std::size_t offset = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      const auto first = static_cast<std::size_t>(box.min[0] + dims[0] * (y + dims[1] * z));
+      const unsigned char* row = data + first * bytes;
+      std::uint16_t* target = &out[offset];
+      if (layout_.sample_type == SampleType::kUInt8) {
+        std::copy(row, row + row_length, target);
+      } else {
+        // memcpy handles headers of odd length, where the samples are not 2-byte aligned.
+        std::memcpy(target, row, row_length * sizeof(std::uint16_t));
+        if (swap) {
+          std::transform(target, target + row_length, target, [](std::uint16_t v) {
+            return static_cast<std::uint16_t>((v >> 8U) | (v << 8U));
+          });
+        }
+      }
+      offset += row_length;
+    }
+  }
 }
 
 void PhantomSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
