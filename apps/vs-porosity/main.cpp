@@ -93,8 +93,8 @@ int main(int argc, char** argv) {
     voxelsieve::writePorosityVdb(dataset, result, options->out / "porosity.vdb");
     const auto written = std::chrono::steady_clock::now();
 
-    std::cout << std::fixed << std::setprecision(4)
-              << "part volume        " << result.part_volume_mm3 << " mm^3\n"
+    std::cout << std::fixed << std::setprecision(4) << "part volume        "
+              << result.part_volume_mm3 << " mm^3\n"
               << "pores              " << result.pores.size() << ", " << result.poreVolumeMm3()
               << " mm^3\n"
               << "zones              " << result.zones.size() << ", " << result.zoneVoidVolumeMm3()
