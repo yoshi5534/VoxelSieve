@@ -1,6 +1,7 @@
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
+#include <iterator>
 #include <list>
 #include <map>
 #include <mutex>
@@ -83,6 +84,9 @@ struct Dataset::Impl {
     BrickPtr grid = readBrick(brickPath(dir, level_index, brick), /*delay_load=*/false);
     const auto bytes = static_cast<std::size_t>(grid->memUsage());
 
+    // Evicted bricks are destroyed after the lock is released: OpenVDB frees a tree with TBB
+    // tasks, and a thread waiting for them may pick up another brick() call on this cache.
+    std::list<Entry> evicted;
     const std::scoped_lock lock(mutex);
     if (const auto it = entries.find(key); it != entries.end()) {
       return it->second->grid;  // another thread loaded it meanwhile
@@ -93,7 +97,7 @@ struct Dataset::Impl {
     while (stats.bytes > cache_bytes && lru.size() > 1) {
       stats.bytes -= lru.back().bytes;
       entries.erase(lru.back().key);
-      lru.pop_back();
+      evicted.splice(evicted.end(), lru, std::prev(lru.end()));
     }
     stats.bricks = lru.size();
     return grid;

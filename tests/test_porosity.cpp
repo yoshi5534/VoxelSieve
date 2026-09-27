@@ -104,6 +104,22 @@ TEST_F(PorosityTest, LargeLunkerCountsEveryVoxel) {
   EXPECT_NEAR(result.pores.front().volume_mm3, truth, 0.03 * truth);
 }
 
+TEST_F(PorosityTest, TinyBrickCacheGivesTheSameResult) {
+  // Every brick access evicts another brick while other threads analyse theirs.
+  SyntheticSpec spec;
+  spec.noise_sigma = 500.0;
+  spec.lunker_count = 2;
+  spec.lunker_radius_mm = 0.5;
+  const SyntheticScan scan(boxMesh({8.0, 6.0, 4.0}), spec);
+  const PorosityResult reference = analyze(scan);
+  const auto tiny = Dataset::open(dir_ / "scan.vsieve", /*cache_bytes=*/1);
+  const PorosityResult result = analyzePorosity(tiny);
+  ASSERT_EQ(result.pores.size(), reference.pores.size());
+  EXPECT_NEAR(result.poreVolumeMm3(), reference.poreVolumeMm3(), 1e-9);
+  EXPECT_NEAR(result.part_volume_mm3, reference.part_volume_mm3, 1e-6);
+  EXPECT_GT(tiny.cacheStats().misses, tiny.cacheStats().bricks);
+}
+
 TEST_F(PorosityTest, LoosenedZonesMatchGroundTruth) {
   SyntheticSpec spec;
   spec.noise_sigma = 500.0;
