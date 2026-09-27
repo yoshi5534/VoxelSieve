@@ -6,6 +6,7 @@ add_executable(voxelsieve_tests
   test_phantom.cpp
   test_porosity.cpp
   test_project.cpp
+  test_studio.cpp
   test_report.cpp
   test_sieve.cpp
   test_synthetic.cpp
@@ -52,3 +53,9 @@ add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_po
 set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
 add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
 set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Prüfbericht")
+
+add_test(NAME vs_studio_mcp_cli
+  COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")
+set_tests_properties(vs_studio_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity")
+add_test(NAME vs_studio_needs_mode COMMAND vs-studio)
+set_tests_properties(vs_studio_needs_mode PROPERTIES WILL_FAIL TRUE)

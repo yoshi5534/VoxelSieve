@@ -202,6 +202,24 @@ A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
 `voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
 `docs/adr/0008-studio-projects-operations-ui.md`.
 
+## AI systems: MCP
+
+`vs-studio --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
+drive VoxelSieve: create or open a project, run operations, undo and redo, and read results.
+Register it with an MCP client as a stdio server, for example:
+
+```json
+{"mcpServers": {"voxelsieve": {"command": "vs-studio",
+                               "args": ["--mcp", "--project", "/data/casting.vsproj"]}}}
+```
+
+Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
+`list_operations`, `dataset_info`, `list_files`, `read_file` and one `run_<operation>` per
+operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). Parameter schemas
+come from the operations, errors come back as tool errors with the reason, and long operations
+report progress. Datasets are never sent over the protocol, only their metadata and small text
+results such as `porosity.json` or `report.json`.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).
