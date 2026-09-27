@@ -69,6 +69,14 @@ struct PorosityResult {
   openvdb::Int32Grid::Ptr pore_labels;
   /// Void fraction per 8^3 block (index = block coordinate), active where a zone was flagged.
   openvdb::FloatGrid::Ptr zone_blocks;
+  /// Material volume in mm^3 per 8^3 block (index = block coordinate), voids excluded. Used for
+  /// the part volume of a region; costs about 4 bytes per block of the part.
+  openvdb::FloatGrid::Ptr material_blocks;
+
+  /// Part volume of an axis-aligned box in mm (dataset coordinates, voxel index times voxel
+  /// size): the material of the blocks overlapping the box, weighted by the overlap, plus the
+  /// pores and zones whose centre lies in the box.
+  [[nodiscard]] double partVolumeMm3(const std::array<std::array<double, 3>, 2>& box_mm) const;
 
   [[nodiscard]] double poreVolumeMm3() const;
   [[nodiscard]] double zoneVoidVolumeMm3() const;
