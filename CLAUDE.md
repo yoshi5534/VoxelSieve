@@ -15,8 +15,12 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
     the built-in template is `resources/report_template.html`, compiled in
+  - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
+    `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008). The
+    studio (UI, MCP) drives everything through operations; new processing becomes an operation
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
   `vs-porosity`, `vs-report`); `examples/` holds an example inspection order
+  and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 

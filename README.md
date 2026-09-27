@@ -180,6 +180,28 @@ The layout is a template: `vs-report --print-template > my_template.html` prints
 `{{#list}}...{{/list}}`, `{{^name}}...{{/name}}`); `report.json` in the output shows all available
 data. See `docs/adr/0007-inspection-report.md`.
 
+## Projects, operations and plugins
+
+The library records work as a project: a directory with `project.json` and one directory per step.
+Each step stores its operation, parameters, inputs, outputs and messages; undo and redo move a
+cursor over the steps, and a new step after an undo discards the undone ones. Operations never
+change their inputs.
+
+```cpp
+voxelsieve::OperationRegistry registry;
+voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, porosity, report
+registry.loadPlugins("plugins");                    // every *.so in the directory
+auto project = voxelsieve::Project::create("casting.vsproj", "Casting 4711");
+project.run(registry, "import_raw", {{"path", "scan.raw"}});
+project.run(registry, "porosity");                  // input: the latest dataset
+project.run(registry, "report", {{"order_path", "examples/inspection_order.json"}});
+project.undo();
+```
+
+A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
+`voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
+`docs/adr/0008-studio-projects-operations-ui.md`.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).
