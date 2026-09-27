@@ -7,7 +7,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 ## Layout
 
 - `include/voxelsieve/` public headers, `src/` library implementation (target `VoxelSieve::voxelsieve`)
-- `apps/` command-line tools, one directory per executable (`vs-phantom`, ...)
+- `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 

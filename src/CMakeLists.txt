@@ -1,6 +1,7 @@
 add_library(voxelsieve
   io.cpp
   phantom.cpp
+  sieve.cpp
   vdb.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
