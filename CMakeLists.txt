@@ -32,6 +32,7 @@ add_subdirectory(apps/vs-phantom)
 add_subdirectory(apps/vs-porosity)
 add_subdirectory(apps/vs-report)
 add_subdirectory(apps/vs-sieve)
+add_subdirectory(apps/vs-studio)
 add_subdirectory(apps/vs-synth)
 
 if(VOXELSIEVE_BUILD_TESTS)
