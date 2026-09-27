@@ -29,6 +29,7 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(apps/vs-phantom)
+add_subdirectory(apps/vs-sieve)
 
 if(VOXELSIEVE_BUILD_TESTS)
   enable_testing()
