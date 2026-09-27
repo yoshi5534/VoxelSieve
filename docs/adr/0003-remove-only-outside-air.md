@@ -24,3 +24,10 @@ The sieve removes only air that is connected to the volume boundary:
 - Fixtures and holders that touch the part are kept as material; handling them is future work.
 - Noise and ring artefacts in the air can create false material blocks; the threshold and block
   classification must be robust against them and are tested with the noisy phantom.
+
+## Implementation status
+
+`voxelsieve::sieve` (src/sieve.cpp) implements steps 1–5 on a volume held in memory. Blocks are
+classified in parallel per slab of 8 slices; the margin is applied with OpenVDB's
+`dilateActiveValues` (18-neighbourhood), so it is at least `margin_voxels` wide around every kept
+block. Streaming the raw file from disk (memory-mapped) for volumes larger than RAM is a follow-up.
