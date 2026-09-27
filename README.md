@@ -39,6 +39,12 @@ voxels) and `level0/`, `level1/`, … with one VDB file per 256³ brick. Bricks 
 outside air are not written. The input is memory-mapped and processed in two streaming passes, so
 the scan does not need to fit in RAM. `--phantom N` sieves a computed N³ phantom instead of a file.
 
+Raw files from CT systems usually start with a proprietary header. VoxelSieve skips it: given the
+dimensions, everything in the file beyond the voxel data is taken as the header, and the detected
+size is printed. Use `--header <bytes>` when the file also has a footer, `--type uint8` for 8-bit
+data and `--big-endian` for big-endian 16-bit samples. Check the printed header size: wrong
+dimensions that are too small also leave extra bytes and would be misread as a header.
+
 | Input | Raw size | Dataset | Time | Peak memory |
 |---|---|---|---|---|
 | 1024³ raw file (mmap) | 2 GB | 776 MB | 6.1 s | 2.5 GB, of which ~2 GB reclaimable mapped input pages |

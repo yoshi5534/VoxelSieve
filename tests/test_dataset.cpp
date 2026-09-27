@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -67,9 +69,80 @@ TEST_F(DatasetTest, MappedRawSourceReadsRegions) {
   mapped.readRegion(box, actual);
   EXPECT_EQ(actual, expected);
 
-  EXPECT_THROW(MappedRawSource(path, {24, 16, 13}, 1.0), std::runtime_error);
+  EXPECT_THROW(MappedRawSource(path, {24, 16, 13}, 1.0), std::runtime_error);  // too small
   EXPECT_THROW(mapped.readRegion({{0, 0, 0}, {25, 1, 1}}, std::span(actual).first(25)),
                std::out_of_range);
+}
+
+/// Writes `volume` with an arbitrary header and footer in the given sample type and byte order.
+void writeRawWithHeader(const std::filesystem::path& path, const Volume16& volume,
+                        std::size_t header, std::size_t footer, SampleType type,
+                        std::endian order) {
+  std::ofstream out(path, std::ios::binary);
+  const std::string header_bytes(header, 'H');
+  out.write(header_bytes.data(), static_cast<std::streamsize>(header));
+  for (const std::uint16_t value : volume.data) {
+    if (type == SampleType::kUInt8) {
+      out.put(static_cast<char>(value & 0xFFU));
+    } else {
+      const auto lo = static_cast<char>(value & 0xFFU);
+      const auto hi = static_cast<char>(value >> 8U);
+      out.put(order == std::endian::little ? lo : hi);
+      out.put(order == std::endian::little ? hi : lo);
+    }
+  }
+  const std::string footer_bytes(footer, 'F');
+  out.write(footer_bytes.data(), static_cast<std::streamsize>(footer));
+}
+
+TEST_F(DatasetTest, MappedRawSourceSkipsHeadersAndDecodesSamples) {
+  PhantomSpec phantom = spec();
+  phantom.dims = {20, 12, 10};
+  const Volume16 volume = generatePhantom(phantom);
+  std::filesystem::create_directories(dir_);
+  const Box box{{1, 2, 3}, {19, 11, 9}};
+  std::vector<std::uint16_t> expected(static_cast<std::size_t>(box.voxelCount()));
+  MemorySource(volume).readRegion(box, expected);
+  std::vector<std::uint16_t> actual(expected.size());
+
+  // Odd header size: samples are not 2-byte aligned. Detected automatically from the file size.
+  const auto big_endian = dir_ / "big.raw";
+  writeRawWithHeader(big_endian, volume, 1235, 0, SampleType::kUInt16, std::endian::big);
+  const MappedRawSource big(big_endian, RawLayout{phantom.dims, 0.1, SampleType::kUInt16,
+                                                  std::endian::big, std::nullopt});
+  EXPECT_EQ(big.headerBytes(), 1235U);
+  big.readRegion(box, actual);
+  EXPECT_EQ(actual, expected);
+
+  // Explicit header with a footer after the voxel data.
+  const auto footer = dir_ / "footer.raw";
+  writeRawWithHeader(footer, volume, 512, 100, SampleType::kUInt16, std::endian::little);
+  const MappedRawSource with_footer(
+      footer, RawLayout{phantom.dims, 0.1, SampleType::kUInt16, std::endian::little, 512});
+  with_footer.readRegion(box, actual);
+  EXPECT_EQ(actual, expected);
+
+  // 8-bit samples come back unchanged.
+  Volume16 small_values = volume;
+  for (auto& value : small_values.data) {
+    value = static_cast<std::uint16_t>(value % 256U);
+  }
+  const auto eight_bit = dir_ / "eight.raw";
+  writeRawWithHeader(eight_bit, small_values, 64, 0, SampleType::kUInt8, std::endian::little);
+  const MappedRawSource uint8(eight_bit, RawLayout{phantom.dims, 0.1, SampleType::kUInt8,
+                                                   std::endian::little, std::nullopt});
+  EXPECT_EQ(uint8.headerBytes(), 64U);
+  uint8.readRegion(box, actual);
+  MemorySource(small_values).readRegion(box, expected);
+  EXPECT_EQ(actual, expected);
+
+  // Too small for the dimensions, or a header that leaves no room for the data.
+  EXPECT_THROW(MappedRawSource(eight_bit, RawLayout{phantom.dims, 0.1, SampleType::kUInt16,
+                                                    std::endian::little, std::nullopt}),
+               std::runtime_error);
+  EXPECT_THROW(MappedRawSource(footer, RawLayout{phantom.dims, 0.1, SampleType::kUInt16,
+                                                 std::endian::little, 700}),
+               std::runtime_error);
 }
 
 TEST_F(DatasetTest, Level0MatchesInMemorySieve) {

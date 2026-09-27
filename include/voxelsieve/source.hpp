@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 
 #include "voxelsieve/phantom.hpp"
@@ -51,23 +53,41 @@ class MemorySource final : public VolumeSource {
   const Volume16& volume_;
 };
 
-/// Headerless little-endian uint16 raw file, memory-mapped. Only the pages that are read are
-/// loaded, and the operating system evicts them under memory pressure.
+enum class SampleType : std::uint8_t { kUInt8, kUInt16 };
+
+/// Layout of a raw volume file: voxels x fastest, optionally preceded by a vendor header and
+/// followed by a footer, both of which are skipped.
+struct RawLayout {
+  std::array<std::int64_t, 3> dims{0, 0, 0};
+  double voxel_size_mm = 1.0;
+  SampleType sample_type = SampleType::kUInt16;
+  std::endian byte_order = std::endian::little;
+  /// Bytes before the voxel data. When unset, everything in the file beyond the voxel data is
+  /// taken to be a header at the start (the common case for proprietary CT raw files).
+  std::optional<std::uint64_t> header_bytes;
+};
+
+/// Raw volume file, memory-mapped. Only the pages that are read are loaded, and the operating
+/// system evicts them under memory pressure. 8-bit samples are returned unchanged as 16-bit values.
 class MappedRawSource final : public VolumeSource {
  public:
+  MappedRawSource(const std::filesystem::path& path, const RawLayout& layout);
+  /// Headerless little-endian uint16 file.
   MappedRawSource(const std::filesystem::path& path, const std::array<std::int64_t, 3>& dims,
                   double voxel_size_mm);
   ~MappedRawSource() override;
 
-  [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return dims_; }
-  [[nodiscard]] double voxelSizeMm() const override { return voxel_size_mm_; }
+  [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
+  [[nodiscard]] double voxelSizeMm() const override { return layout_.voxel_size_mm; }
+  /// Header size in bytes, as given or detected.
+  [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
  private:
   struct Mapping;
   std::unique_ptr<Mapping> mapping_;
-  std::array<std::int64_t, 3> dims_;
-  double voxel_size_mm_;
+  RawLayout layout_;
+  std::uint64_t header_bytes_ = 0;
 };
 
 /// Computes the synthetic phantom on the fly, so tests and benchmarks can use volumes of any size
