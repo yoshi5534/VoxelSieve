@@ -19,11 +19,11 @@ cmake ninja-build clang-format clang-tidy`.
 ```sh
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan   # ASan + UBSan
-clang-format --dry-run --Werror $(git ls-files '*.cpp' '*.hpp')
-clang-tidy -p build/debug $(git ls-files 'src/*.cpp' 'apps/*.cpp' 'tests/*.cpp')
+tools/lint.sh                                                                  # clang-format + parallel clang-tidy
 ```
 
-CI runs all of these; a PR is mergeable only when they pass. Presets build with warnings as errors.
+clang-tidy is slow because every file pulls in the large OpenVDB headers; `tools/lint.sh` runs it
+in parallel and filters the noise about suppressed header findings. CI runs all of these; a PR is mergeable only when they pass. Presets build with warnings as errors.
 
 ## Conventions
 
