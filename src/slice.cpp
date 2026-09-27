@@ -1,6 +1,9 @@
 #include "voxelsieve/slice.hpp"
 
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -142,6 +145,56 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     }
   }
   return image;
+}
+
+VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
+                                const PorosityResult* porosity) {
+  const DatasetInfo& info = dataset.info();
+  VolumePreview preview;
+  preview.level = static_cast<int>(info.levels.size()) - 1;
+  for (const LevelInfo& level : info.levels) {
+    if (*std::max_element(level.dims.begin(), level.dims.end()) <= max_size) {
+      preview.level = level.level;
+      break;
+    }
+  }
+  const LevelInfo& level = dataset.level(preview.level);
+  preview.dims = level.dims;
+  preview.voxel_size_mm = level.voxel_size_mm;
+  const auto plane = static_cast<std::size_t>(level.dims[0] * level.dims[1]);
+  const auto depth = static_cast<std::size_t>(level.dims[2]);
+  std::vector<float> grey(plane * depth);
+  preview.overlay.resize(plane * depth);
+  tbb::parallel_for(std::size_t{0}, depth, [&](std::size_t z) {
+    SliceRequest request;
+    request.axis = 2;
+    request.level = preview.level;
+    request.index = static_cast<std::int64_t>(z) << static_cast<unsigned>(preview.level);
+    request.size = {level.dims[0], level.dims[1]};
+    const SliceImage slice = readSlice(dataset, request, porosity);
+    std::copy(slice.grey.begin(), slice.grey.end(),
+              grey.begin() + static_cast<std::ptrdiff_t>(z * plane));
+    std::copy(slice.overlay.begin(), slice.overlay.end(),
+              preview.overlay.begin() + static_cast<std::ptrdiff_t>(z * plane));
+  });
+
+  std::vector<float> sample;
+  for (std::size_t i = 0; i < grey.size(); i += 7) {
+    sample.push_back(grey[i]);
+  }
+  std::sort(sample.begin(), sample.end());
+  const auto at = [&sample](double fraction) {
+    return sample[static_cast<std::size_t>(fraction * static_cast<double>(sample.size() - 1))];
+  };
+  preview.low = at(0.005);
+  preview.high = std::max(at(0.995), preview.low + 1.0F);
+  preview.grey.resize(grey.size());
+  const float scale = 255.0F / (preview.high - preview.low);
+  for (std::size_t i = 0; i < grey.size(); ++i) {
+    preview.grey[i] = static_cast<std::uint8_t>(
+        std::lround(std::clamp((grey[i] - preview.low) * scale, 0.0F, 255.0F)));
+  }
+  return preview;
 }
 
 }  // namespace voxelsieve

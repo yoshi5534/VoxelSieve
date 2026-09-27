@@ -200,10 +200,8 @@ struct HttpServer::Impl {
     return query == std::string_view::npos ? std::string_view() : text.substr(query + 1);
   }
 
-  /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2]
-  /// Body: width * height float32 grey values (little endian, u fastest), then width * height
-  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
-  http::message_generator tile(const Request& request, std::string_view query) {
+  /// Integer query parameters.
+  static std::map<std::string, std::int64_t> queryValues(std::string_view query) {
     std::map<std::string, std::int64_t> values;
     while (!query.empty()) {
       const auto end = query.find('&');
@@ -215,6 +213,28 @@ struct HttpServer::Impl {
       }
       query = end == std::string_view::npos ? std::string_view() : query.substr(end + 1);
     }
+    return values;
+  }
+
+  static http::message_generator binary(const Request& request, std::string body,
+                                        const std::map<std::string, std::string>& headers) {
+    http::response<http::string_body> response(http::status::ok, request.version());
+    response.set(http::field::content_type, "application/octet-stream");
+    response.set(http::field::cache_control, "no-store");
+    for (const auto& [name, value] : headers) {
+      response.set(name, value);
+    }
+    response.keep_alive(request.keep_alive());
+    response.body() = std::move(body);
+    response.prepare_payload();
+    return response;
+  }
+
+  /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2]
+  /// Body: width * height float32 grey values (little endian, u fastest), then width * height
+  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
+  http::message_generator tile(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
       const auto it = values.find(name);
       return it == values.end() ? fallback : it->second;
@@ -236,15 +256,34 @@ struct HttpServer::Impl {
     std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
     std::memcpy(body.data() + image.grey.size() * sizeof(float), image.overlay.data(),
                 image.overlay.size());
-    http::response<http::string_body> response(http::status::ok, request.version());
-    response.set(http::field::content_type, "application/octet-stream");
-    response.set(http::field::cache_control, "no-store");
-    response.set("X-Width", std::to_string(image.width));
-    response.set("X-Height", std::to_string(image.height));
-    response.keep_alive(request.keep_alive());
-    response.body() = std::move(body);
-    response.prepare_payload();
-    return response;
+    return binary(
+        request, std::move(body),
+        {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
+  }
+
+  /// GET /api/volume?max=256[&step=1][&porosity=2]
+  /// Body: the volume preview (readVolumePreview) as one grey byte per voxel, then one overlay
+  /// byte per voxel, x fastest. Headers give dims, level, voxel size and window.
+  http::message_generator volume(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const auto optional = [&values](const std::string& name) -> std::optional<int> {
+      const auto it = values.find(name);
+      return it == values.end() ? std::nullopt : std::optional<int>(static_cast<int>(it->second));
+    };
+    const auto max = values.contains("max") ? values.at("max") : 256;
+    if (max < 16 || max > 512) {
+      throw std::invalid_argument("max must be between 16 and 512");
+    }
+    const VolumePreview preview = studio.volumePreview(optional("step"), optional("porosity"), max);
+    std::string body(preview.grey.begin(), preview.grey.end());
+    body.append(preview.overlay.begin(), preview.overlay.end());
+    return binary(
+        request, std::move(body),
+        {{"X-Dims", std::to_string(preview.dims[0]) + "," + std::to_string(preview.dims[1]) + "," +
+                        std::to_string(preview.dims[2])},
+         {"X-Level", std::to_string(preview.level)},
+         {"X-Voxel-Size", std::to_string(preview.voxel_size_mm)},
+         {"X-Window", std::to_string(preview.low) + "," + std::to_string(preview.high)}});
   }
 
   http::message_generator get(const Request& request, std::string_view path) {
@@ -256,6 +295,9 @@ struct HttpServer::Impl {
     }
     if (path == "/api/tile") {
       return tile(request, target(request));
+    }
+    if (path == "/api/volume") {
+      return volume(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();

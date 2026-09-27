@@ -58,6 +58,11 @@ class Studio {
                                      std::optional<int> porosity_step,
                                      const SliceRequest& request) const;
 
+  /// The volume of a dataset step for the 3D view (see readVolumePreview).
+  [[nodiscard]] VolumePreview volumePreview(std::optional<int> dataset_step,
+                                            std::optional<int> porosity_step,
+                                            std::int64_t max_size) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -71,6 +76,8 @@ class Studio {
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
   nlohmann::json viewSlice(const nlohmann::json& params) const;
+  [[nodiscard]] std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>>
+  openView(std::optional<int> dataset_step, std::optional<int> porosity_step) const;
   [[nodiscard]] std::shared_ptr<const Dataset> openDataset(const std::filesystem::path& dir) const;
   [[nodiscard]] std::shared_ptr<const PorosityResult> openPorosity(
       const std::filesystem::path& dir) const;

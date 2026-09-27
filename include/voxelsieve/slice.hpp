@@ -42,4 +42,21 @@ struct SliceImage {
 [[nodiscard]] SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
                                    const PorosityResult* porosity = nullptr);
 
+/// The whole volume at one level, as 8-bit values for 3D display in the browser.
+struct VolumePreview {
+  int level = 0;
+  std::array<std::int64_t, 3> dims{};
+  double voxel_size_mm = 0.0;
+  /// Grey values mapped to 0..255 between `low` (0) and `high` (255).
+  float low = 0.0F;
+  float high = 0.0F;
+  std::vector<std::uint8_t> grey;     // x fastest
+  std::vector<std::uint8_t> overlay;  // SliceOverlay per voxel
+};
+
+/// Reads the finest level whose largest dimension is at most `max_size` (the coarsest level if
+/// none is that small). The window spans the 0.5 to 99.5 percentiles of the grey values.
+[[nodiscard]] VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
+                                              const PorosityResult* porosity = nullptr);
+
 }  // namespace voxelsieve
