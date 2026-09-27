@@ -11,7 +11,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
-- `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`)
+  - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts
+- `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 
@@ -40,7 +41,7 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Code that must scale to XXL scans reads through `VolumeSource` and never assumes the volume fits
   in memory (ADR 0004).
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose
-  geometry is known analytically. Prefer asserting against the analytic ground truth over
+  geometry is known analytically. Defect analyses are scored against `SyntheticScan` ground truth. Prefer asserting against the analytic ground truth over
   snapshot values.
 - Keep dependencies minimal; adding one needs a short ADR.
 - Work happens on branches and pull requests; `main` stays green.

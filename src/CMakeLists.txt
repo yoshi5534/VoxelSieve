@@ -1,11 +1,13 @@
 add_library(voxelsieve
   io.cpp
+  mesh.cpp
   phantom.cpp
   dataset.cpp
   dataset_reader.cpp
   detail/blocks.cpp
   sieve.cpp
   source.cpp
+  synthetic.cpp
   vdb.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
