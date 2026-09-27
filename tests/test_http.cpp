@@ -160,6 +160,11 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/tile?axis=5&size=16").status, 400U);
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/tile?index=x").status, 400U);
 
+  // The volume preview for the 3D view: grey bytes, then overlay bytes.
+  const Reply volume = request(server_->port(), http::verb::get, "/api/volume?max=16");
+  ASSERT_EQ(volume.status, 200U) << volume.body;
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume?max=5").status, 400U);
+
   const Reply browsed = call("browse", {{"path", dir_.string()}});
   ASSERT_EQ(browsed.status, 200U) << browsed.body;
   const Json listing = browsed.json();

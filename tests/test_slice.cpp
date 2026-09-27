@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -116,6 +117,30 @@ TEST_F(SliceTest, CoarseLevelsHalveTheSlice) {
   const std::int64_t y = request.size[1] / 2;
   const auto expected = dataset_->sample(1, {x, y, request.index >> 1U});
   EXPECT_EQ(image.grey[static_cast<std::size_t>(y * image.width + x)], expected.value_or(-1.0F));
+}
+
+TEST_F(SliceTest, VolumePreviewFitsAndShowsTheDefects) {
+  const PorosityResult porosity = analyzePorosity(*dataset_);
+  const VolumePreview preview = readVolumePreview(*dataset_, 48, &porosity);
+  EXPECT_LE(*std::max_element(preview.dims.begin(), preview.dims.end()), 48);
+  EXPECT_EQ(preview.dims, dataset_->level(preview.level).dims);
+  const auto voxels = static_cast<std::size_t>(preview.dims[0] * preview.dims[1] * preview.dims[2]);
+  ASSERT_EQ(preview.grey.size(), voxels);
+  ASSERT_EQ(preview.overlay.size(), voxels);
+  // The window spans air to material.
+  EXPECT_NEAR(preview.low, 1000.0F, 1500.0F);
+  EXPECT_NEAR(preview.high, 20000.0F, 1500.0F);
+  // Every defect centre is marked in the coarse volume.
+  for (const Defect& defect : scan_->defects()) {
+    const auto center = voxelOf(defect.center_mm);
+    const auto shift = static_cast<unsigned>(preview.level);
+    const auto index = static_cast<std::size_t>(
+        (center[0] >> shift) +
+        preview.dims[0] * ((center[1] >> shift) + preview.dims[1] * (center[2] >> shift)));
+    EXPECT_NE(preview.overlay[index], 0);
+  }
+  // Without a size limit that small, the finest level that fits is used.
+  EXPECT_EQ(readVolumePreview(*dataset_, 4096).level, 0);
 }
 
 TEST_F(SliceTest, RejectsInvalidRequests) {

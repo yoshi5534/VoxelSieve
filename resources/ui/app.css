@@ -133,3 +133,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .pores tbody tr { cursor: pointer; }
 .pores tbody tr:hover { background: var(--bg); }
 @media (max-width: 1000px) { .viewer { grid-template-columns: 1fr; } }
+.view-modes { margin-bottom: 10px; }
+.view-modes button.on { border-color: var(--accent); color: var(--accent); }
+#stage > canvas { width: 100%; height: 70vh; display: block; background: #111; border-radius: 6px;
+  cursor: grab; touch-action: none; }
