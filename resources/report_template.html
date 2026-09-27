@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prüfbericht {{report.number}}</title>
+{{! VoxelSieve report template. Placeholders use a Mustache subset, see include/voxelsieve/report.hpp.
+    The structure follows the report contents of DIN EN ISO/IEC 17025 (7.8) and the test report
+    of DIN EN ISO 15708-3; the evaluation follows the scheme of BDG P 202. Copy this file with
+    "vs-report --print-template" to adapt it to your own layout. }}
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  :root { --ink: #1d1d1f; --muted: #5f6368; --line: #c9ccd1; --ok: #1e7a3c; --nok: #b3261e; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.4 "Helvetica Neue", Arial, sans-serif; color: var(--ink); margin: 0 auto;
+         max-width: 190mm; padding: 12px; background: #fff; }
+  header { display: flex; justify-content: space-between; align-items: flex-start;
+           border-bottom: 2px solid var(--ink); padding-bottom: 6px; margin-bottom: 12px; }
+  header h1 { font-size: 18pt; margin: 0; }
+  header .lab { text-align: right; color: var(--muted); font-size: 9pt; }
+  h2 { font-size: 11.5pt; margin: 16px 0 6px; border-bottom: 1px solid var(--line);
+       padding-bottom: 2px; break-after: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; }
+  th, td { text-align: left; vertical-align: top; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; }
+  table.fields th { width: 42%; font-weight: normal; color: var(--muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr { break-inside: avoid; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .nok { color: var(--nok); font-weight: 600; }
+  .verdict { border: 2px solid currentColor; padding: 6px 10px; margin: 8px 0; font-size: 11pt; }
+  .images { display: flex; flex-wrap: wrap; gap: 8px; }
+  .images figure { margin: 0; flex: 1 1 30%; min-width: 150px; }
+  .images img { width: 100%; image-rendering: pixelated; border: 1px solid var(--line); }
+  figcaption, .note { color: var(--muted); font-size: 8.5pt; }
+  .signatures { display: flex; gap: 24px; margin-top: 28px; }
+  .signatures div { flex: 1; border-top: 1px solid var(--ink); padding-top: 4px; font-size: 9pt; }
+  section { break-inside: avoid-page; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Prüfbericht</h1>
+    <div>Nr. {{report.number}} vom {{report.date}}</div>
+  </div>
+  <div class="lab">{{laboratory.name}}<br>{{laboratory.address}}</div>
+</header>
+
+<section>
+<h2>1 Auftrag</h2>
+<table class="fields">
+  <tr><th>Auftraggeber</th><td>{{customer.name}}{{#customer.address}}, {{customer.address}}{{/customer.address}}</td></tr>
+  <tr><th>Auftragsnummer</th><td>{{order.number}}</td></tr>
+  {{#order.received}}<tr><th>Eingang des Prüfgegenstands</th><td>{{order.received}}</td></tr>{{/order.received}}
+  <tr><th>Prüfdatum</th><td>{{order.test_date}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>2 Prüfgegenstand</h2>
+<table class="fields">
+  <tr><th>Bezeichnung</th><td>{{part.name}}</td></tr>
+  <tr><th>Zeichnungsnummer</th><td>{{part.drawing}}</td></tr>
+  <tr><th>Werkstoff</th><td>{{part.material}}</td></tr>
+  <tr><th>Seriennummer / Charge</th><td>{{part.serial}}</td></tr>
+  {{#part.condition}}<tr><th>Zustand bei Eingang</th><td>{{part.condition}}</td></tr>{{/part.condition}}
+</table>
+</section>
+
+<section>
+<h2>3 Prüfverfahren</h2>
+<table class="fields">
+  <tr><th>Verfahren</th><td>Industrielle Computertomographie nach DIN EN ISO 15708</td></tr>
+  <tr><th>Auswertung</th><td>Porositätsanalyse mit {{software.name}} {{software.version}}{{#evaluation}}, Bewertung nach {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Abweichungen vom Verfahren</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}keine{{/method.deviations}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4 Prüfeinrichtung und Aufnahmeparameter</h2>
+<table class="fields">
+  <tr><th>CT-Anlage</th><td>{{scan.device}}</td></tr>
+  <tr><th>Röhrenspannung</th><td>{{scan.voltage_kv}} kV</td></tr>
+  <tr><th>Röhrenstrom</th><td>{{scan.current_ua}} µA</td></tr>
+  <tr><th>Vorfilter</th><td>{{scan.filter}}</td></tr>
+  {{#scan.detector}}<tr><th>Detektor</th><td>{{scan.detector}}</td></tr>{{/scan.detector}}
+  <tr><th>Anzahl Projektionen</th><td>{{scan.projections}}</td></tr>
+  <tr><th>Belichtungszeit</th><td>{{scan.exposure_ms}} ms</td></tr>
+  <tr><th>Rekonstruktion</th><td>{{scan.reconstruction}}</td></tr>
+  <tr><th>Voxelgröße</th><td>{{analysis.voxel_size}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>5 Auswerteparameter und Nachweisgrenzen</h2>
+<table class="fields">
+  <tr><th>Grauwert Luft / Material</th><td>{{analysis.air_level}} / {{analysis.material_level}} (Rauschen σ = {{analysis.noise_sigma}})</td></tr>
+  <tr><th>Kleinste ausgewertete Pore</th><td>{{analysis.min_pore_voxels}} Voxel ({{analysis.min_pore_volume}}, Kugeldurchmesser {{analysis.min_pore_diameter}})</td></tr>
+  <tr><th>Gefügeauflockerung</th><td>Blöcke von {{analysis.zone_block}} Kantenlänge, ab {{analysis.zone_min_porosity}} Porosität und {{analysis.zone_sigma}} σ über dem Rauschen, Materialbezug in gleicher Tiefe unter der Oberfläche</td></tr>
+  <tr><th>Messunsicherheit</th><td>{{uncertainty}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>6 Ergebnisse</h2>
+<table class="fields">
+  <tr><th>Bauteilvolumen</th><td>{{results.part_volume}}</td></tr>
+  <tr><th>Poren</th><td>{{results.pore_count}}, zusammen {{results.pore_volume}}</td></tr>
+  <tr><th>Zonen mit Gefügeauflockerung</th><td>{{results.zone_count}}, Porenvolumen {{results.zone_void_volume}}</td></tr>
+  <tr><th>Porosität gesamt</th><td>{{results.porosity}}</td></tr>
+</table>
+
+<div class="images">
+  <figure><img src="{{{images.z}}}" alt="Projektion entlang z"><figcaption>Projektion entlang z</figcaption></figure>
+  <figure><img src="{{{images.y}}}" alt="Projektion entlang y"><figcaption>Projektion entlang y</figcaption></figure>
+  <figure><img src="{{{images.x}}}" alt="Projektion entlang x"><figcaption>Projektion entlang x</figcaption></figure>
+</div>
+<p class="note">Grau: Wanddicke in Strahlrichtung. Rot: Poren. Gelb: Gefügeauflockerung.</p>
+
+{{#has_pores}}
+<h2>Poren nach Größe{{#pores_more}} (die {{pores_listed}} größten von {{results.pore_count}}){{/pores_more}}</h2>
+<table>
+  <tr><th>Nr.</th><th>Lage x; y; z in mm</th><th class="num">Ausdehnung mm</th><th class="num">Kugel-Ø mm</th><th class="num">Volumen mm³</th></tr>
+  {{#pores}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{volume}}</td></tr>
+  {{/pores}}
+</table>
+{{/has_pores}}
+
+{{#has_zones}}
+<h2>Zonen mit Gefügeauflockerung</h2>
+<table>
+  <tr><th>Nr.</th><th>Lage x; y; z in mm</th><th class="num">Volumen mm³</th><th class="num">Porenvolumen mm³</th><th class="num">Porosität %</th></tr>
+  {{#zones}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{volume}}</td><td class="num">{{void_volume}}</td><td class="num">{{porosity}}</td></tr>
+  {{/zones}}
+</table>
+{{/has_zones}}
+</section>
+
+<section>
+<h2>7 Bewertung</h2>
+{{#evaluation}}
+<p>Bewertung nach {{guideline}}. Poren und Zonen werden der Prüfzone zugeordnet, in der ihr Schwerpunkt liegt.</p>
+{{#zones}}
+<table>
+  <tr><th colspan="4">{{name}}: {{region}}, Bauteilvolumen {{part_volume}}</th></tr>
+  <tr><th>Merkmal</th><th class="num">Befund</th><th class="num">Grenzwert</th><th>Ergebnis</th></tr>
+  {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
+  {{/criteria}}
+</table>
+{{/zones}}
+<div class="verdict {{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</div>
+{{/evaluation}}
+{{^evaluation}}
+<p>Es wurden keine Grenzwerte vorgegeben; der Bericht enthält nur die Befunde.</p>
+{{/evaluation}}
+<p class="note">Die Ergebnisse beziehen sich ausschließlich auf den geprüften Gegenstand. Der Bericht darf ohne
+Genehmigung des Prüflaboratoriums nicht auszugsweise vervielfältigt werden.</p>
+</section>
+
+<section class="signatures">
+  <div>Prüfer: {{approval.inspector}}</div>
+  <div>Freigabe: {{approval.approver}}{{#approval.approver_role}}, {{approval.approver_role}}{{/approval.approver_role}}</div>
+  <div>Datum: {{report.date}}</div>
+</section>
+
+</body>
+</html>

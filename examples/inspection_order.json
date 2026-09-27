@@ -1,0 +1,45 @@
+{
+  "report": { "number": "PB-2026-0001", "date": "2026-09-27" },
+  "laboratory": { "name": "Musterlabor CT-Prüfung", "address": "Beispielstraße 1, 12345 Musterstadt" },
+  "customer": { "name": "Gießerei Beispiel GmbH", "address": "Werkstraße 5, 54321 Gussdorf" },
+  "order": { "number": "A-4711", "received": "2026-09-20", "test_date": "2026-09-25" },
+  "part": {
+    "name": "Getriebegehäuse",
+    "drawing": "ZN 123-456 Index C",
+    "material": "EN AC-AlSi9Cu3(Fe)",
+    "serial": "Charge 2026-38, Teil 7",
+    "condition": "gestrahlt, unbearbeitet"
+  },
+  "scan": {
+    "device": "Musteranlage 225 kV",
+    "voltage_kv": 200,
+    "current_ua": 300,
+    "filter": "0,5 mm Cu",
+    "detector": "Flachdetektor 2048 × 2048",
+    "projections": 1440,
+    "exposure_ms": 500,
+    "reconstruction": "gefilterte Rückprojektion (FDK)"
+  },
+  "method": { "deviations": "" },
+  "uncertainty": "Porenvolumen ±5 %, Porengröße ±1 Voxel (Abschätzung an Referenzkörper)",
+  "acceptance": {
+    "guideline": "BDG P 202",
+    "zones": [
+      {
+        "name": "Zone A (Dichtfläche)",
+        "box_mm": [[0.0, 0.0, 0.0], [20.0, 60.0, 10.0]],
+        "max_pore_size_mm": 0.5,
+        "max_pore_count": 3,
+        "count_min_size_mm": 0.2,
+        "max_porosity_percent": 0.5,
+        "allow_loosening": false
+      },
+      {
+        "name": "Zone B (gesamtes Bauteil)",
+        "max_pore_size_mm": 3.0,
+        "max_porosity_percent": 2.0
+      }
+    ]
+  },
+  "approval": { "inspector": "M. Muster", "approver": "E. Beispiel", "approver_role": "Laborleitung" }
+}

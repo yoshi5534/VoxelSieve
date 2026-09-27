@@ -135,6 +135,34 @@ every zone within 2 %, and the total porosity within 1 %; the analysis takes 14 
 `PorosityOptions` and the `--min-pore`, `--zone-sigma` and `--zone-min` options set the detection
 limits.
 
+## Inspection report
+
+`vs-report` runs the porosity analysis, evaluates it against the acceptance limits of an
+inspection order and writes a test report as one self-contained HTML file (print to PDF from the
+browser):
+
+```sh
+./build/release/apps/vs-report/vs-report part.vsieve --order examples/inspection_order.json \
+    --out part.report
+```
+
+The report is structured after the report contents of DIN EN ISO/IEC 17025 (7.8) and the CT test
+report of DIN EN ISO 15708-3: order, part, method, scan settings, analysis parameters and
+detection limits, results with projection images and pore list, evaluation and approval. The
+inspection order (`examples/inspection_order.json`) supplies what the scan cannot know, such as
+the customer, the part number or the tube voltage; missing mandatory fields are marked
+"nicht angegeben" in the report and printed as warnings.
+
+Acceptance follows the scheme of BDG P 202: per inspection zone (a box in dataset coordinates, or
+the whole part) optional limits on the largest pore extent, the number of pores above a size, the
+porosity, and whether loosened microstructure is allowed. The limits come from the drawing or the
+customer.
+
+The layout is a template: `vs-report --print-template > my_template.html` prints the built-in one,
+`--template my_template.html` uses your own. Templates use a Mustache subset (`{{name}}`,
+`{{#list}}...{{/list}}`, `{{^name}}...{{/name}}`); `report.json` in the output shows all available
+data. See `docs/adr/0007-inspection-report.md`.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).

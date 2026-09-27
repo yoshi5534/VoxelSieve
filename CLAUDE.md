@@ -13,8 +13,10 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
   - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
+  - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
+    the built-in template is `resources/report_template.html`, compiled in
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`)
+  `vs-porosity`, `vs-report`); `examples/` holds an example inspection order
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 
