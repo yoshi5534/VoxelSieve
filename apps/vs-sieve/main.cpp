@@ -2,6 +2,7 @@
 // voids and an air margin, and drops the air connected to the volume boundary.
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -16,7 +17,6 @@
 #include <string_view>
 
 #include "voxelsieve/dataset.hpp"
-#include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/vdb.hpp"
 
@@ -25,8 +25,9 @@ namespace {
 constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
        vs-sieve --phantom <n> --out <output> [options]
 
-Reads a headerless uint16 raw volume (little endian, x fastest). Dimensions and voxel size come
-from <input>.json (as written by vs-phantom) unless given on the command line.
+Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json (as written by
+vs-phantom) unless given on the command line. A vendor header before the voxel data is detected
+from the file size and skipped; use --header when the file also has a footer.
 
 Output:
   <dir>                   Bricked multi-resolution dataset (streaming, any volume size;
@@ -37,6 +38,9 @@ Options:
   --out <path>            Output dataset directory or .vdb file (required)
   --dims <x> <y> <z>      Volume dimensions in voxels
   --voxel-size <mm>       Voxel edge length in mm
+  --type <uint16|uint8>   Sample type of the raw file (default uint16)
+  --big-endian            16-bit samples are big endian (default little endian)
+  --header <bytes>        Header size; default: file size minus voxel data
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
   --threshold <value>     Air/material grey value (default: Otsu estimate)
   --margin <voxels>       Air margin kept around the part (default 3)
@@ -51,6 +55,9 @@ struct Options {
   std::filesystem::path out;
   std::optional<std::array<std::int64_t, 3>> dims;
   std::optional<double> voxel_size_mm;
+  voxelsieve::SampleType sample_type = voxelsieve::SampleType::kUInt16;
+  std::endian byte_order = std::endian::little;
+  std::optional<std::uint64_t> header_bytes;
   voxelsieve::SieveOptions sieve;
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
@@ -79,6 +86,17 @@ std::optional<Options> parse(int argc, char** argv) {
         d = std::stoll(next());
       }
       options.dims = dims;
+    } else if (arg == "--type") {
+      const std::string type = next();
+      if (type != "uint16" && type != "uint8") {
+        throw std::invalid_argument("--type must be uint16 or uint8");
+      }
+      options.sample_type =
+          type == "uint8" ? voxelsieve::SampleType::kUInt8 : voxelsieve::SampleType::kUInt16;
+    } else if (arg == "--big-endian") {
+      options.byte_order = std::endian::big;
+    } else if (arg == "--header") {
+      options.header_bytes = std::stoull(next());
     } else if (arg == "--voxel-size") {
       options.voxel_size_mm = std::stod(next());
     } else if (arg == "--threshold") {
@@ -159,10 +177,23 @@ std::uintmax_t directorySize(const std::filesystem::path& dir) {
   return bytes;
 }
 
-void runSingleGrid(const Options& options) {
+std::unique_ptr<voxelsieve::MappedRawSource> openRaw(const Options& options) {
   const Geometry geometry = resolveGeometry(options);
+  auto source = std::make_unique<voxelsieve::MappedRawSource>(
+      options.input,
+      voxelsieve::RawLayout{geometry.dims, geometry.voxel_size_mm, options.sample_type,
+                            options.byte_order, options.header_bytes});
+  if (source->headerBytes() > 0) {
+    std::cout << "header             " << source->headerBytes() << " bytes skipped\n";
+  }
+  return source;
+}
+
+void runSingleGrid(const Options& options) {
   const auto start = std::chrono::steady_clock::now();
-  const auto volume = voxelsieve::readRaw(options.input, geometry.dims, geometry.voxel_size_mm);
+  const auto source = openRaw(options);
+  voxelsieve::Volume16 volume(source->dims(), source->voxelSizeMm());
+  source->readRegion({{0, 0, 0}, volume.dims}, volume.data);
   const auto loaded = std::chrono::steady_clock::now();
 
   openvdb::FloatGrid::Ptr grid;
@@ -204,9 +235,7 @@ void runDataset(const Options& options) {
     spec.noise_sigma = 500.0;
     source = std::make_unique<voxelsieve::PhantomSource>(spec);
   } else {
-    const Geometry geometry = resolveGeometry(options);
-    source = std::make_unique<voxelsieve::MappedRawSource>(options.input, geometry.dims,
-                                                           geometry.voxel_size_mm);
+    source = openRaw(options);
   }
 
   const auto start = std::chrono::steady_clock::now();
