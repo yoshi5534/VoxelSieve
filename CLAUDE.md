@@ -12,7 +12,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
   - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts
-- `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`)
+  - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
+- `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
+  `vs-porosity`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 
