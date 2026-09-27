@@ -202,6 +202,22 @@ A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
 `voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
 `docs/adr/0008-studio-projects-operations-ui.md`.
 
+## Studio
+
+`vs-studio` starts the studio and prints its address, by default http://localhost:8410. The browser
+UI leads through three steps: choose a dataset (or import a raw file), run operations such as the
+porosity analysis, create the inspection report. Every step appears in the protocol with its
+parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
+step. Plugins appear next to the built-in operations.
+
+![Studio with protocol and porosity result](docs/images/studio.png)
+
+```sh
+vs-studio --project /data/casting.vsproj --plugins build/release/plugins
+```
+
+The server listens on 127.0.0.1 only and has no authentication; do not expose it to a network.
+
 ## AI systems: MCP
 
 `vs-studio --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
@@ -214,7 +230,7 @@ Register it with an MCP client as a stdio server, for example:
 ```
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
-`list_operations`, `dataset_info`, `list_files`, `read_file` and one `run_<operation>` per
+`list_operations`, `dataset_info`, `list_files`, `read_file`, `browse` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). Parameter schemas
 come from the operations, errors come back as tool errors with the reason, and long operations
 report progress. Datasets are never sent over the protocol, only their metadata and small text
