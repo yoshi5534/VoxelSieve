@@ -1,9 +1,13 @@
 #include "voxelsieve/io.hpp"
 
+#include <tbb/parallel_for.h>
+
+#include <algorithm>
 #include <bit>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace voxelsieve {
 
@@ -17,6 +21,32 @@ void writeRaw(const std::filesystem::path& path, const Volume16& volume) {
   }
   out.write(reinterpret_cast<const char*>(volume.data.data()),
             static_cast<std::streamsize>(volume.data.size() * sizeof(std::uint16_t)));
+  if (!out) {
+    throw std::runtime_error("Write failed: " + path.string());
+  }
+}
+
+void writeRaw(const std::filesystem::path& path, const VolumeSource& source) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    throw std::runtime_error("Cannot open for writing: " + path.string());
+  }
+  const auto dims = source.dims();
+  const std::int64_t slice = dims[0] * dims[1];
+  // About 64 MB per slab, at least one slice.
+  const std::int64_t slab = std::max<std::int64_t>(1, (std::int64_t{32} << 20) / slice);
+  std::vector<std::uint16_t> buffer;
+  for (std::int64_t z0 = 0; z0 < dims[2]; z0 += slab) {
+    const std::int64_t z1 = std::min(z0 + slab, dims[2]);
+    buffer.resize(static_cast<std::size_t>(slice * (z1 - z0)));
+    tbb::parallel_for(z0, z1, [&](std::int64_t z) {
+      const auto offset = static_cast<std::size_t>(slice * (z - z0));
+      source.readRegion({{0, 0, z}, {dims[0], dims[1], z + 1}},
+                        std::span(buffer).subspan(offset, static_cast<std::size_t>(slice)));
+    });
+    out.write(reinterpret_cast<const char*>(buffer.data()),
+              static_cast<std::streamsize>(buffer.size() * sizeof(std::uint16_t)));
+  }
   if (!out) {
     throw std::runtime_error("Write failed: " + path.string());
   }
