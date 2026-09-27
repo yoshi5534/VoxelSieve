@@ -1,6 +1,6 @@
 # 0004: Out-of-core datasets as bricked, multi-resolution VDB
 
-Status: proposed (2026-09-27)
+Status: accepted (2026-09-27)
 
 ## Context
 
@@ -42,6 +42,7 @@ A dataset is a directory of independent VDB bricks plus an index, at several res
 part.vsieve/
   index.json            dims, voxel size, brick size, value type, threshold, air level,
                         list of non-empty bricks per level, statistics
+  overview.vdb          the whole volume in one grid of at most 256³ voxels (configurable)
   level0/x_y_z.vdb      full resolution, one FloatGrid per brick (default 256³ voxels)
   level1/x_y_z.vdb      downsampled 2x
   level2/...            until the whole volume fits in one brick
@@ -54,6 +55,9 @@ part.vsieve/
 - Grid index space is global: voxel (i, j, k) of the scan has VDB coordinate (i, j, k) in every
   level-0 brick, so bricks can be combined without offsets.
 - The coarse levels give a fast overview and let a viewer load detail only where it is needed.
+- `overview.vdb` is the coarsest level as a single file: the entry point for viewers and a quick
+  look in Blender. Downsampling averages, so pores smaller than an overview voxel are not visible
+  there; they remain in the finer levels.
 - The value type is recorded in `index.json`. Float stays the default (ADR 0002); a custom
   `uint16` tree can be added later without changing the layout.
 
