@@ -5,12 +5,20 @@ add_executable(voxelsieve_tests
   test_io.cpp
   test_phantom.cpp
   test_porosity.cpp
+  test_project.cpp
   test_report.cpp
   test_sieve.cpp
   test_synthetic.cpp
   test_vdb.cpp
 )
 target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main)
+
+# The example plugin is built with the tests and loaded by ProjectTest.PluginsAddOperations.
+add_subdirectory(${PROJECT_SOURCE_DIR}/examples/plugins/histogram
+                 ${CMAKE_BINARY_DIR}/examples/plugins/histogram)
+add_dependencies(voxelsieve_tests voxelsieve_histogram)
+target_compile_definitions(voxelsieve_tests PRIVATE
+  VOXELSIEVE_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins")
 
 include(GoogleTest)
 gtest_discover_tests(voxelsieve_tests)

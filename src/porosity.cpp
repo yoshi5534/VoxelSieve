@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
@@ -16,6 +17,7 @@
 #include <stdexcept>
 
 #include "detail/png.hpp"
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 
 namespace voxelsieve {
@@ -878,6 +880,78 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
     grid->setGridClass(openvdb::GRID_FOG_VOLUME);
   }
   writeVdb(file, {pores, zones});
+}
+
+void savePorosityResult(const PorosityResult& result, const std::filesystem::path& dir) {
+  std::filesystem::create_directories(dir);
+  writeJson(dir / "porosity.json", toJson(result));
+  openvdb::GridPtrVec grids;
+  const auto add = [&grids](const openvdb::GridBase::Ptr& grid, const char* name) {
+    if (grid) {
+      auto copy = grid->deepCopyGrid();
+      copy->setName(name);
+      grids.push_back(copy);
+    }
+  };
+  add(result.pore_labels, "pore_labels");
+  add(result.zone_blocks, "zone_blocks");
+  add(result.material_blocks, "material_blocks");
+  openvdb::io::File file((dir / "analysis.vdb").string());
+  file.write(grids);
+  file.close();
+}
+
+PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
+  std::ifstream in(dir / "porosity.json");
+  if (!in) {
+    throw std::runtime_error("No porosity result in " + dir.string());
+  }
+  const nlohmann::json json = nlohmann::json::parse(in);
+  PorosityResult result;
+  result.voxel_size_mm = json.at("voxel_size_mm").get<double>();
+  result.air_level = json.at("air_level").get<float>();
+  result.material_level = json.at("material_level").get<float>();
+  result.noise_sigma = json.at("noise_sigma").get<double>();
+  result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
+  for (const nlohmann::json& item : json.at("pores")) {
+    DetectedPore pore;
+    pore.id = item.at("id").get<int>();
+    pore.voxel_count = item.at("voxel_count").get<std::int64_t>();
+    pore.volume_mm3 = item.at("volume_mm3").get<double>();
+    pore.equivalent_diameter_mm = item.at("equivalent_diameter_mm").get<double>();
+    pore.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
+    pore.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
+    pore.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
+    result.pores.push_back(pore);
+  }
+  for (const nlohmann::json& item : json.at("zones")) {
+    PorosityZone zone;
+    zone.id = item.at("id").get<int>();
+    zone.block_count = item.at("block_count").get<std::int64_t>();
+    zone.volume_mm3 = item.at("volume_mm3").get<double>();
+    zone.void_volume_mm3 = item.at("void_volume_mm3").get<double>();
+    zone.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
+    zone.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
+    zone.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
+    result.zones.push_back(zone);
+  }
+  if (std::filesystem::exists(dir / "analysis.vdb")) {
+    openvdb::initialize();
+    openvdb::io::File file((dir / "analysis.vdb").string());
+    file.open();
+    const auto grids = file.getGrids();
+    file.close();
+    for (const auto& grid : *grids) {
+      if (grid->getName() == "pore_labels") {
+        result.pore_labels = openvdb::gridPtrCast<openvdb::Int32Grid>(grid);
+      } else if (grid->getName() == "zone_blocks") {
+        result.zone_blocks = openvdb::gridPtrCast<openvdb::FloatGrid>(grid);
+      } else if (grid->getName() == "material_blocks") {
+        result.material_blocks = openvdb::gridPtrCast<openvdb::FloatGrid>(grid);
+      }
+    }
+  }
+  return result;
 }
 
 }  // namespace voxelsieve
