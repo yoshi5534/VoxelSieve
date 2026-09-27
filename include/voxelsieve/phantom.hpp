@@ -49,8 +49,13 @@ struct PhantomSpec {
 [[nodiscard]] std::array<double, 3> voxelCenterMm(const PhantomSpec& spec, std::int64_t x,
                                                   std::int64_t y, std::int64_t z);
 
-/// Renders the phantom. Edge voxels get a partial-volume grey value between air and material.
-/// Noise is reproducible for a given seed and standard library implementation.
+/// Grey value of voxel (x, y, z). Edge voxels get a partial-volume value between air and
+/// material. Noise depends only on the seed and the voxel index, so voxels can be generated in any
+/// order and the result is identical on every platform.
+[[nodiscard]] std::uint16_t phantomValue(const PhantomSpec& spec, std::int64_t x, std::int64_t y,
+                                         std::int64_t z);
+
+/// Renders the whole phantom into memory.
 [[nodiscard]] Volume16 generatePhantom(const PhantomSpec& spec);
 
 }  // namespace voxelsieve
