@@ -92,6 +92,12 @@ struct PorosityResult {
 
 [[nodiscard]] nlohmann::json toJson(const PorosityResult& result);
 
+/// Saves a result so it can be loaded again: porosity.json plus analysis.vdb with the label,
+/// zone and material grids in index space.
+void savePorosityResult(const PorosityResult& result, const std::filesystem::path& dir);
+/// Loads a result written by `savePorosityResult`.
+[[nodiscard]] PorosityResult loadPorosityResult(const std::filesystem::path& dir);
+
 /// Writes projections along x, y and z as PNG images: the part as a grey thickness image, pores in
 /// red and zones in yellow. Images wider than `max_pixels` are downsampled.
 void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
