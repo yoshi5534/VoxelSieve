@@ -8,6 +8,8 @@ add_library(voxelsieve SHARED
   builtin_operations.cpp
   operation.cpp
   project.cpp
+  studio.cpp
+  mcp.cpp
   io.cpp
   mesh.cpp
   phantom.cpp
