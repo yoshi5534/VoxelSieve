@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "voxelsieve/dataset.hpp"
 
@@ -46,6 +47,7 @@ struct Dataset::Impl {
   DatasetInfo info;
   std::vector<std::set<Index3>> stored;  // per level
   std::size_t cache_bytes = 0;
+  BrickLoading loading = BrickLoading::kFull;
 
   mutable std::mutex mutex;
   mutable std::list<Entry> lru;  // most recently used first
@@ -79,15 +81,36 @@ struct Dataset::Impl {
       ++stats.misses;
     }
 
-    // Load outside the lock so other threads keep using the cache. Fully loaded, so the memory
-    // accounted for does not grow later through delayed loading.
-    BrickPtr grid = readBrick(brickPath(dir, level_index, brick), /*delay_load=*/false);
+    // Load outside the lock so other threads keep using the cache.
+    const bool on_access = loading == BrickLoading::kOnAccess;
+    BrickPtr grid = readBrick(brickPath(dir, level_index, brick), on_access);
     const auto bytes = static_cast<std::size_t>(grid->memUsage());
+    // Bricks loaded on access grow as their leaves are read: measure them again. memUsage runs
+    // TBB tasks, so it must not run under the lock.
+    std::vector<std::pair<BrickKey, std::size_t>> measured;
+    if (on_access) {
+      std::vector<std::pair<BrickKey, BrickPtr>> cached;
+      {
+        const std::scoped_lock lock(mutex);
+        for (const Entry& entry : lru) {
+          cached.emplace_back(entry.key, entry.grid);
+        }
+      }
+      for (const auto& [cached_key, cached_grid] : cached) {
+        measured.emplace_back(cached_key, static_cast<std::size_t>(cached_grid->memUsage()));
+      }
+    }
 
     // Evicted bricks are destroyed after the lock is released: OpenVDB frees a tree with TBB
     // tasks, and a thread waiting for them may pick up another brick() call on this cache.
     std::list<Entry> evicted;
     const std::scoped_lock lock(mutex);
+    for (const auto& [measured_key, measured_bytes] : measured) {
+      if (const auto it = entries.find(measured_key); it != entries.end()) {
+        stats.bytes = stats.bytes - it->second->bytes + measured_bytes;
+        it->second->bytes = measured_bytes;
+      }
+    }
     if (const auto it = entries.find(key); it != entries.end()) {
       return it->second->grid;  // another thread loaded it meanwhile
     }
@@ -119,12 +142,14 @@ Dataset::Dataset(Dataset&&) noexcept = default;
 Dataset& Dataset::operator=(Dataset&&) noexcept = default;
 Dataset::~Dataset() = default;
 
-Dataset Dataset::open(const std::filesystem::path& dir, std::size_t cache_bytes) {
+Dataset Dataset::open(const std::filesystem::path& dir, std::size_t cache_bytes,
+                      BrickLoading loading) {
   openvdb::initialize();
   auto impl = std::make_unique<Impl>();
   impl->dir = dir;
   impl->info = readDatasetInfo(dir);
   impl->cache_bytes = cache_bytes;
+  impl->loading = loading;
   for (const LevelInfo& level : impl->info.levels) {
     impl->stored.emplace_back(level.bricks.begin(), level.bricks.end());
   }

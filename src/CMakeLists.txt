@@ -9,14 +9,17 @@ set(VOXELSIEVE_UI_DIR ${PROJECT_SOURCE_DIR}/resources/ui)
 file(READ ${VOXELSIEVE_UI_DIR}/index.html VOXELSIEVE_UI_INDEX)
 file(READ ${VOXELSIEVE_UI_DIR}/app.js VOXELSIEVE_UI_SCRIPT)
 file(READ ${VOXELSIEVE_UI_DIR}/app.css VOXELSIEVE_UI_STYLE)
+file(READ ${VOXELSIEVE_UI_DIR}/viewer.js VOXELSIEVE_UI_VIEWER)
 configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  ${VOXELSIEVE_UI_DIR}/index.html ${VOXELSIEVE_UI_DIR}/app.js ${VOXELSIEVE_UI_DIR}/app.css)
+  ${VOXELSIEVE_UI_DIR}/index.html ${VOXELSIEVE_UI_DIR}/app.js ${VOXELSIEVE_UI_DIR}/app.css
+  ${VOXELSIEVE_UI_DIR}/viewer.js)
 
 add_library(voxelsieve SHARED
   builtin_operations.cpp
   operation.cpp
   project.cpp
+  slice.cpp
   studio.cpp
   mcp.cpp
   http_server.cpp

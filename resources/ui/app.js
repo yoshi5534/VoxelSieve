@@ -10,6 +10,8 @@ const state = {
   stage: 'dataset',
   rawPath: null,
   busy: false,
+  viewer: null,
+  pores: { step: null, list: [] },
 };
 
 // Labels of known parameters; forms show them in this order.
@@ -578,7 +580,8 @@ function renderAnalysisStage(panel) {
     panel.append(card);
   }
   if (latestOutput('porosity')) {
-    panel.append(el('div', { className: 'row' }, nextButton('Weiter zum Bericht', 'report')));
+    panel.append(el('div', { className: 'row' }, nextButton('In der Ansicht prüfen', 'view'),
+      nextButton('Weiter zum Bericht', 'report')));
   }
 }
 
@@ -611,6 +614,124 @@ function renderReportStage(panel) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Slice view
+
+/// Latest porosity step computed from the dataset of `datasetStep`.
+function porosityOf(datasetStep) {
+  const steps = activeSteps().filter((step) => step.operation === 'porosity' &&
+    step.inputs.dataset?.step === datasetStep);
+  return steps.length ? steps[steps.length - 1].id : null;
+}
+
+async function loadPores(step) {
+  if (state.pores.step === step) return;
+  state.pores = { step, list: [] };
+  if (step === null) return;
+  try {
+    const file = await api('read_file', { step, output: 'porosity', file: 'porosity.json' });
+    state.pores.list = JSON.parse(file.text).pores ?? [];
+  } catch {
+    state.pores.list = [];  // larger than read_file allows; the view still shows the overlay
+  }
+  if (state.stage === 'view') render();
+}
+
+function renderViewStage(panel) {
+  const dataset = latestOutput('dataset');
+  if (!dataset) {
+    panel.append(el('h1', {}, 'Ansicht'),
+      el('p', { className: 'hint' }, 'Zuerst einen Datensatz wählen.'),
+      nextButton('Zum Datensatz', 'dataset'));
+    return;
+  }
+  const viewer = state.viewer ?? (state.viewer = new SliceViewer());
+  const porosity = porosityOf(dataset.step.id);
+  loadPores(porosity);
+  const canvas = el('canvas', { tabindex: 0 });
+  const status = el('div', { className: 'viewer-status' });
+  const slider = el('input', { type: 'range', min: 0, step: 1 });
+  const sliceNumber = el('input', { type: 'number', min: 0, step: 1 });
+  const low = el('input', { type: 'number', step: 'any', title: 'Grauwert schwarz' });
+  const high = el('input', { type: 'number', step: 'any', title: 'Grauwert weiß' });
+  const axisButtons = [0, 1, 2].map((axis) => el('button', {
+    onclick: () => viewer.setAxis(axis),
+    title: 'Schnitt senkrecht zur ' + SLICE_AXIS_NAMES[axis] + '-Achse',
+  }, SLICE_AXIS_NAMES[axis].toUpperCase()));
+  const overlay = el('input', { type: 'checkbox', checked: viewer.showOverlay,
+    disabled: porosity === null });
+  overlay.addEventListener('change', () => viewer.setOverlay(overlay.checked));
+  slider.addEventListener('input', () => viewer.setSlice(Number(slider.value)));
+  sliceNumber.addEventListener('change', () => viewer.setSlice(Number(sliceNumber.value)));
+  const applyWindow = () => {
+    if (low.value !== '' && high.value !== '' && Number(high.value) > Number(low.value)) {
+      viewer.setWindow(Number(low.value), Number(high.value));
+    }
+  };
+  low.addEventListener('change', applyWindow);
+  high.addEventListener('change', applyWindow);
+
+  viewer.onChange = () => {
+    const axis = viewer.axis;
+    axisButtons.forEach((button, a) => button.classList.toggle('on', a === axis));
+    slider.max = viewer.info.dims[axis] - 1;
+    sliceNumber.max = slider.max;
+    slider.value = viewer.index[axis];
+    if (document.activeElement !== sliceNumber) sliceNumber.value = viewer.index[axis];
+    if (viewer.window) {
+      if (document.activeElement !== low) low.value = Math.round(viewer.window[0]);
+      if (document.activeElement !== high) high.value = Math.round(viewer.window[1]);
+    }
+    const [u, v] = IN_PLANE_NAMES[axis];
+    const level = viewer.level();
+    let text = SLICE_AXIS_NAMES[axis] + ' = ' + viewer.index[axis] + ' · ' + u + ' nach rechts, ' +
+      v + ' nach unten · Stufe ' + level + ' (' +
+      formatNumber(viewer.info.levels[level].voxel_size_mm) + ' mm)';
+    if (viewer.hover) {
+      const value = viewer.hover.value;
+      text += ' · Voxel ' + viewer.hover.voxel.join(', ') +
+        (value === undefined ? '' : ' · Grauwert ' + formatNumber(Math.round(value)));
+    }
+    status.textContent = text;
+  };
+
+  const tools = el('div', { className: 'viewer-tools' },
+    el('div', { className: 'group' }, axisButtons),
+    slider, sliceNumber,
+    el('div', { className: 'group' }, 'Fenster', low, high,
+      el('button', { onclick: () => viewer.autoWindow() }, 'Auto')),
+    el('label', { className: 'group' }, overlay, 'Poren und Zonen'),
+    el('button', { onclick: () => { viewer.fit(); viewer.requestDraw(); viewer.onChange(); } },
+      'Einpassen'));
+
+  const poreRows = state.pores.list.slice(0, 500).map((pore) => el('tr', {
+    onclick: () => viewer.showVoxel(pore.center_voxels, Math.max(8,
+      ...pore.bounds_max.map((max, a) => max - pore.bounds_min[a] + 1))),
+    title: 'Zur Pore springen',
+  }, el('td', {}, pore.id), el('td', {}, formatNumber(pore.equivalent_diameter_mm)),
+  el('td', {}, formatNumber(pore.volume_mm3))));
+  const side = el('div', { className: 'pores' },
+    el('h3', {}, porosity === null ? 'Keine Porositätsanalyse'
+      : 'Poren (Schritt ' + porosity + ')'),
+    poreRows.length ? el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'Nr.'), el('th', {}, 'Ø mm'), el('th', {}, 'mm³'))),
+      el('tbody', {}, poreRows))
+      : el('p', { className: 'hint' }, porosity === null
+        ? 'Nach der Porositätsanalyse erscheinen hier die Poren; ein Klick springt zur Pore.'
+        : 'Keine Poren gefunden.'));
+
+  panel.append(el('div', { className: 'viewer' },
+    el('div', {}, tools, canvas, status), side));
+
+  api('dataset_info', { step: dataset.step.id }).then((info) => {
+    viewer.setDataset(info, dataset.step.id, porosity);
+    viewer.attach(canvas);
+    viewer.onChange();
+  }).catch(showError);
+}
+
+const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
+
 function render() {
   renderHeader();
   renderProtocol();
@@ -623,6 +744,7 @@ function render() {
   panel.replaceChildren();
   if (state.stage === 'dataset') renderDatasetStage(panel);
   else if (state.stage === 'analysis') renderAnalysisStage(panel);
+  else if (state.stage === 'view') renderViewStage(panel);
   else renderReportStage(panel);
 }
 
@@ -677,8 +799,16 @@ async function start() {
     });
   }
   document.addEventListener('keydown', (event) => {
-    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+    if (state.stage === 'view' && state.viewer?.info) {
+      const steps = { ArrowUp: 1, ArrowDown: -1, PageUp: 10, PageDown: -10 };
+      if (event.key in steps) {
+        event.preventDefault();
+        state.viewer.moveSlice(steps[event.key]);
+        return;
+      }
+    }
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
     event.preventDefault();
     if (event.shiftKey) redo();
     else undo();
