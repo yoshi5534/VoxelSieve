@@ -4,10 +4,27 @@ Open-source tooling for industrial CT volumes, built on [OpenVDB](https://www.op
 
 Reconstructed CT volumes are large, uncompressed raw files in which most voxels are air.
 VoxelSieve separates the surrounding air from the part, keeps internal voids such as pores,
-and stores the result as a sparse VDB grid that can be rendered quickly and analysed further.
+and stores the result as a sparse, bricked VDB dataset that works for scans larger than memory.
+On top of it, it finds pores and loosened microstructure and writes an inspection report.
 
-Status: early development. Two command-line tools exist: `vs-phantom` generates synthetic test
-volumes with known ground truth, and `vs-sieve` converts a raw volume into a sparse VDB grid.
+| CT slice | Porosity analysis | Inspection report |
+|---|---|---|
+| ![Slice through a synthetic casting scan with two zones of loosened microstructure and a shrinkage cavity](docs/images/ct-slice.png) | ![Projection of the part in grey with pores in red and loosened zones in yellow](docs/images/porosity-projection.png) | ![Evaluation table of the inspection report with two inspection zones](docs/images/report-evaluation.png) |
+| Synthetic scan with noise and cupping: two loosened zones and a shrinkage cavity | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 scheme) |
+
+All three images come from one synthetic scan of 1025 × 775 × 525 voxels (830 MB), made with
+`vs-synth --box 80 60 40 --voxel-size 0.08 --lunker 6 --loosening 3 --noise 500 --cupping 0.1
+--seed 7`. Every lunker volume and every zone is found within 2 % of the ground truth.
+
+Status: early development (0.1.0, see [CHANGELOG.md](CHANGELOG.md)). The tools:
+
+| Tool | Does |
+|---|---|
+| `vs-sieve` | raw volume (with vendor header) → sparse bricked dataset, streamed, out of core |
+| `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
+| `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
+| `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
+| `vs-phantom` | simple box phantom with analytic ground truth |
 
 ## Build
 
