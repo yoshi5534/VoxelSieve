@@ -60,6 +60,18 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_EQ(porosity.at("summary").at("pores"), 2);
   EXPECT_FALSE(progress.empty());
 
+  // A slice as PNG with the overlay of the porosity step, at a level that fits max_pixels.
+  const Json slice = studio.call("view_slice", {{"axis", "x"}, {"max_pixels", 64}});
+  EXPECT_EQ(slice.at("porosity_step"), porosity.at("id"));
+  EXPECT_EQ(slice.at("right"), "y");
+  EXPECT_EQ(slice.at("down"), "z");
+  EXPECT_LE(std::max(slice.at("width").get<int>(), slice.at("height").get<int>()), 64);
+  EXPECT_GT(slice.at("level").get<int>(), 0);
+  EXPECT_TRUE(slice.at("image").at("base64").get<std::string>().starts_with("iVBORw0KGgo"));
+  EXPECT_TRUE(
+      studio.call("view_slice", {{"overlay", false}, {"index", 3}}).at("porosity_step").is_null());
+  EXPECT_THROW(studio.call("view_slice", {{"index", 100000}}), std::invalid_argument);
+
   const Json files = studio.call("list_files", {});
   bool has_json = false;
   for (const Json& file : files.at("files")) {
@@ -157,6 +169,15 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
   ASSERT_FALSE(sent.empty());
   EXPECT_EQ(sent.front().at("method"), "notifications/progress");
   EXPECT_EQ(sent.front().at("params").at("progressToken"), "t");
+
+  // Images come back as image content next to the JSON text.
+  const Json slice =
+      handle(request(11, "tools/call", {{"name", "view_slice"}, {"arguments", Json::object()}}));
+  const Json& content = slice.at("result").at("content");
+  ASSERT_EQ(content.size(), 2U);
+  EXPECT_EQ(content[0].at("type"), "image");
+  EXPECT_EQ(content[0].at("mimeType"), "image/png");
+  EXPECT_FALSE(slice.at("result").at("structuredContent").contains("image"));
 
   // Failures are tool errors with the message, so a model can correct the call.
   const Json failed = handle(

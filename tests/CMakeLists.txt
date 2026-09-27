@@ -8,6 +8,7 @@ add_executable(voxelsieve_tests
   test_project.cpp
   test_studio.cpp
   test_http.cpp
+  test_slice.cpp
   test_report.cpp
   test_sieve.cpp
   test_synthetic.cpp
@@ -65,4 +66,5 @@ set_tests_properties(vs_studio_rejects_arguments PROPERTIES WILL_FAIL TRUE)
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
   add_test(NAME ui_script_syntax COMMAND ${NODE_EXECUTABLE} --check ${PROJECT_SOURCE_DIR}/resources/ui/app.js)
+  add_test(NAME ui_viewer_syntax COMMAND ${NODE_EXECUTABLE} --check ${PROJECT_SOURCE_DIR}/resources/ui/viewer.js)
 endif()

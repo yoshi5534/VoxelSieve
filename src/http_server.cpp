@@ -2,10 +2,13 @@
 
 #include <sys/socket.h>
 
+#include <bit>
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <cstring>
 #include <iostream>
 #include <list>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -191,12 +194,68 @@ struct HttpServer::Impl {
     }
   }
 
+  static std::string_view target(const Request& request) {
+    const std::string_view text = request.target();
+    const auto query = text.find('?');
+    return query == std::string_view::npos ? std::string_view() : text.substr(query + 1);
+  }
+
+  /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2]
+  /// Body: width * height float32 grey values (little endian, u fastest), then width * height
+  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
+  http::message_generator tile(const Request& request, std::string_view query) {
+    std::map<std::string, std::int64_t> values;
+    while (!query.empty()) {
+      const auto end = query.find('&');
+      const std::string_view pair = query.substr(0, end);
+      const auto equals = pair.find('=');
+      if (equals != std::string_view::npos) {
+        values[std::string(pair.substr(0, equals))] =
+            std::stoll(std::string(pair.substr(equals + 1)));
+      }
+      query = end == std::string_view::npos ? std::string_view() : query.substr(end + 1);
+    }
+    const auto value = [&values](const std::string& name, std::int64_t fallback) {
+      const auto it = values.find(name);
+      return it == values.end() ? fallback : it->second;
+    };
+    SliceRequest slice;
+    slice.axis = static_cast<int>(value("axis", 2));
+    slice.index = value("index", 0);
+    slice.level = static_cast<int>(value("level", 0));
+    slice.origin = {value("u", 0), value("v", 0)};
+    const std::int64_t size = value("size", 256);
+    slice.size = {size, size};
+    const auto optional = [&values](const std::string& name) -> std::optional<int> {
+      const auto it = values.find(name);
+      return it == values.end() ? std::nullopt : std::optional<int>(static_cast<int>(it->second));
+    };
+    const SliceImage image = studio.sliceTile(optional("step"), optional("porosity"), slice);
+    std::string body(image.grey.size() * sizeof(float) + image.overlay.size(), '\0');
+    static_assert(std::endian::native == std::endian::little, "tiles are sent little endian");
+    std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
+    std::memcpy(body.data() + image.grey.size() * sizeof(float), image.overlay.data(),
+                image.overlay.size());
+    http::response<http::string_body> response(http::status::ok, request.version());
+    response.set(http::field::content_type, "application/octet-stream");
+    response.set(http::field::cache_control, "no-store");
+    response.set("X-Width", std::to_string(image.width));
+    response.set("X-Height", std::to_string(image.height));
+    response.keep_alive(request.keep_alive());
+    response.body() = std::move(body);
+    response.prepare_payload();
+    return response;
+  }
+
   http::message_generator get(const Request& request, std::string_view path) {
     if (path == "/") {
       path = "/index.html";
     }
     if (const auto resource = uiResource(path.substr(1)); !resource.empty()) {
       return text(request, http::status::ok, contentType(std::string(path)), std::string(resource));
+    }
+    if (path == "/api/tile") {
+      return tile(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();

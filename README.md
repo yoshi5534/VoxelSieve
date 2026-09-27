@@ -212,6 +212,13 @@ step. Plugins appear next to the built-in operations.
 
 ![Studio with protocol and porosity result](docs/images/studio.png)
 
+The view ("Ansicht") shows slices along x, y or z. It loads only the tiles on screen, from the
+resolution level that matches the zoom, so it stays fast on scans of hundreds of GB. Wheel zooms,
+dragging pans, the arrow keys (or Shift and the wheel) step through slices; pores are tinted red
+and loosened zones yellow, and a click on a pore in the list jumps to it.
+
+![Slice view of an 830 MB scan zoomed onto a shrinkage cavity](docs/images/slice-view.png)
+
 ```sh
 vs-studio --project /data/casting.vsproj --plugins build/release/plugins
 ```
@@ -230,7 +237,8 @@ Register it with an MCP client as a stdio server, for example:
 ```
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
-`list_operations`, `dataset_info`, `list_files`, `read_file`, `browse` and one `run_<operation>` per
+`list_operations`, `dataset_info`, `view_slice` (a slice as an image, with pores and zones),
+`list_files`, `read_file`, `browse` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). Parameter schemas
 come from the operations, errors come back as tool errors with the reason, and long operations
 report progress. Datasets are never sent over the protocol, only their metadata and small text

@@ -152,6 +152,14 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   EXPECT_EQ(request(server_->port(), http::verb::get, base + "missing.json").status, 400U);
   EXPECT_EQ(request(server_->port(), http::verb::get, "/files/99/dataset/index.json").status, 400U);
 
+  // Slice tiles: float32 grey values, then one overlay byte per pixel.
+  const Reply tile = request(server_->port(), http::verb::get,
+                             "/api/tile?axis=2&index=10&level=0&u=0&v=0&size=16");
+  ASSERT_EQ(tile.status, 200U) << tile.body;
+  EXPECT_EQ(tile.body.size(), 16U * 16U * 5U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/tile?axis=5&size=16").status, 400U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/tile?index=x").status, 400U);
+
   const Reply browsed = call("browse", {{"path", dir_.string()}});
   ASSERT_EQ(browsed.status, 200U) << browsed.body;
   const Json listing = browsed.json();
