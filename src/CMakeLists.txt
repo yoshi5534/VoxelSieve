@@ -4,7 +4,10 @@ file(READ ${VOXELSIEVE_REPORT_TEMPLATE_FILE} VOXELSIEVE_REPORT_TEMPLATE)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${VOXELSIEVE_REPORT_TEMPLATE_FILE})
 
-add_library(voxelsieve
+add_library(voxelsieve SHARED
+  builtin_operations.cpp
+  operation.cpp
+  project.cpp
   io.cpp
   mesh.cpp
   phantom.cpp
@@ -32,6 +35,6 @@ target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_VERSION="${PROJECT_VERS
 find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json
-  PRIVATE Boost::iostreams
+  PRIVATE Boost::iostreams ${CMAKE_DL_LIBS}
   PRIVATE voxelsieve_warnings
 )

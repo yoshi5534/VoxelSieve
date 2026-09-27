@@ -8,6 +8,10 @@ First version: from a raw CT volume to an inspection report.
   a bricked multi-resolution VDB dataset with an overview grid, streamed in two passes over a
   memory-mapped raw file, so scans larger than RAM work (ADR 0004). Reads raw files with vendor
   headers, 8-bit samples and big-endian data. Grey values stay lossless as float (ADR 0002).
+- **Projects and operations** (`voxelsieve::Project`, `voxelsieve::OperationRegistry`): every
+  step is recorded with parameters, inputs, outputs and messages, can be undone and redone, and
+  the project is saved after each change. Import, porosity and report are operations; more can be
+  loaded as plugins (ADR 0008).
 - **Read API** (`voxelsieve::Dataset`): samples, regions across bricks and parallel brick
   iteration through an LRU brick cache with a memory budget.
 - **Synthetic scans** (`vs-synth`): STL meshes to raw volumes with shrinkage cavities, loosened
