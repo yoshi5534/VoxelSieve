@@ -13,9 +13,23 @@ Rough numbers for 300 GB raw with 30 % of the voxels kept:
 
 - 45 billion active voxels, about 88 million 8³ leaves.
 - Float values of all leaves: about 180 GB.
-- OpenVDB topology alone, even with delayed loading (mask, pointers and file offsets per leaf):
-  on the order of 10 GB.
+- OpenVDB topology alone, even with delayed loading: measured 177 bytes per leaf for a delayed-
+  loaded grid (512³ phantom, 74,088 leaves, 12.5 MB vs. 154 MB fully loaded), so about 15 GB.
 - `openvdb::io::File::write` needs the complete grid in memory.
+
+What OpenVDB offers for large data, and where it stops:
+
+- **Delayed loading** (`io::File::open(true)`): the file is memory-mapped and leaf values are read
+  on first access. Topology is still read completely, and loaded leaves are not evicted again.
+- **Clipped reads** (`readGrid(name, bbox)`): only a region is kept in memory.
+- **`tools::MultiResGrid`**: a mip-map of a grid, built and held in memory.
+- Film and VFX volumes are typically a few GB per grid; large simulations are split over frames
+  and grids, so OpenVDB is optimised for sparse grids that fit in RAM, not for one grid of
+  hundreds of GB.
+
+The bricked layout below builds on these features (every brick is delayed-loaded and read by
+bounding box) and adds what is missing: bounded topology memory, eviction, and writing without
+holding the whole result in RAM.
 
 A single VDB grid per dataset therefore does not scale: it cannot be written without holding
 everything in RAM, and even opening it costs gigabytes of topology.
