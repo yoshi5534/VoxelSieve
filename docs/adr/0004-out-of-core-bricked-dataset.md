@@ -1,0 +1,80 @@
+# 0004: Out-of-core datasets as bricked, multi-resolution VDB
+
+Status: proposed (2026-09-27)
+
+## Context
+
+Target data are XXL CT scans of several hundred GB, for example 300 GB of raw `uint16`, which is
+about 150 billion voxels or 5300³. Neither the raw volume nor the sieved result fits in RAM. The
+format has to support later work on such data (viewing, analysis, processing), not just small
+files.
+
+Rough numbers for 300 GB raw with 30 % of the voxels kept:
+
+- 45 billion active voxels, about 88 million 8³ leaves.
+- Float values of all leaves: about 180 GB.
+- OpenVDB topology alone, even with delayed loading (mask, pointers and file offsets per leaf):
+  on the order of 10 GB.
+- `openvdb::io::File::write` needs the complete grid in memory.
+
+A single VDB grid per dataset therefore does not scale: it cannot be written without holding
+everything in RAM, and even opening it costs gigabytes of topology.
+
+## Decision
+
+A dataset is a directory of independent VDB bricks plus an index, at several resolutions:
+
+```
+part.vsieve/
+  index.json            dims, voxel size, brick size, value type, threshold, air level,
+                        list of non-empty bricks per level, statistics
+  level0/x_y_z.vdb      full resolution, one FloatGrid per brick (default 256³ voxels)
+  level1/x_y_z.vdb      downsampled 2x
+  level2/...            until the whole volume fits in one brick
+```
+
+- Bricks do not overlap and are aligned to the 8³ leaf grid. Bricks that contain only outside air
+  are not written at all.
+- Each brick is a normal VDB file: Blender or Houdini can open one directly, and OpenVDB's delayed
+  loading (memory-mapped, leaf data read on first access) keeps opening a brick cheap.
+- Grid index space is global: voxel (i, j, k) of the scan has VDB coordinate (i, j, k) in every
+  level-0 brick, so bricks can be combined without offsets.
+- The coarse levels give a fast overview and let a viewer load detail only where it is needed.
+- The value type is recorded in `index.json`. Float stays the default (ADR 0002); a custom
+  `uint16` tree can be added later without changing the layout.
+
+## Streaming sieve
+
+Memory stays bounded by the block map and a window of the input, independent of the scan size:
+
+1. **Pass 1, statistics:** stream the input in slabs (memory-mapped raw or slice images), build
+   the full 16-bit histogram and store per 8³ block the maximum grey value (2 bytes per block,
+   about 600 MB for 5300³). Threshold by Otsu from the histogram.
+2. **Classify and flood-fill** on the block map in memory: material = block maximum above the
+   threshold; outside air by flood fill from the volume faces (ADR 0003). The air margin is
+   applied at block level first (neighbours of kept blocks), then trimmed to `margin_voxels`
+   per brick.
+3. **Pass 2, write:** process one layer of bricks at a time, read their voxels from the
+   memory-mapped input, write level-0 bricks, and accumulate the 2x downsampled level 1 on the fly.
+   Higher levels are built from level 1, which is 8x smaller.
+
+Inputs are read through a small `VolumeSource` interface (memory-mapped raw first, TIFF stacks
+later), since vendors deliver both.
+
+## Access API
+
+`Dataset::open(path)` reads only `index.json`. Bricks are opened on demand through an LRU cache
+with a memory budget. The API offers iteration over bricks (in parallel), region reads by bounding
+box, point sampling, and level selection. Algorithms that need neighbourhoods read a halo from
+adjacent bricks through the same cache instead of storing overlap on disk.
+
+## Consequences
+
+- Per-brick files keep writes, partial updates and parallel processing simple, and any brick can
+  be inspected with standard VDB tools.
+- A dataset is a directory, not a single file. A single-file container (for example an archive
+  of the bricks) can be added later if users need it.
+- Many files: 300 GB raw at 256³ bricks gives about 9,000 potential level-0 bricks, fewer after
+  sieving. That is fine for local file systems; the brick size is a parameter.
+- `min_material_voxels > 1` needs more than the block maximum; pass 1 can store the k-th largest
+  value per block instead if noise makes this necessary.
