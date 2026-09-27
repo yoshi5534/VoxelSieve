@@ -76,3 +76,18 @@ drawn as an overlay. The 3D viewer ray-casts the overview grid (at most 256³) i
   the size per step.
 - The C++ plugin ABI ties plugins to a VoxelSieve build. That is acceptable while plugins are
   written by us or by close partners; a stable C ABI is future work.
+
+## Addendum (2026-09-27): slice view data access
+
+Measured on an 830 MB scan: a slice tile at level 1 took 1.2 to 3.2 s on first access, because the
+brick cache reads whole bricks (a dense 256³ brick is 50 to 70 MB on disk) to show one plane of
+them. The viewer therefore opens datasets with `BrickLoading::kOnAccess`: only the topology of a
+brick is read at first and the values of an 8³ leaf on first access, from the memory-mapped file.
+A tile then reads about 1/32 of a brick and takes 0.1 to 0.2 s on first access and about 2 ms from
+the cache. Algorithms that visit whole bricks keep `BrickLoading::kFull`. The cache re-measures
+bricks loaded on access whenever it loads one, so its memory budget still holds.
+
+Tiles go to the browser as float32 grey values plus one overlay byte per pixel and are windowed in
+the browser, so contrast changes need no new requests. For MCP, `view_slice` renders a whole slice
+as a PNG; PNGs are now compressed with zlib through Boost.Iostreams, which was already a
+dependency.

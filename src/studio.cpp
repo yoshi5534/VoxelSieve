@@ -1,12 +1,14 @@
 #include "voxelsieve/studio.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
 
+#include "detail/png.hpp"
 #include "voxelsieve/dataset.hpp"
 
 namespace voxelsieve {
@@ -79,6 +81,53 @@ std::filesystem::path insideOf(const std::filesystem::path& root, const std::str
 }
 
 constexpr std::size_t kMaxBrowsedEntries = 5000;
+constexpr std::size_t kOpenDatasets = 2;
+constexpr std::size_t kViewCacheBytes = std::size_t{512} << 20U;
+
+std::string base64(std::span<const std::uint8_t> bytes) {
+  static constexpr std::string_view kAlphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string text;
+  text.reserve((bytes.size() + 2) / 3 * 4);
+  for (std::size_t i = 0; i < bytes.size(); i += 3) {
+    const std::uint32_t chunk = (std::uint32_t{bytes[i]} << 16U) |
+                                (i + 1 < bytes.size() ? std::uint32_t{bytes[i + 1]} << 8U : 0U) |
+                                (i + 2 < bytes.size() ? std::uint32_t{bytes[i + 2]} : 0U);
+    text.push_back(kAlphabet[(chunk >> 18U) & 63U]);
+    text.push_back(kAlphabet[(chunk >> 12U) & 63U]);
+    text.push_back(i + 1 < bytes.size() ? kAlphabet[(chunk >> 6U) & 63U] : '=');
+    text.push_back(i + 2 < bytes.size() ? kAlphabet[chunk & 63U] : '=');
+  }
+  return text;
+}
+
+int axisIndex(const std::string& axis) {
+  if (axis == "x") {
+    return 0;
+  }
+  return axis == "y" ? 1 : 2;
+}
+
+/// Most recently used entry of a small cache, opened with `open` when missing.
+template <typename Value, typename Open>
+std::shared_ptr<const Value> cached(
+    std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Value>>>& entries,
+    const std::filesystem::path& key, std::size_t capacity, const Open& open) {
+  for (auto it = entries.begin(); it != entries.end(); ++it) {
+    if (it->first == key) {
+      auto entry = *it;
+      entries.erase(it);
+      entries.push_back(entry);
+      return entry.second;
+    }
+  }
+  auto value = open();
+  entries.emplace_back(key, value);
+  if (entries.size() > capacity) {
+    entries.erase(entries.begin());
+  }
+  return value;
+}
 
 Json browse(const std::filesystem::path& requested) {
   const auto dir = std::filesystem::weakly_canonical(std::filesystem::absolute(requested));
@@ -173,6 +222,32 @@ std::vector<StudioMethod> Studio::methods() const {
        objectSchema(artifactProperties())},
       {"list_files", "Files of a step output (a directory or a single file) with sizes.",
        objectSchema(artifactProperties())},
+      {"view_slice",
+       "Renders a slice through a dataset as a PNG image, with pores in red and loosened zones in "
+       "yellow when a porosity analysis of the dataset exists. The whole slice is shown at the "
+       "resolution level that fits max_pixels; the result says which axes run right and down.",
+       [] {
+         Json properties = artifactProperties();
+         properties["axis"] = {{"type", "string"},
+                               {"enum", {"x", "y", "z"}},
+                               {"default", "z"},
+                               {"description", "Axis normal to the slice"}};
+         properties["index"] = {{"type", "integer"},
+                                {"minimum", 0},
+                                {"description", "Slice position in voxels; default: the middle"}};
+         properties["max_pixels"] = {
+             {"type", "integer"}, {"minimum", 64}, {"maximum", 2048}, {"default", 768}};
+         properties["window_min"] = {{"type", "number"},
+                                     {"description", "Grey value shown black; default: automatic"}};
+         properties["window_max"] = {{"type", "number"},
+                                     {"description", "Grey value shown white; default: automatic"}};
+         properties["overlay"] = {{"type", "boolean"}, {"default", true}};
+         properties["porosity_step"] = {
+             {"type", "integer"},
+             {"description", "Porosity step for the overlay; default: the latest of this dataset"}};
+         properties.erase("output");
+         return objectSchema(properties);
+       }()},
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, datasets "
        "(.vsieve), projects and inspection orders. Entries have a kind: dir, project, dataset, "
@@ -286,6 +361,134 @@ ArtifactRef Studio::artifactRef(const Json& params, const std::string& type) con
 
 std::filesystem::path Studio::artifactPath(const Json& params) const {
   return project().resolve(artifactRef(params, ""));
+}
+
+std::shared_ptr<const Dataset> Studio::openDataset(const std::filesystem::path& dir) const {
+  const std::scoped_lock lock(view_mutex_);
+  return cached(datasets_, dir, kOpenDatasets, [&dir] {
+    return std::make_shared<const Dataset>(
+        Dataset::open(dir, kViewCacheBytes, BrickLoading::kOnAccess));
+  });
+}
+
+std::shared_ptr<const PorosityResult> Studio::openPorosity(const std::filesystem::path& dir) const {
+  const std::scoped_lock lock(view_mutex_);
+  return cached(porosity_results_, dir, kOpenDatasets,
+                [&dir] { return std::make_shared<const PorosityResult>(loadPorosityResult(dir)); });
+}
+
+SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int> porosity_step,
+                             const SliceRequest& request) const {
+  std::filesystem::path dataset_dir;
+  std::filesystem::path porosity_dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json dataset_params = dataset_step ? Json{{"step", *dataset_step}} : Json::object();
+    dataset_dir = project().resolve(artifactRef(dataset_params, artifact::kDataset));
+    if (porosity_step) {
+      porosity_dir =
+          project().resolve(artifactRef({{"step", *porosity_step}}, artifact::kPorosity));
+    }
+  }
+  const auto dataset = openDataset(dataset_dir);
+  const auto porosity = porosity_dir.empty() ? nullptr : openPorosity(porosity_dir);
+  return readSlice(*dataset, request, porosity.get());
+}
+
+Json Studio::viewSlice(const Json& params) const {
+  const ArtifactRef dataset_ref = artifactRef(params, artifact::kDataset);
+  const auto dataset_dir = project().resolve(dataset_ref);
+  const auto dataset = openDataset(dataset_dir);
+  const DatasetInfo& info = dataset->info();
+
+  // Overlay: the given porosity step, or the latest one computed from this dataset.
+  std::shared_ptr<const PorosityResult> porosity;
+  std::optional<int> porosity_step;
+  if (params.at("overlay").get<bool>()) {
+    if (params.contains("porosity_step")) {
+      porosity_step = params.at("porosity_step").get<int>();
+    } else {
+      for (std::size_t i = project().cursor(); i > 0 && !porosity_step; --i) {
+        const Step& step = project().steps()[i - 1];
+        const auto input = step.inputs.find("dataset");
+        if (step.status == "done" && step.operation == "porosity" && input != step.inputs.end() &&
+            project().resolve(input->second) == dataset_dir) {
+          porosity_step = step.id;
+        }
+      }
+    }
+    if (porosity_step) {
+      porosity = openPorosity(
+          project().resolve(artifactRef({{"step", *porosity_step}}, artifact::kPorosity)));
+    }
+  }
+
+  SliceRequest request;
+  request.axis = axisIndex(params.at("axis").get<std::string>());
+  const auto normal = static_cast<std::size_t>(request.axis);
+  request.index =
+      params.contains("index") ? params.at("index").get<std::int64_t>() : info.dims[normal] / 2;
+  const auto [u, v] = sliceAxes(request.axis);
+  const std::int64_t max_pixels = params.at("max_pixels").get<std::int64_t>();
+  const auto& levels = info.levels;
+  request.level = static_cast<int>(levels.size()) - 1;
+  for (std::size_t l = 0; l < levels.size(); ++l) {
+    const auto& dims = levels[l].dims;
+    if (std::max(dims[static_cast<std::size_t>(u)], dims[static_cast<std::size_t>(v)]) <=
+        max_pixels) {
+      request.level = static_cast<int>(l);
+      break;
+    }
+  }
+  const auto& dims = levels[static_cast<std::size_t>(request.level)].dims;
+  request.size = {dims[static_cast<std::size_t>(u)], dims[static_cast<std::size_t>(v)]};
+  const SliceImage image = readSlice(*dataset, request, porosity.get());
+
+  float low = 0.0F;
+  float high = 0.0F;
+  {
+    std::vector<float> sorted = image.grey;
+    std::sort(sorted.begin(), sorted.end());
+    const auto at = [&sorted](double fraction) {
+      return sorted[static_cast<std::size_t>(fraction * static_cast<double>(sorted.size() - 1))];
+    };
+    low = params.contains("window_min") ? params.at("window_min").get<float>() : at(0.005);
+    high = params.contains("window_max") ? params.at("window_max").get<float>() : at(0.995);
+    if (high <= low) {
+      high = low + 1.0F;
+    }
+  }
+  std::vector<std::uint8_t> rgb(image.grey.size() * 3);
+  for (std::size_t i = 0; i < image.grey.size(); ++i) {
+    const float t = std::clamp((image.grey[i] - low) / (high - low), 0.0F, 1.0F);
+    const auto grey = static_cast<std::uint8_t>(std::lround(t * 255.0F));
+    std::array<std::uint8_t, 3> color{grey, grey, grey};
+    // Tinted like in the browser view: pores red, zones yellow.
+    const auto g = static_cast<float>(grey);
+    const auto channel = [](float value) { return static_cast<std::uint8_t>(value); };
+    if (image.overlay[i] == static_cast<std::uint8_t>(SliceOverlay::kPore)) {
+      color = {channel(0.35F * g + 165.0F), channel(0.35F * g + 25.0F), channel(0.35F * g + 25.0F)};
+    } else if (image.overlay[i] == static_cast<std::uint8_t>(SliceOverlay::kZone)) {
+      color = {channel(0.5F * g + 125.0F), channel(0.5F * g + 100.0F), channel(0.4F * g)};
+    }
+    std::copy(color.begin(), color.end(), rgb.begin() + static_cast<std::ptrdiff_t>(i * 3));
+  }
+  const auto png = detail::encodePng(static_cast<std::uint32_t>(image.width),
+                                     static_cast<std::uint32_t>(image.height), 3, rgb);
+  constexpr std::array<const char*, 3> kNames = {"x", "y", "z"};
+  Json result = {{"step", dataset_ref.step},
+                 {"axis", params.at("axis")},
+                 {"index", request.index},
+                 {"level", request.level},
+                 {"width", image.width},
+                 {"height", image.height},
+                 {"right", kNames[static_cast<std::size_t>(u)]},
+                 {"down", kNames[static_cast<std::size_t>(v)]},
+                 {"pixel_size_mm", levels[static_cast<std::size_t>(request.level)].voxel_size_mm},
+                 {"window", {low, high}},
+                 {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  result["porosity_step"] = porosity_step ? Json(*porosity_step) : Json();
+  return result;
 }
 
 std::filesystem::path Studio::outputFile(int step, const std::string& output,
@@ -448,6 +651,9 @@ Json Studio::call(const std::string& method, const Json& arguments,
             {{"file", root.filename().string()}, {"size_bytes", std::filesystem::file_size(root)}});
       }
       return {{"path", root.string()}, {"files", files}};
+    }
+    if (method == "view_slice") {
+      return viewSlice(checked);
     }
     if (method == "browse") {
       return browse(checked.contains("path")
