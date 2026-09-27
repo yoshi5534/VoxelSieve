@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build and test (${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, asan, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ libopenvdb-dev libboost-iostreams-dev \
+            nlohmann-json3-dev libgtest-dev
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  lint:
+    name: Format and clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ clang-format clang-tidy libopenvdb-dev \
+            libboost-iostreams-dev nlohmann-json3-dev libgtest-dev
+      - name: clang-format
+        run: clang-format --dry-run --Werror $(git ls-files '*.cpp' '*.hpp')
+      - name: Configure
+        run: cmake --preset debug
+      - name: clang-tidy
+        run: clang-tidy -p build/debug $(git ls-files 'src/*.cpp' 'apps/*.cpp' 'tests/*.cpp')
