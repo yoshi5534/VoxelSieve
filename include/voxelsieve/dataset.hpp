@@ -76,6 +76,16 @@ struct CacheStats {
   std::size_t bytes = 0;   // memory of the cached bricks
 };
 
+/// How the brick cache loads bricks.
+enum class BrickLoading : std::uint8_t {
+  /// The whole brick is read; best when an algorithm visits most of its voxels.
+  kFull,
+  /// Only the topology is read at first and the voxel values of an 8^3 leaf on first access, from
+  /// the memory-mapped file; best for sparse access such as slices. The cache re-measures the
+  /// memory of its bricks whenever it loads one, so the budget still holds.
+  kOnAccess,
+};
+
 /// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.
 ///
 /// Opening reads only index.json. Bricks are loaded on demand into an LRU cache whose memory is
@@ -93,7 +103,8 @@ class Dataset {
   static constexpr std::size_t kDefaultCacheBytes = std::size_t{1} << 30U;
 
   [[nodiscard]] static Dataset open(const std::filesystem::path& dir,
-                                    std::size_t cache_bytes = kDefaultCacheBytes);
+                                    std::size_t cache_bytes = kDefaultCacheBytes,
+                                    BrickLoading loading = BrickLoading::kFull);
 
   Dataset(Dataset&&) noexcept;
   Dataset& operator=(Dataset&&) noexcept;

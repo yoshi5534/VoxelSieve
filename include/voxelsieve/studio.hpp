@@ -12,6 +12,7 @@
 
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/project.hpp"
+#include "voxelsieve/slice.hpp"
 
 namespace voxelsieve {
 
@@ -50,6 +51,13 @@ class Studio {
   [[nodiscard]] std::filesystem::path outputFile(int step, const std::string& output,
                                                  const std::string& file) const;
 
+  /// A slice rectangle of the dataset output of `dataset_step` (default: the latest dataset) for
+  /// the viewer, with pores and zones of `porosity_step` in the overlay when given. Datasets and
+  /// porosity results stay open between calls, so repeated tiles only read bricks.
+  [[nodiscard]] SliceImage sliceTile(std::optional<int> dataset_step,
+                                     std::optional<int> porosity_step,
+                                     const SliceRequest& request) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -62,6 +70,10 @@ class Studio {
   [[nodiscard]] std::filesystem::path artifactPath(const nlohmann::json& params) const;
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
+  nlohmann::json viewSlice(const nlohmann::json& params) const;
+  [[nodiscard]] std::shared_ptr<const Dataset> openDataset(const std::filesystem::path& dir) const;
+  [[nodiscard]] std::shared_ptr<const PorosityResult> openPorosity(
+      const std::filesystem::path& dir) const;
 
   OperationRegistry registry_;
   std::vector<std::string> plugin_messages_;
@@ -71,6 +83,11 @@ class Studio {
   bool running_ = false;  // guarded by mutex_, like project_
   std::string running_operation_;
   mutable std::mutex mutex_;
+  // Open datasets and porosity results for viewing, most recently used last.
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
+      porosity_results_;
+  mutable std::mutex view_mutex_;
 };
 
 /// Plugin directories from the environment variable VOXELSIEVE_PLUGIN_PATH (colon-separated).

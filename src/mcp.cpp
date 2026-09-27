@@ -34,8 +34,19 @@ Json resultResponse(const Json& id, Json result) {
   return {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
 }
 
-Json toolResult(const Json& value, bool is_error) {
+Json toolResult(Json value, bool is_error) {
+  // An "image" member ({mime_type, base64}) becomes image content next to the JSON text.
+  Json image;
+  if (value.is_object() && value.contains("image") && value.at("image").is_object()) {
+    image = {{"type", "image"},
+             {"data", value.at("image").at("base64")},
+             {"mimeType", value.at("image").at("mime_type")}};
+    value.erase("image");
+  }
   Json result = {{"content", {{{"type", "text"}, {"text", value.dump(2)}}}}, {"isError", is_error}};
+  if (!image.is_null()) {
+    result["content"].insert(result["content"].begin(), image);
+  }
   if (!is_error) {
     result["structuredContent"] = value;
   }

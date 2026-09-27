@@ -1,0 +1,45 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <vector>
+
+#include "voxelsieve/dataset.hpp"
+#include "voxelsieve/porosity.hpp"
+
+namespace voxelsieve {
+
+/// Overlay classes of a slice pixel.
+enum class SliceOverlay : std::uint8_t { kNone = 0, kPore = 1, kZone = 2 };
+
+/// A rectangle of a slice through a dataset level (ADR 0008). The slice is normal to `axis`; its
+/// pixels run along the in-plane axes u and v (`sliceAxes`), u fastest.
+struct SliceRequest {
+  int axis = 2;
+  /// Slice position in level-0 voxels along `axis`.
+  std::int64_t index = 0;
+  int level = 0;
+  /// First pixel and size in level voxels along u and v. Pixels outside the volume show air.
+  std::array<std::int64_t, 2> origin{0, 0};
+  std::array<std::int64_t, 2> size{256, 256};
+};
+
+struct SliceImage {
+  std::int64_t width = 0;
+  std::int64_t height = 0;
+  /// Grey values, u fastest; removed air and pixels outside the volume hold the air level.
+  std::vector<float> grey;
+  /// SliceOverlay per pixel: pores and loosened zones within the pixel's footprint.
+  std::vector<std::uint8_t> overlay;
+};
+
+/// In-plane axes (u, v) of a slice normal to `axis`: z -> (x, y), y -> (x, z), x -> (y, z).
+[[nodiscard]] std::array<int, 2> sliceAxes(int axis);
+
+/// Reads a slice rectangle. Only the bricks it touches are loaded, so the cost depends on the
+/// rectangle and level, not on the dataset size. With `porosity`, pores and zones are marked in
+/// the overlay; a pixel of a coarser level is marked if its footprint holds any.
+[[nodiscard]] SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
+                                   const PorosityResult* porosity = nullptr);
+
+}  // namespace voxelsieve
