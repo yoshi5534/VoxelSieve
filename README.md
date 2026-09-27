@@ -54,6 +54,17 @@ dimensions that are too small also leave extra bytes and would be misread as a h
 The computed phantom is slower because every voxel is evaluated twice; its memory figure shows the
 sieve's own footprint without mapped input pages.
 
+Programs read a dataset through `voxelsieve::Dataset`, which loads bricks on demand into an LRU
+cache with a memory budget:
+
+```cpp
+const auto dataset = voxelsieve::Dataset::open("scan.vsieve", /*cache_bytes=*/4ULL << 30U);
+std::optional<float> value = dataset.sample(0, {512, 400, 300});  // nullopt for removed air
+std::vector<float> slab(512 * 512 * 16);
+dataset.readRegion(0, {{0, 0, 300}, {512, 512, 316}}, slab);      // across brick boundaries
+dataset.forEachBrick(1, [](const auto& brick, const openvdb::FloatGrid& grid) { /* parallel */ });
+```
+
 ### Single grid
 
 ```sh

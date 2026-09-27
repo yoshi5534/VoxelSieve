@@ -103,5 +103,11 @@ Implemented in `src/dataset.cpp` (`writeDataset`, `readDatasetInfo`, `readBrick`
 `VolumeSource` implementations for memory-mapped raw files and computed phantoms. Level-0 bricks
 are voxel-identical to the in-memory sieve (tested). The margin crosses brick boundaries through a
 halo of `ceil(margin / 8)` blocks. Coarser levels are built brick by brick from the finer level,
-loading one child at a time. Not yet implemented: the `Dataset` access API with an LRU brick
-cache, TIFF-stack input, and `min_material_voxels` for streaming (block maximum only).
+loading one child at a time.
+
+The access API is `Dataset` in `src/dataset_reader.cpp`: point sampling, region reads across
+bricks, parallel brick iteration and an LRU cache bounded by a byte budget. Cached bricks are
+loaded completely rather than delayed, so the memory counted against the budget does not grow
+behind the cache's back. Not yet implemented: halo reads for neighbourhood algorithms (a region
+read covers them for now), TIFF-stack input, and `min_material_voxels` for streaming (block
+maximum only).

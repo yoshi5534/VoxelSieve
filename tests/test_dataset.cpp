@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -237,6 +239,132 @@ TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   options.brick_size = 16;
   (void)writeDataset(source, dir_, options);
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+}
+
+class DatasetReaderTest : public DatasetTest {
+ protected:
+  static constexpr float kThreshold = 10000.0F;
+  static constexpr std::int64_t kBrickSize = 16;
+
+  /// Writes the phantom with many small bricks and returns the in-memory sieve as reference.
+  SieveResult writeReference() {
+    const Volume16 volume = generatePhantom(spec());
+    SieveOptions sieve_options;
+    sieve_options.threshold = kThreshold;
+    DatasetOptions options;
+    options.threshold = kThreshold;
+    options.brick_size = kBrickSize;
+    (void)writeDataset(MemorySource(volume), dir_, options);
+    return sieve(volume, sieve_options);
+  }
+};
+
+TEST_F(DatasetReaderTest, SamplesMatchInMemorySieve) {
+  const SieveResult reference = writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  EXPECT_EQ(dataset.info().dims, (Index3{128, 128, 128}));
+
+  std::int64_t checked = 0;
+  for (auto it = reference.grid->cbeginValueOn(); it; ++it) {
+    const openvdb::Coord c = it.getCoord();
+    const auto value = dataset.sample(0, {c.x(), c.y(), c.z()});
+    ASSERT_EQ(value, std::optional<float>(*it)) << c;
+    ++checked;
+  }
+  EXPECT_EQ(checked, dataset.info().active_voxel_count);
+
+  // Removed outside air and positions outside the volume have no value.
+  EXPECT_FALSE(dataset.sample(0, {0, 0, 0}).has_value());
+  EXPECT_FALSE(dataset.sample(0, {-1, 5, 5}).has_value());
+  EXPECT_FALSE(dataset.sample(0, {5, 5, 128}).has_value());
+  EXPECT_FALSE(dataset.hasBrick(0, {0, 0, 0}));
+  EXPECT_EQ(dataset.brick(0, {0, 0, 0}), nullptr);
+  EXPECT_THROW((void)dataset.sample(7, {0, 0, 0}), std::out_of_range);
+}
+
+TEST_F(DatasetReaderTest, RegionAcrossBricksMatchesInMemorySieve) {
+  const SieveResult reference = writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  // Spans several bricks on every axis, with partial bricks at both ends.
+  const Box box{{5, 20, 37}, {70, 61, 100}};
+  constexpr float kFill = -1.0F;
+  std::vector<float> region(static_cast<std::size_t>(box.voxelCount()));
+  dataset.readRegion(0, box, region, kFill);
+
+  const auto accessor = reference.grid->getConstAccessor();
+  std::size_t index = 0;
+  std::size_t active = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
+        const openvdb::Coord c(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
+        float expected = kFill;
+        if (accessor.probeValue(c, expected)) {
+          ++active;
+        } else {
+          expected = kFill;
+        }
+        ASSERT_EQ(region[index], expected) << c;
+      }
+    }
+  }
+  EXPECT_GT(active, 0U);
+  EXPECT_LT(active, region.size());  // the box also contains removed air
+
+  EXPECT_THROW(dataset.readRegion(0, {{0, 0, 0}, {129, 1, 1}}, region), std::out_of_range);
+  EXPECT_THROW(dataset.readRegion(0, {{0, 0, 0}, {2, 2, 2}}, region), std::invalid_argument);
+}
+
+TEST_F(DatasetReaderTest, CacheStaysWithinBudget) {
+  (void)writeReference();
+  const auto one_brick = static_cast<std::size_t>(
+      readBrick(brickPath(dir_, 0, readDatasetInfo(dir_).levels[0].bricks.front()), false)
+          ->memUsage());
+  const std::size_t budget = 3 * one_brick;
+  const Dataset dataset = Dataset::open(dir_, budget);
+
+  const auto& bricks = dataset.level(0).bricks;
+  ASSERT_GT(bricks.size(), 10U);
+  for (const Index3& brick : bricks) {
+    ASSERT_NE(dataset.brick(0, brick), nullptr);
+    const CacheStats stats = dataset.cacheStats();
+    EXPECT_TRUE(stats.bytes <= budget || stats.bricks == 1) << stats.bytes;
+  }
+  const CacheStats after_first_pass = dataset.cacheStats();
+  EXPECT_EQ(after_first_pass.misses, bricks.size());
+  EXPECT_LT(after_first_pass.bricks, bricks.size());  // older bricks were evicted
+
+  // The most recent brick is cached; a brick held by the caller survives eviction.
+  const Dataset::BrickPtr held = dataset.brick(0, bricks.back());
+  EXPECT_EQ(dataset.cacheStats().hits, 1U);
+  for (const Index3& brick : bricks) {
+    (void)dataset.brick(0, brick);
+  }
+  EXPECT_GT(held->activeVoxelCount(), 0U);
+}
+
+TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
+  (void)writeReference();
+  // A tiny budget forces eviction while several threads load bricks.
+  const Dataset dataset = Dataset::open(dir_, 1);
+  for (int level = 0; level < static_cast<int>(dataset.info().levels.size()); ++level) {
+    std::atomic<std::int64_t> active{0};
+    std::atomic<std::size_t> visited{0};
+    dataset.forEachBrick(level, [&](const Index3& brick, const openvdb::FloatGrid& grid) {
+      const Box box = dataset.brickBox(level, brick);
+      const openvdb::CoordBBox bounds = grid.evalActiveVoxelBoundingBox();
+      EXPECT_GE(bounds.min().x(), box.min[0]);
+      EXPECT_LT(bounds.max().z(), box.max[2]);
+      active += static_cast<std::int64_t>(grid.activeVoxelCount());
+      ++visited;
+    });
+    EXPECT_EQ(visited, dataset.level(level).bricks.size());
+    if (level == 0) {
+      EXPECT_EQ(active, dataset.info().active_voxel_count);
+    } else {
+      EXPECT_GT(active, 0);
+    }
+  }
 }
 
 }  // namespace
