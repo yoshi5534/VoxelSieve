@@ -4,12 +4,23 @@ file(READ ${VOXELSIEVE_REPORT_TEMPLATE_FILE} VOXELSIEVE_REPORT_TEMPLATE)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${VOXELSIEVE_REPORT_TEMPLATE_FILE})
 
+# The browser UI of vs-studio is compiled in the same way.
+set(VOXELSIEVE_UI_DIR ${PROJECT_SOURCE_DIR}/resources/ui)
+file(READ ${VOXELSIEVE_UI_DIR}/index.html VOXELSIEVE_UI_INDEX)
+file(READ ${VOXELSIEVE_UI_DIR}/app.js VOXELSIEVE_UI_SCRIPT)
+file(READ ${VOXELSIEVE_UI_DIR}/app.css VOXELSIEVE_UI_STYLE)
+configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${VOXELSIEVE_UI_DIR}/index.html ${VOXELSIEVE_UI_DIR}/app.js ${VOXELSIEVE_UI_DIR}/app.css)
+
 add_library(voxelsieve SHARED
   builtin_operations.cpp
   operation.cpp
   project.cpp
   studio.cpp
   mcp.cpp
+  http_server.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp
   io.cpp
   mesh.cpp
   phantom.cpp
@@ -37,6 +48,6 @@ target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_VERSION="${PROJECT_VERS
 find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json
-  PRIVATE Boost::iostreams ${CMAKE_DL_LIBS}
+  PRIVATE Boost::iostreams Boost::headers ${CMAKE_DL_LIBS}
   PRIVATE voxelsieve_warnings
 )
