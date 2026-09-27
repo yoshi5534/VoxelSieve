@@ -2,6 +2,7 @@ add_library(voxelsieve
   io.cpp
   phantom.cpp
   dataset.cpp
+  dataset_reader.cpp
   detail/blocks.cpp
   sieve.cpp
   source.cpp

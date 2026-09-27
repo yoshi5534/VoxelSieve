@@ -3,9 +3,13 @@
 #include <openvdb/openvdb.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "voxelsieve/source.hpp"
@@ -63,5 +67,70 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
 /// access.
 [[nodiscard]] openvdb::FloatGrid::Ptr readBrick(const std::filesystem::path& file,
                                                 bool delay_load = true);
+
+/// Counters of the brick cache of a `Dataset`.
+struct CacheStats {
+  std::uint64_t hits = 0;
+  std::uint64_t misses = 0;
+  std::size_t bricks = 0;  // bricks currently cached
+  std::size_t bytes = 0;   // memory of the cached bricks
+};
+
+/// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.
+///
+/// Opening reads only index.json. Bricks are loaded on demand into an LRU cache whose memory is
+/// bounded by `cache_bytes`; the most recently used brick is always kept, even if it alone exceeds
+/// the budget. Returned bricks stay valid while the caller holds them, also after eviction.
+///
+/// Voxel coordinates are per level: level-L voxel (i, j, k) covers level-0 voxels
+/// [i * 2^L, (i + 1) * 2^L) on each axis. All methods may be called from several threads.
+class Dataset {
+ public:
+  using BrickPtr = std::shared_ptr<const openvdb::FloatGrid>;
+  using BrickFunction =
+      std::function<void(const std::array<std::int64_t, 3>& brick, const openvdb::FloatGrid& grid)>;
+
+  static constexpr std::size_t kDefaultCacheBytes = std::size_t{1} << 30U;
+
+  [[nodiscard]] static Dataset open(const std::filesystem::path& dir,
+                                    std::size_t cache_bytes = kDefaultCacheBytes);
+
+  Dataset(Dataset&&) noexcept;
+  Dataset& operator=(Dataset&&) noexcept;
+  Dataset(const Dataset&) = delete;
+  Dataset& operator=(const Dataset&) = delete;
+  ~Dataset();
+
+  [[nodiscard]] const DatasetInfo& info() const;
+  [[nodiscard]] const std::filesystem::path& dir() const;
+  [[nodiscard]] const LevelInfo& level(int level) const;
+
+  /// Voxel box of a brick at `level`, clipped to the level's dimensions.
+  [[nodiscard]] Box brickBox(int level, const std::array<std::int64_t, 3>& brick) const;
+
+  /// False for bricks that were not written because they hold only outside air.
+  [[nodiscard]] bool hasBrick(int level, const std::array<std::int64_t, 3>& brick) const;
+
+  /// The brick, loaded through the cache, or nullptr when it was not written.
+  [[nodiscard]] BrickPtr brick(int level, const std::array<std::int64_t, 3>& brick) const;
+
+  /// Grey value of an active voxel; nullopt for removed air and positions outside the volume.
+  [[nodiscard]] std::optional<float> sample(int level,
+                                            const std::array<std::int64_t, 3>& voxel) const;
+
+  /// Copies the voxels of `box` into `out`, x fastest, writing `fill` where no voxel is active.
+  /// `box` must lie inside the level and `out.size()` must equal `box.voxelCount()`.
+  void readRegion(int level, const Box& box, std::span<float> out, float fill = 0.0F) const;
+
+  /// Calls `function` for every stored brick of `level`, in parallel.
+  void forEachBrick(int level, const BrickFunction& function) const;
+
+  [[nodiscard]] CacheStats cacheStats() const;
+
+ private:
+  struct Impl;
+  explicit Dataset(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace voxelsieve
