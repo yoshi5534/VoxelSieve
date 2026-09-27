@@ -1,0 +1,288 @@
+#include "voxelsieve/http_server.hpp"
+
+#include <sys/socket.h>
+
+#include <boost/asio.hpp>
+#include <boost/beast.hpp>
+#include <iostream>
+#include <list>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+
+namespace voxelsieve {
+namespace {
+
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = asio::ip::tcp;
+using Json = nlohmann::json;
+using Request = http::request<http::string_body>;
+
+std::string percentDecode(std::string_view text) {
+  std::string decoded;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == '%' && i + 2 < text.size()) {
+      const std::string hex(text.substr(i + 1, 2));
+      decoded.push_back(static_cast<char>(std::stoi(hex, nullptr, 16)));
+      i += 2;
+    } else {
+      decoded.push_back(text[i]);
+    }
+  }
+  return decoded;
+}
+
+std::string_view contentType(const std::filesystem::path& path) {
+  const std::string extension = path.extension().string();
+  if (extension == ".html") {
+    return "text/html; charset=utf-8";
+  }
+  if (extension == ".js") {
+    return "text/javascript; charset=utf-8";
+  }
+  if (extension == ".css") {
+    return "text/css; charset=utf-8";
+  }
+  if (extension == ".json") {
+    return "application/json";
+  }
+  if (extension == ".png") {
+    return "image/png";
+  }
+  if (extension == ".txt" || extension == ".csv") {
+    return "text/plain; charset=utf-8";
+  }
+  return "application/octet-stream";
+}
+
+/// Host name of a Host header value, without the port.
+std::string hostName(std::string_view host) {
+  if (host.starts_with("[")) {
+    return std::string(host.substr(0, host.find(']') + 1));
+  }
+  return std::string(host.substr(0, host.find(':')));
+}
+
+}  // namespace
+
+struct HttpServer::Impl {
+  struct Connection {
+    tcp::socket socket;
+    std::thread thread;
+    std::atomic<bool> done = false;
+    explicit Connection(tcp::socket s) : socket(std::move(s)) {}
+  };
+
+  Impl(Studio& s, const std::string& host, unsigned short requested_port)
+      : studio(s), acceptor(io), bound_host(host) {
+    const tcp::endpoint endpoint(asio::ip::make_address(host), requested_port);
+    acceptor.open(endpoint.protocol());
+    acceptor.set_option(asio::socket_base::reuse_address(true));
+    acceptor.bind(endpoint);
+    acceptor.listen();
+    port = acceptor.local_endpoint().port();
+  }
+
+  [[nodiscard]] bool allowedHost(std::string_view header) const {
+    const std::string name = hostName(header);
+    return name == "localhost" || name == "127.0.0.1" || name == "[::1]" || name == bound_host;
+  }
+
+  void accept() {
+    acceptor.async_accept([this](const boost::system::error_code& error, tcp::socket socket) {
+      if (!error) {
+        start(std::move(socket));
+      }
+      if (acceptor.is_open()) {
+        accept();
+      }
+    });
+  }
+
+  void start(tcp::socket socket) {
+    const std::scoped_lock lock(mutex);
+    if (stopped) {
+      return;
+    }
+    for (auto it = connections.begin(); it != connections.end();) {
+      if ((*it)->done) {
+        (*it)->thread.join();
+        it = connections.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    auto& connection = connections.emplace_back(std::make_unique<Connection>(std::move(socket)));
+    Connection* raw = connection.get();
+    raw->thread = std::thread([this, raw] {
+      serve(raw->socket);
+      raw->done = true;
+    });
+  }
+
+  void serve(tcp::socket& socket) {
+    beast::flat_buffer buffer;
+    boost::system::error_code error;
+    while (true) {
+      Request request;
+      http::read(socket, buffer, request, error);
+      if (error) {
+        break;
+      }
+      const bool keep_alive = request.keep_alive();
+      beast::write(socket, handle(request), error);
+      if (error || !keep_alive) {
+        break;
+      }
+    }
+    [[maybe_unused]] const auto shut = socket.shutdown(tcp::socket::shutdown_send, error);
+  }
+
+  static http::message_generator text(const Request& request, http::status status,
+                                      std::string_view type, std::string body) {
+    http::response<http::string_body> response(status, request.version());
+    response.set(http::field::content_type, type);
+    response.set(http::field::cache_control, "no-store");
+    response.set("X-Content-Type-Options", "nosniff");
+    response.keep_alive(request.keep_alive());
+    response.body() = std::move(body);
+    response.prepare_payload();
+    return response;
+  }
+
+  static http::message_generator json(const Request& request, http::status status,
+                                      const Json& value) {
+    return text(request, status, "application/json",
+                value.dump(-1, ' ', false, Json::error_handler_t::replace));
+  }
+
+  static http::message_generator error(const Request& request, http::status status,
+                                       const std::string& message) {
+    return json(request, status, {{"error", message}});
+  }
+
+  http::message_generator handle(const Request& request) {
+    if (!allowedHost(request[http::field::host])) {
+      return error(request, http::status::forbidden, "Host not allowed");
+    }
+    const std::string_view target = request.target();
+    const std::string_view path = target.substr(0, target.find('?'));
+    try {
+      if (request.method() == http::verb::get) {
+        return get(request, path);
+      }
+      if (request.method() == http::verb::post && path.starts_with("/api/call/")) {
+        if (!request[http::field::content_type].starts_with("application/json")) {
+          return error(request, http::status::unsupported_media_type, "Send application/json");
+        }
+        const std::string method(path.substr(std::string_view("/api/call/").size()));
+        const Json params = request.body().empty() ? Json::object() : Json::parse(request.body());
+        return json(request, http::status::ok, studio.call(method, params));
+      }
+      return error(request, http::status::not_found, "Not found");
+    } catch (const Json::parse_error& failure) {
+      return error(request, http::status::bad_request, failure.what());
+    } catch (const std::invalid_argument& failure) {
+      return error(request, http::status::bad_request, failure.what());
+    } catch (const std::exception& failure) {
+      return error(request, http::status::internal_server_error, failure.what());
+    }
+  }
+
+  http::message_generator get(const Request& request, std::string_view path) {
+    if (path == "/") {
+      path = "/index.html";
+    }
+    if (const auto resource = uiResource(path.substr(1)); !resource.empty()) {
+      return text(request, http::status::ok, contentType(std::string(path)), std::string(resource));
+    }
+    if (path == "/api/methods") {
+      Json methods = Json::array();
+      for (const StudioMethod& method : studio.methods()) {
+        methods.push_back({{"name", method.name},
+                           {"description", method.description},
+                           {"parameters", method.parameters}});
+      }
+      return json(request, http::status::ok, methods);
+    }
+    if (path.starts_with("/files/")) {
+      // /files/<step>/<output>/<file...>
+      const std::string rest = percentDecode(path.substr(std::string_view("/files/").size()));
+      const auto first = rest.find('/');
+      const auto second = rest.find('/', first == std::string::npos ? first : first + 1);
+      if (first == std::string::npos) {
+        return error(request, http::status::not_found, "Not found");
+      }
+      const int step = std::stoi(rest.substr(0, first));
+      const std::string output = rest.substr(first + 1, second - first - 1);
+      const std::string file = second == std::string::npos ? "" : rest.substr(second + 1);
+      const auto resolved = studio.outputFile(step, output, file);
+      http::response<http::file_body> response(http::status::ok, request.version());
+      beast::error_code failure;
+      response.body().open(resolved.c_str(), beast::file_mode::scan, failure);
+      if (failure) {
+        return error(request, http::status::not_found, failure.message());
+      }
+      response.set(http::field::content_type, contentType(resolved));
+      response.set(http::field::cache_control, "no-store");
+      response.set("X-Content-Type-Options", "nosniff");
+      response.keep_alive(request.keep_alive());
+      response.prepare_payload();
+      return response;
+    }
+    return error(request, http::status::not_found, "Not found");
+  }
+
+  void stop() {
+    asio::post(io, [this] {
+      boost::system::error_code ignored;
+      [[maybe_unused]] const auto closed = acceptor.close(ignored);
+    });
+    std::list<std::unique_ptr<Connection>> open;
+    {
+      const std::scoped_lock lock(mutex);
+      stopped = true;
+      open.swap(connections);
+    }
+    for (const auto& connection : open) {
+      // Wakes a thread blocked in read; the socket object itself stays with its thread.
+      ::shutdown(connection->socket.native_handle(), SHUT_RDWR);
+    }
+    for (const auto& connection : open) {
+      connection->thread.join();
+    }
+  }
+
+  Studio& studio;
+  asio::io_context io;
+  tcp::acceptor acceptor;
+  std::string bound_host;
+  unsigned short port = 0;
+  std::mutex mutex;
+  std::list<std::unique_ptr<Connection>> connections;
+  bool stopped = false;
+};
+
+HttpServer::HttpServer(Studio& studio, const std::string& host, unsigned short port)
+    : impl_(std::make_unique<Impl>(studio, host, port)) {}
+
+HttpServer::~HttpServer() {
+  try {
+    stop();
+  } catch (...) {
+    std::cerr << "voxelsieve: error while stopping the HTTP server\n";
+  }
+}
+
+unsigned short HttpServer::port() const { return impl_->port; }
+
+void HttpServer::run() {
+  impl_->accept();
+  impl_->io.run();
+}
+
+void HttpServer::stop() { impl_->stop(); }
+
+}  // namespace voxelsieve

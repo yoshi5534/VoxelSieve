@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoxelSieve Studio</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <span class="brand">VoxelSieve</span>
+  <span id="project-name" class="project-name">Kein Projekt</span>
+  <nav class="actions">
+    <button id="btn-new" title="Neues Projekt">Neu</button>
+    <button id="btn-open" title="Projekt öffnen">Öffnen</button>
+    <button id="btn-save-as" title="Projekt in ein neues Verzeichnis kopieren" disabled>Speichern unter</button>
+    <span class="sep"></span>
+    <button id="btn-undo" title="Letzten Schritt rückgängig machen" disabled>↶ Rückgängig</button>
+    <button id="btn-redo" title="Schritt wiederherstellen" disabled>↷ Wiederholen</button>
+  </nav>
+</header>
+<div id="error" class="error" hidden></div>
+<div id="busy" class="busy" hidden>
+  <span id="busy-text"></span>
+  <progress id="busy-progress" max="1"></progress>
+</div>
+<main>
+  <aside>
+    <h2>Protokoll</h2>
+    <p class="hint" id="protocol-empty">Noch keine Schritte. Jeder Schritt wird hier mit Parametern
+      und Ergebnis festgehalten und kann rückgängig gemacht werden.</p>
+    <ol id="protocol"></ol>
+  </aside>
+  <section id="workspace">
+    <div id="welcome" class="panel">
+      <h1>Vom CT-Scan zum Prüfbericht</h1>
+      <p>Ein Projekt hält alle Schritte fest und ist jederzeit gespeichert.</p>
+      <p><button class="primary" id="welcome-new">Neues Projekt</button>
+        <button id="welcome-open">Projekt öffnen</button></p>
+    </div>
+    <div id="wizard" hidden>
+      <ol class="stages">
+        <li><button data-stage="dataset"><b>1</b> Datensatz</button></li>
+        <li><button data-stage="analysis"><b>2</b> Analyse</button></li>
+        <li><button data-stage="report"><b>3</b> Bericht</button></li>
+      </ol>
+      <div class="panel" id="stage"></div>
+    </div>
+  </section>
+</main>
+<dialog id="browser">
+  <form method="dialog">
+    <h2 id="browser-title">Datei wählen</h2>
+    <div class="path-row"><button type="button" id="browser-up" title="Übergeordnetes Verzeichnis">↑</button>
+      <input id="browser-path" spellcheck="false"></div>
+    <ul id="browser-list"></ul>
+    <div id="browser-name-row" class="name-row" hidden><label>Name <input id="browser-name"
+      spellcheck="false"></label></div>
+    <div class="dialog-buttons">
+      <button value="cancel">Abbrechen</button>
+      <button type="button" class="primary" id="browser-ok">Auswählen</button>
+    </div>
+  </form>
+</dialog>
+<script src="app.js"></script>
+</body>
+</html>
