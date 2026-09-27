@@ -1,0 +1,158 @@
+#include <gtest/gtest.h>
+#include <openvdb/io/File.h>
+
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+
+#include "voxelsieve/phantom.hpp"
+#include "voxelsieve/sieve.hpp"
+
+namespace voxelsieve {
+namespace {
+
+openvdb::Coord coord(std::int64_t x, std::int64_t y, std::int64_t z) {
+  return {static_cast<openvdb::Int32>(x), static_cast<openvdb::Int32>(y),
+          static_cast<openvdb::Int32>(z)};
+}
+
+PhantomSpec noisyPhantom() {
+  PhantomSpec spec = defaultPhantomSpec();
+  spec.noise_sigma = 500.0;
+  return spec;
+}
+
+TEST(Sieve, OtsuThresholdSeparatesAirAndMaterial) {
+  const PhantomSpec spec = noisyPhantom();
+  const float threshold = estimateThreshold(generatePhantom(spec), 2);
+  const auto midpoint = 0.5F * static_cast<float>(spec.air_value + spec.material_value);
+  const auto contrast = static_cast<float>(spec.material_value - spec.air_value);
+  EXPECT_NEAR(threshold, midpoint, 0.2F * contrast);
+}
+
+TEST(Sieve, KeepsAllMaterialAndInternalAir) {
+  const PhantomSpec spec = noisyPhantom();
+  const Volume16 volume = generatePhantom(spec);
+  const SieveResult result = sieve(volume);
+  const auto accessor = result.grid->getConstAccessor();
+
+  std::int64_t material = 0;
+  std::int64_t internal_air = 0;
+  for (std::int64_t z = 0; z < spec.dims[2]; ++z) {
+    for (std::int64_t y = 0; y < spec.dims[1]; ++y) {
+      for (std::int64_t x = 0; x < spec.dims[0]; ++x) {
+        const auto center = voxelCenterMm(spec, x, y, z);
+        const bool inside_box =
+            std::abs(center[0]) < 4.0 && std::abs(center[1]) < 4.0 && std::abs(center[2]) < 4.0;
+        if (!inside_box) {
+          continue;
+        }
+        // Everything inside the outer box is material, cavity or pore; all of it must stay.
+        const bool is_material = phantomSignedDistanceMm(spec, center) < 0.0;
+        material += is_material ? 1 : 0;
+        internal_air += is_material ? 0 : 1;
+        ASSERT_TRUE(accessor.isValueOn(coord(x, y, z)))
+            << "lost voxel " << x << " " << y << " " << z;
+        ASSERT_EQ(accessor.getValue(coord(x, y, z)), static_cast<float>(volume.at(x, y, z)));
+      }
+    }
+  }
+  EXPECT_GT(material, 0);
+  EXPECT_GT(internal_air, 0);
+}
+
+TEST(Sieve, RemovesOutsideAirButKeepsMargin) {
+  const PhantomSpec spec = noisyPhantom();
+  SieveOptions options;
+  options.margin_voxels = 3;
+  const SieveResult result = sieve(generatePhantom(spec), options);
+  const auto accessor = result.grid->getConstAccessor();
+
+  // Voxel indices along x for points on the centre line (y = z = centre).
+  const auto index_at_mm = [&](double mm) {
+    return static_cast<std::int64_t>(
+        std::floor(mm / spec.voxel_size_mm + static_cast<double>(spec.dims[0]) / 2.0));
+  };
+  const std::int64_t mid = spec.dims[1] / 2;
+  EXPECT_TRUE(accessor.isValueOn(coord(index_at_mm(4.0 + 0.25), mid, mid)));  // inside margin
+  EXPECT_FALSE(accessor.isValueOn(coord(index_at_mm(4.0 + 2.0), mid, mid)));  // far outside
+  EXPECT_FALSE(accessor.isValueOn(coord(0, 0, 0)));
+
+  EXPECT_GT(result.stats.outside_air_block_count, 0);
+  EXPECT_LT(result.stats.active_voxel_count, result.stats.voxel_count / 2);
+  EXPECT_EQ(result.stats.voxel_count, spec.dims[0] * spec.dims[1] * spec.dims[2]);
+}
+
+TEST(Sieve, RemovesCavityThatIsOpenToTheOutside) {
+  // Cube shell of material, 4 voxels thick, with the +z face missing: its interior is outside air.
+  constexpr std::int64_t kN = 48;
+  Volume16 volume({kN, kN, kN}, 0.1);
+  for (std::int64_t z = 0; z < kN; ++z) {
+    for (std::int64_t y = 0; y < kN; ++y) {
+      for (std::int64_t x = 0; x < kN; ++x) {
+        const bool in_outer = x >= 8 && x < 40 && y >= 8 && y < 40 && z >= 8;
+        const bool in_inner = x >= 12 && x < 36 && y >= 12 && y < 36 && z >= 12;
+        volume.at(x, y, z) = (in_outer && !in_inner) ? 20000 : 1000;
+      }
+    }
+  }
+  SieveOptions options;
+  options.margin_voxels = 2;
+  const SieveResult result = sieve(volume, options);
+  const auto accessor = result.grid->getConstAccessor();
+  EXPECT_TRUE(accessor.isValueOn(coord(10, 24, 24)));   // wall
+  EXPECT_FALSE(accessor.isValueOn(coord(24, 24, 40)));  // open interior, far from the walls
+  EXPECT_FALSE(accessor.isValueOn(coord(2, 2, 2)));     // outside
+}
+
+TEST(Sieve, SolidVolumeWithoutAirKeepsEverything) {
+  constexpr std::int64_t kVoxels = std::int64_t{20} * 20 * 20;
+  Volume16 volume({20, 20, 20}, 0.2);
+  for (std::int64_t i = 0; i < kVoxels; ++i) {
+    volume.data[static_cast<std::size_t>(i)] = static_cast<std::uint16_t>(i % 2 == 0 ? 100 : 60000);
+  }
+  // Checkerboard-like data: every block holds material, so nothing is outside air.
+  const SieveResult result = sieve(volume);
+  EXPECT_EQ(result.stats.active_voxel_count, kVoxels);
+  EXPECT_EQ(result.stats.outside_air_block_count, 0);
+}
+
+TEST(Sieve, StoresMetadataAndRoundTripsThroughFile) {
+  PhantomSpec spec = noisyPhantom();
+  spec.dims = {64, 64, 64};
+  spec.voxel_size_mm = 0.2;
+  const SieveResult result = sieve(generatePhantom(spec));
+
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("voxelsieve_sieve_" +
+                     std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + ".vdb");
+  writeVdb(path, {result.grid});
+
+  openvdb::io::File file(path.string());
+  file.open();
+  const auto loaded = openvdb::gridPtrCast<openvdb::FloatGrid>(file.readGrid("density"));
+  file.close();
+  std::filesystem::remove(path);
+
+  ASSERT_TRUE(loaded);
+  EXPECT_EQ(loaded->activeVoxelCount(), result.grid->activeVoxelCount());
+  EXPECT_DOUBLE_EQ(loaded->voxelSize()[0], 0.2);
+  EXPECT_FLOAT_EQ(loaded->metaValue<float>("voxelsieve_threshold"), result.stats.threshold);
+  EXPECT_EQ(loaded->metaValue<openvdb::Vec3i>("voxelsieve_source_dims"),
+            openvdb::Vec3i(64, 64, 64));
+}
+
+TEST(Sieve, RejectsInvalidOptions) {
+  const Volume16 volume({8, 8, 8}, 1.0);
+  SieveOptions options;
+  options.margin_voxels = -1;
+  EXPECT_THROW((void)sieve(volume, options), std::invalid_argument);
+  options.margin_voxels = 0;
+  options.histogram_stride = 0;
+  EXPECT_THROW((void)sieve(volume, options), std::invalid_argument);
+}
+
+}  // namespace
+}  // namespace voxelsieve
