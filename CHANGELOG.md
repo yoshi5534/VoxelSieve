@@ -12,6 +12,8 @@ First version: from a raw CT volume to an inspection report.
   step is recorded with parameters, inputs, outputs and messages, can be undone and redone, and
   the project is saved after each change. Import, porosity and report are operations; more can be
   loaded as plugins (ADR 0008).
+- **Studio** (`vs-studio`): browser UI with a wizard (dataset, operations, report), the step
+  protocol and undo/redo, served locally; operations run while the UI stays responsive.
 - **MCP** (`vs-studio --mcp`): the studio API as Model Context Protocol tools for AI systems
   (`voxelsieve::Studio`, `voxelsieve::McpServer`).
 - **Read API** (`voxelsieve::Dataset`): samples, regions across bricks and parallel brick

@@ -7,12 +7,13 @@ add_executable(voxelsieve_tests
   test_porosity.cpp
   test_project.cpp
   test_studio.cpp
+  test_http.cpp
   test_report.cpp
   test_sieve.cpp
   test_synthetic.cpp
   test_vdb.cpp
 )
-target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main)
+target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers)
 
 # The example plugin is built with the tests and loaded by ProjectTest.PluginsAddOperations.
 add_subdirectory(${PROJECT_SOURCE_DIR}/examples/plugins/histogram
@@ -57,5 +58,11 @@ set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "
 add_test(NAME vs_studio_mcp_cli
   COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")
 set_tests_properties(vs_studio_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity")
-add_test(NAME vs_studio_needs_mode COMMAND vs-studio)
-set_tests_properties(vs_studio_needs_mode PROPERTIES WILL_FAIL TRUE)
+add_test(NAME vs_studio_rejects_arguments COMMAND vs-studio --bogus)
+set_tests_properties(vs_studio_rejects_arguments PROPERTIES WILL_FAIL TRUE)
+
+# The browser UI has no build step; at least make sure the script parses.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+  add_test(NAME ui_script_syntax COMMAND ${NODE_EXECUTABLE} --check ${PROJECT_SOURCE_DIR}/resources/ui/app.js)
+endif()
