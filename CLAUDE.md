@@ -7,6 +7,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 ## Layout
 
 - `include/voxelsieve/` public headers, `src/` library implementation (target `VoxelSieve::voxelsieve`)
+  - `source.hpp` read access to volumes larger than RAM (`MappedRawSource`, `PhantomSource`, ...)
+  - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
+  - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
@@ -33,6 +36,8 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Volumes are x-fastest, then y, then z. Raw files are headerless little-endian `uint16` with a
   JSON sidecar (`<name>.json`) describing dims, voxel size and format.
 - Grey values are stored losslessly (`FloatGrid`, see ADR 0002). Never quantise silently.
+- Code that must scale to XXL scans reads through `VolumeSource` and never assumes the volume fits
+  in memory (ADR 0004).
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose
   geometry is known analytically. Prefer asserting against the analytic ground truth over
   snapshot values.

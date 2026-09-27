@@ -25,6 +25,31 @@ description and the analytic ground truth (pores, wall thickness, material volum
 
 ## Sieve a volume
 
+VoxelSieve writes either a bricked dataset (any size, streamed) or a single `.vdb` grid (small
+volumes, in memory).
+
+### Bricked dataset for large scans
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve scan.raw --out scan.vsieve
+```
+
+`scan.vsieve/` holds `index.json`, `overview.vdb` (the whole volume in one grid of at most 256³
+voxels) and `level0/`, `level1/`, … with one VDB file per 256³ brick. Bricks that contain only
+outside air are not written. The input is memory-mapped and processed in two streaming passes, so
+the scan does not need to fit in RAM. `--phantom N` sieves a computed N³ phantom instead of a file.
+
+| Input | Raw size | Dataset | Time | Peak memory |
+|---|---|---|---|---|
+| 1024³ raw file (mmap) | 2 GB | 776 MB | 6.1 s | 2.5 GB, of which ~2 GB reclaimable mapped input pages |
+| 1024³ computed phantom | (2 GB) | 776 MB | 35.5 s | 0.46 GB |
+| 2048³ computed phantom | (16 GB) | 5.8 GB | 345 s | 0.87 GB |
+
+The computed phantom is slower because every voxel is evaluated twice; its memory figure shows the
+sieve's own footprint without mapped input pages.
+
+### Single grid
+
 ```sh
 ./build/release/apps/vs-sieve/vs-sieve phantom.raw --out phantom.vdb
 ```

@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <limits>
 #include <numbers>
-#include <random>
 
 namespace voxelsieve {
 namespace {
@@ -33,6 +32,24 @@ std::array<double, 3> halfExtents(const std::array<double, 3>& size, double shri
 }
 
 bool isHollow(const PhantomSpec& spec) { return spec.wall_thickness_mm > 0.0; }
+
+std::uint64_t splitMix64(std::uint64_t value) {
+  value += 0x9E3779B97F4A7C15ULL;
+  value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+  value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
+  return value ^ (value >> 31U);
+}
+
+/// Standard normal sample that depends only on (seed, index), so any voxel can be generated
+/// independently and in any order (Box-Muller on two hashed uniforms).
+double gaussianNoise(std::uint64_t seed, std::uint64_t index) {
+  const std::uint64_t h1 = splitMix64(seed ^ splitMix64(2 * index));
+  const std::uint64_t h2 = splitMix64(seed ^ splitMix64(2 * index + 1));
+  constexpr double kScale = 1.0 / 9007199254740992.0;                 // 2^-53
+  const double u1 = (static_cast<double>(h1 >> 11U) + 1.0) * kScale;  // (0, 1]
+  const double u2 = static_cast<double>(h2 >> 11U) * kScale;          // [0, 1)
+  return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * std::numbers::pi * u2);
+}
 
 }  // namespace
 
@@ -83,25 +100,27 @@ std::array<double, 3> voxelCenterMm(const PhantomSpec& spec, std::int64_t x, std
   return center;
 }
 
-Volume16 generatePhantom(const PhantomSpec& spec) {
-  Volume16 volume(spec.dims, spec.voxel_size_mm);
-  std::mt19937_64 rng(spec.seed);
-  std::normal_distribution<double> noise(0.0, spec.noise_sigma > 0.0 ? spec.noise_sigma : 1.0);
+std::uint16_t phantomValue(const PhantomSpec& spec, std::int64_t x, std::int64_t y,
+                           std::int64_t z) {
   const double air = spec.air_value;
   const double contrast = static_cast<double>(spec.material_value) - air;
+  const double distance = phantomSignedDistanceMm(spec, voxelCenterMm(spec, x, y, z));
+  // Linear partial-volume model: fraction of the voxel covered by material.
+  const double fraction = std::clamp(0.5 - distance / spec.voxel_size_mm, 0.0, 1.0);
+  double value = air + fraction * contrast;
+  if (spec.noise_sigma > 0.0) {
+    const auto index = static_cast<std::uint64_t>(x + spec.dims[0] * (y + spec.dims[1] * z));
+    value += spec.noise_sigma * gaussianNoise(spec.seed, index);
+  }
+  return static_cast<std::uint16_t>(std::clamp(std::round(value), 0.0, 65535.0));
+}
 
+Volume16 generatePhantom(const PhantomSpec& spec) {
+  Volume16 volume(spec.dims, spec.voxel_size_mm);
   for (std::int64_t z = 0; z < spec.dims[2]; ++z) {
     for (std::int64_t y = 0; y < spec.dims[1]; ++y) {
       for (std::int64_t x = 0; x < spec.dims[0]; ++x) {
-        const double distance = phantomSignedDistanceMm(spec, voxelCenterMm(spec, x, y, z));
-        // Linear partial-volume model: fraction of the voxel covered by material.
-        const double fraction = std::clamp(0.5 - distance / spec.voxel_size_mm, 0.0, 1.0);
-        double value = air + fraction * contrast;
-        if (spec.noise_sigma > 0.0) {
-          value += noise(rng);
-        }
-        volume.at(x, y, z) =
-            static_cast<std::uint16_t>(std::clamp(std::round(value), 0.0, 65535.0));
+        volume.at(x, y, z) = phantomValue(spec, x, y, z);
       }
     }
   }
