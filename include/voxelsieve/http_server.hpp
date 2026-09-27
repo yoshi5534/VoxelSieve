@@ -17,6 +17,8 @@ namespace voxelsieve {
 ///   GET  /api/tile?axis=&index=&level=&u=&v=&size=[&step=][&porosity=]
 ///                                           a slice tile for the viewer (see readSlice): float32
 ///                                           grey values, then one overlay byte per pixel
+///   GET  /api/volume?max=[&step=][&porosity=]  the volume preview for the 3D view: grey bytes,
+///                                           then overlay bytes (see readVolumePreview)
 ///
 /// Requests must name the local host in the Host header and API calls must send JSON, which
 /// keeps other web sites open in the same browser from using the server.
@@ -41,8 +43,8 @@ class HttpServer {
   std::unique_ptr<Impl> impl_;
 };
 
-/// A file of the compiled-in browser UI ("index.html", "app.js", "viewer.js", "app.css"); empty
-/// if unknown.
+/// A file of the compiled-in browser UI ("index.html", "app.js", "viewer.js", "volume.js",
+/// "app.css"); empty if unknown.
 [[nodiscard]] std::string_view uiResource(std::string_view name);
 
 }  // namespace voxelsieve

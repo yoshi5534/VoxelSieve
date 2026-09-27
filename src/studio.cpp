@@ -379,6 +379,18 @@ std::shared_ptr<const PorosityResult> Studio::openPorosity(const std::filesystem
 
 SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int> porosity_step,
                              const SliceRequest& request) const {
+  const auto [dataset, porosity] = openView(dataset_step, porosity_step);
+  return readSlice(*dataset, request, porosity.get());
+}
+
+VolumePreview Studio::volumePreview(std::optional<int> dataset_step,
+                                    std::optional<int> porosity_step, std::int64_t max_size) const {
+  const auto [dataset, porosity] = openView(dataset_step, porosity_step);
+  return readVolumePreview(*dataset, max_size, porosity.get());
+}
+
+std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Studio::openView(
+    std::optional<int> dataset_step, std::optional<int> porosity_step) const {
   std::filesystem::path dataset_dir;
   std::filesystem::path porosity_dir;
   {
@@ -390,9 +402,7 @@ SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int>
           project().resolve(artifactRef({{"step", *porosity_step}}, artifact::kPorosity));
     }
   }
-  const auto dataset = openDataset(dataset_dir);
-  const auto porosity = porosity_dir.empty() ? nullptr : openPorosity(porosity_dir);
-  return readSlice(*dataset, request, porosity.get());
+  return {openDataset(dataset_dir), porosity_dir.empty() ? nullptr : openPorosity(porosity_dir)};
 }
 
 Json Studio::viewSlice(const Json& params) const {
