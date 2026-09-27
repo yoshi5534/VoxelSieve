@@ -13,80 +13,33 @@
 #include <stdexcept>
 #include <vector>
 
+#include "detail/blocks.hpp"
+
 namespace voxelsieve {
 namespace {
 
-enum class BlockState : std::uint8_t { kAir, kMaterial, kOutsideAir };
-
-struct BlockGrid {
-  std::array<std::int64_t, 3> dims{};
-  std::vector<BlockState> states;
-
-  [[nodiscard]] std::size_t index(std::int64_t bx, std::int64_t by, std::int64_t bz) const {
-    return static_cast<std::size_t>(bx + dims[0] * (by + dims[1] * bz));
-  }
-};
-
-std::int64_t ceilDiv(std::int64_t a, std::int64_t b) { return (a + b - 1) / b; }
-
-struct ThresholdResult {
-  float threshold = 0.0F;
-  float air_level = 0.0F;
-};
+using detail::BlockGrid;
+using detail::BlockState;
+using detail::ceilDiv;
+using detail::floodFillOutsideAir;
+using detail::Histogram;
+using detail::kHistogramBins;
+using detail::otsuThreshold;
+using detail::ThresholdResult;
 
 ThresholdResult otsu(const Volume16& volume, int stride) {
   if (stride < 1) {
     throw std::invalid_argument("histogram_stride must be >= 1");
   }
-  std::vector<std::uint64_t> histogram(65536, 0);
-  std::uint64_t total = 0;
+  Histogram histogram(kHistogramBins, 0);
   for (std::int64_t z = 0; z < volume.dims[2]; z += stride) {
     for (std::int64_t y = 0; y < volume.dims[1]; y += stride) {
       for (std::int64_t x = 0; x < volume.dims[0]; x += stride) {
         ++histogram[volume.at(x, y, z)];
-        ++total;
       }
     }
   }
-  if (total == 0) {
-    throw std::invalid_argument("Cannot estimate a threshold for an empty volume");
-  }
-
-  double sum_all = 0.0;
-  for (std::size_t value = 0; value < histogram.size(); ++value) {
-    sum_all += static_cast<double>(value) * static_cast<double>(histogram[value]);
-  }
-  // Maximise the between-class variance; class "below" holds values <= t.
-  double best_variance = -1.0;
-  std::size_t best_value = 0;
-  double weight_below = 0.0;
-  double sum_below = 0.0;
-  for (std::size_t value = 0; value + 1 < histogram.size(); ++value) {
-    weight_below += static_cast<double>(histogram[value]);
-    sum_below += static_cast<double>(value) * static_cast<double>(histogram[value]);
-    const double weight_above = static_cast<double>(total) - weight_below;
-    if (weight_below == 0.0 || weight_above == 0.0) {
-      continue;
-    }
-    const double mean_below = sum_below / weight_below;
-    const double mean_above = (sum_all - sum_below) / weight_above;
-    const double variance =
-        weight_below * weight_above * (mean_below - mean_above) * (mean_below - mean_above);
-    if (variance > best_variance) {
-      best_variance = variance;
-      best_value = value;
-    }
-  }
-
-  double air_weight = 0.0;
-  double air_sum = 0.0;
-  for (std::size_t value = 0; value <= best_value; ++value) {
-    air_weight += static_cast<double>(histogram[value]);
-    air_sum += static_cast<double>(value) * static_cast<double>(histogram[value]);
-  }
-  // Values <= best_value are air, so the separating grey value lies half a step above.
-  return {static_cast<float>(static_cast<double>(best_value) + 0.5),
-          static_cast<float>(air_weight > 0.0 ? air_sum / air_weight : 0.0)};
+  return otsuThreshold(histogram);
 }
 
 BlockGrid classifyBlocks(const Volume16& volume, float threshold, int min_material_voxels) {
@@ -122,53 +75,6 @@ BlockGrid classifyBlocks(const Volume16& volume, float threshold, int min_materi
     }
   });
   return blocks;
-}
-
-/// Marks air blocks that are face-connected to the volume boundary as outside air.
-void floodFillOutsideAir(BlockGrid& blocks) {
-  std::deque<std::array<std::int64_t, 3>> queue;
-  const auto visit = [&](std::int64_t bx, std::int64_t by, std::int64_t bz) {
-    if (bx < 0 || by < 0 || bz < 0 || bx >= blocks.dims[0] || by >= blocks.dims[1] ||
-        bz >= blocks.dims[2]) {
-      return;
-    }
-    BlockState& state = blocks.states[blocks.index(bx, by, bz)];
-    if (state == BlockState::kAir) {
-      state = BlockState::kOutsideAir;
-      queue.push_back({bx, by, bz});
-    }
-  };
-
-  const auto& d = blocks.dims;
-  for (std::int64_t a = 0; a < d[0]; ++a) {
-    for (std::int64_t b = 0; b < d[1]; ++b) {
-      visit(a, b, 0);
-      visit(a, b, d[2] - 1);
-    }
-  }
-  for (std::int64_t a = 0; a < d[0]; ++a) {
-    for (std::int64_t c = 0; c < d[2]; ++c) {
-      visit(a, 0, c);
-      visit(a, d[1] - 1, c);
-    }
-  }
-  for (std::int64_t b = 0; b < d[1]; ++b) {
-    for (std::int64_t c = 0; c < d[2]; ++c) {
-      visit(0, b, c);
-      visit(d[0] - 1, b, c);
-    }
-  }
-
-  while (!queue.empty()) {
-    const auto [bx, by, bz] = queue.front();
-    queue.pop_front();
-    visit(bx - 1, by, bz);
-    visit(bx + 1, by, bz);
-    visit(bx, by - 1, bz);
-    visit(bx, by + 1, bz);
-    visit(bx, by, bz - 1);
-    visit(bx, by, bz + 1);
-  }
 }
 
 openvdb::Coord toCoord(std::int64_t x, std::int64_t y, std::int64_t z) {

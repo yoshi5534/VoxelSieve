@@ -96,3 +96,12 @@ adjacent bricks through the same cache instead of storing overlap on disk.
   sieving. That is fine for local file systems; the brick size is a parameter.
 - `min_material_voxels > 1` needs more than the block maximum; pass 1 can store the k-th largest
   value per block instead if noise makes this necessary.
+
+## Implementation status
+
+Implemented in `src/dataset.cpp` (`writeDataset`, `readDatasetInfo`, `readBrick`) with
+`VolumeSource` implementations for memory-mapped raw files and computed phantoms. Level-0 bricks
+are voxel-identical to the in-memory sieve (tested). The margin crosses brick boundaries through a
+halo of `ceil(margin / 8)` blocks. Coarser levels are built brick by brick from the finer level,
+loading one child at a time. Not yet implemented: the `Dataset` access API with an LRU brick
+cache, TIFF-stack input, and `min_material_voxels` for streaming (block maximum only).
