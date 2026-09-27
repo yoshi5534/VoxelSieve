@@ -111,6 +111,30 @@ The grey values carry the void volume exactly, even for pores much smaller than 
 `docs/adr/0005-synthetic-scans-from-meshes.md`). The scan is computed on demand and streamed to
 disk: 1040 × 840 × 640 voxels (1.1 GB) with 15 defects take 41 s on 4 cores.
 
+## Porosity analysis
+
+`vs-porosity` finds internal pores and zones of loosened microstructure in a sieved dataset:
+
+```sh
+./build/release/apps/vs-porosity/vs-porosity part.vsieve --out part.porosity
+```
+
+- `porosity.json`: part volume, porosity, and every pore and zone with centre, bounds and void
+  volume.
+- `projection_x.png`, `projection_y.png`, `projection_z.png`: the part as a grey thickness image,
+  pores in red, zones in yellow.
+- `porosity.vdb`: grids `pores` and `zones` in the dataset's world space, to view next to the part
+  in Blender or Houdini.
+
+Pore volumes come from the grey values, so partially filled edge voxels count with their fraction.
+Zones are 8³ blocks whose grey value lies clearly below the material level at the same depth below
+the surface, so cupping from beam hardening is not reported as porosity (see
+`docs/adr/0006-porosity-analysis.md`). On an 830 MB synthetic scan (1025 × 775 × 525 voxels,
+6 lunkers, 3 loosened zones, noise and 10 % cupping) every lunker is within 2 % of its true volume,
+every zone within 2 %, and the total porosity within 1 %; the analysis takes 14 s on 4 cores.
+`PorosityOptions` and the `--min-pore`, `--zone-sigma` and `--zone-min` options set the detection
+limits.
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).
