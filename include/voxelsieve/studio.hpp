@@ -51,6 +51,9 @@ class Studio {
   [[nodiscard]] std::filesystem::path outputFile(int step, const std::string& output,
                                                  const std::string& file) const;
 
+  /// The picture of a saved view of the open project, for serving it.
+  [[nodiscard]] std::filesystem::path viewImage(int id) const;
+
   /// A slice rectangle of the dataset output of `dataset_step` (default: the latest dataset) for
   /// the viewer, with pores and zones of `porosity_step` in the overlay when given. Datasets and
   /// porosity results stay open between calls, so repeated tiles only read bricks.

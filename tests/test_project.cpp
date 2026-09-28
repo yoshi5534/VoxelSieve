@@ -206,6 +206,64 @@ TEST_F(ProjectTest, SaveAsContinuesInTheCopy) {
   EXPECT_THROW((void)Project::create(dir_ / "copy", "x"), std::invalid_argument);
 }
 
+TEST_F(ProjectTest, ViewStateAndSavedViewsPersistOutsideTheProtocol) {
+  auto project = Project::create(dir_ / "p", "Test");
+  project.run(registry_, "make_number", {{"value", 2}});
+  const nlohmann::json state = {{"stage", "view"}, {"camera", {{"yaw", 0.5}}}};
+  project.setView(state);
+  const std::vector<std::uint8_t> png = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n', 1, 2, 3};
+  const int first = project.saveView("Übersicht", state, png).id;
+  const int second = project.saveView("Ohne Bild", {{"stage", "report"}}).id;
+  EXPECT_NE(first, second);
+  EXPECT_TRUE(std::filesystem::exists(project.viewImage(first)));
+  project.renameView(second, "Bericht");
+  // Views are no steps: undo leaves them alone.
+  EXPECT_TRUE(project.undo());
+  EXPECT_EQ(project.savedViews().size(), 2U);
+
+  auto reopened = Project::open(dir_ / "p");
+  EXPECT_EQ(reopened.view(), state);
+  ASSERT_EQ(reopened.savedViews().size(), 2U);
+  EXPECT_EQ(reopened.savedView(first).name, "Übersicht");
+  EXPECT_TRUE(reopened.savedView(first).has_image);
+  EXPECT_EQ(reopened.savedView(second).name, "Bericht");
+  EXPECT_FALSE(reopened.savedView(second).has_image);
+
+  reopened.deleteView(first);
+  EXPECT_FALSE(std::filesystem::exists(reopened.viewImage(first)));
+  EXPECT_THROW((void)reopened.savedView(first), std::invalid_argument);
+  // Ids are not reused after a delete.
+  EXPECT_GT(reopened.saveView("Neu", state).id, second);
+}
+
+TEST_F(ProjectTest, InvalidViewsAreRejected) {
+  auto project = Project::create(dir_ / "p", "Test");
+  EXPECT_THROW(project.setView(nlohmann::json::array()), std::invalid_argument);
+  EXPECT_THROW((void)project.saveView("", {}), std::invalid_argument);
+  const std::vector<std::uint8_t> not_png = {'G', 'I', 'F', '8', '9', 'a', 0, 0, 0};
+  EXPECT_THROW((void)project.saveView("Bild", nlohmann::json::object(), not_png),
+               std::invalid_argument);
+  EXPECT_THROW(project.setView({{"big", std::string(std::size_t{300} << 10U, 'x')}}),
+               std::invalid_argument);
+  EXPECT_THROW(project.renameView(7, "x"), std::invalid_argument);
+  EXPECT_TRUE(project.savedViews().empty());
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "p" / "views"));
+}
+
+TEST_F(ProjectTest, AdoptViewsKeepsStepsAndTakesTheViews) {
+  auto project = Project::create(dir_ / "p", "Test");
+  Project working = project;  // an operation runs on a copy ...
+  working.run(registry_, "make_number", {{"value", 4}});
+  project.setView({{"stage", "view"}});  // ... while the UI saves its view
+  (void)project.saveView("Während", {{"stage", "view"}});
+  working.adoptViews(project);
+  const auto reopened = Project::open(dir_ / "p");
+  EXPECT_EQ(reopened.steps().size(), 1U);
+  EXPECT_EQ(reopened.view(), nlohmann::json({{"stage", "view"}}));
+  ASSERT_EQ(reopened.savedViews().size(), 1U);
+  EXPECT_EQ(reopened.savedViews()[0].name, "Während");
+}
+
 TEST(ParameterTest, DefaultsTypesAndRanges) {
   const Json schema = {
       {"type", "object"},
