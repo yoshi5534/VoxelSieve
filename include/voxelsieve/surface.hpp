@@ -126,10 +126,12 @@ struct IndexedMesh {
   std::vector<std::array<std::uint32_t, 3>> triangles;
 };
 
-/// Mesh of the surface for display, in level-0 voxel coordinates (voxel index, not mm). Flat
-/// regions are meshed with larger triangles; when the mesh still has more than `max_triangles`,
-/// the surface is resampled at 2, 4, ... times the voxel size until it fits.
-[[nodiscard]] IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles);
+/// Mesh of the surface for display, in level-0 voxel coordinates (voxel index, not mm). With
+/// `adaptivity` > 0, flat regions are meshed with larger triangles (see volumeToMesh); when the
+/// mesh still has more than `max_triangles`, the surface is resampled at 2, 4, ... times the voxel
+/// size until it fits.
+[[nodiscard]] IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
+                                             double adaptivity = 0.25);
 
 /// Writes the middle slice along x, y and z as surface_[xyz].png: material grey, air black and the
 /// band coloured from blue (in material) to red (in air). Slices larger than `max_pixels` are

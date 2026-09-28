@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "detail/png.hpp"
+#include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 
 namespace voxelsieve {
@@ -461,7 +462,10 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surfac
     const Json params = surface_step ? Json{{"step", *surface_step}} : Json::object();
     file = project().resolve(artifactRef(params, artifact::kSurface)) / "surface.vss";
   }
-  const std::filesystem::path key = file.string() + "#" + std::to_string(max_triangles);
+  // The file time is part of the key: an undone step and its successor share the directory.
+  const std::filesystem::path key =
+      file.string() + "#" + std::to_string(max_triangles) + "#" +
+      std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());
   {
     const std::scoped_lock lock(surface_mutex_);
     for (const auto& [path, mesh] : surface_meshes_) {
@@ -479,6 +483,48 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surfac
     surface_meshes_.erase(surface_meshes_.begin());
   }
   return mesh;
+}
+
+std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
+    std::optional<int> comparison_step) const {
+  std::filesystem::path dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = comparison_step ? Json{{"step", *comparison_step}} : Json::object();
+    dir = project().resolve(artifactRef(params, artifact::kComparison));
+  }
+  const std::filesystem::path key =
+      dir.string() + "#" +
+      std::to_string(
+          std::filesystem::last_write_time(dir / "deviation.ply").time_since_epoch().count());
+  {
+    const std::scoped_lock lock(surface_mutex_);
+    for (const auto& [path, view] : deviation_meshes_) {
+      if (path == key) {
+        return view;
+      }
+    }
+  }
+  std::ifstream in(dir / "compare.json");
+  const Json info = Json::parse(in);
+  DeviationMesh read = readDeviationPly(dir / "deviation.ply");
+  const auto v = static_cast<float>(info.at("voxel_size_mm").get<double>());
+  for (auto& p : read.mesh.points) {
+    for (float& c : p) {
+      c /= v;
+    }
+  }
+  auto view = std::make_shared<DeviationView>();
+  view->mesh = std::move(read.mesh);
+  view->deviation_mm = std::move(read.deviation_mm);
+  view->tolerance_mm = info.at("tolerance_mm").get<double>();
+  view->range_mm = info.at("deviation").at("range_mm").get<double>();
+  const std::scoped_lock lock(surface_mutex_);
+  deviation_meshes_.emplace_back(key, view);
+  if (deviation_meshes_.size() > kOpenDatasets) {
+    deviation_meshes_.erase(deviation_meshes_.begin());
+  }
+  return view;
 }
 
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Studio::openView(
