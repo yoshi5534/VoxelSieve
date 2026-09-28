@@ -48,6 +48,37 @@ class SliceViewer {
     }
   }
 
+  /// Slice, zoom and window, for saving them with the project or as a named view.
+  getState() {
+    const saved = { step: this.step, axis: this.axis, index: [...this.index], window: this.window,
+      showOverlay: this.showOverlay };
+    // Before the first picture the zoom is not fitted yet; leave it to the next fit then.
+    if (!this.fitPending) Object.assign(saved, { zoom: this.zoom, center: [...this.center] });
+    return saved;
+  }
+
+  /// Restores a state of the same dataset; call after setDataset.
+  setState(saved) {
+    if (!this.info || saved.step !== this.step) return;
+    this.axis = saved.axis;
+    this.index = saved.index.map((i, a) => Math.min(Math.max(i, 0), this.info.dims[a] - 1));
+    this.window = saved.window;
+    this.showOverlay = saved.showOverlay;
+    if (saved.zoom && saved.center) {
+      this.zoom = saved.zoom;
+      this.center = [...saved.center];
+      this.fitPending = false;
+    }
+    this.requestDraw();
+    this.onChange();
+  }
+
+  /// The current picture as a PNG data URL.
+  capture() {
+    this.draw();
+    return this.canvas.toDataURL('image/png');
+  }
+
   clearTiles() {
     this.tiles.clear();
     this.failed.clear();

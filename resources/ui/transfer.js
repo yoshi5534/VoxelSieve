@@ -80,6 +80,172 @@ function transferPreset(name, threshold) {
   }
 }
 
+/// Histogram smoothed with a box filter of 2 * radius + 1 bins.
+function smoothHistogram(histogram, radius) {
+  return histogram.map((_, i) => {
+    let sum = 0;
+    let count = 0;
+    for (let k = Math.max(i - radius, 0); k <= Math.min(i + radius, histogram.length - 1); k += 1) {
+      sum += histogram[k];
+      count += 1;
+    }
+    return sum / count;
+  });
+}
+
+/// Otsu threshold: the bin that best separates the histogram into two classes.
+function otsuThreshold(histogram) {
+  const total = histogram.reduce((a, b) => a + b, 0);
+  const sum = histogram.reduce((a, count, i) => a + i * count, 0);
+  let below = 0;
+  let belowSum = 0;
+  let best = 0;
+  let bestVariance = -1;
+  for (let t = 0; t < histogram.length - 1; t += 1) {
+    below += histogram[t];
+    belowSum += t * histogram[t];
+    const above = total - below;
+    if (below === 0 || above === 0) continue;
+    const difference = belowSum / below - (sum - belowSum) / above;
+    const variance = below * above * difference * difference;
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      best = t;
+    }
+  }
+  return best + 0.5;
+}
+
+/// Prominent peaks of the histogram (on a log scale, so a small second material next to a
+/// large air peak still counts), strongest first: {bin, prominence}.
+function histogramPeaks(histogram) {
+  const log = smoothHistogram(histogram, 4).map((count) => Math.log1p(count));
+  const peaks = [];
+  for (let i = 0; i < log.length; i += 1) {
+    let top = true;
+    for (let k = Math.max(i - 6, 0); k <= Math.min(i + 6, log.length - 1) && top; k += 1) {
+      top = log[k] < log[i] || (log[k] === log[i] && k >= i);
+    }
+    if (!top || log[i] <= 0) continue;
+    // Prominence: height above the higher of the two valleys towards the next higher peak.
+    let left = log[i];
+    for (let k = i - 1; k >= 0 && log[k] <= log[i]; k -= 1) left = Math.min(left, log[k]);
+    let right = log[i];
+    for (let k = i + 1; k < log.length && log[k] <= log[i]; k += 1) right = Math.min(right, log[k]);
+    peaks.push({ bin: i, prominence: log[i] - Math.max(left, right) });
+  }
+  return peaks.filter((p) => p.prominence >= 0.7).sort((a, b) => b.prominence - a.prominence);
+}
+
+/// Two or three renderings that bring out interesting ranges of the histogram: the density
+/// spread of the material, lower densities inside the part (pores, loosened structure) and
+/// further phases (inclusions, a second material) or else the part as a solid body. Each is
+/// {id, name, description, points, colorMap, shading, range: [low, high] in 0..1}.
+function suggestTransfers(histogram) {
+  const bins = histogram.length;
+  const total = histogram.reduce((a, b) => a + b, 0);
+  if (total === 0) return [];
+  const split = otsuThreshold(histogram);
+  const smooth = smoothHistogram(histogram, 2);
+  const argmax = (from, to) => {
+    let best = from;
+    for (let i = from; i < to; i += 1) if (smooth[i] > smooth[best]) best = i;
+    return best;
+  };
+  const air = argmax(0, Math.ceil(split));
+  const material = argmax(Math.ceil(split), bins);
+  // Half width at half maximum of the material peak, at least two bins.
+  let low = material;
+  while (low > split && smooth[low] > smooth[material] / 2) low -= 1;
+  let high = material;
+  while (high < bins - 1 && smooth[high] > smooth[material] / 2) high += 1;
+  const spread = Math.max((high - low) / 2, 2);
+  const threshold = (air + material) / 2;
+  const x = (bin) => Math.min(Math.max(bin / (bins - 1), 0), 1);
+  const point = (bin, a) => ({ x: x(bin), a, color: [0, 0, 0] });
+  const sorted = (points) => points.sort((p, q) => p.x - q.x)
+    .filter((p, i, all) => i === 0 || p.x > all[i - 1].x);
+
+  const suggestions = [];
+  const densityLow = Math.max(material - 3 * spread, threshold);
+  const densityHigh = Math.min(material + 3 * spread, bins - 1);
+  suggestions.push({
+    id: 'dichte',
+    name: 'Dichteverteilung',
+    description: 'Das Material farbig nach Dichte',
+    // The colour map spans only the material range, so its whole scale shows density.
+    points: (() => {
+      const range = applyColorMap(sorted([point(densityLow, 0.06), point(material, 0.1),
+        point(densityHigh, 0.16)]), 'viridis');
+      const first = range[0].color;
+      return sorted([{ ...point(0, 0), color: first }, { ...point(densityLow - 2, 0), color: first },
+        ...range, { ...point(bins - 1, 0.16), color: range[range.length - 1].color }]);
+    })(),
+    colorMap: 'viridis',
+    shading: false,
+    range: [x(densityLow), x(densityHigh)],
+  });
+
+  // Lower densities between the surface and the material peak: pores and loosened structure,
+  // with the material itself faint.
+  const looseLow = threshold + 0.25 * (material - threshold);
+  const looseHigh = Math.max(material - 2 * spread, looseLow + 2);
+  if (looseHigh < material) {
+    const faint = [150, 160, 172];
+    suggestions.push({
+      id: 'locker',
+      name: 'Geringere Dichte',
+      description: 'Bereiche unter der Materialdichte rot, das Material blass',
+      points: sorted([point(0, 0), point(threshold, 0),
+        { ...point(looseLow, 0.55), color: [230, 60, 30] },
+        { ...point(looseHigh, 0.55), color: [255, 170, 40] },
+        { ...point(material - spread, 0.08), color: faint },
+        { ...point(bins - 1, 0.08), color: faint }]).map((p) => (p.a === 0 ? { ...p,
+        color: [230, 60, 30] } : p)),
+      colorMap: 'heiss',
+      shading: true,
+      range: [x(looseLow), x(looseHigh)],
+    });
+  }
+
+  // Further phases: prominent peaks inside the part (above the surface threshold) away from the
+  // material peak.
+  const phases = histogramPeaks(histogram).filter((p) => p.bin > threshold + 2 * spread &&
+    Math.abs(p.bin - material) > 3 * spread).slice(0, 2);
+  if (phases.length > 0) {
+    const colors = [[40, 200, 255], [255, 80, 200]];
+    const points = [point(0, 0), point(threshold, 0), point(threshold + 2, 0.04),
+      point(bins - 1, 0.04)];
+    for (const [i, phase] of phases.entries()) {
+      const width = Math.max(spread, 3);
+      points.push(point(phase.bin - width, 0.04), { ...point(phase.bin, 0.9), color: colors[i] },
+        point(phase.bin + width, 0.04));
+    }
+    const faint = sorted(points).map((p) => (p.a >= 0.9 ? p : { ...p, color: [150, 160, 172] }));
+    suggestions.push({
+      id: 'phasen',
+      name: phases.length > 1 ? 'Weitere Phasen' : 'Weitere Phase',
+      description: 'Eigene Maxima im Histogramm farbig, etwa Einschlüsse',
+      points: faint,
+      colorMap: 'grau',
+      shading: true,
+      range: [x(phases[0].bin - spread), x(phases[0].bin + spread)],
+    });
+  } else {
+    suggestions.push({
+      id: 'koerper',
+      name: 'Bauteil',
+      description: 'Das Bauteil als beleuchteter Körper',
+      points: applyColorMap(sorted([point(0, 0), point(threshold - 2, 0), point(threshold + 2, 1),
+        point(bins - 1, 1)]), 'stahl'),
+      colorMap: 'stahl',
+      shading: true,
+      range: [x(threshold), 1],
+    });
+  }
+  return suggestions.slice(0, 3);
+}
+
 function hexColor(color) {
   return '#' + color.map((c) => c.toString(16).padStart(2, '0')).join('');
 }
@@ -325,9 +491,9 @@ class TransferEditor {
 
 if (typeof window !== 'undefined') {
   Object.assign(window, { COLOR_MAPS, TRANSFER_PRESETS, TransferEditor, applyColorMap, colorMapAt,
-    hexColor, lookupTable, parseHexColor, transferPreset });
+    hexColor, lookupTable, parseHexColor, suggestTransfers, transferPreset });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { COLOR_MAPS, applyColorMap, colorMapAt, hexColor, lookupTable, parseHexColor,
-    transferPreset };
+  module.exports = { COLOR_MAPS, applyColorMap, colorMapAt, hexColor, histogramPeaks, lookupTable,
+    otsuThreshold, parseHexColor, suggestTransfers, transferPreset };
 }

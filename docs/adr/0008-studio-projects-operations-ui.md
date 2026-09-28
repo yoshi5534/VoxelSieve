@@ -98,4 +98,15 @@ values plus the overlay (`readVolumePreview`, at most 32 MB) and ray-casts it in
 Colour and opacity per grey value come from a transfer function that the browser keeps as a
 256-entry lookup texture; its histogram is counted from the same 8-bit preview, so editing it needs
 no server round trip. Opacities hold per 1/128 of the largest axis, so the picture does not change
-with the level shown. The transfer function is a view setting and is not stored in the project.
+with the level shown.
+
+Addendum (views): the project also stores how it is shown, so it opens as it was left. The UI
+sends its view state (stage, slice viewer, camera, transfer function, colours, background) with
+`view_set` shortly after each change; `project.json` keeps it under `view`. Named views
+(`view_save`) keep such a state with a PNG of the canvas in `views/<id>.png` under
+`saved_views`. Views are presentation, not processing: they are no steps, undo does not touch
+them, and they can be saved while an operation runs on its copy of the project (the finished copy
+takes the views over before it replaces the project). The state is opaque JSON to the core,
+limited to 256 kB; pictures must be PNG. Suggested renderings are computed in the browser from the
+histogram of the preview (Otsu split into air and material, the material peak and its width,
+further prominent peaks), since they need no data beyond it.

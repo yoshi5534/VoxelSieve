@@ -105,6 +105,32 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_THROW(studio.call("project_open", {{"path", 3}}), std::invalid_argument);
 }
 
+TEST_F(StudioTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
+  const auto project = (dir_ / "p").string();
+  const Json state = {{"stage", "view"}, {"mode", "3d"}, {"transfer", {{"points", Json::array()}}}};
+  {
+    Studio studio;
+    (void)studio.call("project_create", {{"path", project}});
+    (void)studio.call("view_set", {{"state", state}});
+    // "iVBORw0KGgo=" is the PNG signature.
+    const Json saved =
+        studio.call("view_save", {{"name", "Aufsicht"}, {"image_base64", "iVBORw0KGgo="}});
+    EXPECT_EQ(saved.at("state"), state);  // the current view by default
+    EXPECT_THROW((void)studio.call("view_save", {{"name", "x"}, {"image_base64", "#?"}}),
+                 std::invalid_argument);
+  }
+  Studio studio;
+  const Json status = studio.call("project_open", {{"path", project}});
+  EXPECT_EQ(status.at("view"), state);
+  const Json views = studio.call("view_list", {}).at("views");
+  ASSERT_EQ(views.size(), 1U);
+  const Json image = studio.call("view_image", {{"id", views[0].at("id")}});
+  EXPECT_EQ(image.at("image").at("mime_type"), "image/png");
+  EXPECT_EQ(image.at("image").at("base64"), "iVBORw0KGgo=");
+  const Json renamed = studio.call("view_rename", {{"id", views[0].at("id")}, {"name", "Seite"}});
+  EXPECT_EQ(renamed.at("name"), "Seite");
+}
+
 TEST_F(StudioTest, EveryOperationIsAMethodWithItsSchema) {
   const Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
   bool found = false;

@@ -22,6 +22,7 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 using Json = nlohmann::json;
 using Request = http::request<http::string_body>;
+constexpr std::uint64_t kMaxBodyBytes = std::uint64_t{64} << 20U;
 
 std::string percentDecode(std::string_view text) {
   std::string decoded;
@@ -129,8 +130,11 @@ struct HttpServer::Impl {
     beast::flat_buffer buffer;
     boost::system::error_code error;
     while (true) {
-      Request request;
-      http::read(socket, buffer, request, error);
+      // Saved views carry a picture of the canvas, so bodies may be larger than Beast's 1 MB.
+      http::request_parser<http::string_body> parser;
+      parser.body_limit(kMaxBodyBytes);
+      http::read(socket, buffer, parser, error);
+      const Request request = parser.release();
       if (error) {
         break;
       }
@@ -308,6 +312,12 @@ struct HttpServer::Impl {
       }
       return json(request, http::status::ok, methods);
     }
+    if (path.starts_with("/views/") && path.ends_with(".png")) {
+      // /views/<id>.png: the picture of a saved view
+      const auto name = path.substr(std::string_view("/views/").size());
+      const int id = std::stoi(std::string(name.substr(0, name.size() - 4)));
+      return sendFile(request, studio.viewImage(id));
+    }
     if (path.starts_with("/files/")) {
       // /files/<step>/<output>/<file...>
       const std::string rest = percentDecode(path.substr(std::string_view("/files/").size()));
@@ -319,21 +329,25 @@ struct HttpServer::Impl {
       const int step = std::stoi(rest.substr(0, first));
       const std::string output = rest.substr(first + 1, second - first - 1);
       const std::string file = second == std::string::npos ? "" : rest.substr(second + 1);
-      const auto resolved = studio.outputFile(step, output, file);
-      http::response<http::file_body> response(http::status::ok, request.version());
-      beast::error_code failure;
-      response.body().open(resolved.c_str(), beast::file_mode::scan, failure);
-      if (failure) {
-        return error(request, http::status::not_found, failure.message());
-      }
-      response.set(http::field::content_type, contentType(resolved));
-      response.set(http::field::cache_control, "no-store");
-      response.set("X-Content-Type-Options", "nosniff");
-      response.keep_alive(request.keep_alive());
-      response.prepare_payload();
-      return response;
+      return sendFile(request, studio.outputFile(step, output, file));
     }
     return error(request, http::status::not_found, "Not found");
+  }
+
+  static http::message_generator sendFile(const Request& request,
+                                          const std::filesystem::path& resolved) {
+    http::response<http::file_body> response(http::status::ok, request.version());
+    beast::error_code failure;
+    response.body().open(resolved.c_str(), beast::file_mode::scan, failure);
+    if (failure) {
+      return error(request, http::status::not_found, failure.message());
+    }
+    response.set(http::field::content_type, contentType(resolved));
+    response.set(http::field::cache_control, "no-store");
+    response.set("X-Content-Type-Options", "nosniff");
+    response.keep_alive(request.keep_alive());
+    response.prepare_payload();
+    return response;
   }
 
   void stop() {
