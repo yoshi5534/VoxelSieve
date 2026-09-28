@@ -87,16 +87,18 @@ std::vector<std::uint8_t> lzwEncode(const std::vector<std::uint8_t>& in) {
       out.push_back(static_cast<std::uint8_t>((buffer >> static_cast<unsigned>(buffered)) & 0xFFU));
     }
   };
-  std::map<std::vector<std::uint8_t>, std::uint32_t> table;
+  // Words as strings: GCC 13 at -O3 warns falsely on comparing vectors of bytes
+  // (stringop-overread).
+  std::map<std::string, std::uint32_t> table;
   std::uint32_t next = 258;
   emit(256);
-  std::vector<std::uint8_t> word;
-  const auto code = [&](const std::vector<std::uint8_t>& w) {
-    return w.size() == 1 ? std::uint32_t{w[0]} : table.at(w);
+  std::string word;
+  const auto code = [&](const std::string& w) {
+    return w.size() == 1 ? std::uint32_t{static_cast<std::uint8_t>(w[0])} : table.at(w);
   };
   for (const std::uint8_t c : in) {
-    std::vector<std::uint8_t> longer = word;
-    longer.push_back(c);
+    std::string longer = word;
+    longer.push_back(static_cast<char>(c));
     if (word.empty() || longer.size() == 1 || table.contains(longer)) {
       word = std::move(longer);
       continue;
@@ -111,7 +113,7 @@ std::vector<std::uint8_t> lzwEncode(const std::vector<std::uint8_t>& in) {
     } else if (next > (1U << static_cast<unsigned>(width)) - 1) {
       ++width;
     }
-    word = {c};
+    word = std::string(1, static_cast<char>(c));
   }
   if (!word.empty()) {
     emit(code(word));
