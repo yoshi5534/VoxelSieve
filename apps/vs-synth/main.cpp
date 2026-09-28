@@ -1,6 +1,6 @@
-// vs-synth: turns a closed STL mesh into a synthetic CT scan with artificial lunkers, loosened
-// microstructure, noise and CT artefacts. Writes <prefix>.raw plus a <prefix>.json sidecar with the
-// ground truth of every defect.
+// vs-synth: turns a closed STL mesh or a built-in sample part into a synthetic CT scan with
+// artificial lunkers, loosened microstructure, noise and CT artefacts. Writes <prefix>.raw plus a
+// <prefix>.json sidecar with the ground truth of every defect.
 
 #include <array>
 #include <chrono>
@@ -14,12 +14,14 @@
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/parts.hpp"
 #include "voxelsieve/synthetic.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-synth <part.stl> --out <prefix> [options]
        vs-synth --box <x> <y> <z> --out <prefix> [options]
+       vs-synth --part <housing|bracket|hub> --out <prefix> [options]
 
 Writes <prefix>.raw (uint16, little endian, x fastest) and <prefix>.json with the ground truth.
 STL coordinates are taken as mm. Sizes left at 0 are chosen from the part size.
@@ -27,6 +29,9 @@ STL coordinates are taken as mm. Sizes left at 0 are chosen from the part size.
 Geometry:
   --out <prefix>              Output path without extension (required)
   --box <x> <y> <z>           Use a box with these edge lengths in mm instead of an STL file
+  --part <name>               Use a sample casting: housing, bracket or hub (30 to 50 mm long)
+  --scale <f>                 Scale of the sample part (default 1)
+  --stl <file>                Also write the mesh of the part as STL
   --voxel-size <mm>           Voxel edge length (default 0.1)
   --padding <mm>              Air around the part (default 1)
   --seed <n>                  Seed for defects, noise and artefacts (default 42)
@@ -45,6 +50,7 @@ Grey values and artefacts:
   --noise <sigma>             Gaussian noise in grey values (default 500, 0 disables)
   --cupping <f>               Beam-hardening darkening inside the part, e.g. 0.1 (default 0)
   --cupping-depth <mm>        Depth at which cupping reaches 63 % (default 20 % of smallest extent)
+  --blur <mm>                 Unsharpness: sigma of a Gaussian point spread function (default 0)
   --rings <n>                 Number of ring artefacts around the z axis (default 0)
   --ring-strength <sigma>     Ring amplitude in grey values (default 300)
   -h, --help                  Show this help
@@ -54,6 +60,9 @@ struct Options {
   std::filesystem::path input;
   std::filesystem::path out;
   std::optional<std::array<double, 3>> box;
+  std::string part;
+  double scale = 1.0;
+  std::filesystem::path stl;
   voxelsieve::SyntheticSpec spec;
 };
 
@@ -80,6 +89,14 @@ std::optional<Options> parse(int argc, char** argv) {
         edge = std::stod(next());
       }
       options.box = size;
+    } else if (arg == "--part") {
+      options.part = next();
+    } else if (arg == "--scale") {
+      options.scale = std::stod(next());
+    } else if (arg == "--stl") {
+      options.stl = next();
+    } else if (arg == "--blur") {
+      spec.blur_sigma_mm = std::stod(next());
     } else if (arg == "--voxel-size") {
       spec.voxel_size_mm = std::stod(next());
     } else if (arg == "--padding") {
@@ -118,8 +135,10 @@ std::optional<Options> parse(int argc, char** argv) {
       throw std::invalid_argument("Unknown option: " + std::string(arg));
     }
   }
-  if (options.input.empty() == !options.box || options.out.empty()) {
-    throw std::invalid_argument("--out and either an STL file or --box are required");
+  const int geometries =
+      (options.input.empty() ? 0 : 1) + (options.box ? 1 : 0) + (options.part.empty() ? 0 : 1);
+  if (geometries != 1 || options.out.empty()) {
+    throw std::invalid_argument("--out and one of an STL file, --box or --part are required");
   }
   return options;
 }
@@ -134,8 +153,21 @@ int main(int argc, char** argv) {
       return 0;
     }
     const auto start = std::chrono::steady_clock::now();
-    const voxelsieve::Mesh mesh =
-        options->box ? voxelsieve::boxMesh(*options->box) : voxelsieve::readStl(options->input);
+    voxelsieve::Mesh mesh;
+    if (options->box) {
+      mesh = voxelsieve::boxMesh(*options->box);
+    } else if (!options->part.empty()) {
+      voxelsieve::SamplePartOptions part;
+      part.scale = options->scale;
+      // Facets about as large as the voxels; the mesh is the ground truth either way.
+      part.resolution_mm = options->spec.voxel_size_mm;
+      mesh = voxelsieve::samplePartMesh(options->part, part);
+    } else {
+      mesh = voxelsieve::readStl(options->input);
+    }
+    if (!options->stl.empty()) {
+      voxelsieve::writeStl(options->stl, mesh);
+    }
     const voxelsieve::SyntheticScan scan(mesh, options->spec);
     for (const auto& warning : scan.warnings()) {
       std::cerr << "warning: " << warning << '\n';

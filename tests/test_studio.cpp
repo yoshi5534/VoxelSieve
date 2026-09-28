@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -84,6 +85,20 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
                std::invalid_argument);
   EXPECT_THROW(studio.call("read_file", {{"file", "projection_z.png"}}), std::invalid_argument);
 
+  // The surface of the box: 6 x 5 x 4 mm, lunkers inside, as mask, images and mesh.
+  const Json surface = studio.call("run_surface", {{"stl", true}});
+  EXPECT_EQ(surface.at("status"), "done");
+  EXPECT_NEAR(surface.at("summary").at("surface_volume_mm3").get<double>(), 120.0, 1.5);
+  EXPECT_GT(surface.at("summary").at("compression_vs_raw").get<double>(), 10.0);
+  const Json surface_files = studio.call("list_files", {});
+  std::vector<std::string> names;
+  for (const Json& file : surface_files.at("files")) {
+    names.push_back(file.at("file").get<std::string>());
+  }
+  for (const char* name : {"surface.vss", "surface.json", "surface.stl", "surface_z.png"}) {
+    EXPECT_NE(std::find(names.begin(), names.end(), name), names.end()) << name;
+  }
+
   // Explicit inputs by step id.
   const Json histogram = studio.call(
       "run_histogram", {{"bins", 8}, {"inputs", {{"dataset", {{"step", imported.at("id")}}}}}});
@@ -98,7 +113,7 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Studio other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 3U);
+  EXPECT_EQ(reopened.at("steps").size(), 4U);
 
   EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);

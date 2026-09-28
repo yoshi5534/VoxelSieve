@@ -202,6 +202,47 @@ TEST(Synthetic, ArtefactsChangeGreyValues) {
   }));
 }
 
+TEST(Synthetic, BlurWidensEdgesAndKeepsTheVolume) {
+  SyntheticSpec spec;
+  spec.blur_sigma_mm = 0.08;  // 0.8 voxels
+  const SyntheticScan blurred(boxMesh(kBoxSize), spec);
+  // A Gaussian keeps the sum of the grey values, so the material volume stays exact.
+  EXPECT_NEAR(measuredMaterialMm3(blurred), 120.0, 0.01);
+  const auto voxels = render(blurred);
+  const auto dims = blurred.dims();
+  const auto at = [&](std::int64_t x) {
+    return voxels[static_cast<std::size_t>(x + dims[0] * (35 + dims[1] * 30))];
+  };
+  // The face between x = 9 and 10 lies on a voxel boundary: sharp, the voxels on both sides are
+  // pure air and material; blurred, the first material voxel loses the air share of the kernel.
+  double air_share = 0.0;
+  double total = 0.0;
+  for (int k = -3; k <= 3; ++k) {
+    const double w = std::exp(-0.5 * k * k / 0.64);
+    total += w;
+    air_share += k < 0 ? w : 0.0;
+  }
+  const double contrast = static_cast<double>(spec.material_value) - spec.air_value;
+  const double fraction = (static_cast<double>(at(10)) - spec.air_value) / contrast;
+  EXPECT_NEAR(fraction, 1.0 - air_share / total, 0.002);
+  EXPECT_NEAR((static_cast<double>(at(9)) - spec.air_value) / contrast, 1.0 - fraction, 0.002);
+
+  // Regions get the same values as the whole volume, also at the volume border.
+  const Box box{{0, 3, 20}, {17, 9, 23}};
+  std::vector<std::uint16_t> part(static_cast<std::size_t>(box.voxelCount()));
+  blurred.readRegion(box, part);
+  std::size_t i = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++i) {
+        ASSERT_EQ(part[i], voxels[static_cast<std::size_t>(x + dims[0] * (y + dims[1] * z))]);
+      }
+    }
+  }
+  spec.blur_sigma_mm = -1.0;
+  EXPECT_THROW(SyntheticScan(boxMesh(kBoxSize), spec), std::invalid_argument);
+}
+
 TEST(Synthetic, SieveKeepsDefects) {
   SyntheticSpec spec = defectSpec();
   spec.noise_sigma = 300.0;

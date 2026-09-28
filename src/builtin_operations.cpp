@@ -1,16 +1,20 @@
 // Operations that ship with VoxelSieve. Each wraps a library function; the command-line tools
 // use the same functions.
 
+#include <openvdb/io/File.h>
+
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/mesh.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/surface.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -192,6 +196,76 @@ class Porosity final : public Operation {
   OperationInfo info_;
 };
 
+class Surface final : public Operation {
+ public:
+  Surface() {
+    info_.id = "surface";
+    info_.title = "Oberfläche";
+    info_.description =
+        "Locates the surface of the part and stores it as a distance mask with a few bits per "
+        "voxel (surface.vss): only blocks near the surface are stored, and there the codes give "
+        "the distance to the surface in steps of a fraction of a voxel. Optionally also as STL "
+        "mesh and VDB level set.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset"}};
+    info_.outputs = {{"surface", artifact::kSurface, "Surface mask, images, mesh"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"bits", {{"type", "integer"}, {"minimum", 2}, {"maximum", 8}, {"default", 4}}},
+          {"band_voxels",
+           {{"type", "number"}, {"minimum", 0.25}, {"maximum", 3}, {"default", 1.0}}},
+          {"iso_value",
+           {{"type", "number"},
+            {"description",
+             "Grey value of the surface; default half way between air and "
+             "material"}}},
+          {"stl", {{"type", "boolean"}, {"default", false}}},
+          {"vdb", {{"type", "boolean"}, {"default", false}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    SurfaceOptions options;
+    options.bits = p.at("bits").get<int>();
+    options.band_voxels = p.at("band_voxels").get<double>();
+    if (p.contains("iso_value")) {
+      options.iso_value = p.at("iso_value").get<float>();
+    }
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const auto dir = context.output_dir / "surface";
+    std::filesystem::create_directories(dir);
+    const SurfaceInfo info = writeSurface(dataset, dir / "surface.vss", options);
+    context.progress(0.7);
+    const SurfaceMask mask = SurfaceMask::open(dir / "surface.vss");
+    writeJson(dir / "surface.json", toJson(info));
+    writeSurfaceImages(mask, dir);
+    if (p.at("stl").get<bool>()) {
+      writeStl(dir / "surface.stl", mask.toMesh());
+    }
+    if (p.at("vdb").get<bool>()) {
+      openvdb::io::File file((dir / "surface.vdb").string());
+      file.write({mask.toLevelSet()});
+      file.close();
+    }
+    const auto voxels = static_cast<double>(info.dims[0] * info.dims[1] * info.dims[2]);
+    OperationResult result;
+    result.outputs["surface"] = "surface";
+    result.summary = {{"surface_blocks", info.surface_blocks},
+                      {"band_voxels", info.band_voxel_count},
+                      {"file_bytes", info.file_bytes},
+                      {"bits_per_voxel", 8.0 * static_cast<double>(info.file_bytes) / voxels},
+                      {"compression_vs_raw", 2.0 * voxels / static_cast<double>(info.file_bytes)},
+                      {"step_voxels", info.stepVoxels()},
+                      {"iso_value", info.iso_value},
+                      {"surface_volume_mm3", info.volume_mm3}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class Report final : public Operation {
  public:
   Report() {
@@ -277,6 +351,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<OpenDataset>());
   registry.add(std::make_shared<ImportRaw>());
   registry.add(std::make_shared<Porosity>());
+  registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<Report>());
 }
 

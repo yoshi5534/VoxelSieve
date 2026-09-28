@@ -41,6 +41,11 @@ const LABELS = {
   template_path: 'Berichtsvorlage (Datei)',
   bins: 'Klassen',
   level: 'Auflösungsstufe',
+  bits: 'Bits je Voxel',
+  band_voxels: 'Bandbreite (± Voxel)',
+  iso_value: 'Oberflächen-Grauwert',
+  stl: 'STL-Netz schreiben',
+  vdb: 'VDB-Levelset schreiben',
 };
 
 const SUMMARY_LABELS = {
@@ -60,6 +65,14 @@ const SUMMARY_LABELS = {
   evaluated_zones: 'Bewertete Prüfzonen',
   missing_fields: 'Fehlende Angaben',
   passed: 'Ergebnis',
+  surface_blocks: 'Oberflächenblöcke (8³)',
+  band_voxels: 'Voxel im Abstandsband',
+  file_bytes: 'Dateigröße (Bytes)',
+  bits_per_voxel: 'Bit je Voxel',
+  compression_vs_raw: 'Kompression ggü. 16-bit-Rohdaten',
+  step_voxels: 'Abstandsstufe (Voxel)',
+  iso_value: 'Oberflächen-Grauwert',
+  surface_volume_mm3: 'Volumen aus der Oberfläche (mm³)',
 };
 
 // ---------------------------------------------------------------------------------------------
