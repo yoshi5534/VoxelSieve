@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -22,8 +23,8 @@ struct TiffStackOptions {
   /// TIFF files; with several, the one with the most slices whose name does not look like labels
   /// (label, mask, target, seg, gt).
   std::string folder;
-  /// Overrides the voxel size of the files.
-  std::optional<double> voxel_size_mm;
+  /// Overrides the voxel size of the files (edge length per axis, slice thickness).
+  std::optional<VoxelSize> voxel_size;
   /// Memory for decoded strips and tiles.
   std::size_t cache_bytes = std::size_t{1} << 30;
 };
@@ -34,12 +35,14 @@ class TiffStackSource final : public VolumeSource {
   ~TiffStackSource() override;
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override;
-  /// Given, else from the files, else 1 mm (see fileVoxelSizeMm).
-  [[nodiscard]] double voxelSizeMm() const override;
+  /// Given, else from the files, else 1 mm (see fileVoxelSize).
+  [[nodiscard]] VoxelSize voxelSize() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
-  /// Pixel size from the files (centimetre resolution or ImageJ description), 0 if they give none.
-  [[nodiscard]] double fileVoxelSizeMm() const;
+  /// Voxel size from the files: pixel width and height from a centimetre resolution or an ImageJ
+  /// description, the slice spacing from an ImageJ description ("spacing=") or else the pixel
+  /// width. Nothing if the files give no pixel size.
+  [[nodiscard]] std::optional<VoxelSize> fileVoxelSize() const;
   [[nodiscard]] int bitsPerSample() const;
   /// Folder the slices come from ("" for the top level or a single file).
   [[nodiscard]] const std::string& folder() const;

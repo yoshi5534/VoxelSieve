@@ -101,15 +101,15 @@ class ReportTest : public ::testing::Test {
 TEST_F(ReportTest, PoreSizeLimitSeparatesAtTheLunkerExtent) {
   analyzeBoxWithLunker();
   const Defect& lunker = scan_->defects().front();
-  const double size = poreSizeMm(result_.pores.front(), result_.voxel_size_mm);
+  const double size = poreSizeMm(result_.pores.front(), result_.voxel_size);
   // The lobes lie inside the enclosing sphere; the extent is at least the core sphere.
-  EXPECT_LE(size, 2.0 * lunker.radius_mm + result_.voxel_size_mm);
-  EXPECT_GE(size, 2.0 * lunker.spheres.front().radius_mm - result_.voxel_size_mm);
+  EXPECT_LE(size, 2.0 * lunker.radius_mm + result_.voxel_size[0]);
+  EXPECT_GE(size, 2.0 * lunker.spheres.front().radius_mm - result_.voxel_size[0]);
 
   InspectionZone tight{"tight", std::nullopt, {}};
   tight.limits.max_pore_size_mm = 0.5 * size;
   InspectionZone loose{"loose", std::nullopt, {}};
-  loose.limits.max_pore_size_mm = 2.0 * lunker.radius_mm + result_.voxel_size_mm;
+  loose.limits.max_pore_size_mm = 2.0 * lunker.radius_mm + result_.voxel_size[0];
   const Evaluation evaluation = evaluate(result_, {tight, loose});
   ASSERT_EQ(evaluation.zones.size(), 2U);
   EXPECT_FALSE(evaluation.zones[0].passed());

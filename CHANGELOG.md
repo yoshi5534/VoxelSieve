@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Voxels that are not cubes** (`voxelsieve::VoxelSize`, ADR 0012): an edge length per axis, for
+  scans with a coarser slice spacing, and the slice thickness when slices are thinner than their
+  spacing. Volumes, positions, pore sizes, surfaces, the nominal-actual comparison, report images
+  and the slice and 3D views use the pitch per axis; VDB grids carry a scale per axis. Existing
+  files stay readable. `--voxel-size x,y,z`, `--slice-thickness`, and the same as parameters.
 - **TIFF stacks** (`voxelsieve::TiffStackSource`, `vs-sieve`, studio operation `import_tiff`): a
   directory of slices, a multi-page TIFF or a ZIP archive of either, read without extracting it.
   Classic TIFF and BigTIFF, strips and tiles, uncompressed, LZW, Deflate and PackBits, horizontal

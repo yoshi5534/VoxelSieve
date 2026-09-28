@@ -17,6 +17,7 @@
 #include <stdexcept>
 
 #include "detail/png.hpp"
+#include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 
@@ -361,8 +362,8 @@ double PorosityResult::partVolumeMm3(const std::array<std::array<double, 3>, 2>&
   std::array<double, 3> lo{};
   std::array<double, 3> hi{};
   for (std::size_t a = 0; a < 3; ++a) {
-    lo[a] = box_mm[0][a] / voxel_size_mm;
-    hi[a] = box_mm[1][a] / voxel_size_mm;
+    lo[a] = box_mm[0][a] / voxel_size[a];
+    hi[a] = box_mm[1][a] / voxel_size[a];
   }
   const auto inside = [&](const std::array<double, 3>& p) {
     for (std::size_t a = 0; a < 3; ++a) {
@@ -401,10 +402,10 @@ double PorosityResult::partVolumeMm3(const std::array<std::array<double, 3>, 2>&
 PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& options) {
   const DatasetInfo& info = dataset.info();
   PorosityResult result;
-  result.voxel_size_mm = info.voxel_size_mm;
+  result.voxel_size = info.voxel_size;
   result.air_level = info.air_level;
   const double air = info.air_level;
-  const double voxel_volume = std::pow(info.voxel_size_mm, 3);
+  const double voxel_volume = info.voxel_size.volumeMm3();
 
   const Scan scan = scanBricks(dataset);
   std::map<Coord, int> outside;
@@ -656,10 +657,8 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
 }
 
 nlohmann::json toJson(const PorosityResult& result) {
-  const double v = result.voxel_size_mm;
-  const auto mm = [v](const std::array<double, 3>& voxels) {
-    return std::array<double, 3>{voxels[0] * v, voxels[1] * v, voxels[2] * v};
-  };
+  const VoxelSize& v = result.voxel_size;
+  const auto mm = [&v](const std::array<double, 3>& voxels) { return v.toMm(voxels); };
   nlohmann::json pores = nlohmann::json::array();
   for (const DetectedPore& pore : result.pores) {
     pores.push_back({{"id", pore.id},
@@ -732,7 +731,8 @@ struct Projection {
 };
 
 void writeProjectionPng(const std::filesystem::path& path, const Projection& material,
-                        const Projection& pores, const Projection& zones) {
+                        const Projection& pores, const Projection& zones,
+                        const VoxelSize& voxel_size) {
   const std::int64_t width = material.width;
   const std::int64_t height = material.height;
   const std::int64_t factor = material.factor;
@@ -774,12 +774,14 @@ void writeProjectionPng(const std::filesystem::path& path, const Projection& mat
       }
     }
   }
-  detail::writeRgbPng(path, static_cast<std::uint32_t>(out_width),
-                      static_cast<std::uint32_t>(height * zoom), rgb);
+  const auto [u, w] = material.axes();
+  detail::writeRgbPng(
+      path, static_cast<std::uint32_t>(out_width), static_cast<std::uint32_t>(height * zoom), rgb,
+      voxel_size[static_cast<std::size_t>(u)], voxel_size[static_cast<std::size_t>(w)]);
 }
 
-openvdb::math::Transform::Ptr levelZeroTransform(double voxel_size_mm) {
-  return openvdb::math::Transform::createLinearTransform(voxel_size_mm);
+openvdb::math::Transform::Ptr levelZeroTransform(const VoxelSize& voxel_size) {
+  return detail::voxelTransform(voxel_size);
 }
 
 }  // namespace
@@ -847,7 +849,7 @@ void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
   constexpr std::array<const char*, 3> kNames{"projection_x.png", "projection_y.png",
                                               "projection_z.png"};
   for (std::size_t a = 0; a < 3; ++a) {
-    writeProjectionPng(dir / kNames[a], material[a], pores[a], zones[a]);
+    writeProjectionPng(dir / kNames[a], material[a], pores[a], zones[a], result.voxel_size);
   }
 }
 
@@ -876,7 +878,7 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
   pores->setName("pores");
   zones->setName("zones");
   for (const auto& grid : {pores, zones}) {
-    grid->setTransform(levelZeroTransform(result.voxel_size_mm));
+    grid->setTransform(levelZeroTransform(result.voxel_size));
     grid->setGridClass(openvdb::GRID_FOG_VOLUME);
   }
   writeVdb(file, {pores, zones});
@@ -908,7 +910,7 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
   }
   const nlohmann::json json = nlohmann::json::parse(in);
   PorosityResult result;
-  result.voxel_size_mm = json.at("voxel_size_mm").get<double>();
+  result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
   result.air_level = json.at("air_level").get<float>();
   result.material_level = json.at("material_level").get<float>();
   result.noise_sigma = json.at("noise_sigma").get<double>();

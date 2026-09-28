@@ -12,7 +12,7 @@ namespace {
 // Index of the voxel whose centre lies closest to `mm` along one axis.
 std::int64_t voxelIndex(const PhantomSpec& spec, std::size_t axis, double mm) {
   return static_cast<std::int64_t>(
-      std::floor(mm / spec.voxel_size_mm + static_cast<double>(spec.dims[axis]) / 2.0));
+      std::floor(mm / spec.voxel_size[axis] + static_cast<double>(spec.dims[axis]) / 2.0));
 }
 
 TEST(Phantom, HasRequestedDimensions) {
@@ -20,7 +20,7 @@ TEST(Phantom, HasRequestedDimensions) {
   const Volume16 volume = generatePhantom(spec);
   EXPECT_EQ(volume.dims, spec.dims);
   EXPECT_EQ(volume.voxelCount(), 128U * 128U * 128U);
-  EXPECT_DOUBLE_EQ(volume.voxel_size_mm, spec.voxel_size_mm);
+  EXPECT_EQ(volume.voxel_size, spec.voxel_size);
 }
 
 TEST(Phantom, SignedDistanceHasCorrectSign) {
@@ -52,7 +52,7 @@ TEST(Phantom, MaterialVolumeMatchesAnalyticValue) {
   for (const std::uint16_t value : volume.data) {
     material_fraction_sum += (static_cast<double>(value) - spec.air_value) / contrast;
   }
-  const double voxel_volume = std::pow(spec.voxel_size_mm, 3);
+  const double voxel_volume = spec.voxel_size.volumeMm3();
   EXPECT_NEAR(material_fraction_sum * voxel_volume, phantomMaterialVolumeMm3(spec),
               0.01 * phantomMaterialVolumeMm3(spec));
 }

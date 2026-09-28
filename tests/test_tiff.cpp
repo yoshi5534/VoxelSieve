@@ -617,22 +617,35 @@ TEST_F(TiffTest, ReadsVoxelSize) {
   TiffSpec centimetre;
   centimetre.resolution_unit = 3;
   centimetre.resolution = 50.0;  // 50 pixels per cm
-  EXPECT_NEAR(TiffStackSource(writeStack(centimetre, "cm")).voxelSizeMm(), 0.2, 1e-9);
+  EXPECT_NEAR(TiffStackSource(writeStack(centimetre, "cm")).voxelSize()[0], 0.2, 1e-9);
 
   TiffSpec image_j;
   image_j.resolution_unit = 1;
   image_j.resolution = 20.0;  // 20 pixels per micron
   image_j.description = "ImageJ=1.54f\nimages=6\nunit=micron\n";
-  EXPECT_NEAR(TiffStackSource(writeStack(image_j, "imagej")).fileVoxelSizeMm(), 0.00005, 1e-12);
+  const VoxelSize from_image_j =
+      TiffStackSource(writeStack(image_j, "imagej")).fileVoxelSize().value_or(VoxelSize(-1.0));
+  EXPECT_NEAR(from_image_j[0], 0.00005, 1e-12);
+  EXPECT_NEAR(from_image_j[2], 0.00005, 1e-12);  // no spacing given: cubic
+
+  // ImageJ stacks with a slice spacing: voxels that are not cubes.
+  TiffSpec spaced = image_j;
+  spaced.resolution = 3.0;  // 3 pixels per mm
+  spaced.description = "ImageJ=1.54f\nimages=6\nslices=6\nunit=mm\nspacing=0.6\n";
+  const VoxelSize from_spacing =
+      TiffStackSource(writeStack(spaced, "spacing")).fileVoxelSize().value_or(VoxelSize(-1.0));
+  EXPECT_NEAR(from_spacing[0], 1.0 / 3.0, 1e-9);
+  EXPECT_NEAR(from_spacing[1], 1.0 / 3.0, 1e-9);
+  EXPECT_NEAR(from_spacing[2], 0.6, 1e-12);
 
   TiffSpec inch;  // print resolution, not a pixel size
   inch.resolution = 300.0;
   const TiffStackSource unknown(writeStack(inch, "inch"));
-  EXPECT_EQ(unknown.fileVoxelSizeMm(), 0.0);
-  EXPECT_EQ(unknown.voxelSizeMm(), 1.0);
+  EXPECT_FALSE(unknown.fileVoxelSize().has_value());
+  EXPECT_EQ(unknown.voxelSize(), VoxelSize(1.0));
   TiffStackOptions options;
-  options.voxel_size_mm = 0.05;
-  EXPECT_EQ(TiffStackSource(dir_ / "inch", options).voxelSizeMm(), 0.05);
+  options.voxel_size = 0.05;
+  EXPECT_EQ(TiffStackSource(dir_ / "inch", options).voxelSize(), 0.05);
 }
 
 TEST_F(TiffTest, RejectsWhatCannotBeKeptExactly) {
@@ -732,7 +745,7 @@ TEST_F(TiffTest, PhantomStackGivesTheSameDatasetAsTheRawVolume) {
   spec.compression = 8;
   spec.predictor = 2;
   spec.resolution_unit = 3;
-  spec.resolution = 10.0 / phantom.voxel_size_mm;
+  spec.resolution = 10.0 / phantom.voxel_size[0];
   const auto slice = static_cast<std::size_t>(phantom.dims[0] * phantom.dims[1]);
   for (std::int64_t z = 0; z < phantom.dims[2]; ++z) {
     std::vector<std::uint32_t> pixels(slice);
@@ -742,7 +755,7 @@ TEST_F(TiffTest, PhantomStackGivesTheSameDatasetAsTheRawVolume) {
     writeFile(dir_ / "phantom" / ("p" + std::to_string(z) + ".tif"), writeTiff(spec, {pixels}));
   }
   const TiffStackSource tiff(dir_ / "phantom");
-  EXPECT_NEAR(tiff.voxelSizeMm(), phantom.voxel_size_mm, 1e-9);
+  EXPECT_NEAR(tiff.voxelSize()[0], phantom.voxel_size[0], 1e-9);
   EXPECT_EQ(readAll(tiff), volume.data);
 
   DatasetOptions options;

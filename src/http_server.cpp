@@ -286,7 +286,9 @@ struct HttpServer::Impl {
         {{"X-Dims", std::to_string(preview.dims[0]) + "," + std::to_string(preview.dims[1]) + "," +
                         std::to_string(preview.dims[2])},
          {"X-Level", std::to_string(preview.level)},
-         {"X-Voxel-Size", std::to_string(preview.voxel_size_mm)},
+         {"X-Voxel-Size", std::to_string(preview.voxel_size[0]) + "," +
+                              std::to_string(preview.voxel_size[1]) + "," +
+                              std::to_string(preview.voxel_size[2])},
          {"X-Window", std::to_string(preview.low) + "," + std::to_string(preview.high)}});
   }
 

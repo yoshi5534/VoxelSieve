@@ -56,8 +56,21 @@ bool insideBox(const std::array<double, 3>& p_mm, const std::array<std::array<do
   return true;
 }
 
-std::array<double, 3> toMm(const std::array<double, 3>& voxels, double voxel_size) {
-  return {voxels[0] * voxel_size, voxels[1] * voxel_size, voxels[2] * voxel_size};
+/// "100.0 µm" or "330.0 × 330.0 × 600.0 µm", with the slice thickness when it leaves gaps.
+std::string voxelSizeText(const VoxelSize& v) {
+  std::string text = v.isotropic()
+                         ? formatNumber(v[0] * 1000.0, 1)
+                         : formatNumber(v[0] * 1000.0, 1) + " × " + formatNumber(v[1] * 1000.0, 1) +
+                               " × " + formatNumber(v[2] * 1000.0, 1);
+  text += " µm";
+  if (v.slice_thickness_mm > 0.0) {
+    text += " (Schichtdicke " + formatNumber(v.slice_thickness_mm * 1000.0, 1) + " µm)";
+  }
+  return text;
+}
+
+std::array<double, 3> toMm(const std::array<double, 3>& voxels, const VoxelSize& voxel_size) {
+  return voxel_size.toMm(voxels);
 }
 
 std::string base64(const std::vector<char>& bytes) {
@@ -275,16 +288,17 @@ bool Evaluation::passed() const {
   return std::all_of(zones.begin(), zones.end(), [](const auto& z) { return z.passed(); });
 }
 
-double poreSizeMm(const DetectedPore& pore, double voxel_size_mm) {
-  std::int64_t longest = 0;
+double poreSizeMm(const DetectedPore& pore, const VoxelSize& voxel_size) {
+  double longest = 0.0;
   for (std::size_t a = 0; a < 3; ++a) {
-    longest = std::max(longest, pore.bounds.max[a] - pore.bounds.min[a]);
+    longest = std::max(
+        longest, static_cast<double>(pore.bounds.max[a] - pore.bounds.min[a]) * voxel_size[a]);
   }
-  return static_cast<double>(longest) * voxel_size_mm;
+  return longest;
 }
 
 Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZone>& zones) {
-  const double v = result.voxel_size_mm;
+  const VoxelSize& v = result.voxel_size;
   Evaluation evaluation;
   for (const InspectionZone& zone : zones) {
     const auto inside = [&](const std::array<double, 3>& center_voxels) {
@@ -386,18 +400,21 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
                           std::vector<std::string>* warnings) {
   Json data = order.is_object() ? order : Json::object();
   completeMandatory(data, warnings);
-  const double v = result.voxel_size_mm;
-  const double voxel_volume = v * v * v;
+  const VoxelSize& v = result.voxel_size;
+  const double voxel_volume = v.volumeMm3();
 
   data["software"] = {{"name", "VoxelSieve"}, {"version", VOXELSIEVE_VERSION}};
   const double min_pore_volume = static_cast<double>(options.min_pore_voxels) * voxel_volume;
   data["analysis"] = {
-      {"voxel_size", formatNumber(v * 1000.0, 1) + " µm"},
+      {"voxel_size", voxelSizeText(v)},
       {"min_pore_voxels", options.min_pore_voxels},
       {"min_pore_volume", formatNumber(min_pore_volume, 6) + " mm³"},
       {"min_pore_diameter",
        formatNumber(std::cbrt(6.0 * min_pore_volume / std::numbers::pi), 3) + " mm"},
-      {"zone_block", formatNumber(8.0 * v, 2) + " mm"},
+      {"zone_block", v.isotropic()
+                         ? formatNumber(8.0 * v[0], 2) + " mm"
+                         : formatNumber(8.0 * v[0], 2) + " × " + formatNumber(8.0 * v[1], 2) +
+                               " × " + formatNumber(8.0 * v[2], 2) + " mm"},
       {"zone_min_porosity", formatNumber(100.0 * options.min_zone_void_fraction, 1) + " %"},
       {"zone_sigma", formatNumber(options.zone_sigma, 1)},
       {"material_level", formatNumber(result.material_level, 0)},
@@ -485,9 +502,16 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
 }
 
 void addPartImages(Json& data, const SurfaceMask& surface, const PorosityResult& result) {
-  const IndexedMesh mesh = surfaceDisplayMesh(surface, 1500000);
+  IndexedMesh mesh = surfaceDisplayMesh(surface, 1500000);
   if (mesh.triangles.empty()) {
     return;
+  }
+  // Rendered in mm, so that parts with voxels of different edge lengths keep their shape.
+  const VoxelSize& v = result.voxel_size;
+  for (auto& p : mesh.points) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      p[k] = static_cast<float>(p[k] * v[k]);
+    }
   }
   std::array<float, 3> lo = mesh.points.front();
   std::array<float, 3> hi = lo;
@@ -498,8 +522,7 @@ void addPartImages(Json& data, const SurfaceMask& surface, const PorosityResult&
     }
   }
   const double size = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
-  // Voxel units, as the mesh. Very small pores get a minimum radius so that they stay visible.
-  const double v = result.voxel_size_mm;
+  // Very small pores get a minimum radius so that they stay visible.
   const double min_radius = 0.004 * size;
   RenderView view;
   view.width = 900;
@@ -513,12 +536,13 @@ void addPartImages(Json& data, const SurfaceMask& surface, const PorosityResult&
   glass.surface_opacity = 0.2;
   glass.surface_color = {120, 138, 162};
   for (const PorosityZone& zone : result.zones) {
-    const double radius = std::cbrt(3.0 * zone.volume_mm3 / (4.0 * std::numbers::pi)) / v;
-    glass.spheres.push_back({zone.center_voxels, std::max(radius, min_radius), {240, 168, 32}});
+    const double radius = std::cbrt(3.0 * zone.volume_mm3 / (4.0 * std::numbers::pi));
+    glass.spheres.push_back(
+        {v.toMm(zone.center_voxels), std::max(radius, min_radius), {240, 168, 32}});
   }
   for (const DetectedPore& pore : result.pores) {
-    glass.spheres.push_back({pore.center_voxels,
-                             std::max(0.5 * pore.equivalent_diameter_mm / v, min_radius),
+    glass.spheres.push_back({v.toMm(pore.center_voxels),
+                             std::max(0.5 * pore.equivalent_diameter_mm, min_radius),
                              {212, 44, 36}});
   }
   data["images"]["pores"] = dataUri(render(glass, view));

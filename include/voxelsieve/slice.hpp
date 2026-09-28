@@ -6,6 +6,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -46,7 +47,7 @@ struct SliceImage {
 struct VolumePreview {
   int level = 0;
   std::array<std::int64_t, 3> dims{};
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   /// Grey values mapped to 0..255 between `low` (0) and `high` (255).
   float low = 0.0F;
   float high = 0.0F;

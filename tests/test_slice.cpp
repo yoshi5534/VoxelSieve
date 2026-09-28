@@ -40,7 +40,7 @@ class SliceTest : public ::testing::Test {
     const auto origin = scan_->originMm();
     std::array<std::int64_t, 3> voxel{};
     for (std::size_t a = 0; a < 3; ++a) {
-      voxel[a] = static_cast<std::int64_t>(std::floor((mm[a] - origin[a]) / scan_->voxelSizeMm()));
+      voxel[a] = static_cast<std::int64_t>(std::floor((mm[a] - origin[a]) / scan_->voxelSize()[a]));
     }
     return voxel;
   }

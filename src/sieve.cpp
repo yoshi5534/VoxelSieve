@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "detail/blocks.hpp"
+#include "detail/transform.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -145,7 +146,7 @@ SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
   });
   tree.prune();
 
-  grid->setTransform(openvdb::math::Transform::createLinearTransform(volume.voxel_size_mm));
+  grid->setTransform(detail::voxelTransform(volume.voxel_size));
   grid->setGridClass(openvdb::GRID_FOG_VOLUME);
   grid->setName("density");
   grid->insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(stats.threshold));

@@ -14,7 +14,7 @@ TEST(Vdb, DenseGridKeepsEveryVoxelLossless) {
 
   const auto grid = toDenseFloatGrid(volume);
   EXPECT_EQ(grid->activeVoxelCount(), volume.voxelCount());
-  EXPECT_DOUBLE_EQ(grid->voxelSize()[0], spec.voxel_size_mm);
+  EXPECT_DOUBLE_EQ(grid->voxelSize()[0], spec.voxel_size[0]);
 
   const auto accessor = grid->getConstAccessor();
   for (const auto& [x, y, z] : {std::array<int, 3>{0, 0, 0}, {5, 17, 33}, {39, 39, 39}}) {

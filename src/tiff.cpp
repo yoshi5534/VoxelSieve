@@ -116,7 +116,7 @@ struct TiffStackSource::Impl {
   std::vector<std::string> other_folders;
   detail::TiffPage first;
   std::array<std::int64_t, 3> dims{};
-  std::optional<double> voxel_size_mm;
+  std::optional<VoxelSize> voxel_size;
   std::size_t cache_bytes = 0;
 
   using Chunk = std::shared_ptr<const std::vector<std::uint16_t>>;
@@ -234,10 +234,10 @@ struct TiffStackSource::Impl {
 TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffStackOptions& options)
     : impl_(std::make_unique<Impl>()) {
   Impl& impl = *impl_;
-  impl.voxel_size_mm = options.voxel_size_mm;
+  impl.voxel_size = options.voxel_size;
   impl.cache_bytes = options.cache_bytes;
-  if (impl.voxel_size_mm && !(*impl.voxel_size_mm > 0.0)) {
-    throw std::invalid_argument("Voxel size must be positive");
+  if (impl.voxel_size) {
+    impl.voxel_size->validate();
   }
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error("No such file or directory: " + path.string());
@@ -365,12 +365,19 @@ TiffStackSource::~TiffStackSource() = default;
 
 std::array<std::int64_t, 3> TiffStackSource::dims() const { return impl_->dims; }
 
-double TiffStackSource::voxelSizeMm() const {
-  return impl_->voxel_size_mm.value_or(impl_->first.pixel_size_mm > 0.0 ? impl_->first.pixel_size_mm
-                                                                        : 1.0);
+VoxelSize TiffStackSource::voxelSize() const {
+  return impl_->voxel_size.value_or(fileVoxelSize().value_or(VoxelSize(1.0)));
 }
 
-double TiffStackSource::fileVoxelSizeMm() const { return impl_->first.pixel_size_mm; }
+std::optional<VoxelSize> TiffStackSource::fileVoxelSize() const {
+  const detail::TiffPage& page = impl_->first;
+  if (!(page.pixel_size_mm > 0.0)) {
+    return std::nullopt;
+  }
+  const double height = page.pixel_height_mm > 0.0 ? page.pixel_height_mm : page.pixel_size_mm;
+  const double spacing = page.slice_spacing_mm > 0.0 ? page.slice_spacing_mm : page.pixel_size_mm;
+  return VoxelSize(page.pixel_size_mm, height, spacing);
+}
 
 int TiffStackSource::bitsPerSample() const { return impl_->first.bits; }
 

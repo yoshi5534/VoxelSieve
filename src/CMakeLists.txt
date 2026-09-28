@@ -48,6 +48,7 @@ add_library(voxelsieve SHARED
   synthetic.cpp
   tiff.cpp
   vdb.cpp
+  voxel_size.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
 

@@ -24,12 +24,53 @@ namespace {
 using Json = nlohmann::json;
 
 Json datasetSummary(const DatasetInfo& info) {
-  return {{"dims", info.dims},
-          {"voxel_size_mm", info.voxel_size_mm},
-          {"levels", info.levels.size()},
-          {"bricks", info.levels.empty() ? 0 : info.levels.front().bricks.size()},
-          {"active_voxels", info.active_voxel_count},
-          {"threshold", info.threshold}};
+  Json summary = {{"dims", info.dims}};
+  writeVoxelSize(summary, info.voxel_size);
+  summary.update({{"levels", info.levels.size()},
+                  {"bricks", info.levels.empty() ? 0 : info.levels.front().bricks.size()},
+                  {"active_voxels", info.active_voxel_count},
+                  {"threshold", info.threshold}});
+  return summary;
+}
+
+/// Parameters for the voxel size: one edge length for cubic voxels or one per axis, and the slice
+/// thickness when slices are thinner than their spacing (ADR 0012).
+void addVoxelSizeParameters(Json& properties, const std::string& default_text) {
+  properties["voxel_size_mm"] = {
+      {"type", {"number", "array"}},
+      {"items", {{"type", "number"}, {"exclusiveMinimum", 0}}},
+      {"minItems", 3},
+      {"maxItems", 3},
+      {"exclusiveMinimum", 0},
+      {"description",
+       "Edge length in mm, or [x, y, z] when the voxels are not cubes (e.g. a "
+       "coarser slice spacing). " +
+           default_text}};
+  properties["slice_thickness_mm"] = {
+      {"type", "number"},
+      {"exclusiveMinimum", 0},
+      {"description",
+       "Slice thickness in mm when the slices are thinner than their spacing (a gap between "
+       "slices); recorded, measurements use the spacing"}};
+}
+
+/// Voxel size from the parameters, if given; the slice thickness alone keeps `fallback`.
+std::optional<VoxelSize> voxelSizeParameter(const Json& p,
+                                            const std::optional<VoxelSize>& fallback) {
+  std::optional<VoxelSize> size = fallback;
+  if (p.contains("voxel_size_mm")) {
+    size = voxelSizeFromJson(p.at("voxel_size_mm"));
+  }
+  if (p.contains("slice_thickness_mm")) {
+    if (!size) {
+      throw std::invalid_argument("slice_thickness_mm needs a voxel size");
+    }
+    size->slice_thickness_mm = p.at("slice_thickness_mm").get<double>();
+  }
+  if (size) {
+    size->validate();
+  }
+  return size;
 }
 
 class OpenDataset final : public Operation {
@@ -81,7 +122,6 @@ class ImportRaw final : public Operation {
         {"properties",
          {{"path", {{"type", "string"}, {"description", "Raw volume file"}}},
           {"dims", dims},
-          {"voxel_size_mm", {{"type", "number"}, {"minimum", 0}}},
           {"sample_type",
            {{"type", "string"}, {"enum", {"uint16", "uint8"}}, {"default", "uint16"}}},
           {"big_endian", {{"type", "boolean"}, {"default", false}}},
@@ -94,6 +134,7 @@ class ImportRaw final : public Operation {
           {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
+    addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -114,13 +155,13 @@ class ImportRaw final : public Operation {
     } else {
       throw std::invalid_argument("No dims given and no sidecar next to " + path.string());
     }
-    if (p.contains("voxel_size_mm")) {
-      layout.voxel_size_mm = p.at("voxel_size_mm").get<double>();
-    } else if (sidecar.contains("voxel_size_mm")) {
-      layout.voxel_size_mm = sidecar.at("voxel_size_mm").get<double>();
-    } else {
+    const auto voxel_size = voxelSizeParameter(p, sidecar.contains("voxel_size_mm")
+                                                      ? std::optional(readVoxelSize(sidecar))
+                                                      : std::nullopt);
+    if (!voxel_size) {
       throw std::invalid_argument("No voxel_size_mm given and no sidecar next to " + path.string());
     }
+    layout.voxel_size = *voxel_size;
     layout.sample_type = p.at("sample_type").get<std::string>() == "uint8" ? SampleType::kUInt8
                                                                            : SampleType::kUInt16;
     layout.byte_order = p.at("big_endian").get<bool>() ? std::endian::big : std::endian::little;
@@ -168,15 +209,12 @@ class ImportTiff final : public Operation {
             {"description",
              "Folder of the slices when there are several; default: the grey values, not "
              "labels or masks"}}},
-          {"voxel_size_mm",
-           {{"type", "number"},
-            {"minimum", 0},
-            {"description", "Default: from the files, else 1 mm"}}},
           {"threshold",
            {{"type", "number"}, {"description", "Air/material grey value; default: Otsu"}}},
           {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
+    addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -184,9 +222,11 @@ class ImportTiff final : public Operation {
     const Json& p = context.params;
     TiffStackOptions tiff;
     tiff.folder = p.value("folder", std::string());
-    if (p.contains("voxel_size_mm")) {
-      tiff.voxel_size_mm = p.at("voxel_size_mm").get<double>();
+    if (!p.contains("voxel_size_mm") && p.contains("slice_thickness_mm")) {
+      // The thickness alone: the spacing comes from the files.
+      tiff.voxel_size = TiffStackSource(p.at("path").get<std::string>(), tiff).voxelSize();
     }
+    tiff.voxel_size = voxelSizeParameter(p, tiff.voxel_size);
     const TiffStackSource source(p.at("path").get<std::string>(), tiff);
     if (!source.folder().empty()) {
       context.log("Slices from " + source.folder());
@@ -194,9 +234,10 @@ class ImportTiff final : public Operation {
     for (const std::string& other : source.otherFolders()) {
       context.log("Also in the input: " + other + " (choose with 'folder')");
     }
-    if (!tiff.voxel_size_mm && source.fileVoxelSizeMm() <= 0.0) {
+    if (!tiff.voxel_size && !source.fileVoxelSize()) {
       context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
     }
+    context.log("Voxel size " + describe(source.voxelSize()));
     DatasetOptions options;
     if (p.contains("threshold")) {
       options.threshold = p.at("threshold").get<float>();

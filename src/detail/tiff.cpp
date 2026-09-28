@@ -6,6 +6,7 @@
 #include <boost/iostreams/filter/zlib.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <stdexcept>
@@ -26,6 +27,7 @@ enum Tag : std::uint16_t {
   kRowsPerStrip = 278,
   kStripByteCounts = 279,
   kXResolution = 282,
+  kYResolution = 283,
   kResolutionUnit = 296,
   kPredictor = 317,
   kTileWidth = 322,
@@ -123,6 +125,20 @@ double rational(const Reader& reader, const Field& field) {
   const auto numerator = static_cast<double>(reader.decode(field.data.data(), 4));
   const auto denominator = static_cast<double>(reader.decode(field.data.data() + 4, 4));
   return denominator > 0.0 ? numerator / denominator : 0.0;
+}
+
+/// Number after `key` in an ImageJ description ("spacing=0.6"); 0 if missing.
+double imageJNumber(const std::string& description, const std::string& key) {
+  const auto pos = description.find(key);
+  if (pos == std::string::npos || (pos > 0 && description[pos - 1] != '\n')) {
+    return 0.0;
+  }
+  try {
+    const double value = std::stod(description.substr(pos + key.size()));
+    return value > 0.0 && std::isfinite(value) ? value : 0.0;
+  } catch (const std::exception&) {
+    return 0.0;
+  }
 }
 
 /// Length unit of an ImageJ description ("unit=micron"), in mm; 0 if none.
@@ -283,16 +299,20 @@ std::vector<TiffPage> readTiffPages(const ByteSource& bytes, std::size_t max_pag
     }
     // Pixel size: a centimetre resolution, or pixels per unit of an ImageJ description. Inch
     // resolutions are left out: they are almost always a printing default such as 72 dpi.
-    if (const auto x = fields.find(kXResolution); x != fields.end()) {
-      const double resolution = rational(reader, x->second);
-      const auto unit = integer(reader, fields, kResolutionUnit, 2);
+    // The slice spacing comes only from an ImageJ description ("spacing=").
+    const auto unit = integer(reader, fields, kResolutionUnit, 2);
+    const double image_j_unit_mm = unit == 1 ? imageJUnitMm(page.description) : 0.0;
+    const auto size_of = [&](std::uint16_t tag) {
+      const auto field = fields.find(tag);
+      const double resolution = field == fields.end() ? 0.0 : rational(reader, field->second);
       if (resolution > 0.0 && unit == 3) {
-        page.pixel_size_mm = 10.0 / resolution;
-      } else if (resolution > 0.0 && unit == 1) {
-        const double unit_mm = imageJUnitMm(page.description);
-        page.pixel_size_mm = unit_mm > 0.0 ? unit_mm / resolution : 0.0;
+        return 10.0 / resolution;
       }
-    }
+      return resolution > 0.0 && image_j_unit_mm > 0.0 ? image_j_unit_mm / resolution : 0.0;
+    };
+    page.pixel_size_mm = size_of(kXResolution);
+    page.pixel_height_mm = size_of(kYResolution);
+    page.slice_spacing_mm = image_j_unit_mm * imageJNumber(page.description, "spacing=");
     pages.push_back(std::move(page));
   }
   if (pages.empty()) {

@@ -12,6 +12,7 @@
 
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -121,7 +122,7 @@ struct CompareResult {
   double fit_inliers = 0.0;
   int fit_iterations = 0;
   double tolerance_mm = 0.0;
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   /// Connected surfaces of the scan, and those left out (internal voids).
   std::size_t components = 0;
   std::size_t dropped_components = 0;

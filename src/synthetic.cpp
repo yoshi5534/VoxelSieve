@@ -319,7 +319,7 @@ struct SyntheticScan::Impl {
 
     /// Material fraction of a voxel in [0, 1].
     [[nodiscard]] double fraction(std::int64_t x, std::int64_t y, std::int64_t z) {
-      const double v = impl.spec.voxel_size_mm;
+      const double v = impl.spec.voxel_size[0];
       const openvdb::Coord voxel(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
       const double d_mesh = meshDistanceAt(voxel);
       double result = std::clamp(0.5 - d_mesh / v, 0.0, 1.0);
@@ -359,7 +359,7 @@ struct SyntheticScan::Impl {
   };
 
   [[nodiscard]] Vec3 voxelCenter(std::int64_t x, std::int64_t y, std::int64_t z) const {
-    const double v = spec.voxel_size_mm;
+    const double v = spec.voxel_size[0];
     return {origin[0] + static_cast<double>(x) * v, origin[1] + static_cast<double>(y) * v,
             origin[2] + static_cast<double>(z) * v};
   }
@@ -406,7 +406,7 @@ struct SyntheticScan::Impl {
       triangles.push_back(indices);
     }
 
-    const double v = spec.voxel_size_mm;
+    const double v = spec.voxel_size[0];
     auto fine_transform = openvdb::math::Transform::createLinearTransform(v);
     fine_transform->postTranslate({origin[0], origin[1], origin[2]});
     fine = openvdb::tools::meshToLevelSet<openvdb::FloatGrid>(*fine_transform, points, triangles,
@@ -427,7 +427,7 @@ struct SyntheticScan::Impl {
 
   [[nodiscard]] bool overlapsDefect(const Vec3& center, double radius) const {
     return std::any_of(defects.begin(), defects.end(), [&](const Defect& d) {
-      return distance(center, d.center_mm) < radius + d.radius_mm + 2.0 * spec.voxel_size_mm;
+      return distance(center, d.center_mm) < radius + d.radius_mm + 2.0 * spec.voxel_size[0];
     });
   }
 
@@ -479,7 +479,7 @@ struct SyntheticScan::Impl {
   }
 
   void placeLoosening(Random& random) {
-    const double v = spec.voxel_size_mm;
+    const double v = spec.voxel_size[0];
     const double zone =
         spec.loosening_radius_mm > 0.0 ? spec.loosening_radius_mm : 0.1 * smallestExtent();
     const double pore =
@@ -535,8 +535,12 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
   if (mesh.triangles.empty()) {
     throw std::invalid_argument("Mesh has no triangles");
   }
-  if (spec.voxel_size_mm <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0) {
+  if (spec.voxel_size[0] <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0) {
     throw std::invalid_argument("voxel size must be > 0, padding and blur >= 0");
+  }
+  if (!spec.voxel_size.isotropic()) {
+    // The mesh distance fields (OpenVDB level sets) need cubic voxels.
+    throw std::invalid_argument("Synthetic scans need cubic voxels");
   }
   openvdb::initialize();
   Impl& impl = *impl_;
@@ -546,7 +550,7 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
   if (impl.mesh_volume_mm3 <= 0.0) {
     throw std::invalid_argument("Mesh encloses no volume; is it closed and outward oriented?");
   }
-  const double v = spec.voxel_size_mm;
+  const double v = spec.voxel_size[0];
   for (std::size_t i = 0; i < 3; ++i) {
     const double extent = impl.bounds.max[i] - impl.bounds.min[i] + 2.0 * spec.padding_mm;
     impl.dims[i] = std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(extent / v)));
@@ -566,7 +570,7 @@ SyntheticScan::~SyntheticScan() = default;
 
 std::array<std::int64_t, 3> SyntheticScan::dims() const { return impl_->dims; }
 
-double SyntheticScan::voxelSizeMm() const { return impl_->spec.voxel_size_mm; }
+VoxelSize SyntheticScan::voxelSize() const { return impl_->spec.voxel_size; }
 
 const SyntheticSpec& SyntheticScan::spec() const { return impl_->spec; }
 
@@ -599,7 +603,7 @@ void SyntheticScan::readRegion(const Box& box, std::span<std::uint16_t> out) con
       spec.cupping_depth_mm > 0.0 ? spec.cupping_depth_mm : 0.2 * impl.smallestExtent();
   // The blur needs the sharp values around the box; the volume border is replicated, so every
   // voxel gets the same value however the volume is split into regions.
-  const double sigma = spec.blur_sigma_mm / spec.voxel_size_mm;
+  const double sigma = spec.blur_sigma_mm / spec.voxel_size[0];
   const auto halo = sigma > 0.0 ? static_cast<std::int64_t>(std::ceil(3.0 * sigma)) : 0;
   Box region;
   for (std::size_t i = 0; i < 3; ++i) {
@@ -674,7 +678,7 @@ nlohmann::json SyntheticScan::toJson() const {
       {"format",
        {{"type", "raw"}, {"dtype", "uint16"}, {"endianness", "little"}, {"order", "xyz"}}},
       {"dims", impl.dims},
-      {"voxel_size_mm", s.voxel_size_mm},
+      {"voxel_size_mm", s.voxel_size},
       {"origin_mm", impl.origin},
       {"synthetic",
        {{"air_value", s.air_value},
