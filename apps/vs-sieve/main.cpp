@@ -18,16 +18,22 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
+       vs-sieve <slices/ | stack.tif | slices.zip> --out <output> [options]
        vs-sieve --phantom <n> --out <output> [options]
 
 Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json (as written by
 vs-phantom) unless given on the command line. A vendor header before the voxel data is detected
 from the file size and skipped; use --header when the file also has a footer.
+
+Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
+without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
+--voxel-size, else from the files, else 1 mm.
 
 Output:
   <dir>                   Bricked multi-resolution dataset (streaming, any volume size;
@@ -41,6 +47,7 @@ Options:
   --type <uint16|uint8>   Sample type of the raw file (default uint16)
   --big-endian            16-bit samples are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
+  --folder <name>         TIFF stacks: folder of the slices when there are several
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
   --threshold <value>     Air/material grey value (default: Otsu estimate)
   --margin <voxels>       Air margin kept around the part (default 3)
@@ -58,6 +65,7 @@ struct Options {
   voxelsieve::SampleType sample_type = voxelsieve::SampleType::kUInt16;
   std::endian byte_order = std::endian::little;
   std::optional<std::uint64_t> header_bytes;
+  std::string folder;
   voxelsieve::SieveOptions sieve;
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
@@ -95,6 +103,8 @@ std::optional<Options> parse(int argc, char** argv) {
           type == "uint8" ? voxelsieve::SampleType::kUInt8 : voxelsieve::SampleType::kUInt16;
     } else if (arg == "--big-endian") {
       options.byte_order = std::endian::big;
+    } else if (arg == "--folder") {
+      options.folder = next();
     } else if (arg == "--header") {
       options.header_bytes = std::stoull(next());
     } else if (arg == "--voxel-size") {
@@ -177,7 +187,28 @@ std::uintmax_t directorySize(const std::filesystem::path& dir) {
   return bytes;
 }
 
-std::unique_ptr<voxelsieve::MappedRawSource> openRaw(const Options& options) {
+bool isTiffInput(const Options& options) {
+  return options.input.extension() != ".raw" && voxelsieve::isTiffStackPath(options.input);
+}
+
+std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
+  if (isTiffInput(options)) {
+    voxelsieve::TiffStackOptions tiff;
+    tiff.folder = options.folder;
+    tiff.voxel_size_mm = options.voxel_size_mm;
+    auto source = std::make_unique<voxelsieve::TiffStackSource>(options.input, tiff);
+    const auto dims = source->dims();
+    std::cout << "tiff stack         " << dims[2] << " slices of " << dims[0] << "x" << dims[1]
+              << ", " << source->bitsPerSample() << " bit"
+              << (source->folder().empty() ? "" : ", folder " + source->folder()) << "\n";
+    for (const std::string& other : source->otherFolders()) {
+      std::cout << "also in input      " << other << " (choose with --folder)\n";
+    }
+    if (!options.voxel_size_mm && source->fileVoxelSizeMm() <= 0.0) {
+      std::cout << "voxel size         unknown in the files, 1 mm assumed (set --voxel-size)\n";
+    }
+    return source;
+  }
   const Geometry geometry = resolveGeometry(options);
   auto source = std::make_unique<voxelsieve::MappedRawSource>(
       options.input,
@@ -191,7 +222,7 @@ std::unique_ptr<voxelsieve::MappedRawSource> openRaw(const Options& options) {
 
 void runSingleGrid(const Options& options) {
   const auto start = std::chrono::steady_clock::now();
-  const auto source = openRaw(options);
+  const auto source = openSource(options);
   voxelsieve::Volume16 volume(source->dims(), source->voxelSizeMm());
   source->readRegion({{0, 0, 0}, volume.dims}, volume.data);
   const auto loaded = std::chrono::steady_clock::now();
@@ -212,7 +243,7 @@ void runSingleGrid(const Options& options) {
   const auto written = std::chrono::steady_clock::now();
 
   const auto active = grid->activeVoxelCount();
-  const auto raw_bytes = std::filesystem::file_size(options.input);
+  const auto raw_bytes = static_cast<std::uintmax_t>(volume.voxelCount()) * 2U;
   const auto vdb_bytes = std::filesystem::file_size(options.out);
   std::cout << std::fixed << std::setprecision(2) << "active voxels      " << active << " of "
             << volume.voxelCount() << " ("
@@ -235,7 +266,7 @@ void runDataset(const Options& options) {
     spec.noise_sigma = 500.0;
     source = std::make_unique<voxelsieve::PhantomSource>(spec);
   } else {
-    source = openRaw(options);
+    source = openSource(options);
   }
 
   const auto start = std::chrono::steady_clock::now();

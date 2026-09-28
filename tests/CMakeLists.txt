@@ -15,9 +15,12 @@ add_executable(voxelsieve_tests
   test_compare.cpp
   test_render.cpp
   test_synthetic.cpp
+  test_tiff.cpp
   test_vdb.cpp
 )
 target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers)
+# Tests of internals (detail/) see the private headers.
+target_include_directories(voxelsieve_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 # The example plugin is built with the tests and loaded by ProjectTest.PluginsAddOperations.
 add_subdirectory(${PROJECT_SOURCE_DIR}/examples/plugins/histogram

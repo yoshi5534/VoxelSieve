@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **TIFF stacks** (`voxelsieve::TiffStackSource`, `vs-sieve`, studio operation `import_tiff`): a
+  directory of slices, a multi-page TIFF or a ZIP archive of either, read without extracting it.
+  Classic TIFF and BigTIFF, strips and tiles, uncompressed, LZW, Deflate and PackBits, horizontal
+  predictor; unsigned 8/16-bit samples and 32-bit labels up to 65535. Label folders next to the
+  grey values are recognised and can be chosen with `--folder` (ADR 0011).
+
 ## 0.1.0 (2026-09-28)
 
 First version: from a raw CT volume to an inspection report.

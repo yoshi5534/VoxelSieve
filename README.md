@@ -20,7 +20,7 @@ Status: early development, first release 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)
 
 | Tool | Does |
 |---|---|
-| `vs-sieve` | raw volume (with vendor header) → sparse bricked dataset, streamed, out of core |
+| `vs-sieve` | raw volume (with vendor header) or TIFF stack → sparse bricked dataset, streamed, out of core |
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
 | `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
@@ -84,6 +84,25 @@ std::vector<float> slab(512 * 512 * 16);
 dataset.readRegion(0, {{0, 0, 300}, {512, 512, 316}}, slab);      // across brick boundaries
 dataset.forEachBrick(1, [](const auto& brick, const openvdb::FloatGrid& grid) { /* parallel */ });
 ```
+
+### TIFF stacks
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve slices/ --out scan.vsieve --voxel-size 0.05
+./build/release/apps/vs-sieve/vs-sieve scan.zip --out scan.vsieve        # read without extracting
+./build/release/apps/vs-sieve/vs-sieve scan.zip --folder target --threshold 0.5 --out labels.vsieve
+```
+
+A directory of slices, a multi-page TIFF or a ZIP archive of either is read directly
+(`voxelsieve::TiffStackSource`, ADR 0011). Slices are sorted by name with numbers by value
+(`slice2` before `slice10`). Supported are classic TIFF and BigTIFF, strips and tiles,
+uncompressed, LZW, Deflate and PackBits, with or without horizontal predictor, and unsigned 8 or 16
+bit samples; 32-bit samples are accepted as long as they fit into 16 bits (label volumes). Float
+and colour images are refused rather than quantised. When the input holds several folders of
+slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
+`seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
+comes from a centimetre resolution or an ImageJ description, otherwise 1 mm is assumed and
+printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
 
 ### Single grid
 
@@ -260,7 +279,7 @@ change their inputs.
 
 ```cpp
 voxelsieve::OperationRegistry registry;
-voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, porosity, surface, report
+voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, import_tiff, porosity, …
 registry.loadPlugins("plugins");                    // every *.so in the directory
 auto project = voxelsieve::Project::create("casting.vsproj", "Casting 4711");
 project.run(registry, "import_raw", {{"path", "scan.raw"}});

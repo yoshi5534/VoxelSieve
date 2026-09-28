@@ -9,6 +9,7 @@ const state = {
   operations: [],
   stage: 'dataset',
   rawPath: null,
+  rawOperation: null,
   busy: false,
   viewer: null,
   volume: null,
@@ -431,8 +432,7 @@ async function browserLoad(path) {
     list.replaceChildren();
     for (const entry of listing.entries) {
       const selectable = browserOptions.kinds.includes(entry.kind);
-      const navigable = entry.kind === 'dir' || (entry.kind === 'project' && !selectable) ||
-        (entry.kind === 'dataset' && !selectable);
+      const navigable = entry.kind === 'dir' || (entry.directory && !selectable);
       const item = el('li', { className: selectable || navigable ? '' : 'disabled' },
         el('span', { className: 'kind' }, kindLabel(entry.kind)),
         el('span', {}, entry.name),
@@ -448,7 +448,9 @@ async function browserLoad(path) {
         }
       });
       item.addEventListener('dblclick', () => {
-        if (selectable) browserFinish(entry);
+        // A directory of TIFF slices is chosen by a click and the button; a double click opens it.
+        if (selectable && entry.kind === 'tiff' && entry.directory) browserLoad(entry.path);
+        else if (selectable) browserFinish(entry);
       });
       list.append(item);
     }
@@ -459,8 +461,8 @@ async function browserLoad(path) {
 }
 
 function kindLabel(kind) {
-  return { dir: 'Ordner', project: 'Projekt', dataset: 'Datensatz', raw: 'Rohdaten', file: 'Datei' }[
-    kind] ?? kind;
+  return { dir: 'Ordner', project: 'Projekt', dataset: 'Datensatz', raw: 'Rohdaten',
+    tiff: 'TIFF', file: 'Datei' }[kind] ?? kind;
 }
 
 function browserFinish(entry) {
@@ -684,7 +686,8 @@ function renderDatasetStage(panel) {
       el('div', { className: 'row' }, nextButton('Weiter zur Analyse', 'analysis'))));
   } else {
     panel.append(el('p', { className: 'hint' },
-      'Wähle einen gesiebten Datensatz (.vsieve) oder eine Rohdatei. Rohdaten werden beim Import ' +
+      'Wähle einen gesiebten Datensatz (.vsieve), eine Rohdatei oder einen TIFF-Stapel (Ordner, ' +
+      'mehrseitiges TIFF oder ZIP). Rohdaten werden beim Import ' +
       'von der Luft um das Bauteil befreit und als Datensatz mit Auflösungsstufen gespeichert; ' +
       'das Original bleibt unverändert.'));
   }
@@ -692,28 +695,34 @@ function renderDatasetStage(panel) {
     disabled: state.busy,
     onclick: async () => {
       const chosen = await browse({ title: 'Datensatz oder Rohdaten wählen',
-        kinds: ['dataset', 'raw', 'file'] });
+        kinds: ['dataset', 'raw', 'tiff', 'file'] });
       if (!chosen) return;
       if (chosen.kind === 'dataset') {
         state.rawPath = null;
         await runStep('open_dataset', { path: chosen.path });
       } else {
         state.rawPath = chosen.path;
+        state.rawOperation = chosen.kind === 'tiff' ? 'import_tiff' : 'import_raw';
         render();
       }
     },
   }, dataset ? 'Anderen Datensatz wählen …' : 'Datensatz wählen …')));
 
-  const importInfo = operationInfo('import_raw');
+  const importOperation = state.rawOperation ?? 'import_raw';
+  const importInfo = operationInfo(importOperation);
   if (state.rawPath && importInfo) {
     const form = buildForm(importInfo.parameters, { path: state.rawPath });
     panel.append(el('div', { className: 'card' },
       el('h3', {}, importInfo.title),
-      el('p', {}, 'Abmessungen und Voxelgröße kommen aus der JSON-Datei neben den Rohdaten, ' +
-        'wenn sie nicht angegeben sind. Ohne Schwellwert wird er automatisch bestimmt (Otsu).'),
+      el('p', {}, importOperation === 'import_tiff'
+        ? 'Die Schichten werden nach Namen sortiert (Zahlen nach Wert) und direkt aus dem Ordner ' +
+          'oder ZIP gelesen. Liegen mehrere Ordner vor, werden die Grauwerte statt Label- oder ' +
+          'Maskenordnern gewählt. Ohne Voxelgröße in den Dateien wird 1 mm angenommen.'
+        : 'Abmessungen und Voxelgröße kommen aus der JSON-Datei neben den Rohdaten, ' +
+          'wenn sie nicht angegeben sind. Ohne Schwellwert wird er automatisch bestimmt (Otsu).'),
       form.element,
       el('div', { className: 'row' },
-        runButton('Importieren', 'import_raw', () => form.values(), () => {
+        runButton('Importieren', importOperation, () => form.values(), () => {
           state.rawPath = null;
           render();
         }),

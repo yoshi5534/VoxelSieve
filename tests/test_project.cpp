@@ -290,7 +290,8 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 6U);
+  EXPECT_EQ(registry.all().size(), 7U);
+  EXPECT_NE(registry.find("import_tiff"), nullptr);
 
   SyntheticSpec spec;
   spec.noise_sigma = 300.0;
