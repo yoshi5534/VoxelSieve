@@ -254,6 +254,13 @@ Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
 part. The background can be a studio light, a gradient or a plain colour.
 
+"Extrahierte Oberfläche" shows only the surface from a run of the operation "Oberfläche", as a
+triangle mesh at full resolution rather than the coarse level. Flat regions get larger triangles,
+and a surface that would exceed the triangle budget (`GET /api/surface?max_triangles=`, default
+1.5 million) is resampled at twice the voxel size until it fits. The cut along x opens it too.
+
+![Extracted surface of the housing sample part in the 3D view](docs/images/surface-view.png)
+
 When a volume is loaded, the view suggests two or three renderings from its histogram, each with a
 small picture: the density spread of the material, densities below the material (pores,
 loosened structure) and further peaks such as inclusions, or else the part as a solid body.

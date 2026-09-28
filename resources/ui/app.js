@@ -912,7 +912,15 @@ function renderViewStage(panel) {
 
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
 
-const VOLUME_MODES = ['Oberfläche', 'Transferfunktion', 'Maximumprojektion'];
+const VOLUME_MODES = ['Oberfläche', 'Transferfunktion', 'Maximumprojektion',
+  'Extrahierte Oberfläche'];
+
+/// Latest surface step computed from the dataset of `datasetStep`.
+function surfaceOf(datasetStep) {
+  const steps = activeSteps().filter((step) => step.operation === 'surface' &&
+    step.inputs.dataset?.step === datasetStep);
+  return steps.length ? steps[steps.length - 1].id : null;
+}
 
 function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
@@ -920,6 +928,9 @@ function renderVolumeView(panel, dataset) {
   const transfer = state.transfer ??
     (state.transfer = { key: null, preset: null, colorMap: 'viridis', points: null });
   const porosity = porosityOf(dataset.step.id);
+  const surfaceStep = surfaceOf(dataset.step.id);
+  // Without a surface step the extracted surface cannot be shown; fall back to the grey values.
+  if (volume.mode === 3 && surfaceStep === null) volume.mode = 0;
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
     title: 'Klicken setzt einen Punkt, Ziehen verschiebt ihn, Doppelklick oder Entf löscht ihn' });
@@ -941,7 +952,10 @@ function renderVolumeView(panel, dataset) {
     return input;
   };
   const mode = el('select', { title: 'Darstellung' },
-    VOLUME_MODES.map((name, i) => el('option', { value: i, selected: volume.mode === i }, name)));
+    VOLUME_MODES.map((name, i) => el('option', {
+      value: i, selected: volume.mode === i, disabled: i === 3 && surfaceStep === null,
+      title: i === 3 && surfaceStep === null ? 'Zuerst die Operation „Oberfläche“ ausführen'
+        : null }, name)));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
   shading.addEventListener('change', () => update({ shading: shading.checked }));
   const surface = colorInput('Farbe der Oberfläche', () => volume.surfaceColor,
@@ -1056,11 +1070,24 @@ function renderVolumeView(panel, dataset) {
   };
   const applyMode = () => {
     update({ mode: Number(mode.value) });
-    const surfaceMode = volume.mode === 0;
+    const surfaceMode = volume.mode === 0 || volume.mode === 3;
     editor.setMode(surfaceMode ? 'threshold' : 'curve');
     curveTools.hidden = surfaceMode;
     surfaceTools.hidden = !surfaceMode;
     shading.parentElement.hidden = volume.mode !== 1;
+    pores.parentElement.hidden = volume.mode === 3;
+    if (volume.mode === 3) showSurface();
+  };
+  /// Loads the mesh of the latest surface step of this dataset and says what is shown.
+  const showSurface = () => {
+    status.textContent = 'Lade Oberfläche aus Schritt ' + surfaceStep + ' …';
+    volume.loadSurface(surfaceStep).then((mesh) => {
+      if (volume.mode !== 3) return;
+      status.textContent = 'Extrahierte Oberfläche aus Schritt ' + surfaceStep + ' · ' +
+        formatNumber(mesh.triangles) + ' Dreiecke · Ziehen dreht, Mausrad zoomt';
+    }).catch((error) => {
+      status.textContent = error.message;
+    });
   };
   mode.addEventListener('change', applyMode);
 
@@ -1109,6 +1136,7 @@ function renderVolumeView(panel, dataset) {
     volume.setTransfer(lookupTable(editor.points));
     editor.onSelect();
     renderSuggestions();
+    if (volume.mode === 3 && volume.surface) return;  // the surface status stays
     status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
       formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
   };
