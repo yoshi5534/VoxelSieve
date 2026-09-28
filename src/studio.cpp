@@ -1,6 +1,7 @@
 #include "voxelsieve/studio.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -174,6 +175,37 @@ std::shared_ptr<const Value> cached(
   return value;
 }
 
+std::string lowerExtension(const std::filesystem::path& path) {
+  std::string extension = path.extension().string();
+  std::ranges::transform(extension, extension.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return extension;
+}
+
+bool isTiffFile(const std::filesystem::path& path) {
+  const std::string extension = lowerExtension(path);
+  return extension == ".tif" || extension == ".tiff";
+}
+
+/// Whether a directory holds TIFF slices, directly or one folder down (data/, target/). Looks at a
+/// bounded number of entries, so that browsing stays fast on huge directories.
+bool containsTiff(const std::filesystem::path& dir, int depth = 1) {
+  constexpr int kLookedAt = 64;
+  int looked_at = 0;
+  std::error_code error;
+  for (auto it = std::filesystem::directory_iterator(
+           dir, std::filesystem::directory_options::skip_permission_denied, error);
+       !error && it != std::filesystem::directory_iterator() && looked_at < kLookedAt;
+       it.increment(error), ++looked_at) {
+    std::error_code ignored;
+    if (it->is_directory(ignored) ? depth > 0 && containsTiff(it->path(), depth - 1)
+                                  : isTiffFile(it->path())) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Json browse(const std::filesystem::path& requested) {
   const auto dir = std::filesystem::weakly_canonical(std::filesystem::absolute(requested));
   if (!std::filesystem::is_directory(dir)) {
@@ -194,12 +226,16 @@ Json browse(const std::filesystem::path& requested) {
     if (it->is_directory(ignored)) {
       entry["kind"] = std::filesystem::exists(path / "project.json", ignored) ? "project"
                       : std::filesystem::exists(path / "index.json", ignored) ? "dataset"
+                      : containsTiff(path)                                    ? "tiff"
                                                                               : "dir";
+      entry["directory"] = true;
     } else {
       auto sidecar = path;
       sidecar.replace_extension(".json");
-      entry["kind"] =
-          path.extension() != ".json" && std::filesystem::exists(sidecar, ignored) ? "raw" : "file";
+      entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
+                      : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
+                          ? "raw"
+                          : "file";
       entry["size_bytes"] = it->file_size(ignored);
     }
     entries.push_back(std::move(entry));
@@ -208,8 +244,8 @@ Json browse(const std::filesystem::path& requested) {
     }
   }
   std::sort(entries.begin(), entries.end(), [](const Json& a, const Json& b) {
-    const bool a_file = a.at("kind") == "file" || a.at("kind") == "raw";
-    const bool b_file = b.at("kind") == "file" || b.at("kind") == "raw";
+    const bool a_file = !a.contains("directory");
+    const bool b_file = !b.contains("directory");
     return a_file != b_file ? b_file : a.at("name") < b.at("name");
   });
   return {{"path", dir.string()}, {"parent", dir.parent_path().string()}, {"entries", entries}};
@@ -314,9 +350,10 @@ std::vector<StudioMethod> Studio::methods() const {
       {"view_delete", "Deletes a saved view and its picture.",
        objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
       {"browse",
-       "Lists a directory on the machine running VoxelSieve, to choose raw volumes, datasets "
-       "(.vsieve), projects and inspection orders. Entries have a kind: dir, project, dataset, "
-       "raw (a file with a JSON sidecar) or file.",
+       "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
+       "datasets (.vsieve), projects and inspection orders. Entries have a kind: dir, project, "
+       "dataset, raw (a file with a JSON sidecar), tiff (a TIFF file, a ZIP archive or a "
+       "directory with TIFF slices, for import_tiff) or file; directories carry directory: true.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"description",
