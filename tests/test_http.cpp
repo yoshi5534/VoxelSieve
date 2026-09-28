@@ -108,6 +108,18 @@ TEST_F(HttpTest, ServesTheUi) {
   EXPECT_NE(script.content_type.find("javascript"), std::string::npos);
   EXPECT_EQ(script.body, uiResource("app.js"));
   EXPECT_EQ(request(server_->port(), http::verb::get, "/app.css").status, 200U);
+  // Every script the page loads is served.
+  const std::string_view page = index.body;
+  int scripts = 0;
+  for (auto at = page.find("<script src=\""); at != std::string_view::npos;
+       at = page.find("<script src=\"", at + 1)) {
+    const auto begin = at + std::string_view("<script src=\"").size();
+    const std::string name(page.substr(begin, page.find('"', begin) - begin));
+    EXPECT_EQ(request(server_->port(), http::verb::get, "/" + name).status, 200U) << name;
+    EXPECT_FALSE(uiResource(name).empty()) << name;
+    ++scripts;
+  }
+  EXPECT_GE(scripts, 4);
   EXPECT_EQ(request(server_->port(), http::verb::get, "/nothing").status, 404U);
   const Reply methods = request(server_->port(), http::verb::get, "/api/methods");
   bool has_porosity = false;

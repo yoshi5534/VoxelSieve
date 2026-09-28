@@ -220,8 +220,13 @@ and loosened zones yellow, and a click on a pore in the list jumps to it.
 ![Slice view of an 830 MB scan zoomed onto a shrinkage cavity](docs/images/slice-view.png)
 
 The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis) in the browser:
-"Oberfläche" shades the part surface, "Durchsicht" shows the part translucent with its pores and
-zones inside, and a cut along x opens the part.
+"Oberfläche" shades the part surface at a threshold dragged in the histogram, "Transferfunktion"
+composites colour and opacity per grey value, and "Maximumprojektion" shows the densest value
+along each ray. The transfer function is edited on the histogram: click adds a control point,
+drag moves it, double click removes it; each point has its own colour, colour maps (Stahl,
+Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical settings. Pores
+and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
+part.
 
 ![3D view with pores and loosened zones inside the translucent part](docs/images/volume-view.png)
 

@@ -744,37 +744,154 @@ function renderViewStage(panel) {
 
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
 
+const VOLUME_MODES = ['Oberfläche', 'Transferfunktion', 'Maximumprojektion'];
+
 function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
+  // The transfer function outlives re-rendering; it is reset when another volume is loaded.
+  const transfer = state.transfer ??
+    (state.transfer = { key: null, preset: 'durchsicht', colorMap: 'stahl', points: null });
   const porosity = porosityOf(dataset.step.id);
   const canvas = el('canvas');
+  const histogram = el('canvas', { className: 'transfer', tabindex: 0,
+    title: 'Klicken setzt einen Punkt, Ziehen verschiebt ihn, Doppelklick oder Entf löscht ihn' });
+  const editor = new TransferEditor(histogram);
   const status = el('div', { className: 'viewer-status' }, 'Lade Übersicht …');
-  const mode = el('select', {},
-    el('option', { value: 0, selected: volume.mode === 0 }, 'Oberfläche'),
-    el('option', { value: 1, selected: volume.mode === 1 }, 'Durchsicht'));
-  mode.addEventListener('change', () => volume.set({ mode: Number(mode.value) }));
-  const threshold = el('input', { type: 'range', min: 0, max: 1, step: 0.005,
-    title: 'Schwelle Luft/Material' });
-  threshold.addEventListener('input', () => volume.set({ threshold: Number(threshold.value) }));
+  const hint = el('div', { className: 'viewer-status' });
+
+  const colorInput = (title, get, set) => {
+    const input = el('input', { type: 'color', title, value: hexColor(get()) });
+    input.addEventListener('input', () => set(parseHexColor(input.value)));
+    return input;
+  };
+  const mode = el('select', { title: 'Darstellung' },
+    VOLUME_MODES.map((name, i) => el('option', { value: i, selected: volume.mode === i }, name)));
+  const shading = el('input', { type: 'checkbox', checked: volume.shading });
+  shading.addEventListener('change', () => volume.set({ shading: shading.checked }));
+  const surface = colorInput('Farbe der Oberfläche', () => volume.surfaceColor,
+    (rgb) => volume.set({ surfaceColor: rgb }));
   const cut = el('input', { type: 'range', min: 0, max: 1, step: 0.005, value: volume.cut,
     title: 'Schnitt entlang x' });
   cut.addEventListener('input', () => volume.set({ cut: Number(cut.value) }));
   const pores = el('input', { type: 'checkbox', checked: volume.pores,
     disabled: porosity === null });
   pores.addEventListener('change', () => volume.set({ pores: pores.checked }));
-  volume.onChange = () => {
-    threshold.value = volume.threshold;
-    const v = volume.volume;
-    if (v) {
-      status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
-        formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
+  const poreColor = colorInput('Farbe der Poren', () => volume.poreColor,
+    (rgb) => volume.set({ poreColor: rgb }));
+  const zoneColor = colorInput('Farbe der aufgelockerten Zonen', () => volume.zoneColor,
+    (rgb) => volume.set({ zoneColor: rgb }));
+  const background = colorInput('Hintergrund', () => volume.background,
+    (rgb) => volume.set({ background: rgb }));
+
+  const preset = el('select', { title: 'Vorlage der Transferfunktion' },
+    el('option', { value: '' }, 'Vorlage …'),
+    Object.entries(TRANSFER_PRESETS).map(([key, name]) => el('option', { value: key }, name)));
+  const colorMap = el('select', { title: 'Farbskala über die Punkte legen' },
+    Object.entries(COLOR_MAPS).map(([key, map]) => el('option', {
+      value: key, selected: key === transfer.colorMap }, map.name)));
+  const pointColor = el('input', { type: 'color', title: 'Farbe des gewählten Punkts' });
+  const pointOpacity = el('input', { type: 'number', min: 0, max: 100, step: 1,
+    title: 'Deckkraft des gewählten Punkts in Prozent' });
+  const removePoint = el('button', { onclick: () => editor.removeSelected(),
+    title: 'Gewählten Punkt löschen' }, 'Löschen');
+  const curveTools = el('div', { className: 'group' }, preset, colorMap,
+    el('span', { className: 'sep' }), 'Punkt', pointColor, pointOpacity, '%', removePoint);
+  const surfaceTools = el('label', { className: 'group' }, 'Farbe', surface);
+
+  const reset = (name) => {
+    transfer.preset = name;
+    transfer.colorMap = { dichte: 'viridis', rand: 'kupfer' }[name] ?? 'stahl';
+    colorMap.value = transfer.colorMap;
+    editor.setPoints(transferPreset(name, volume.threshold));
+  };
+  preset.addEventListener('change', () => {
+    if (preset.value) reset(preset.value);
+    preset.value = '';
+  });
+  colorMap.addEventListener('change', () => {
+    transfer.colorMap = colorMap.value;
+    const selected = editor.selected;
+    editor.setPoints(applyColorMap(editor.points, colorMap.value));
+    editor.selected = selected;
+    editor.onSelect();
+  });
+  pointColor.addEventListener('input', () => {
+    if (editor.selected < 0) return;
+    editor.points[editor.selected].color = parseHexColor(pointColor.value);
+    editor.changed();
+  });
+  pointOpacity.addEventListener('change', () => {
+    if (editor.selected < 0) return;
+    editor.points[editor.selected].a = Math.min(Math.max(Number(pointOpacity.value) / 100, 0), 1);
+    editor.changed();
+  });
+
+  editor.onChange = () => {
+    transfer.points = editor.points;
+    volume.set({ threshold: editor.threshold });
+    volume.setTransfer(lookupTable(editor.points));
+  };
+  const valueAt = (x) => {
+    const w = volume.volume?.window;
+    return w ? w[0] + x * (w[1] - w[0]) : x * 255;
+  };
+  editor.label = (x) => formatNumber(Math.round(valueAt(x)));
+  editor.onSelect = () => {
+    const point = editor.points[editor.selected];
+    pointColor.disabled = !point;
+    pointOpacity.disabled = !point;
+    removePoint.disabled = !point || editor.points.length <= 2;
+    if (point) {
+      pointColor.value = hexColor(point.color);
+      if (document.activeElement !== pointOpacity) pointOpacity.value = Math.round(point.a * 100);
+    }
+    if (editor.hover !== null) {
+      const bin = Math.min(Math.round(editor.hover * 255), 255);
+      hint.textContent = 'Grauwert ' + formatNumber(Math.round(valueAt(editor.hover))) + ' · ' +
+        formatNumber(volume.histogram[bin]) + ' Voxel';
+    } else {
+      hint.textContent = editor.mode === 'threshold'
+        ? 'Schwelle Luft/Material: ' + formatNumber(Math.round(valueAt(editor.threshold))) +
+          ' · im Histogramm ziehen'
+        : 'Kurve: Deckkraft je Grauwert · Klicken setzt einen Punkt, Ziehen verschiebt ihn, ' +
+          'Doppelklick löscht ihn';
     }
   };
+  const applyMode = () => {
+    volume.set({ mode: Number(mode.value) });
+    const surfaceMode = volume.mode === 0;
+    editor.setMode(surfaceMode ? 'threshold' : 'curve');
+    curveTools.hidden = surfaceMode;
+    surfaceTools.hidden = !surfaceMode;
+    shading.parentElement.hidden = volume.mode !== 1;
+  };
+  mode.addEventListener('change', applyMode);
+
+  volume.onChange = () => {
+    const v = volume.volume;
+    if (!v) return;
+    if (transfer.key !== v.key || !transfer.points) {
+      transfer.key = v.key;
+      transfer.points = transferPreset(transfer.preset, volume.threshold);
+    }
+    editor.threshold = volume.threshold;
+    editor.points = transfer.points;
+    editor.setHistogram(volume.histogram);
+    volume.setTransfer(lookupTable(editor.points));
+    editor.onSelect();
+    status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
+      formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
+  };
   panel.append(el('div', { className: 'viewer-tools' }, mode,
-    el('label', { className: 'group' }, 'Schwelle', threshold),
+    el('label', { className: 'group' }, shading, 'Beleuchtung'),
     el('label', { className: 'group' }, 'Schnitt x', cut),
-    el('label', { className: 'group' }, pores, 'Poren und Zonen')),
-  canvas, status);
+    el('label', { className: 'group' }, pores, 'Poren', poreColor, zoneColor),
+    el('label', { className: 'group' }, 'Hintergrund', background)),
+  canvas, status,
+  el('div', { className: 'transfer-editor' },
+    el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogramm'), curveTools, surfaceTools),
+    histogram, hint));
+  applyMode();
   try {
     volume.attach(canvas);
   } catch (error) {
