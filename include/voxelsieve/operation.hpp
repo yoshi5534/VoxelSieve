@@ -25,6 +25,9 @@ struct PortInfo {
   std::string name;
   std::string type;  // one of the artifact kinds
   std::string description;
+  /// An optional input is wired to the latest active output of its type when there is one, and
+  /// left out otherwise.
+  bool optional = false;
 };
 
 struct OperationInfo {

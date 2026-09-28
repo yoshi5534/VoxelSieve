@@ -208,7 +208,7 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
       step.inputs[port.name] = given->second;
     } else if (const auto found = latest(port.type)) {
       step.inputs[port.name] = *found;
-    } else {
+    } else if (!port.optional) {
       throw std::invalid_argument("No " + port.type + " available for input '" + port.name +
                                   "' of " + info.id);
     }

@@ -65,8 +65,9 @@ different, drawing-specific procedure and is left for later.
   to 1, 2, 2.5 or 5 × 10^n.
 - `deviation.ply`: the scanned surface with a float `deviation` and an RGB colour per vertex, in
   binary PLY. MeshLab, ParaView, CloudCompare and Blender open it.
-- `deviation_[xyz].png` are views along the axes. `cad_aligned.stl` is the CAD model in scan
-  coordinates; it is optional, because CAD meshes can be large.
+- `deviation_view_[12].png` are shaded views from above and from below (`render.hpp`).
+  `cad_aligned.stl` is the CAD model in scan coordinates; it is optional, because CAD meshes can
+  be large.
 
 The colours are the same in the images, the PLY and the studio: green within the tolerance,
 yellow to red above it and cyan to blue below it, saturated at ±range.
@@ -94,4 +95,5 @@ dent at -0.400 mm.
 
 - New algorithms that need the distance to a mesh can use `MeshDistance`.
 - Wall thickness, datum alignment and tolerance zones per feature can build on this comparison.
-- The report does not include the comparison yet.
+- The inspection report shows the comparison when it is given one (`addComparison`): the key
+  figures, both views and the histogram.

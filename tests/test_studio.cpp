@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -114,6 +116,19 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_THROW((void)studio.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
                std::exception);
 
+  // The report picks up the surface and the comparison for its 3D views.
+  const Json reported = studio.call("run_report", {});
+  EXPECT_EQ(reported.at("status"), "done");
+  EXPECT_EQ(reported.at("inputs").at("surface").at("step"), surface.at("id"));
+  EXPECT_EQ(reported.at("inputs").at("comparison").at("step"), compared.at("id"));
+  std::ifstream report_file(dir_ / "p" / "steps" /
+                            (std::to_string(reported.at("id").get<int>()) + "-report") / "report" /
+                            "report.html");
+  const std::string html{std::istreambuf_iterator<char>(report_file),
+                         std::istreambuf_iterator<char>()};
+  EXPECT_NE(html.find("Soll-Ist-Vergleich"), std::string::npos);
+  EXPECT_NE(html.find("Poren (rot)"), std::string::npos);
+
   // Explicit inputs by step id.
   const Json histogram = studio.call(
       "run_histogram", {{"bins", 8}, {"inputs", {{"dataset", {{"step", imported.at("id")}}}}}});
@@ -128,7 +143,7 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Studio other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 6U);
+  EXPECT_EQ(reopened.at("steps").size(), 7U);
 
   EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);

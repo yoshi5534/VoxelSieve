@@ -32,6 +32,11 @@
   .images { display: flex; flex-wrap: wrap; gap: 8px; }
   .images figure { margin: 0; flex: 1 1 30%; min-width: 150px; }
   .images img { width: 100%; image-rendering: pixelated; border: 1px solid var(--line); }
+  .renders { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+  .renders figure { margin: 0; flex: 1 1 45%; min-width: 220px; break-inside: avoid; }
+  .renders img { width: 100%; height: auto; display: block; border: 1px solid var(--line); }
+  .histogram { margin: 4px 0 0; }
+  .histogram svg { display: block; width: 100%; height: auto; max-height: 62mm; }
   figcaption, .note { color: var(--muted); font-size: 8.5pt; }
   .signatures { display: flex; gap: 24px; margin-top: 28px; }
   .signatures div { flex: 1; border-top: 1px solid var(--ink); padding-top: 4px; font-size: 9pt; }
@@ -73,7 +78,7 @@
 <h2>3 Prüfverfahren</h2>
 <table class="fields">
   <tr><th>Verfahren</th><td>Industrielle Computertomographie nach DIN EN ISO 15708</td></tr>
-  <tr><th>Auswertung</th><td>Porositätsanalyse mit {{software.name}} {{software.version}}{{#evaluation}}, Bewertung nach {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Auswertung</th><td>Porositätsanalyse{{#comparison}} und Soll-Ist-Vergleich{{/comparison}} mit {{software.name}} {{software.version}}{{#evaluation}}, Bewertung nach {{evaluation.guideline}}{{/evaluation}}</td></tr>
   <tr><th>Abweichungen vom Verfahren</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}keine{{/method.deviations}}</td></tr>
 </table>
 </section>
@@ -112,6 +117,12 @@
   <tr><th>Porosität gesamt</th><td>{{results.porosity}}</td></tr>
 </table>
 
+{{#images.part}}
+<div class="renders">
+  <figure><img src="{{{images.part}}}" alt="Bauteil"><figcaption>Bauteil, Oberfläche aus dem CT-Volumen</figcaption></figure>
+  <figure><img src="{{{images.pores}}}" alt="Poren im Bauteil"><figcaption>Poren (rot) und Zonen mit Gefügeauflockerung (gelb) im Bauteil, maßstäblich; sehr kleine Befunde vergrößert</figcaption></figure>
+</div>
+{{/images.part}}
 <div class="images">
   <figure><img src="{{{images.z}}}" alt="Projektion entlang z"><figcaption>Projektion entlang z</figcaption></figure>
   <figure><img src="{{{images.y}}}" alt="Projektion entlang y"><figcaption>Projektion entlang y</figcaption></figure>
@@ -138,8 +149,30 @@
 {{/has_zones}}
 </section>
 
+{{#comparison}}
 <section>
-<h2>7 Bewertung</h2>
+<h2>7 Soll-Ist-Vergleich</h2>
+<table class="fields">
+  <tr><th>Soll-Geometrie (CAD)</th><td>{{cad}}</td></tr>
+  <tr><th>Ausrichtung</th><td>{{alignment}}, Restabweichung der Ausrichtung {{fit_rms}} (RMS)</td></tr>
+  <tr><th>Toleranz</th><td>{{tolerance}}</td></tr>
+  <tr><th>Anteil der Oberfläche in Toleranz</th><td>{{within}} (darüber {{above}}, darunter {{below}})</td></tr>
+  <tr><th>Mittelwert / Standardabweichung</th><td>{{mean}} / {{std}}</td></tr>
+  <tr><th>Kleinste / größte Abweichung</th><td>{{min}} / {{max}}</td></tr>
+  <tr><th>5 % / 95 % der Oberfläche</th><td>unter {{p5}} / unter {{p95}}</td></tr>
+  <tr><th>Verglichene Oberfläche</th><td>{{area}}, Außenfläche ohne {{dropped}} innere Porenflächen</td></tr>
+</table>
+<div class="renders">
+  <figure><img src="{{{images.deviation_1}}}" alt="Abweichung, Ansicht von oben"><figcaption>Abweichung, Ansicht von oben</figcaption></figure>
+  <figure><img src="{{{images.deviation_2}}}" alt="Abweichung, Ansicht von unten"><figcaption>Abweichung, Ansicht von unten</figcaption></figure>
+</div>
+<figure class="histogram">{{{images.deviation_histogram}}}<figcaption>Häufigkeitsverteilung der Abweichung, Toleranzbereich hinterlegt</figcaption></figure>
+<p class="note">Positive Abweichung (gelb bis rot): mehr Material als die Soll-Geometrie. Negative Abweichung (türkis bis blau): Material fehlt. Grün: innerhalb der Toleranz. Farbskala gesättigt bei {{range}}. Die Häufigkeit ist auf die Fläche bezogen.</p>
+</section>
+{{/comparison}}
+
+<section>
+<h2>{{#comparison}}8{{/comparison}}{{^comparison}}7{{/comparison}} Bewertung</h2>
 {{#evaluation}}
 <p>Bewertung nach {{guideline}}. Poren und Zonen werden der Prüfzone zugeordnet, in der ihr Schwerpunkt liegt.</p>
 {{#zones}}

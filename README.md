@@ -173,7 +173,7 @@ the part has more material than nominal, negative where material is missing.
   - `compare.json`: the transform, the fit, the mean, RMS, extremes and percentiles, the area in
     and out of tolerance, and a histogram.
   - `deviation.ply`: the scanned surface with the deviation and a colour per vertex.
-  - `deviation_[xyz].png`: views along the axes.
+  - `deviation_view_1.png`, `deviation_view_2.png`: shaded views from above and from below.
   - `cad_aligned.stl` with `--aligned-stl`: the CAD model moved into scan coordinates.
 - **Internal voids:** surfaces of closed internal voids (pores) are left out by default; they
   belong to the porosity analysis.
@@ -231,6 +231,17 @@ Acceptance follows the scheme of BDG P 202: per inspection zone (a box in datase
 the whole part) optional limits on the largest pore extent, the number of pores above a size, the
 porosity, and whether loosened microstructure is allowed. The limits come from the drawing or the
 customer.
+
+With `--surface part.vss` (from `vs-surface`) the report shows the part and its pores in 3D: the
+part as glass with pores in red and loosened zones in amber, true to scale. With
+`--comparison part.compare` (from `vs-compare`) it adds the nominal-actual comparison: the key
+figures, the coloured deviation from above and from below, and the histogram of the deviation.
+In the studio, the report step takes the latest surface and comparison of the project when there
+are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
+
+![3D views of the part and of its pores in the inspection report](docs/images/report-part-views.png)
+
+![Nominal-actual comparison in the inspection report: key figures, coloured views and histogram](docs/images/report-comparison.png)
 
 The layout is a template: `vs-report --print-template > my_template.html` prints the built-in one,
 `--template my_template.html` uses your own. Templates use a Mustache subset (`{{name}}`,

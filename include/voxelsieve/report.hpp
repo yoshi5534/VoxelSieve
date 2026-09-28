@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/surface.hpp"
 
 namespace voxelsieve {
 
@@ -84,6 +85,17 @@ struct Evaluation {
                                         const Evaluation& evaluation,
                                         const std::filesystem::path& image_dir,
                                         std::vector<std::string>* warnings = nullptr);
+
+/// Adds rendered 3D views to report data: the part (images.part) and the part as glass with its
+/// pores in red and loosened zones in amber, true to scale (images.pores).
+void addPartImages(nlohmann::json& data, const SurfaceMask& surface, const PorosityResult& result);
+
+/// Adds a nominal-actual comparison written by writeComparison in `dir`: its results formatted
+/// for print (data.comparison), the rendered views (images.deviation_1, images.deviation_2) and
+/// the deviation histogram as SVG, coloured like the views (images.deviation_histogram). `cad_name`
+/// names the CAD model in the report; empty takes cad_path from compare.json.
+void addComparison(nlohmann::json& data, const std::filesystem::path& dir,
+                   const std::string& cad_name = {});
 
 /// Renders a template with a subset of Mustache: {{name}} (HTML-escaped), {{{name}}} (raw),
 /// dotted names, sections {{#name}}...{{/name}} over lists, objects and true values, inverted

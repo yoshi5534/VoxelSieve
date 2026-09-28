@@ -15,6 +15,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/surface.hpp"
 
 namespace {
 
@@ -32,6 +33,9 @@ Options:
   --order <file>          Inspection order: laboratory, customer, part, scan settings and
                           acceptance limits (see examples/inspection_order.json)
   --out <dir>             Output directory (required)
+  --surface <file.vss>    Surface written by vs-surface: adds 3D views of the part and its
+                          pores
+  --comparison <dir>      Output of vs-compare: adds the nominal-actual comparison
   --template <file>       Report template instead of the built-in one
   --print-template        Print the built-in template and exit
   --min-pore <voxels>     Smallest pore reported (default 3)
@@ -46,6 +50,8 @@ struct Options {
   std::filesystem::path order;
   std::filesystem::path out;
   std::filesystem::path report_template;
+  std::filesystem::path surface;
+  std::filesystem::path comparison;
   bool print_template = false;
   voxelsieve::PorosityOptions porosity;
   std::size_t cache_mb = 1024;
@@ -67,6 +73,10 @@ std::optional<Options> parse(int argc, char** argv) {
       options.order = next();
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--surface") {
+      options.surface = next();
+    } else if (arg == "--comparison") {
+      options.comparison = next();
     } else if (arg == "--template") {
       options.report_template = next();
     } else if (arg == "--print-template") {
@@ -131,6 +141,12 @@ int main(int argc, char** argv) {
     std::vector<std::string> warnings;
     nlohmann::json data = voxelsieve::reportData(order, result, options->porosity, evaluation,
                                                  options->out, &warnings);
+    if (!options->surface.empty()) {
+      voxelsieve::addPartImages(data, voxelsieve::SurfaceMask::open(options->surface), result);
+    }
+    if (!options->comparison.empty()) {
+      voxelsieve::addComparison(data, options->comparison);
+    }
     std::ofstream(options->out / "report.html", std::ios::binary)
         << voxelsieve::renderTemplate(report_template, data);
     data.erase("images");

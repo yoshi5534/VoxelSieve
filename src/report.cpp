@@ -9,6 +9,10 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "detail/png.hpp"
+#include "voxelsieve/compare.hpp"
+#include "voxelsieve/render.hpp"
+
 namespace voxelsieve {
 namespace {
 
@@ -85,6 +89,84 @@ std::string dataUri(const std::filesystem::path& png) {
   const std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
   return "data:image/png;base64," + base64(bytes);
+}
+
+std::string dataUri(const RenderImage& image) {
+  const auto png =
+      detail::encodePng(static_cast<std::uint32_t>(image.width),
+                        static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
+  return "data:image/png;base64," + base64(std::vector<char>(png.begin(), png.end()));
+}
+
+/// Signed number with a decimal comma, "+0,123" or "−0,123".
+std::string formatSigned(double value, int decimals) {
+  std::string text = formatNumber(std::abs(value), decimals);
+  const bool zero = text.find_first_not_of("0,") == std::string::npos;
+  if (zero) {
+    return text;
+  }
+  return (value < 0.0 ? "−" : "+") + text;
+}
+
+std::string hexColor(const std::array<std::uint8_t, 3>& c) {
+  std::array<char, 8> text{};
+  std::snprintf(text.data(), text.size(), "#%02x%02x%02x", c[0], c[1], c[2]);
+  return text.data();
+}
+
+/// Histogram of the deviation as SVG: area fraction per bin, bars coloured like the 3D views,
+/// with the tolerance band and an axis in mm.
+std::string deviationHistogramSvg(const std::vector<double>& histogram, double tolerance,
+                                  double range) {
+  constexpr double kWidth = 640.0;
+  constexpr double kHeight = 200.0;
+  constexpr double kLeft = 10.0;
+  constexpr double kRight = 630.0;
+  constexpr double kTop = 12.0;
+  constexpr double kBottom = 160.0;
+  std::ostringstream svg;
+  svg.setf(std::ios::fixed);
+  svg.precision(2);
+  svg << R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 )" << kWidth << ' ' << kHeight
+      << R"(" role="img" aria-label="Häufigkeitsverteilung der Abweichung" )"
+      << R"(font-family="Helvetica Neue, Arial, sans-serif" font-size="11">)";
+  const auto x = [&](double mm) { return kLeft + (mm + range) / (2.0 * range) * (kRight - kLeft); };
+  if (range > 0.0 && tolerance < range) {
+    svg << R"(<rect x=")" << x(-tolerance) << R"(" y=")" << kTop << R"(" width=")"
+        << x(tolerance) - x(-tolerance) << R"(" height=")" << kBottom - kTop
+        << R"(" fill="#3cbe5a" fill-opacity="0.08"/>)";
+  }
+  double peak = 0.0;
+  for (const double f : histogram) {
+    peak = std::max(peak, f);
+  }
+  const auto bins = histogram.size();
+  for (std::size_t i = 0; i < bins && peak > 0.0 && range > 0.0; ++i) {
+    const double lo = -range + 2.0 * range * static_cast<double>(i) / static_cast<double>(bins);
+    const double hi = lo + 2.0 * range / static_cast<double>(bins);
+    const double h = histogram[i] / peak * (kBottom - kTop);
+    svg << R"(<rect x=")" << x(lo) + 0.5 << R"(" y=")" << kBottom - h << R"(" width=")"
+        << std::max(0.0, x(hi) - x(lo) - 1.0) << R"(" height=")" << h << R"(" fill=")"
+        << hexColor(deviationColor(0.5 * (lo + hi), tolerance, range)) << R"("/>)";
+  }
+  svg << R"(<line x1=")" << kLeft << R"(" y1=")" << kBottom << R"(" x2=")" << kRight << R"(" y2=")"
+      << kBottom << R"(" stroke="#5f6368"/>)";
+  std::vector<double> ticks{-range, 0.0, range};
+  if (tolerance > 0.0 && tolerance < 0.8 * range) {
+    ticks.insert(ticks.begin() + 1, -tolerance);
+    ticks.insert(ticks.end() - 1, tolerance);
+  }
+  for (const double tick : ticks) {
+    const char* anchor = tick <= -range ? "start" : (tick >= range ? "end" : "middle");
+    svg << R"(<line x1=")" << x(tick) << R"(" y1=")" << kBottom << R"(" x2=")" << x(tick)
+        << R"(" y2=")" << kBottom + 4.0 << R"(" stroke="#5f6368"/>)";
+    svg << R"(<text x=")" << x(tick) << R"(" y=")" << kBottom + 17.0 << R"(" text-anchor=")"
+        << anchor << R"(" fill="#1d1d1f">)" << formatSigned(tick, 3) << "</text>";
+  }
+  svg << R"(<text x=")" << 0.5 * (kLeft + kRight) << R"(" y=")" << kBottom + 34.0
+      << R"(" text-anchor="middle" fill="#5f6368">Abweichung in mm (Rand: auch darüber hinaus)</text>)";
+  svg << "</svg>";
+  return svg.str();
 }
 
 /// Mandatory fields of the report, from the report contents required by DIN EN ISO/IEC 17025
@@ -400,6 +482,88 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
                     {"y", dataUri(image_dir / "projection_y.png")},
                     {"z", dataUri(image_dir / "projection_z.png")}};
   return data;
+}
+
+void addPartImages(Json& data, const SurfaceMask& surface, const PorosityResult& result) {
+  const IndexedMesh mesh = surfaceDisplayMesh(surface, 1500000);
+  if (mesh.triangles.empty()) {
+    return;
+  }
+  std::array<float, 3> lo = mesh.points.front();
+  std::array<float, 3> hi = lo;
+  for (const auto& p : mesh.points) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], p[k]);
+      hi[k] = std::max(hi[k], p[k]);
+    }
+  }
+  const double size = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
+  // Voxel units, as the mesh. Very small pores get a minimum radius so that they stay visible.
+  const double v = result.voxel_size_mm;
+  const double min_radius = 0.004 * size;
+  RenderView view;
+  view.width = 900;
+  view.height = 680;
+  RenderScene part;
+  part.mesh = &mesh;
+  data["images"]["part"] = dataUri(render(part, view));
+
+  RenderScene glass;
+  glass.mesh = &mesh;
+  glass.surface_opacity = 0.2;
+  glass.surface_color = {120, 138, 162};
+  for (const PorosityZone& zone : result.zones) {
+    const double radius = std::cbrt(3.0 * zone.volume_mm3 / (4.0 * std::numbers::pi)) / v;
+    glass.spheres.push_back({zone.center_voxels, std::max(radius, min_radius), {240, 168, 32}});
+  }
+  for (const DetectedPore& pore : result.pores) {
+    glass.spheres.push_back({pore.center_voxels,
+                             std::max(0.5 * pore.equivalent_diameter_mm / v, min_radius),
+                             {212, 44, 36}});
+  }
+  data["images"]["pores"] = dataUri(render(glass, view));
+}
+
+void addComparison(Json& data, const std::filesystem::path& dir, const std::string& cad_name) {
+  std::ifstream in(dir / "compare.json", std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("No compare.json in " + dir.string());
+  }
+  const Json compare = Json::parse(in);
+  const Json& d = compare.at("deviation");
+  const double tolerance = compare.at("tolerance_mm").get<double>();
+  const double range = d.at("range_mm").get<double>();
+  std::string cad = cad_name;
+  if (cad.empty()) {
+    cad = std::filesystem::path(compare.value("cad_path", std::string())).filename().string();
+  }
+  const auto percent = [&](const char* key) {
+    return formatNumber(100.0 * d.at(key).get<double>(), 1) + " %";
+  };
+  const auto mm = [&](double value) { return formatSigned(value, 3) + " mm"; };
+  const Json& p = d.at("percentiles_mm");
+  data["comparison"] = {
+      {"cad", cad.empty() ? std::string(kNotGiven) : cad},
+      {"alignment", compare.value("alignment", "auto") == "none" ? "vorgegebene Lage"
+                                                                 : "Best-Fit über die Außenfläche"},
+      {"fit_rms", formatNumber(compare.at("fit").at("rms_mm").get<double>(), 3) + " mm"},
+      {"tolerance", "± " + formatNumber(tolerance, 3) + " mm"},
+      {"mean", mm(d.at("mean_mm").get<double>())},
+      {"std", formatNumber(d.at("std_mm").get<double>(), 3) + " mm"},
+      {"min", mm(d.at("min_mm").get<double>())},
+      {"max", mm(d.at("max_mm").get<double>())},
+      {"p5", mm(p.value("5", 0.0))},
+      {"p95", mm(p.value("95", 0.0))},
+      {"within", percent("within_tolerance")},
+      {"above", percent("above_tolerance")},
+      {"below", percent("below_tolerance")},
+      {"area", formatNumber(d.at("area_mm2").get<double>(), 0) + " mm²"},
+      {"dropped", compare.value("dropped_components", 0)},
+      {"range", "± " + formatNumber(range, 3) + " mm"}};
+  data["images"]["deviation_1"] = dataUri(dir / "deviation_view_1.png");
+  data["images"]["deviation_2"] = dataUri(dir / "deviation_view_2.png");
+  data["images"]["deviation_histogram"] =
+      deviationHistogramSvg(d.at("histogram").get<std::vector<double>>(), tolerance, range);
 }
 
 }  // namespace voxelsieve

@@ -13,6 +13,7 @@ add_executable(voxelsieve_tests
   test_sieve.cpp
   test_surface.cpp
   test_compare.cpp
+  test_render.cpp
   test_synthetic.cpp
   test_vdb.cpp
 )
@@ -83,6 +84,13 @@ add_test(NAME vs_compare_cli_bad_initial
          COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare_bad --initial 1,2,3)
 set_tests_properties(vs_compare_cli_bad_initial PROPERTIES WILL_FAIL TRUE)
+add_test(NAME vs_report_cli_images
+         COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve
+                 --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_hub_report
+                 --surface ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss
+                 --comparison ${CMAKE_CURRENT_BINARY_DIR}/cli_compare)
+set_tests_properties(vs_report_cli_images PROPERTIES DEPENDS vs_compare_cli PASS_REGULAR_EXPRESSION "report.html")
 
 add_test(NAME vs_studio_mcp_cli
   COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")

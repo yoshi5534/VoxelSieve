@@ -42,6 +42,10 @@ First version: from a raw CT volume to an inspection report.
   to the scanned surface (principal axes, then a robust best fit) and measures the signed
   deviation per surface point. Writes statistics, a coloured PLY and views; the 3D view shows the
   deviation in colour (ADR 0010).
+- **Report images**: the inspection report shows the part and its pores in 3D (part as glass,
+  pores and loosened zones true to scale) when given a surface, and the nominal-actual comparison
+  with coloured views and a deviation histogram when given a comparison. Operations can have
+  optional inputs for this. The shaded views come from a CPU renderer (`voxelsieve::render`).
 - **Porosity analysis** (`vs-porosity`): pores with partial-volume void volumes and zones of
   loosened microstructure against a depth-dependent material level, so cupping is not reported
   as porosity (ADR 0006). JSON, projection images and a VDB with pores and zones.

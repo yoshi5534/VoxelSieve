@@ -19,8 +19,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include "detail/png.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/render.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -579,93 +579,21 @@ void writePly(const std::filesystem::path& file, const CompareResult& result) {
 
 /// Orthographic views of the coloured surface along x, y and z, flat shaded, viewed from the
 /// positive side of the axis with the other two axes to the right and up.
-void writeImages(const CompareResult& result, const std::filesystem::path& dir,
-                 int max_pixels = 800) {
-  const IndexedMesh& mesh = result.mesh;
-  if (mesh.points.empty()) {
+void writeImages(const CompareResult& result, const std::filesystem::path& dir) {
+  if (result.mesh.points.empty()) {
     return;
   }
-  Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
-         std::numeric_limits<double>::max()};
-  Vec hi{-lo[0], -lo[1], -lo[2]};
-  for (const auto& p : mesh.points) {
-    for (std::size_t a = 0; a < 3; ++a) {
-      lo[a] = std::min(lo[a], static_cast<double>(p[a]));
-      hi[a] = std::max(hi[a], static_cast<double>(p[a]));
-    }
+  RenderScene scene;
+  scene.mesh = &result.mesh;
+  scene.vertex_colors.reserve(result.deviation_mm.size());
+  for (const float d : result.deviation_mm) {
+    scene.vertex_colors.push_back(deviationColor(d, result.tolerance_mm, result.stats.range_mm));
   }
-  for (std::size_t axis = 0; axis < 3; ++axis) {
-    const std::size_t u = axis == 0 ? 1 : 0;
-    const std::size_t v = axis == 2 ? 1 : 2;
-    const double extent = std::max({hi[u] - lo[u], hi[v] - lo[v], 1e-9});
-    const double scale = (max_pixels - 20) / extent;
-    const int width = static_cast<int>(std::ceil((hi[u] - lo[u]) * scale)) + 20;
-    const int height = static_cast<int>(std::ceil((hi[v] - lo[v]) * scale)) + 20;
-    std::vector<double> depth(static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
-                              -std::numeric_limits<double>::infinity());
-    std::vector<std::uint8_t> rgb(depth.size() * 3, 0);
-    for (std::size_t i = 0; i < depth.size(); ++i) {
-      rgb[3 * i] = 34;
-      rgb[3 * i + 1] = 36;
-      rgb[3 * i + 2] = 40;
-    }
-    for (const auto& t : mesh.triangles) {
-      std::array<Vec, 3> s{};  // pixel x, pixel y, depth
-      std::array<Vec, 3> w{};
-      for (std::size_t k = 0; k < 3; ++k) {
-        const auto& p = mesh.points[t[k]];
-        w[k] = {p[0], p[1], p[2]};
-        s[k] = {10.0 + (p[u] - lo[u]) * scale, height - 10.0 - (p[v] - lo[v]) * scale, p[axis]};
-      }
-      const Vec n = cross(w[1] - w[0], w[2] - w[0]);
-      const double length = norm(n);
-      if (length <= 0.0) {
-        continue;
-      }
-      const double shade = 0.35 + 0.65 * std::abs(n[axis]) / length;
-      const double area =
-          (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) - (s[2][0] - s[0][0]) * (s[1][1] - s[0][1]);
-      if (std::abs(area) < 1e-12) {
-        continue;
-      }
-      const int x0 =
-          std::max(0, static_cast<int>(std::floor(std::min({s[0][0], s[1][0], s[2][0]}))));
-      const int x1 =
-          std::min(width - 1, static_cast<int>(std::ceil(std::max({s[0][0], s[1][0], s[2][0]}))));
-      const int y0 =
-          std::max(0, static_cast<int>(std::floor(std::min({s[0][1], s[1][1], s[2][1]}))));
-      const int y1 =
-          std::min(height - 1, static_cast<int>(std::ceil(std::max({s[0][1], s[1][1], s[2][1]}))));
-      for (int y = y0; y <= y1; ++y) {
-        for (int x = x0; x <= x1; ++x) {
-          const double px = x + 0.5;
-          const double py = y + 0.5;
-          const double b0 =
-              ((s[1][0] - px) * (s[2][1] - py) - (s[2][0] - px) * (s[1][1] - py)) / area;
-          const double b1 =
-              ((s[2][0] - px) * (s[0][1] - py) - (s[0][0] - px) * (s[2][1] - py)) / area;
-          const double b2 = 1.0 - b0 - b1;
-          if (b0 < 0.0 || b1 < 0.0 || b2 < 0.0) {
-            continue;
-          }
-          const double z = b0 * s[0][2] + b1 * s[1][2] + b2 * s[2][2];
-          const auto pixel = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
-                             static_cast<std::size_t>(x);
-          if (z <= depth[pixel]) {
-            continue;
-          }
-          depth[pixel] = z;
-          const double d = b0 * result.deviation_mm[t[0]] + b1 * result.deviation_mm[t[1]] +
-                           b2 * result.deviation_mm[t[2]];
-          const auto color = deviationColor(d, result.tolerance_mm, result.stats.range_mm);
-          for (std::size_t c = 0; c < 3; ++c) {
-            rgb[3 * pixel + c] = static_cast<std::uint8_t>(std::lround(color[c] * shade));
-          }
-        }
-      }
-    }
-    detail::writeRgbPng(dir / (std::string("deviation_") + "xyz"[axis] + ".png"),
-                        static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), rgb);
+  for (std::size_t k = 0; k < kDeviationViews.size(); ++k) {
+    RenderView view;
+    view.azimuth_degrees = kDeviationViews[k][0];
+    view.elevation_degrees = kDeviationViews[k][1];
+    writePng(render(scene, view), dir / ("deviation_view_" + std::to_string(k + 1) + ".png"));
   }
 }
 

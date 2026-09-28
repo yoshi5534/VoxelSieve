@@ -336,7 +336,8 @@ std::vector<StudioMethod> Studio::methods() const {
     Json schema = info.parameters;
     std::string inputs;
     for (const PortInfo& port : info.inputs) {
-      inputs += (inputs.empty() ? "" : ", ") + port.name + " (" + port.type + ")";
+      inputs += (inputs.empty() ? "" : ", ") + port.name + " (" + port.type +
+                (port.optional ? ", optional" : "") + ")";
     }
     if (!info.inputs.empty()) {
       schema["properties"]["inputs"] = {
@@ -766,8 +767,10 @@ Json Studio::call(const std::string& method, const Json& arguments,
         const OperationInfo& info = operation->info();
         Json inputs = Json::array();
         for (const PortInfo& port : info.inputs) {
-          inputs.push_back(
-              {{"name", port.name}, {"type", port.type}, {"description", port.description}});
+          inputs.push_back({{"name", port.name},
+                            {"type", port.type},
+                            {"description", port.description},
+                            {"optional", port.optional}});
         }
         Json outputs = Json::array();
         for (const PortInfo& port : info.outputs) {
