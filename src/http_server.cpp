@@ -290,6 +290,29 @@ struct HttpServer::Impl {
          {"X-Window", std::to_string(preview.low) + "," + std::to_string(preview.high)}});
   }
 
+  /// GET /api/surface?max_triangles=1500000[&step=3]
+  /// Body: the display mesh of a surface step (Studio::surfaceMesh), the points as three float32
+  /// per vertex in level-0 voxel coordinates, then three uint32 indices per triangle.
+  http::message_generator surface(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const std::optional<int> step = values.contains("step")
+                                        ? std::optional<int>(static_cast<int>(values.at("step")))
+                                        : std::nullopt;
+    const auto max = values.contains("max_triangles") ? values.at("max_triangles") : 1500000;
+    if (max < 1000 || max > 20000000) {
+      throw std::invalid_argument("max_triangles must be between 1000 and 20000000");
+    }
+    const auto mesh = studio.surfaceMesh(step, static_cast<std::size_t>(max));
+    const std::size_t point_bytes = mesh->points.size() * sizeof(mesh->points[0]);
+    const std::size_t triangle_bytes = mesh->triangles.size() * sizeof(mesh->triangles[0]);
+    std::string body(point_bytes + triangle_bytes, '\0');
+    std::memcpy(body.data(), mesh->points.data(), point_bytes);
+    std::memcpy(body.data() + point_bytes, mesh->triangles.data(), triangle_bytes);
+    return binary(request, std::move(body),
+                  {{"X-Vertices", std::to_string(mesh->points.size())},
+                   {"X-Triangles", std::to_string(mesh->triangles.size())}});
+  }
+
   http::message_generator get(const Request& request, std::string_view path) {
     if (path == "/") {
       path = "/index.html";
@@ -302,6 +325,9 @@ struct HttpServer::Impl {
     }
     if (path == "/api/volume") {
       return volume(request, target(request));
+    }
+    if (path == "/api/surface") {
+      return surface(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();

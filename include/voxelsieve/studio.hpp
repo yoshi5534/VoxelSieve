@@ -13,6 +13,7 @@
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/project.hpp"
 #include "voxelsieve/slice.hpp"
+#include "voxelsieve/surface.hpp"
 
 namespace voxelsieve {
 
@@ -66,6 +67,12 @@ class Studio {
                                             std::optional<int> porosity_step,
                                             std::int64_t max_size) const;
 
+  /// Display mesh of the surface output of `surface_step` (default: the latest surface) in
+  /// level-0 voxel coordinates, with at most about `max_triangles` (see surfaceDisplayMesh). The
+  /// last meshes stay cached.
+  [[nodiscard]] std::shared_ptr<const IndexedMesh> surfaceMesh(std::optional<int> surface_step,
+                                                               std::size_t max_triangles) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -98,6 +105,10 @@ class Studio {
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
       porosity_results_;
   mutable std::mutex view_mutex_;
+  // Display meshes by surface file and triangle budget; never locked while a mesh is built.
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const IndexedMesh>>>
+      surface_meshes_;
+  mutable std::mutex surface_mutex_;
 };
 
 /// Plugin directories from the environment variable VOXELSIEVE_PLUGIN_PATH (colon-separated).

@@ -193,6 +193,16 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   ASSERT_EQ(volume.status, 200U) << volume.body;
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume?max=5").status, 400U);
 
+  // The extracted surface as a mesh: float32 points, then uint32 triangles, 12 bytes each.
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/surface").status, 400U);  // none yet
+  ASSERT_EQ(call("run_surface", {}).status, 200U);
+  const Reply surface = request(server_->port(), http::verb::get, "/api/surface");
+  ASSERT_EQ(surface.status, 200U) << surface.body;
+  EXPECT_GT(surface.body.size(), 1000U);
+  EXPECT_EQ(surface.body.size() % 12U, 0U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/surface?max_triangles=10").status,
+            400U);
+
   const Reply browsed = call("browse", {{"path", dir_.string()}});
   ASSERT_EQ(browsed.status, 200U) << browsed.body;
   const Json listing = browsed.json();
