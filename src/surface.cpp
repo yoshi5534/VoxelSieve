@@ -867,9 +867,8 @@ Mesh SurfaceMask::toMesh(double adaptivity) const {
   return mesh;
 }
 
-IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles) {
-  // Merges coplanar cells into larger polygons; a quarter keeps curved parts smooth.
-  constexpr double kAdaptivity = 0.25;
+IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
+                               double adaptivity) {
   constexpr int kMaxCoarsening = 5;
   const double v = mask.info().voxel_size_mm;
   openvdb::FloatGrid::Ptr grid = mask.toLevelSet();
@@ -878,7 +877,7 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
     std::vector<openvdb::Vec3s> points;
     std::vector<openvdb::Vec3I> triangles;
     std::vector<openvdb::Vec4I> quads;
-    openvdb::tools::volumeToMesh(*grid, points, triangles, quads, 0.0, kAdaptivity);
+    openvdb::tools::volumeToMesh(*grid, points, triangles, quads, 0.0, adaptivity);
     const std::size_t count = triangles.size() + 2 * quads.size();
     if (count <= max_triangles || coarsening == kMaxCoarsening) {
       mesh.points.reserve(points.size());

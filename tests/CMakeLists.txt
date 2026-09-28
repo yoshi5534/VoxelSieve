@@ -12,6 +12,7 @@ add_executable(voxelsieve_tests
   test_report.cpp
   test_sieve.cpp
   test_surface.cpp
+  test_compare.cpp
   test_synthetic.cpp
   test_vdb.cpp
 )
@@ -74,6 +75,14 @@ add_test(NAME vs_surface_cli
 set_tests_properties(vs_surface_cli PROPERTIES DEPENDS vs_surface_cli_sieve PASS_REGULAR_EXPRESSION "bit/band voxel")
 add_test(NAME vs_surface_cli_info COMMAND vs-surface --info ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss)
 set_tests_properties(vs_surface_cli_info PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "against 16-bit raw")
+add_test(NAME vs_compare_cli
+         COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare --tolerance 0.1 --aligned-stl)
+set_tests_properties(vs_compare_cli PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "% within")
+add_test(NAME vs_compare_cli_bad_initial
+         COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare_bad --initial 1,2,3)
+set_tests_properties(vs_compare_cli_bad_initial PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME vs_studio_mcp_cli
   COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")

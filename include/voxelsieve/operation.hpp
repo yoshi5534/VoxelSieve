@@ -18,6 +18,7 @@ inline constexpr const char* kDataset = "dataset";    // bricked dataset written
 inline constexpr const char* kPorosity = "porosity";  // directory written by the porosity step
 inline constexpr const char* kReport = "report";      // directory with report.html and report.json
 inline constexpr const char* kSurface = "surface";    // directory with surface.vss (ADR 0009)
+inline constexpr const char* kComparison = "comparison";  // nominal-actual comparison with CAD
 }  // namespace artifact
 
 struct PortInfo {

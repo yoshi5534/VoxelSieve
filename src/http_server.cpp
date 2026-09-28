@@ -313,6 +313,31 @@ struct HttpServer::Impl {
                    {"X-Triangles", std::to_string(mesh->triangles.size())}});
   }
 
+  /// GET /api/deviation[?step=5]
+  /// Body: the compared surface of a nominal-actual comparison step (Studio::deviationMesh): three
+  /// float32 per vertex in level-0 voxel coordinates, one float32 deviation in mm per vertex, then
+  /// three uint32 indices per triangle.
+  http::message_generator deviation(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const std::optional<int> step = values.contains("step")
+                                        ? std::optional<int>(static_cast<int>(values.at("step")))
+                                        : std::nullopt;
+    const auto view = studio.deviationMesh(step);
+    const auto& mesh = view->mesh;
+    const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
+    const std::size_t deviation_bytes = view->deviation_mm.size() * sizeof(float);
+    const std::size_t triangle_bytes = mesh.triangles.size() * sizeof(mesh.triangles[0]);
+    std::string body(point_bytes + deviation_bytes + triangle_bytes, '\0');
+    std::memcpy(body.data(), mesh.points.data(), point_bytes);
+    std::memcpy(body.data() + point_bytes, view->deviation_mm.data(), deviation_bytes);
+    std::memcpy(body.data() + point_bytes + deviation_bytes, mesh.triangles.data(), triangle_bytes);
+    return binary(request, std::move(body),
+                  {{"X-Vertices", std::to_string(mesh.points.size())},
+                   {"X-Triangles", std::to_string(mesh.triangles.size())},
+                   {"X-Tolerance", std::to_string(view->tolerance_mm)},
+                   {"X-Range", std::to_string(view->range_mm)}});
+  }
+
   http::message_generator get(const Request& request, std::string_view path) {
     if (path == "/") {
       path = "/index.html";
@@ -328,6 +353,9 @@ struct HttpServer::Impl {
     }
     if (path == "/api/surface") {
       return surface(request, target(request));
+    }
+    if (path == "/api/deviation") {
+      return deviation(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();

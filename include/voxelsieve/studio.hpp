@@ -73,6 +73,17 @@ class Studio {
   [[nodiscard]] std::shared_ptr<const IndexedMesh> surfaceMesh(std::optional<int> surface_step,
                                                                std::size_t max_triangles) const;
 
+  /// The compared surface of a nominal-actual comparison step (default: the latest) in level-0
+  /// voxel coordinates, with the deviation per vertex in mm and the tolerance and colour range.
+  struct DeviationView {
+    IndexedMesh mesh;
+    std::vector<float> deviation_mm;
+    double tolerance_mm = 0.0;
+    double range_mm = 0.0;
+  };
+  [[nodiscard]] std::shared_ptr<const DeviationView> deviationMesh(
+      std::optional<int> comparison_step) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -108,6 +119,8 @@ class Studio {
   // Display meshes by surface file and triangle budget; never locked while a mesh is built.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const IndexedMesh>>>
       surface_meshes_;
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const DeviationView>>>
+      deviation_meshes_;
   mutable std::mutex surface_mutex_;
 };
 
