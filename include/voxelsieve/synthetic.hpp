@@ -69,6 +69,10 @@ struct SyntheticSpec {
   /// Depth below the surface over which cupping reaches 63 % of its strength; 0 picks 20 % of the
   /// smallest mesh extent.
   double cupping_depth_mm = 0.0;
+  /// Unsharpness of the imaging chain (focal spot, detector, reconstruction filter): standard
+  /// deviation of a Gaussian point spread function in mm applied to the grey values before rings
+  /// and noise, for example 0.7 voxels. 0 keeps the sharp partial-volume edges.
+  double blur_sigma_mm = 0.0;
   /// Ring artefacts around the z axis through the volume centre (the rotation axis).
   int ring_count = 0;
   /// Standard deviation of the ring amplitudes in grey values.
