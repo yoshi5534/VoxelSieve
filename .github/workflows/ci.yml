@@ -13,6 +13,7 @@ jobs:
   build-test:
     name: Build and test (${{ matrix.preset }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -30,11 +31,12 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset ${{ matrix.preset }} --timeout 600
 
   lint:
     name: Format and clang-tidy
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
