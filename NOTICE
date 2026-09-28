@@ -1,0 +1,16 @@
+VoxelSieve
+Copyright 2026 The VoxelSieve Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+VoxelSieve does not bundle third-party source code. It links against the following libraries,
+which are distributed under their own licenses:
+
+- OpenVDB (https://www.openvdb.org/): Mozilla Public License 2.0 up to version 10,
+  Apache License 2.0 from version 11
+- oneTBB (https://github.com/uxlfoundation/oneTBB): Apache License 2.0
+- Boost (https://www.boost.org/): Boost Software License 1.0
+- nlohmann/json (https://github.com/nlohmann/json): MIT License
+- zlib (https://zlib.net/): zlib License
+- Zstandard (https://facebook.github.io/zstd/): BSD License
+- GoogleTest (https://github.com/google/googletest), tests only: BSD 3-Clause License

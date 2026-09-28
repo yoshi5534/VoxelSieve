@@ -8,7 +8,7 @@
   predictor; unsigned 8/16-bit samples and 32-bit labels up to 65535. Label folders next to the
   grey values are recognised and can be chosen with `--folder` (ADR 0011).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-28)
 
 First version: from a raw CT volume to an inspection report.
 
