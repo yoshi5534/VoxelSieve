@@ -79,7 +79,7 @@ std::array<double, 3> voxelCenterMm(const PhantomSpec& spec, std::int64_t x, std
   std::array<double, 3> center{};
   for (std::size_t i = 0; i < 3; ++i) {
     center[i] = (static_cast<double>(index[i]) + 0.5 - static_cast<double>(spec.dims[i]) / 2.0) *
-                spec.voxel_size_mm;
+                spec.voxel_size[i];
   }
   return center;
 }
@@ -88,9 +88,32 @@ std::uint16_t phantomValue(const PhantomSpec& spec, std::int64_t x, std::int64_t
                            std::int64_t z) {
   const double air = spec.air_value;
   const double contrast = static_cast<double>(spec.material_value) - air;
-  const double distance = phantomSignedDistanceMm(spec, voxelCenterMm(spec, x, y, z));
-  // Linear partial-volume model: fraction of the voxel covered by material.
-  const double fraction = std::clamp(0.5 - distance / spec.voxel_size_mm, 0.0, 1.0);
+  const std::array<double, 3> center = voxelCenterMm(spec, x, y, z);
+  const double distance = phantomSignedDistanceMm(spec, center);
+  // Linear partial-volume model: fraction of the voxel covered by material. The voxel's width
+  // across the surface is its extent along the surface normal, which for box faces is exactly the
+  // pitch of the axis they are perpendicular to.
+  double width = spec.voxel_size[0];
+  if (!spec.voxel_size.isotropic() && std::abs(distance) < spec.voxel_size.maxMm()) {
+    std::array<double, 3> normal{};
+    double length = 0.0;
+    const double h = spec.voxel_size.minMm() * 0.25;
+    for (std::size_t a = 0; a < 3; ++a) {
+      std::array<double, 3> plus = center;
+      std::array<double, 3> minus = center;
+      plus[a] += h;
+      minus[a] -= h;
+      normal[a] = phantomSignedDistanceMm(spec, plus) - phantomSignedDistanceMm(spec, minus);
+      length += normal[a] * normal[a];
+    }
+    if (length > 0.0) {
+      width = 0.0;
+      for (std::size_t a = 0; a < 3; ++a) {
+        width += std::abs(normal[a]) / std::sqrt(length) * spec.voxel_size[a];
+      }
+    }
+  }
+  const double fraction = std::clamp(0.5 - distance / width, 0.0, 1.0);
   double value = air + fraction * contrast;
   if (spec.noise_sigma > 0.0) {
     const auto index = static_cast<std::uint64_t>(x + spec.dims[0] * (y + spec.dims[1] * z));
@@ -100,7 +123,7 @@ std::uint16_t phantomValue(const PhantomSpec& spec, std::int64_t x, std::int64_t
 }
 
 Volume16 generatePhantom(const PhantomSpec& spec) {
-  Volume16 volume(spec.dims, spec.voxel_size_mm);
+  Volume16 volume(spec.dims, spec.voxel_size);
   for (std::int64_t z = 0; z < spec.dims[2]; ++z) {
     for (std::int64_t y = 0; y < spec.dims[1]; ++y) {
       for (std::int64_t x = 0; x < spec.dims[0]; ++x) {

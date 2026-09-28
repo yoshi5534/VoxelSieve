@@ -1,11 +1,13 @@
 #include "voxelsieve/vdb.hpp"
 
+#include "detail/transform.hpp"
+
 namespace voxelsieve {
 
 openvdb::FloatGrid::Ptr toDenseFloatGrid(const Volume16& volume) {
   openvdb::initialize();
   auto grid = openvdb::FloatGrid::create(0.0F);
-  grid->setTransform(openvdb::math::Transform::createLinearTransform(volume.voxel_size_mm));
+  grid->setTransform(detail::voxelTransform(volume.voxel_size));
   grid->setGridClass(openvdb::GRID_FOG_VOLUME);
   grid->setName("density");
 

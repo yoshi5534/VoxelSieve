@@ -58,17 +58,18 @@ Json datasetInfoJson(const DatasetInfo& info) {
   for (const LevelInfo& level : info.levels) {
     levels.push_back({{"level", level.level},
                       {"dims", level.dims},
-                      {"voxel_size_mm", level.voxel_size_mm},
+                      {"voxel_size_mm", level.voxel_size},
                       {"bricks", level.bricks.size()}});
   }
-  return {{"dims", info.dims},
-          {"voxel_size_mm", info.voxel_size_mm},
-          {"brick_size", info.brick_size},
-          {"threshold", info.threshold},
-          {"air_level", info.air_level},
-          {"margin_voxels", info.margin_voxels},
-          {"active_voxels", info.active_voxel_count},
-          {"levels", levels}};
+  Json json = {{"dims", info.dims}};
+  writeVoxelSize(json, info.voxel_size);
+  json.update({{"brick_size", info.brick_size},
+               {"threshold", info.threshold},
+               {"air_level", info.air_level},
+               {"margin_voxels", info.margin_voxels},
+               {"active_voxels", info.active_voxel_count},
+               {"levels", levels}});
+  return json;
 }
 
 /// `file` relative to `root`, refusing paths that leave it.
@@ -306,7 +307,9 @@ std::vector<StudioMethod> Studio::methods() const {
       {"view_slice",
        "Renders a slice through a dataset as a PNG image, with pores in red and loosened zones in "
        "yellow when a porosity analysis of the dataset exists. The whole slice is shown at the "
-       "resolution level that fits max_pixels; the result says which axes run right and down.",
+       "resolution level that fits max_pixels; the result says which axes run right and down. "
+       "One pixel per voxel: pixel_size_mm gives its width and height, which differ when the "
+       "voxels are not cubes.",
        [] {
          Json properties = artifactProperties();
          properties["axis"] = {{"type", "string"},
@@ -546,10 +549,10 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
   std::ifstream in(dir / "compare.json");
   const Json info = Json::parse(in);
   DeviationMesh read = readDeviationPly(dir / "deviation.ply");
-  const auto v = static_cast<float>(info.at("voxel_size_mm").get<double>());
+  const VoxelSize v = readVoxelSize(info);
   for (auto& p : read.mesh.points) {
-    for (float& c : p) {
-      c /= v;
+    for (std::size_t k = 0; k < 3; ++k) {
+      p[k] = static_cast<float>(p[k] / v[k]);
     }
   }
   auto view = std::make_shared<DeviationView>();
@@ -662,17 +665,20 @@ Json Studio::viewSlice(const Json& params) const {
   const auto png = detail::encodePng(static_cast<std::uint32_t>(image.width),
                                      static_cast<std::uint32_t>(image.height), 3, rgb);
   constexpr std::array<const char*, 3> kNames = {"x", "y", "z"};
-  Json result = {{"step", dataset_ref.step},
-                 {"axis", params.at("axis")},
-                 {"index", request.index},
-                 {"level", request.level},
-                 {"width", image.width},
-                 {"height", image.height},
-                 {"right", kNames[static_cast<std::size_t>(u)]},
-                 {"down", kNames[static_cast<std::size_t>(v)]},
-                 {"pixel_size_mm", levels[static_cast<std::size_t>(request.level)].voxel_size_mm},
-                 {"window", {low, high}},
-                 {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  Json result = {
+      {"step", dataset_ref.step},
+      {"axis", params.at("axis")},
+      {"index", request.index},
+      {"level", request.level},
+      {"width", image.width},
+      {"height", image.height},
+      {"right", kNames[static_cast<std::size_t>(u)]},
+      {"down", kNames[static_cast<std::size_t>(v)]},
+      {"pixel_size_mm",
+       {levels[static_cast<std::size_t>(request.level)].voxel_size[static_cast<std::size_t>(u)],
+        levels[static_cast<std::size_t>(request.level)].voxel_size[static_cast<std::size_t>(v)]}},
+      {"window", {low, high}},
+      {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
   result["porosity_step"] = porosity_step ? Json(*porosity_step) : Json();
   return result;
 }

@@ -101,8 +101,8 @@ bit samples; 32-bit samples are accepted as long as they fit into 16 bits (label
 and colour images are refused rather than quantised. When the input holds several folders of
 slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
-comes from a centimetre resolution or an ImageJ description, otherwise 1 mm is assumed and
-printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
+comes from a centimetre resolution or an ImageJ description (including its slice `spacing`),
+otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
 
 ### Single grid
 
@@ -111,7 +111,10 @@ printed; set it with `--voxel-size`. In the studio this is the operation `import
 ```
 
 Dimensions and voxel size are read from `phantom.json`, or given with `--dims X Y Z` and
-`--voxel-size MM`. The air/material threshold is estimated with Otsu's method unless `--threshold`
+`--voxel-size MM`. Voxels need not be cubes (ADR 0012): `--voxel-size 0.33,0.33,0.6` gives the
+edge along x, y and z, and `--slice-thickness 0.4` records slices thinner than their spacing
+(a gap between slices). All measurements, VDB transforms, images and viewers use the pitch per
+axis. The air/material threshold is estimated with Otsu's method unless `--threshold`
 is set; `--margin` controls how many voxels of air stay around the part. `--dense` writes every
 voxel without sieving, as a baseline. The resulting `.vdb` opens directly in Blender or Houdini.
 

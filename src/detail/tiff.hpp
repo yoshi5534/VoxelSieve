@@ -63,8 +63,11 @@ struct TiffPage {
   std::uint32_t chunks_across = 1;
   std::vector<std::uint64_t> offsets;
   std::vector<std::uint64_t> byte_counts;
-  /// Pixel size in mm from a centimetre resolution or an ImageJ description, 0 if unknown.
+  /// Pixel width and height in mm from a centimetre resolution or an ImageJ description, 0 if
+  /// unknown; the slice spacing only from an ImageJ description ("spacing=").
   double pixel_size_mm = 0.0;
+  double pixel_height_mm = 0.0;
+  double slice_spacing_mm = 0.0;
   std::string description;
 };
 

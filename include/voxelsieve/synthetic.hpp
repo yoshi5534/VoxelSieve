@@ -10,6 +10,7 @@
 
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -42,7 +43,7 @@ struct Defect {
 /// Settings for a synthetic CT scan of a mesh. Sizes are in mm; zero counts or strengths disable
 /// the respective feature.
 struct SyntheticSpec {
-  double voxel_size_mm = 0.1;
+  VoxelSize voxel_size{0.1};
   /// Air around the mesh bounding box on every side.
   double padding_mm = 1.0;
   std::uint16_t air_value = 1000;
@@ -91,7 +92,7 @@ class SyntheticScan final : public VolumeSource {
   ~SyntheticScan() override;
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override;
-  [[nodiscard]] double voxelSizeMm() const override;
+  [[nodiscard]] VoxelSize voxelSize() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   [[nodiscard]] const SyntheticSpec& spec() const;

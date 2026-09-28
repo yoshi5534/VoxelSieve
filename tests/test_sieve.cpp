@@ -73,7 +73,7 @@ TEST(Sieve, RemovesOutsideAirButKeepsMargin) {
   // Voxel indices along x for points on the centre line (y = z = centre).
   const auto index_at_mm = [&](double mm) {
     return static_cast<std::int64_t>(
-        std::floor(mm / spec.voxel_size_mm + static_cast<double>(spec.dims[0]) / 2.0));
+        std::floor(mm / spec.voxel_size[0] + static_cast<double>(spec.dims[0]) / 2.0));
   };
   const std::int64_t mid = spec.dims[1] / 2;
   EXPECT_TRUE(accessor.isValueOn(coord(index_at_mm(4.0 + 0.25), mid, mid)));  // inside margin
@@ -122,7 +122,7 @@ TEST(Sieve, SolidVolumeWithoutAirKeepsEverything) {
 TEST(Sieve, StoresMetadataAndRoundTripsThroughFile) {
   PhantomSpec spec = noisyPhantom();
   spec.dims = {64, 64, 64};
-  spec.voxel_size_mm = 0.2;
+  spec.voxel_size = 0.2;
   const SieveResult result = sieve(generatePhantom(spec));
 
   const auto path = std::filesystem::temp_directory_path() /

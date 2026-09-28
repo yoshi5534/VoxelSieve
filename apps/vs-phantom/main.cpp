@@ -21,7 +21,7 @@ Writes <prefix>.raw (uint16, little endian, x fastest) and <prefix>.json.
 Options:
   --out <prefix>        Output path without extension (required)
   --dims <n>            Voxels per axis (default 128)
-  --voxel-size <mm>     Voxel edge length in mm (default 0.1)
+  --voxel-size <mm>     Voxel edge length in mm, or x,y,z (default 0.1)
   --noise <sigma>       Gaussian noise in grey values (default 500, 0 disables)
   --seed <n>            Noise seed (default 42)
   --solid               Solid box instead of a hollow one
@@ -52,7 +52,7 @@ std::optional<Options> parse(int argc, char** argv) {
       const std::int64_t n = std::stoll(next());
       options.spec.dims = {n, n, n};
     } else if (arg == "--voxel-size") {
-      options.spec.voxel_size_mm = std::stod(next());
+      options.spec.voxel_size = voxelsieve::parseVoxelSize(next());
     } else if (arg == "--noise") {
       options.spec.noise_sigma = std::stod(next());
     } else if (arg == "--seed") {

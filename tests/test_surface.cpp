@@ -105,19 +105,19 @@ class SurfaceTest : public ::testing::Test {
   /// Synthetic scan of a sample part with realistic grey values: noise, cupping and an
   /// unsharpness of half a voxel.
   static std::unique_ptr<SyntheticScan> scanOf(const std::string& part, double scale,
-                                               double voxel_size_mm, int lunkers = 0,
+                                               double voxel_size, int lunkers = 0,
                                                double padding_voxels = 4.0) {
     SamplePartOptions options;
     options.scale = scale;
-    options.resolution_mm = voxel_size_mm;
+    options.resolution_mm = voxel_size;
     SyntheticSpec spec;
-    spec.voxel_size_mm = voxel_size_mm;
-    spec.padding_mm = padding_voxels * voxel_size_mm;
+    spec.voxel_size = voxel_size;
+    spec.padding_mm = padding_voxels * voxel_size;
     spec.noise_sigma = 400.0;
     spec.cupping = 0.1;
-    spec.blur_sigma_mm = 0.5 * voxel_size_mm;
+    spec.blur_sigma_mm = 0.5 * voxel_size;
     spec.lunker_count = lunkers;
-    spec.lunker_radius_mm = 4.0 * voxel_size_mm;
+    spec.lunker_radius_mm = 4.0 * voxel_size;
     return std::make_unique<SyntheticScan>(samplePartMesh(part, options), spec);
   }
 
@@ -131,7 +131,7 @@ class SurfaceTest : public ::testing::Test {
 
   static Accuracy measure(const SyntheticScan& scan, const SurfaceMask& mask) {
     const SurfaceInfo& info = mask.info();
-    const double v = info.voxel_size_mm;
+    const double v = info.voxel_size[0];
     const auto origin = scan.originMm();
     const auto dims = info.dims;
     Accuracy result;
@@ -332,7 +332,7 @@ TEST_F(SurfaceTest, LevelSetAndMeshFollowTheCodes) {
   const SurfaceMask mask = SurfaceMask::open(dir_ / "surface.vss");
   const auto grid = mask.toLevelSet();
   EXPECT_EQ(grid->getGridClass(), openvdb::GRID_LEVEL_SET);
-  const double v = mask.info().voxel_size_mm;
+  const double v = mask.info().voxel_size[0];
   EXPECT_NEAR(grid->voxelSize()[0], v, 1e-12);
   const auto dims = mask.info().dims;
   auto accessor = grid->getConstAccessor();
@@ -359,7 +359,7 @@ TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
   const Dataset dataset = sieve(*scan, "scan.vsieve");
   (void)writeSurface(dataset, dir_ / "surface.vss");
   const SurfaceMask mask = SurfaceMask::open(dir_ / "surface.vss");
-  const double v = mask.info().voxel_size_mm;
+  const double v = mask.info().voxel_size[0];
   const auto origin = scan->originMm();
   const IndexedMesh full = surfaceDisplayMesh(mask, 10000000);
   ASSERT_FALSE(full.triangles.empty());

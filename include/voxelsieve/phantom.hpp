@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "voxelsieve/volume.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -20,7 +21,7 @@ struct Pore {
 /// ground truth for tests and benchmarks.
 struct PhantomSpec {
   std::array<std::int64_t, 3> dims{128, 128, 128};
-  double voxel_size_mm = 0.1;
+  VoxelSize voxel_size{0.1};
   std::uint16_t air_value = 1000;
   std::uint16_t material_value = 20000;
   /// Standard deviation of additive Gaussian noise in grey values; 0 disables noise.

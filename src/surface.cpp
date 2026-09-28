@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "detail/png.hpp"
+#include "detail/transform.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -342,7 +343,7 @@ Json headerJson(const SurfaceInfo& info) {
 SurfaceInfo infoFromJson(const Json& json) {
   SurfaceInfo info;
   info.dims = json.at("dims").get<Index3>();
-  info.voxel_size_mm = json.at("voxel_size_mm").get<double>();
+  info.voxel_size = readVoxelSize(json);
   info.bits = json.at("bits").get<int>();
   info.band_voxels = json.at("band_voxels").get<double>();
   info.block_size = json.at("block_size").get<std::int64_t>();
@@ -397,24 +398,25 @@ FileSections readSections(const char* data, std::size_t size) {
 // ---------------------------------------------------------------------------------------------
 
 Json toJson(const SurfaceInfo& info) {
-  return {{"dims", info.dims},
-          {"voxel_size_mm", info.voxel_size_mm},
-          {"bits", info.bits},
-          {"band_voxels", info.band_voxels},
-          {"step_voxels", info.stepVoxels()},
-          {"block_size", info.block_size},
-          {"chunk_size", info.chunk_size},
-          {"iso_value", info.iso_value},
-          {"air_level", info.air_level},
-          {"material_level", info.material_level},
-          {"compression", kCompression},
-          {"chunks", info.chunks},
-          {"surface_chunks", info.surface_chunks},
-          {"surface_blocks", info.surface_blocks},
-          {"band_voxel_count", info.band_voxel_count},
-          {"volume_mm3", info.volume_mm3},
-          {"raw_bytes", info.raw_bytes},
-          {"file_bytes", info.file_bytes}};
+  Json json = {{"dims", info.dims}};
+  writeVoxelSize(json, info.voxel_size);
+  json.update({{"bits", info.bits},
+               {"band_voxels", info.band_voxels},
+               {"step_voxels", info.stepVoxels()},
+               {"block_size", info.block_size},
+               {"chunk_size", info.chunk_size},
+               {"iso_value", info.iso_value},
+               {"air_level", info.air_level},
+               {"material_level", info.material_level},
+               {"compression", kCompression},
+               {"chunks", info.chunks},
+               {"surface_chunks", info.surface_chunks},
+               {"surface_blocks", info.surface_blocks},
+               {"band_voxel_count", info.band_voxel_count},
+               {"volume_mm3", info.volume_mm3},
+               {"raw_bytes", info.raw_bytes},
+               {"file_bytes", info.file_bytes}});
+  return json;
 }
 
 std::uint8_t encodeSurfaceDistance(double distance_voxels, bool inside, int bits,
@@ -459,7 +461,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   }
   SurfaceInfo info;
   info.dims = data.dims;
-  info.voxel_size_mm = data.voxel_size_mm;
+  info.voxel_size = data.voxel_size;
   info.bits = options.bits;
   info.band_voxels = options.band_voxels;
   info.chunk_size = data.brick_size;
@@ -518,7 +520,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
                 info.band_voxel_count += chunk.band_voxels;
                 material_voxels += chunk.material_voxels;
               }));
-  info.volume_mm3 = material_voxels * std::pow(info.voxel_size_mm, 3);
+  info.volume_mm3 = material_voxels * info.voxel_size.volumeMm3();
 
   const std::vector<char> packed_table = compress(table, resolved.compression_level);
   const std::uint64_t table_offset = position;
@@ -802,11 +804,14 @@ void SurfaceMask::readCodes(const Box& box, std::span<std::uint8_t> out) const {
 
 openvdb::FloatGrid::Ptr SurfaceMask::toLevelSet() const {
   const SurfaceInfo& info = impl_->info;
-  const double v = info.voxel_size_mm;
+  // Distances in mm for cubic voxels; with voxels of different edge lengths the codes measure in
+  // voxel units, scaled by the mean edge. The zero crossing, which is all that meshing uses, is
+  // the same either way.
+  const double v = info.voxel_size.meanMm();
   auto grid = openvdb::FloatGrid::create(static_cast<float>(info.band_voxels * v));
   grid->setGridClass(openvdb::GRID_LEVEL_SET);
   grid->setName("surface");
-  grid->setTransform(openvdb::math::Transform::createLinearTransform(v));
+  grid->setTransform(detail::voxelTransform(info.voxel_size));
   auto accessor = grid->getAccessor();
   for (std::size_t index = 0; index < impl_->table.size(); ++index) {
     if (impl_->table[index].kind != BlockKind::kSurface) {
@@ -870,7 +875,7 @@ Mesh SurfaceMask::toMesh(double adaptivity) const {
 IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
                                double adaptivity) {
   constexpr int kMaxCoarsening = 5;
-  const double v = mask.info().voxel_size_mm;
+  const VoxelSize& v = mask.info().voxel_size;
   openvdb::FloatGrid::Ptr grid = mask.toLevelSet();
   IndexedMesh mesh;
   for (int coarsening = 0;; ++coarsening) {
@@ -882,8 +887,8 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
     if (count <= max_triangles || coarsening == kMaxCoarsening) {
       mesh.points.reserve(points.size());
       for (const openvdb::Vec3s& p : points) {
-        mesh.points.push_back({static_cast<float>(p.x() / v), static_cast<float>(p.y() / v),
-                               static_cast<float>(p.z() / v)});
+        mesh.points.push_back({static_cast<float>(p.x() / v[0]), static_cast<float>(p.y() / v[1]),
+                               static_cast<float>(p.z() / v[2])});
       }
       mesh.triangles.reserve(count);
       for (const openvdb::Vec3I& t : triangles) {
@@ -899,7 +904,7 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
     auto coarse = openvdb::FloatGrid::create(grid->background() * 2.0F);
     coarse->setGridClass(openvdb::GRID_LEVEL_SET);
     coarse->setTransform(
-        openvdb::math::Transform::createLinearTransform(grid->voxelSize()[0] * 2.0));
+        detail::voxelTransform(detail::voxelSizeOf(grid->transform()).scaled(2.0)));
     openvdb::tools::resampleToMatch<openvdb::tools::BoxSampler>(*grid, *coarse);
     grid = coarse;
   }
@@ -949,7 +954,8 @@ void writeSurfaceImages(const SurfaceMask& mask, const std::filesystem::path& di
     }
     const std::string name = std::string("surface_") + "xyz"[axis] + ".png";
     detail::writeRgbPng(dir / name, static_cast<std::uint32_t>(width),
-                        static_cast<std::uint32_t>(height), rgb);
+                        static_cast<std::uint32_t>(height), rgb, info.voxel_size[u],
+                        info.voxel_size[v]);
   }
 }
 

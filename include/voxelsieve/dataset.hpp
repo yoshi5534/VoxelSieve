@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -37,13 +38,13 @@ struct DatasetOptions {
 struct LevelInfo {
   int level = 0;
   std::array<std::int64_t, 3> dims{};
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   std::vector<std::array<std::int64_t, 3>> bricks;
 };
 
 struct DatasetInfo {
   std::array<std::int64_t, 3> dims{};
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   std::int64_t brick_size = 0;
   float threshold = 0.0F;
   float air_level = 0.0F;

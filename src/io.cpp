@@ -53,8 +53,8 @@ void writeRaw(const std::filesystem::path& path, const VolumeSource& source) {
 }
 
 Volume16 readRaw(const std::filesystem::path& path, const std::array<std::int64_t, 3>& dims,
-                 double voxel_size_mm) {
-  Volume16 volume(dims, voxel_size_mm);
+                 const VoxelSize& voxel_size) {
+  Volume16 volume(dims, voxel_size);
   const auto expected_bytes = volume.data.size() * sizeof(std::uint16_t);
   if (std::filesystem::file_size(path) != expected_bytes) {
     throw std::runtime_error("File size of " + path.string() + " does not match dimensions (" +
@@ -78,7 +78,7 @@ nlohmann::json phantomToJson(const PhantomSpec& spec) {
       {"format",
        {{"type", "raw"}, {"dtype", "uint16"}, {"endianness", "little"}, {"order", "xyz"}}},
       {"dims", spec.dims},
-      {"voxel_size_mm", spec.voxel_size_mm},
+      {"voxel_size_mm", spec.voxel_size},
       {"phantom",
        {{"air_value", spec.air_value},
         {"material_value", spec.material_value},

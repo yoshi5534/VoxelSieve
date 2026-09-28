@@ -8,6 +8,7 @@
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/volume.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -21,7 +22,8 @@ void writeRaw(const std::filesystem::path& path, const VolumeSource& source);
 /// Reads a headerless little-endian uint16 file. Throws std::runtime_error if the file size does
 /// not match `dims`.
 [[nodiscard]] Volume16 readRaw(const std::filesystem::path& path,
-                               const std::array<std::int64_t, 3>& dims, double voxel_size_mm);
+                               const std::array<std::int64_t, 3>& dims,
+                               const VoxelSize& voxel_size);
 
 /// Sidecar metadata describing a raw file and, for phantoms, its ground truth.
 [[nodiscard]] nlohmann::json phantomToJson(const PhantomSpec& spec);

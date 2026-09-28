@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -54,7 +55,7 @@ struct PorosityOptions {
 };
 
 struct PorosityResult {
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   float air_level = 0.0F;
   /// Global material grey value (median of fully material block means).
   float material_level = 0.0F;

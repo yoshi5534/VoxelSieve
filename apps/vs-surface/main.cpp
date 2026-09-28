@@ -99,7 +99,8 @@ void printInfo(const voxelsieve::SurfaceInfo& info) {
   const auto voxels = static_cast<double>(info.dims[0] * info.dims[1] * info.dims[2]);
   const auto bits = 8.0 * static_cast<double>(info.file_bytes);
   std::cout << std::fixed << std::setprecision(3) << "dims               " << info.dims[0] << " x "
-            << info.dims[1] << " x " << info.dims[2] << ", " << info.voxel_size_mm << " mm\n"
+            << info.dims[1] << " x " << info.dims[2] << ", "
+            << voxelsieve::describe(info.voxel_size) << "\n"
             << "code               " << info.bits << " bit, band +-" << info.band_voxels
             << " voxels, step " << info.stepVoxels() << " voxels\n"
             << std::setprecision(1) << "surface            iso " << info.iso_value << " (air "

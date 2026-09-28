@@ -38,8 +38,7 @@ class PorosityTest : public ::testing::Test {
   static std::array<double, 3> toVoxels(const SyntheticScan& scan,
                                         const std::array<double, 3>& mm) {
     const auto origin = scan.originMm();
-    return {(mm[0] - origin[0]) / scan.voxelSizeMm(), (mm[1] - origin[1]) / scan.voxelSizeMm(),
-            (mm[2] - origin[2]) / scan.voxelSizeMm()};
+    return scan.voxelSize().toVoxels({mm[0] - origin[0], mm[1] - origin[1], mm[2] - origin[2]});
   }
 
   static double distance(const std::array<double, 3>& a, const std::array<double, 3>& b) {
@@ -142,7 +141,7 @@ TEST_F(PorosityTest, LoosenedZonesMatchGroundTruth) {
   double found = zone.void_volume_mm3;
   for (const DetectedPore& pore : result.pores) {
     EXPECT_LT(distance(pore.center_voxels, toVoxels(scan, truth.center_mm)),
-              truth.radius_mm / scan.voxelSizeMm() + 2.0);
+              truth.radius_mm / scan.voxelSize()[0] + 2.0);
     found += pore.volume_mm3;
   }
   EXPECT_NEAR(found, truth.void_volume_mm3, 0.15 * truth.void_volume_mm3);

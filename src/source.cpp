@@ -51,8 +51,9 @@ struct MappedRawSource::Mapping {
 };
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path,
-                                 const std::array<std::int64_t, 3>& dims, double voxel_size_mm)
-    : MappedRawSource(path, RawLayout{dims, voxel_size_mm, SampleType::kUInt16, std::endian::little,
+                                 const std::array<std::int64_t, 3>& dims,
+                                 const VoxelSize& voxel_size)
+    : MappedRawSource(path, RawLayout{dims, voxel_size, SampleType::kUInt16, std::endian::little,
                                       std::uint64_t{0}}) {}
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLayout& layout)

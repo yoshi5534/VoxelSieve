@@ -5,6 +5,7 @@
 #include <boost/iostreams/device/back_inserter.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
+#include <cmath>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -95,6 +96,31 @@ void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::ui
   if (!out) {
     throw std::runtime_error("Cannot write " + path.string());
   }
+}
+
+void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::uint32_t height,
+                 std::span<const std::uint8_t> rgb, double pixel_width, double pixel_height) {
+  const double finer = std::min(pixel_width, pixel_height);
+  const auto out_width = static_cast<std::uint32_t>(
+      std::max(1.0, std::round(static_cast<double>(width) * pixel_width / finer)));
+  const auto out_height = static_cast<std::uint32_t>(
+      std::max(1.0, std::round(static_cast<double>(height) * pixel_height / finer)));
+  if (out_width == width && out_height == height) {
+    writeRgbPng(path, width, height, rgb);
+    return;
+  }
+  std::vector<std::uint8_t> stretched(std::size_t{out_width} * out_height * 3);
+  for (std::uint32_t y = 0; y < out_height; ++y) {
+    const std::size_t sy = std::min<std::size_t>(height - 1, std::size_t{y} * height / out_height);
+    for (std::uint32_t x = 0; x < out_width; ++x) {
+      const std::size_t sx = std::min<std::size_t>(width - 1, std::size_t{x} * width / out_width);
+      const std::size_t from = (sy * width + sx) * 3;
+      const std::size_t to = (std::size_t{y} * out_width + x) * 3;
+      std::copy_n(rgb.begin() + static_cast<std::ptrdiff_t>(from), 3,
+                  stretched.begin() + static_cast<std::ptrdiff_t>(to));
+    }
+  }
+  writeRgbPng(path, out_width, out_height, stretched);
 }
 
 }  // namespace voxelsieve::detail

@@ -16,6 +16,7 @@
 #include <string>
 
 #include "detail/blocks.hpp"
+#include "detail/transform.hpp"
 #include "voxelsieve/sieve.hpp"
 
 namespace voxelsieve {
@@ -118,12 +119,8 @@ BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold) {
 // ---------------------------------------------------------------------------------------------
 // Pass 2: level-0 bricks.
 
-void setGridProperties(openvdb::FloatGrid& grid, int level, double voxel_size_mm) {
-  const auto scale = static_cast<double>(std::int64_t{1} << level);
-  auto transform = openvdb::math::Transform::createLinearTransform(voxel_size_mm * scale);
-  // Level-L voxel i covers level-0 voxels [i * 2^L, (i + 1) * 2^L); centre it on them.
-  transform->postTranslate(openvdb::Vec3d((scale - 1.0) / 2.0 * voxel_size_mm));
-  grid.setTransform(transform);
+void setGridProperties(openvdb::FloatGrid& grid, int level, const VoxelSize& voxel_size) {
+  grid.setTransform(detail::voxelTransform(voxel_size, level));
   grid.setGridClass(openvdb::GRID_FOG_VOLUME);
   grid.setName("density");
   grid.insertMeta("voxelsieve_level", openvdb::Int32Metadata(level));
@@ -232,21 +229,22 @@ nlohmann::json toJson(const DatasetInfo& info) {
   for (const LevelInfo& level : info.levels) {
     levels.push_back({{"level", level.level},
                       {"dims", level.dims},
-                      {"voxel_size_mm", level.voxel_size_mm},
+                      {"voxel_size_mm", level.voxel_size},
                       {"bricks", level.bricks}});
   }
-  return {{"format", "voxelsieve-dataset"},
-          {"version", kFormatVersion},
-          {"value_type", "float"},
-          {"dims", info.dims},
-          {"voxel_size_mm", info.voxel_size_mm},
-          {"brick_size", info.brick_size},
-          {"threshold", info.threshold},
-          {"air_level", info.air_level},
-          {"margin_voxels", info.margin_voxels},
-          {"active_voxel_count", info.active_voxel_count},
-          {"overview", "overview.vdb"},
-          {"levels", levels}};
+  nlohmann::json json = {{"format", "voxelsieve-dataset"},
+                         {"version", kFormatVersion},
+                         {"value_type", "float"},
+                         {"dims", info.dims}};
+  writeVoxelSize(json, info.voxel_size);
+  json.update({{"brick_size", info.brick_size},
+               {"threshold", info.threshold},
+               {"air_level", info.air_level},
+               {"margin_voxels", info.margin_voxels},
+               {"active_voxel_count", info.active_voxel_count},
+               {"overview", "overview.vdb"},
+               {"levels", levels}});
+  return json;
 }
 
 }  // namespace
@@ -284,7 +282,8 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
 
   DatasetInfo info;
   info.dims = source.dims();
-  info.voxel_size_mm = source.voxelSizeMm();
+  info.voxel_size = source.voxelSize();
+  info.voxel_size.validate();
   info.brick_size = options.brick_size;
   info.margin_voxels = options.margin_voxels;
 
@@ -295,7 +294,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   const BlockGrid blocks = classifyBlocks(stats, info.threshold);
 
   // Level 0.
-  LevelInfo level0{0, info.dims, info.voxel_size_mm, {}};
+  LevelInfo level0{0, info.dims, info.voxel_size, {}};
   const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   std::mutex mutex;
@@ -305,7 +304,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
     if (!grid) {
       return;
     }
-    setGridProperties(*grid, 0, info.voxel_size_mm);
+    setGridProperties(*grid, 0, info.voxel_size);
     grid->insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
     writeBrick(brickPath(dir, 0, brick), grid);
     // Counted outside the lock: OpenVDB counts with TBB tasks, and a thread waiting for them may
@@ -325,7 +324,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
                     [&](std::int64_t d) { return d <= options.brick_size; })) {
       break;
     }
-    LevelInfo coarser{finer.level + 1, ceilDiv3(finer.dims, 2), finer.voxel_size_mm * 2.0, {}};
+    LevelInfo coarser{finer.level + 1, ceilDiv3(finer.dims, 2), finer.voxel_size.scaled(2.0), {}};
     const Index3 coarse_brick_dims = ceilDiv3(coarser.dims, options.brick_size);
     std::filesystem::create_directories(brickPath(dir, coarser.level, {0, 0, 0}).parent_path());
     tbb::parallel_for(std::size_t{0}, product(coarse_brick_dims), [&](std::size_t i) {
@@ -340,7 +339,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
         return;
       }
       auto grid = downsample(children);
-      setGridProperties(*grid, coarser.level, info.voxel_size_mm);
+      setGridProperties(*grid, coarser.level, info.voxel_size);
       writeBrick(brickPath(dir, coarser.level, brick), grid);
       const std::scoped_lock lock(mutex);
       coarser.bricks.push_back(brick);
@@ -353,7 +352,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   const LevelInfo& top = info.levels.back();
   if (top.bricks.empty()) {
     auto empty = openvdb::FloatGrid::create(0.0F);
-    setGridProperties(*empty, top.level, info.voxel_size_mm);
+    setGridProperties(*empty, top.level, info.voxel_size);
     writeBrick(dir / "overview.vdb", empty);
   } else {
     std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
@@ -378,7 +377,7 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   }
   DatasetInfo info;
   info.dims = json.at("dims").get<Index3>();
-  info.voxel_size_mm = json.at("voxel_size_mm").get<double>();
+  info.voxel_size = readVoxelSize(json);
   info.brick_size = json.at("brick_size").get<std::int64_t>();
   info.threshold = json.at("threshold").get<float>();
   info.air_level = json.at("air_level").get<float>();
@@ -386,7 +385,7 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   info.active_voxel_count = json.at("active_voxel_count").get<std::int64_t>();
   for (const auto& level : json.at("levels")) {
     info.levels.push_back({level.at("level").get<int>(), level.at("dims").get<Index3>(),
-                           level.at("voxel_size_mm").get<double>(),
+                           level.at("voxel_size_mm").get<VoxelSize>(),
                            level.at("bricks").get<std::vector<Index3>>()});
   }
   return info;

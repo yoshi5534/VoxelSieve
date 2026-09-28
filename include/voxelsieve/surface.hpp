@@ -16,6 +16,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -42,7 +43,7 @@ struct SurfaceOptions {
 
 struct SurfaceInfo {
   std::array<std::int64_t, 3> dims{};
-  double voxel_size_mm = 0.0;
+  VoxelSize voxel_size;
   int bits = 0;
   double band_voxels = 0.0;
   std::int64_t block_size = 8;
