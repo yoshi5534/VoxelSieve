@@ -145,8 +145,13 @@ struct CompareResult {
 [[nodiscard]] std::array<std::uint8_t, 3> deviationColor(double deviation_mm, double tolerance_mm,
                                                          double range_mm);
 
+/// Directions of the rendered views deviation_view_1.png, deviation_view_2.png: azimuth and
+/// elevation in degrees as in RenderView, one from above and one from below the other side.
+inline constexpr std::array<std::array<double, 2>, 2> kDeviationViews{
+    {{-60.0, 25.0}, {120.0, -25.0}}};
+
 /// Writes compare.json, deviation.ply (binary PLY with a float `deviation` and colours per
-/// vertex) and deviation_[xyz].png (views along the axes) into `dir`.
+/// vertex) and deviation_view_[12].png (shaded views, see kDeviationViews) into `dir`.
 void writeComparison(const CompareResult& result, const std::filesystem::path& dir);
 
 /// Writes the CAD model moved into scan coordinates as STL.

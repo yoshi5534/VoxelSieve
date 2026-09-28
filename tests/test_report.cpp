@@ -5,10 +5,12 @@
 #include <string>
 #include <vector>
 
+#include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/surface.hpp"
 #include "voxelsieve/synthetic.hpp"
 
 namespace voxelsieve {
@@ -220,6 +222,43 @@ TEST_F(ReportTest, DefaultTemplateRendersReportWithMissingFieldsMarked) {
   EXPECT_NE(html.find("Prüfkörper &lt;1&gt;"), std::string::npos);
   EXPECT_NE(html.find("Die Anforderungen sind nicht erfüllt."), std::string::npos);
   EXPECT_EQ(html.find("{{"), std::string::npos);
+}
+
+TEST_F(ReportTest, ShowsPartViewsAndTheNominalActualComparison) {
+  analyzeBoxWithLunker();
+  (void)writeSurface(*dataset_, dir_ / "surface.vss");
+  const SurfaceMask mask = SurfaceMask::open(dir_ / "surface.vss");
+  const CompareResult compared =
+      compareToCad(mask, boxMesh({kSize[0], kSize[1], kSize[2]}, {5.0, -2.0, 1.0}));
+  writeComparison(compared, dir_ / "comparison");
+
+  Json data = reportData(Json::object(), result_, PorosityOptions{}, Evaluation{}, dir_);
+  const std::string without = renderTemplate(defaultReportTemplate(), data);
+  EXPECT_EQ(without.find("Soll-Ist-Vergleich"), std::string::npos);
+  EXPECT_NE(without.find("7 Bewertung"), std::string::npos);
+
+  addPartImages(data, mask, result_);
+  addComparison(data, dir_ / "comparison", "box.stl");
+  const Json& images = data.at("images");
+  for (const char* name : {"part", "pores", "deviation_1", "deviation_2"}) {
+    EXPECT_TRUE(images.at(name).get<std::string>().starts_with("data:image/png;base64,")) << name;
+  }
+  EXPECT_NE(images.at("part"), images.at("pores"));
+  const auto histogram = images.at("deviation_histogram").get<std::string>();
+  EXPECT_TRUE(histogram.starts_with("<svg"));
+  EXPECT_NE(histogram.find("<rect"), std::string::npos);
+  const Json& comparison = data.at("comparison");
+  EXPECT_EQ(comparison.at("cad"), "box.stl");
+  EXPECT_EQ(comparison.at("tolerance"), "± 0,100 mm");
+  EXPECT_TRUE(comparison.at("within").get<std::string>().ends_with(" %"));
+
+  const std::string html = renderTemplate(defaultReportTemplate(), data);
+  EXPECT_NE(html.find("7 Soll-Ist-Vergleich"), std::string::npos);
+  EXPECT_NE(html.find("8 Bewertung"), std::string::npos);
+  EXPECT_NE(html.find("box.stl"), std::string::npos);
+  EXPECT_NE(html.find(images.at("pores").get<std::string>()), std::string::npos);
+  EXPECT_EQ(html.find("{{"), std::string::npos);
+  EXPECT_THROW(addComparison(data, dir_ / "none"), std::runtime_error);
 }
 
 }  // namespace

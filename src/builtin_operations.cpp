@@ -350,8 +350,12 @@ class Report final : public Operation {
     info_.title = "Prüfbericht";
     info_.description =
         "Evaluates the porosity result against the acceptance limits of the inspection order "
-        "(BDG P 202 scheme) and writes report.html and report.json.";
-    info_.inputs = {{"porosity", artifact::kPorosity, "Porosity result"}};
+        "(BDG P 202 scheme) and writes report.html and report.json. With a surface, the report "
+        "shows 3D views of the part and its pores; with a comparison, the nominal-actual "
+        "comparison with its views and histogram.";
+    info_.inputs = {{"porosity", artifact::kPorosity, "Porosity result"},
+                    {"surface", artifact::kSurface, "Surface for the 3D views of the part", true},
+                    {"comparison", artifact::kComparison, "Nominal-actual comparison", true}};
     info_.outputs = {{"report", artifact::kReport, "Report directory"}};
     info_.parameters = {
         {"type", "object"},
@@ -392,6 +396,14 @@ class Report final : public Operation {
     const Evaluation evaluation = evaluate(porosity, zones);
     std::vector<std::string> warnings;
     Json data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
+    if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
+      context.log("Rendering the part and its pores");
+      addPartImages(data, SurfaceMask::open(surface->second / "surface.vss"), porosity);
+    }
+    if (const auto comparison = context.inputs.find("comparison");
+        comparison != context.inputs.end()) {
+      addComparison(data, comparison->second);
+    }
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
     std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
