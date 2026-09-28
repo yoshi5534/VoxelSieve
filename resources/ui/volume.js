@@ -13,6 +13,16 @@ void main() {
   gl_Position = vec4(position, 0.0, 1.0);
 }`;
 
+/// Background styles: colours are top/centre and bottom/edge.
+const BACKGROUNDS = {
+  studio: { name: 'Studio hell', style: 2, colors: [[232, 234, 237], [150, 157, 166]] },
+  studioDunkel: { name: 'Studio dunkel', style: 2, colors: [[70, 76, 86], [14, 16, 19]] },
+  verlauf: { name: 'Verlauf blau', style: 1, colors: [[58, 72, 96], [10, 12, 18]] },
+  verlaufGrau: { name: 'Verlauf grau', style: 1, colors: [[96, 100, 106], [26, 28, 31]] },
+  schwarz: { name: 'Schwarz', style: 0, colors: [[18, 18, 18], [18, 18, 18]] },
+  weiss: { name: 'Weiß', style: 0, colors: [[255, 255, 255], [255, 255, 255]] },
+};
+
 const VOLUME_FRAGMENT = `#version 300 es
 precision highp float;
 precision highp sampler3D;
@@ -36,7 +46,9 @@ uniform float cut;       // texture x beyond which the part is cut away
 uniform vec3 surfaceColor;
 uniform vec3 poreColor;
 uniform vec3 zoneColor;
-uniform vec3 background;
+uniform vec3 background;   // top or centre colour
+uniform vec3 background2;  // bottom or edge colour
+uniform int backgroundStyle; // 0 plain, 1 vertical gradient, 2 studio
 
 // Opacities of the transfer function hold for this path length (1/128 of the largest axis), so
 // the picture does not depend on the level shown.
@@ -82,7 +94,20 @@ float stepOpacity(float opacity, float stepSize) {
   return 1.0 - pow(1.0 - min(opacity, 0.999), stepSize / kReferenceLength);
 }
 
+vec3 backgroundAt() {
+  if (backgroundStyle == 1) return mix(background2, background, ndc.y * 0.5 + 0.5);
+  if (backgroundStyle == 2) {
+    // Studio: a soft light in the middle falling off to the edges, the lower part a little darker
+    // like a floor.
+    float r = length(vec2(ndc.x * aspect * 0.55, ndc.y * 0.8 - 0.1));
+    vec3 c = mix(background, background2, smoothstep(0.05, 1.05, r));
+    return c * (1.0 - 0.15 * smoothstep(-0.1, -1.0, ndc.y));
+  }
+  return background;
+}
+
 void main() {
+  vec3 background = backgroundAt();
   vec3 direction = normalize(forward + ndc.x * aspect * 0.35 * right + ndc.y * 0.35 * up);
   float near;
   float far;
@@ -168,7 +193,7 @@ class VolumeViewer {
     this.surfaceColor = [209, 214, 219];
     this.poreColor = [230, 38, 31];
     this.zoneColor = [242, 204, 77];
-    this.background = [18, 18, 18];
+    this.background = { preset: 'studioDunkel', ...BACKGROUNDS.studioDunkel };
     this.histogram = new Array(256).fill(0);
     this.transfer = null;       // lookup table of 256 RGBA bytes
     this.yaw = 0.8;
@@ -178,6 +203,50 @@ class VolumeViewer {
     this.gl = null;
     this.pending = false;
     this.onChange = () => {};
+    this.onInteract = () => {};  // camera moved by the user
+  }
+
+  /// Everything that makes up the picture, for saving it with the project or as a named view.
+  getState() {
+    return {
+      key: this.volume?.key ?? null,
+      mode: this.mode, shading: this.shading, pores: this.pores, cut: this.cut,
+      threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
+      surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
+      background: this.background,
+    };
+  }
+
+  setState(saved) {
+    const keys = ['mode', 'shading', 'pores', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
+      'surfaceColor', 'poreColor', 'zoneColor', 'background'];
+    for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
+    this.requestDraw();
+  }
+
+  /// The current picture as a PNG data URL, drawn right now so the buffer is still there.
+  capture() {
+    this.draw();
+    return this.canvas.toDataURL('image/png');
+  }
+
+  /// Renders with other settings and returns a small PNG data URL, leaving the view unchanged.
+  renderPreview(settings, table, width = 240) {
+    const saved = this.getState();
+    const savedTable = this.transfer;
+    Object.assign(this, settings);
+    this.transfer = table;
+    this.transferUploaded = false;
+    this.draw();
+    const scaled = document.createElement('canvas');
+    scaled.width = width;
+    scaled.height = Math.round(width * this.canvas.height / Math.max(this.canvas.width, 1));
+    scaled.getContext('2d').drawImage(this.canvas, 0, 0, scaled.width, scaled.height);
+    this.setState(saved);
+    this.transfer = savedTable;
+    this.transferUploaded = false;
+    this.draw();
+    return scaled.toDataURL('image/png');
   }
 
   /// Loads the volume preview of a dataset step (with the overlay of a porosity step).
@@ -240,11 +309,15 @@ class VolumeViewer {
       this.pitch = Math.min(Math.max(drag.pitch + (event.clientY - drag.y) * 0.01, -1.5), 1.5);
       this.requestDraw();
     });
-    canvas.addEventListener('pointerup', () => { drag = null; });
+    canvas.addEventListener('pointerup', () => {
+      if (drag) this.onInteract();
+      drag = null;
+    });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
       this.distance = Math.min(Math.max(this.distance * Math.exp(event.deltaY * 0.001), 0.6), 8);
       this.requestDraw();
+      this.onInteract();
     }, { passive: false });
     new ResizeObserver(() => this.requestDraw()).observe(canvas);
     this.requestDraw();
@@ -340,6 +413,7 @@ class VolumeViewer {
   draw() {
     const gl = this.gl;
     const canvas = this.canvas;
+    if (!gl) return;
     const ratio = window.devicePixelRatio || 1;
     const width = Math.round(canvas.clientWidth * ratio);
     const height = Math.round(canvas.clientHeight * ratio);
@@ -349,10 +423,9 @@ class VolumeViewer {
       canvas.height = height;
     }
     gl.viewport(0, 0, width, height);
-    const background = this.background.map((c) => c / 255);
-    gl.clearColor(...background, 1);
+    gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!this.volume) return;
+    if (!this.volume || !this.program) return;
     if (!this.uploaded) this.upload();
     if (!this.transferUploaded) this.uploadTransfer();
     const [x, y, z] = this.volume.dims;
@@ -387,7 +460,9 @@ class VolumeViewer {
     color('surfaceColor', this.surfaceColor);
     color('poreColor', this.poreColor);
     color('zoneColor', this.zoneColor);
-    color('background', this.background);
+    color('background', this.background.colors[0]);
+    color('background2', this.background.colors[1]);
+    gl.uniform1i(uniform('backgroundStyle'), this.background.style);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
@@ -403,3 +478,4 @@ function cross(a, b) {
 }
 
 window.VolumeViewer = VolumeViewer;
+window.BACKGROUNDS = BACKGROUNDS;

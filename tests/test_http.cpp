@@ -48,6 +48,22 @@ Reply request(unsigned short port, http::verb verb, const std::string& target,
   return {response.result_int(), std::string(response[http::field::content_type]), response.body()};
 }
 
+std::string base64Encode(const std::string& bytes) {
+  static constexpr std::string_view kAlphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string text;
+  for (std::size_t i = 0; i < bytes.size(); i += 3) {
+    std::uint32_t chunk = 0;
+    for (std::size_t k = 0; k < 3; ++k) {
+      chunk = (chunk << 8U) | (i + k < bytes.size() ? static_cast<std::uint8_t>(bytes[i + k]) : 0U);
+    }
+    for (std::size_t k = 0; k < 4; ++k) {
+      text.push_back(i + k <= bytes.size() ? kAlphabet[(chunk >> (18U - 6U * k)) & 63U] : '=');
+    }
+  }
+  return text;
+}
+
 /// Blocks until released, to observe the studio while an operation runs.
 class Wait final : public Operation {
  public:
@@ -211,6 +227,40 @@ TEST_F(HttpTest, AnswersWhileAnOperationRuns) {
   status = call("project_status").json();
   EXPECT_TRUE(status.at("running").is_null());
   EXPECT_EQ(status.at("steps").size(), 1U);
+}
+
+TEST_F(HttpTest, SavesViewsWithLargePicturesAndKeepsThemAcrossOperations) {
+  ASSERT_EQ(call("project_create", {{"path", (dir_ / "p").string()}}).status, 200U);
+  // A picture larger than Beast's default body limit of 1 MB.
+  std::string png = "\x89PNG\r\n\x1a\n";
+  png.resize(std::size_t{3} << 20U, 'v');
+  const std::string encoded = base64Encode(png);
+  std::thread runner([this] { EXPECT_EQ(call("run_wait").status, 200U); });
+  for (int i = 0; i < 500 && call("project_status").json().at("running").is_null(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // While the operation runs on its copy of the project, views are still saved ...
+  EXPECT_EQ(call("view_set", {{"state", {{"stage", "view"}}}}).status, 200U);
+  const Reply saved = call(
+      "view_save", {{"name", "Übersicht"}, {"image_base64", "data:image/png;base64," + encoded}});
+  ASSERT_EQ(saved.status, 200U) << saved.body;
+  const int id = saved.json().at("id").get<int>();
+  release_.set_value();
+  runner.join();
+  // ... and kept when the operation finishes.
+  const Json status = call("project_status").json();
+  EXPECT_EQ(status.at("steps").size(), 1U);
+  EXPECT_EQ(status.at("view").at("stage"), "view");
+  ASSERT_EQ(status.at("saved_views").size(), 1U);
+  EXPECT_EQ(status.at("saved_views")[0].at("state").at("stage"), "view");
+  const Reply picture =
+      request(server_->port(), http::verb::get, "/views/" + std::to_string(id) + ".png");
+  EXPECT_EQ(picture.status, 200U);
+  EXPECT_EQ(picture.content_type, "image/png");
+  EXPECT_EQ(picture.body, png);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/views/99.png").status, 400U);
+  EXPECT_EQ(call("view_delete", {{"id", id}}).status, 200U);
+  EXPECT_TRUE(call("view_list").json().at("views").empty());
 }
 
 TEST_F(HttpTest, StopClosesOpenConnections) {

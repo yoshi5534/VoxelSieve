@@ -101,6 +101,50 @@ std::string base64(std::span<const std::uint8_t> bytes) {
   return text;
 }
 
+std::vector<std::uint8_t> decodeBase64(std::string_view text) {
+  // Accepts a data URL ("data:image/png;base64,...") as the canvas produces it.
+  if (const auto comma = text.find(','); text.starts_with("data:") && comma != text.npos) {
+    text.remove_prefix(comma + 1);
+  }
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(text.size() / 4 * 3);
+  std::uint32_t chunk = 0;
+  int bits = 0;
+  for (const char c : text) {
+    std::uint32_t value = 0;
+    if (c >= 'A' && c <= 'Z') {
+      value = static_cast<std::uint32_t>(c - 'A');
+    } else if (c >= 'a' && c <= 'z') {
+      value = static_cast<std::uint32_t>(c - 'a' + 26);
+    } else if (c >= '0' && c <= '9') {
+      value = static_cast<std::uint32_t>(c - '0' + 52);
+    } else if (c == '+') {
+      value = 62;
+    } else if (c == '/') {
+      value = 63;
+    } else if (c == '=' || c == '\n' || c == '\r') {
+      continue;
+    } else {
+      throw std::invalid_argument("Invalid base64 data");
+    }
+    chunk = (chunk << 6U) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push_back(static_cast<std::uint8_t>((chunk >> static_cast<unsigned>(bits)) & 0xFFU));
+    }
+  }
+  return bytes;
+}
+
+Json savedViewJson(const SavedView& view) {
+  return {{"id", view.id},
+          {"name", view.name},
+          {"created", view.created},
+          {"state", view.state},
+          {"has_image", view.has_image}};
+}
+
 int axisIndex(const std::string& axis) {
   if (axis == "x") {
     return 0;
@@ -248,6 +292,26 @@ std::vector<StudioMethod> Studio::methods() const {
          properties.erase("output");
          return objectSchema(properties);
        }()},
+      {"view_set",
+       "Stores how the project is shown (the UI sends its viewer state), so opening the project "
+       "shows it the same way. Not a step.",
+       objectSchema({{"state", {{"type", "object"}}}}, {"state"})},
+      {"view_save",
+       "Saves a view under a name: a view state (default: the current one) and optionally a PNG "
+       "picture of it. Saved views are listed in project_status and are not steps.",
+       objectSchema({{"name", {{"type", "string"}}},
+                     {"state", {{"type", "object"}}},
+                     {"image_base64", {{"type", "string"}, {"description", "PNG, base64"}}}},
+                    {"name"})},
+      {"view_list", "The saved views of the project with name, state and whether a picture exists.",
+       objectSchema(Json::object())},
+      {"view_image", "The picture of a saved view as a PNG image.",
+       objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
+      {"view_rename", "Renames a saved view.",
+       objectSchema({{"id", {{"type", "integer"}}}, {"name", {{"type", "string"}}}},
+                    Json::array({"id", "name"}))},
+      {"view_delete", "Deletes a saved view and its picture.",
+       objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, datasets "
        "(.vsieve), projects and inspection orders. Entries have a kind: dir, project, dataset, "
@@ -512,6 +576,14 @@ std::filesystem::path Studio::outputFile(int step, const std::string& output,
   return path;
 }
 
+std::filesystem::path Studio::viewImage(int id) const {
+  const std::scoped_lock lock(mutex_);
+  if (!project().savedView(id).has_image) {
+    throw std::invalid_argument("View " + std::to_string(id) + " has no picture");
+  }
+  return project().viewImage(id);
+}
+
 Json Studio::runOperation(const std::string& operation, Json params,
                           const std::function<void(double)>& progress) {
   // The operation runs on a copy of the project without holding the lock, so status, file and
@@ -549,6 +621,8 @@ Json Studio::runOperation(const std::string& operation, Json params,
   };
   const auto finish = [this, &working] {
     const std::scoped_lock lock(mutex_);
+    // Views saved while the operation ran went to the project, not to the working copy.
+    working->adoptViews(*project_);
     project_ = std::move(working);
     running_ = false;
     running_operation_.clear();
@@ -664,6 +738,45 @@ Json Studio::call(const std::string& method, const Json& arguments,
     }
     if (method == "view_slice") {
       return viewSlice(checked);
+    }
+    if (method == "view_set") {
+      project().setView(checked.at("state"));
+      return {{"view", project().view()}};
+    }
+    if (method == "view_save") {
+      const std::vector<std::uint8_t> png =
+          checked.contains("image_base64")
+              ? decodeBase64(checked.at("image_base64").get<std::string>())
+              : std::vector<std::uint8_t>{};
+      const Json state = checked.contains("state") ? checked.at("state") : project().view();
+      return savedViewJson(project().saveView(checked.at("name").get<std::string>(), state, png));
+    }
+    if (method == "view_list") {
+      Json views = Json::array();
+      for (const SavedView& view : project().savedViews()) {
+        views.push_back(savedViewJson(view));
+      }
+      return {{"views", views}};
+    }
+    if (method == "view_image") {
+      const SavedView& view = project().savedView(checked.at("id").get<int>());
+      if (!view.has_image) {
+        throw std::invalid_argument("View '" + view.name + "' has no picture");
+      }
+      std::ifstream in(project().viewImage(view.id), std::ios::binary);
+      const std::vector<std::uint8_t> png{std::istreambuf_iterator<char>(in),
+                                          std::istreambuf_iterator<char>()};
+      return {{"id", view.id},
+              {"name", view.name},
+              {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+    }
+    if (method == "view_rename") {
+      project().renameView(checked.at("id").get<int>(), checked.at("name").get<std::string>());
+      return savedViewJson(project().savedView(checked.at("id").get<int>()));
+    }
+    if (method == "view_delete") {
+      project().deleteView(checked.at("id").get<int>());
+      return {{"deleted", checked.at("id")}};
     }
     if (method == "browse") {
       return browse(checked.contains("path")

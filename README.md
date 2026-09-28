@@ -226,9 +226,21 @@ along each ray. The transfer function is edited on the histogram: click adds a c
 drag moves it, double click removes it; each point has its own colour, colour maps (Stahl,
 Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical settings. Pores
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
-part.
+part. The background can be a studio light, a gradient or a plain colour.
+
+When a volume is loaded, the view suggests two or three renderings from its histogram, each with a
+small picture: the density spread of the material, densities below the material (pores,
+loosened structure) and further peaks such as inclusions, or else the part as a solid body.
 
 ![3D view with pores and loosened zones inside the translucent part](docs/images/volume-view.png)
+
+The project remembers how it was shown: stage, slice, zoom and window, camera, transfer function,
+colours and background come back when it is opened again. "Ansicht speichern" keeps the current
+view under a name with a picture in the project (`views/<id>.png`); a click on it shows it again,
+and "Bild exportieren" downloads the picture. Views are presentation, not processing, so they are
+not steps and undo leaves them alone.
+
+![Saved views above the 3D view](docs/images/saved-views.png)
 
 ```sh
 vs-studio --project /data/casting.vsproj --plugins build/release/plugins
@@ -249,7 +261,8 @@ Register it with an MCP client as a stdio server, for example:
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
 `list_operations`, `dataset_info`, `view_slice` (a slice as an image, with pores and zones),
-`list_files`, `read_file`, `browse` and one `run_<operation>` per
+`view_list` and `view_image` (saved views and their pictures), `view_save`, `view_set`,
+`view_rename`, `view_delete`, `list_files`, `read_file`, `browse` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). Parameter schemas
 come from the operations, errors come back as tool errors with the reason, and long operations
 report progress. Datasets are never sent over the protocol, only their metadata and small text

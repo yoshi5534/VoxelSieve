@@ -14,6 +14,12 @@ const state = {
   volume: null,
   viewMode: 'slice',
   pores: { step: null, list: [] },
+  projectDir: null,     // directory of the open project, to notice when another one is opened
+  transfer: null,       // transfer function of the 3D view
+  restore: null,        // parts of a saved view state still to apply: {slice, volume, transfer}
+  savedState: {},       // view state last sent to the studio
+  suggestions: null,    // renderings suggested for the loaded volume: {key, items, images}
+  capture: null,        // returns the picture of the current view as a PNG data URL
 };
 
 // Labels of known parameters; forms show them in this order.
@@ -156,7 +162,150 @@ function clearError() {
 
 async function refresh() {
   state.status = await api('project_status');
+  if (!state.status.open) {
+    state.projectDir = null;
+  } else if (state.status.dir !== state.projectDir) {
+    projectOpened();
+  }
   render();
+}
+
+// ---------------------------------------------------------------------------------------------
+// View state: saved with the project, so it opens as it was left, and as named views
+
+/// Stage for a project without a saved view state.
+function defaultStage() {
+  if (latestOutput('report')) return 'report';
+  return latestOutput('dataset') ? 'analysis' : 'dataset';
+}
+
+function projectOpened() {
+  state.projectDir = state.status.dir;
+  state.viewer = null;
+  state.volume = null;
+  state.transfer = null;
+  state.suggestions = null;
+  state.pores = { step: null, list: [] };
+  state.savedState = state.status.view ?? {};
+  applyViewState(state.savedState);
+}
+
+/// Shows a view state: stage and view mode now, viewer settings once their data is loaded.
+function applyViewState(view) {
+  const stages = ['dataset', 'analysis', 'report', 'view'];
+  state.stage = stages.includes(view?.stage) ? view.stage : defaultStage();
+  if (view?.viewMode === 'slice' || view?.viewMode === '3d') state.viewMode = view.viewMode;
+  state.restore = { slice: view?.slice ?? null, volume: view?.volume ?? null,
+    transfer: view?.transfer ?? null };
+}
+
+function collectViewState() {
+  const previous = state.savedState ?? {};
+  const pending = state.restore ?? {};
+  const transfer = state.transfer?.points
+    ? { key: state.transfer.key, preset: state.transfer.preset,
+      colorMap: state.transfer.colorMap, points: state.transfer.points }
+    : pending.transfer ?? previous.transfer ?? null;
+  return {
+    stage: state.stage,
+    viewMode: state.viewMode,
+    slice: state.viewer?.info ? state.viewer.getState() : pending.slice ?? previous.slice ?? null,
+    volume: state.volume?.volume ? state.volume.getState()
+      : pending.volume ?? previous.volume ?? null,
+    transfer,
+  };
+}
+
+let viewSaveTimer = null;
+
+/// Sends the view state to the studio shortly after the last change.
+function scheduleViewSave() {
+  if (!state.status.open) return;
+  clearTimeout(viewSaveTimer);
+  viewSaveTimer = setTimeout(async () => {
+    const view = collectViewState();
+    if (JSON.stringify(view) === JSON.stringify(state.savedState)) return;
+    try {
+      await api('view_set', { state: view });
+      state.savedState = view;
+    } catch {
+      // Not worth an error message; the next change tries again.
+    }
+  }, 700);
+}
+
+function downloadDataUrl(url, name) {
+  const link = el('a', { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function fileName(name) {
+  return (name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'ansicht') + '.png';
+}
+
+async function saveNamedView(name) {
+  clearError();
+  try {
+    const image = state.capture ? state.capture() : undefined;
+    await api('view_save', { name, state: collectViewState(), image_base64: image });
+    await refresh();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function showSavedView(view) {
+  applyViewState(view.state);
+  render();
+}
+
+async function renameSavedView(view) {
+  const name = window.prompt('Neuer Name der Ansicht', view.name);
+  if (!name || name === view.name) return;
+  await action(() => api('view_rename', { id: view.id, name }));
+}
+
+async function deleteSavedView(view) {
+  if (!window.confirm('Ansicht „' + view.name + '“ löschen?')) return;
+  await action(() => api('view_delete', { id: view.id }));
+}
+
+/// Toolbar of the view stage: save the current view under a name, export it as a picture, and
+/// the saved views as pictures to click.
+function renderViewBar(panel, modes) {
+  const views = state.status.saved_views ?? [];
+  const name = el('input', { type: 'text', placeholder: 'Ansicht ' + (views.length + 1),
+    title: 'Name der Ansicht', className: 'view-name' });
+  const save = () => saveNamedView(name.value.trim() || name.placeholder);
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') save();
+  });
+  panel.append(el('div', { className: 'viewer-tools view-bar' }, modes,
+    el('span', { className: 'sep' }), name,
+    el('button', { onclick: save, title: 'Aktuelle Ansicht mit Bild im Projekt speichern' },
+      'Ansicht speichern'),
+    el('button', {
+      onclick: () => state.capture &&
+        downloadDataUrl(state.capture(), fileName(name.value.trim() || 'ansicht')),
+      title: 'Aktuelle Ansicht als PNG herunterladen',
+    }, 'Bild exportieren')));
+  if (!views.length) return;
+  panel.append(el('div', { className: 'saved-views' }, views.map((view) => el('div', {
+    className: 'saved-view', title: 'Ansicht zeigen',
+  },
+  el('button', { className: 'thumb', onclick: () => showSavedView(view) },
+    view.has_image ? el('img', { src: 'views/' + view.id + '.png', alt: view.name, loading: 'lazy' })
+      : el('span', { className: 'hint' }, 'ohne Bild')),
+  el('div', { className: 'saved-view-row' },
+    el('span', { className: 'saved-view-name' }, view.name),
+    view.has_image ? el('a', { href: 'views/' + view.id + '.png', download: fileName(view.name),
+      title: 'Bild herunterladen' }, '⤓') : null,
+    el('button', { className: 'icon', title: 'Umbenennen', onclick: () => renameSavedView(view) },
+      '✎'),
+    el('button', { className: 'icon', title: 'Löschen', onclick: () => deleteSavedView(view) },
+      '×'))))));
 }
 
 async function action(work) {
@@ -652,7 +801,7 @@ function renderViewStage(panel) {
       className: state.viewMode === mode ? 'on' : null,
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
-  panel.append(modes);
+  renderViewBar(panel, modes);
   if (state.viewMode === '3d') {
     renderVolumeView(panel, dataset);
     return;
@@ -705,6 +854,7 @@ function renderViewStage(panel) {
         (value === undefined ? '' : ' · Grauwert ' + formatNumber(Math.round(value)));
     }
     status.textContent = text;
+    scheduleViewSave();
   };
 
   const tools = el('div', { className: 'viewer-tools' },
@@ -735,9 +885,14 @@ function renderViewStage(panel) {
   panel.append(el('div', { className: 'viewer' },
     el('div', {}, tools, canvas, status), side));
 
+  state.capture = () => viewer.capture();
   api('dataset_info', { step: dataset.step.id }).then((info) => {
     viewer.setDataset(info, dataset.step.id, porosity);
     viewer.attach(canvas);
+    if (state.restore?.slice) {
+      viewer.setState(state.restore.slice);
+      state.restore.slice = null;
+    }
     viewer.onChange();
   }).catch(showError);
 }
@@ -750,7 +905,7 @@ function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
   // The transfer function outlives re-rendering; it is reset when another volume is loaded.
   const transfer = state.transfer ??
-    (state.transfer = { key: null, preset: 'durchsicht', colorMap: 'stahl', points: null });
+    (state.transfer = { key: null, preset: null, colorMap: 'viridis', points: null });
   const porosity = porosityOf(dataset.step.id);
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
@@ -758,6 +913,14 @@ function renderVolumeView(panel, dataset) {
   const editor = new TransferEditor(histogram);
   const status = el('div', { className: 'viewer-status' }, 'Lade Übersicht …');
   const hint = el('div', { className: 'viewer-status' });
+  const suggestionRow = el('div', { className: 'suggestions' });
+  // Every change of the picture is also kept in the project.
+  const update = (settings) => {
+    volume.set(settings);
+    scheduleViewSave();
+  };
+  volume.onInteract = scheduleViewSave;
+  state.capture = () => volume.capture();
 
   const colorInput = (title, get, set) => {
     const input = el('input', { type: 'color', title, value: hexColor(get()) });
@@ -767,21 +930,42 @@ function renderVolumeView(panel, dataset) {
   const mode = el('select', { title: 'Darstellung' },
     VOLUME_MODES.map((name, i) => el('option', { value: i, selected: volume.mode === i }, name)));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
-  shading.addEventListener('change', () => volume.set({ shading: shading.checked }));
+  shading.addEventListener('change', () => update({ shading: shading.checked }));
   const surface = colorInput('Farbe der Oberfläche', () => volume.surfaceColor,
-    (rgb) => volume.set({ surfaceColor: rgb }));
+    (rgb) => update({ surfaceColor: rgb }));
   const cut = el('input', { type: 'range', min: 0, max: 1, step: 0.005, value: volume.cut,
     title: 'Schnitt entlang x' });
-  cut.addEventListener('input', () => volume.set({ cut: Number(cut.value) }));
+  cut.addEventListener('input', () => update({ cut: Number(cut.value) }));
   const pores = el('input', { type: 'checkbox', checked: volume.pores,
     disabled: porosity === null });
-  pores.addEventListener('change', () => volume.set({ pores: pores.checked }));
+  pores.addEventListener('change', () => update({ pores: pores.checked }));
   const poreColor = colorInput('Farbe der Poren', () => volume.poreColor,
-    (rgb) => volume.set({ poreColor: rgb }));
+    (rgb) => update({ poreColor: rgb }));
   const zoneColor = colorInput('Farbe der aufgelockerten Zonen', () => volume.zoneColor,
-    (rgb) => volume.set({ zoneColor: rgb }));
-  const background = colorInput('Hintergrund', () => volume.background,
-    (rgb) => volume.set({ background: rgb }));
+    (rgb) => update({ zoneColor: rgb }));
+
+  // Background: a style with two colours (top or centre, bottom or edge) that can be changed.
+  const backgroundStyle = el('select', { title: 'Hintergrund' },
+    Object.entries(BACKGROUNDS).map(([key, background]) => el('option', {
+      value: key, selected: key === volume.background.preset }, background.name)),
+    el('option', { value: 'eigen', selected: !(volume.background.preset in BACKGROUNDS) },
+      'Eigene Farben'));
+  const backgroundColors = [0, 1].map((i) => colorInput(
+    i === 0 ? 'Hintergrund oben oder Mitte' : 'Hintergrund unten oder Rand',
+    () => volume.background.colors[i],
+    (rgb) => {
+      const colors = [...volume.background.colors];
+      colors[i] = rgb;
+      const style = volume.background.style === 0 ? 1 : volume.background.style;
+      update({ background: { preset: 'eigen', name: 'Eigene Farben', style, colors } });
+      backgroundStyle.value = 'eigen';
+    }));
+  backgroundStyle.addEventListener('change', () => {
+    const preset = BACKGROUNDS[backgroundStyle.value];
+    if (!preset) return;
+    update({ background: { preset: backgroundStyle.value, ...preset } });
+    backgroundColors.forEach((input, i) => { input.value = hexColor(preset.colors[i]); });
+  });
 
   const preset = el('select', { title: 'Vorlage der Transferfunktion' },
     el('option', { value: '' }, 'Vorlage …'),
@@ -798,14 +982,13 @@ function renderVolumeView(panel, dataset) {
     el('span', { className: 'sep' }), 'Punkt', pointColor, pointOpacity, '%', removePoint);
   const surfaceTools = el('label', { className: 'group' }, 'Farbe', surface);
 
-  const reset = (name) => {
-    transfer.preset = name;
-    transfer.colorMap = { dichte: 'viridis', rand: 'kupfer' }[name] ?? 'stahl';
-    colorMap.value = transfer.colorMap;
-    editor.setPoints(transferPreset(name, volume.threshold));
-  };
   preset.addEventListener('change', () => {
-    if (preset.value) reset(preset.value);
+    if (preset.value) {
+      transfer.preset = preset.value;
+      transfer.colorMap = { dichte: 'viridis', rand: 'kupfer' }[preset.value] ?? 'stahl';
+      colorMap.value = transfer.colorMap;
+      editor.setPoints(transferPreset(preset.value, volume.threshold));
+    }
     preset.value = '';
   });
   colorMap.addEventListener('change', () => {
@@ -830,12 +1013,14 @@ function renderVolumeView(panel, dataset) {
     transfer.points = editor.points;
     volume.set({ threshold: editor.threshold });
     volume.setTransfer(lookupTable(editor.points));
+    scheduleViewSave();
   };
   const valueAt = (x) => {
     const w = volume.volume?.window;
     return w ? w[0] + x * (w[1] - w[0]) : x * 255;
   };
-  editor.label = (x) => formatNumber(Math.round(valueAt(x)));
+  const label = (x) => formatNumber(Math.round(valueAt(x)));
+  editor.label = label;
   editor.onSelect = () => {
     const point = editor.points[editor.selected];
     pointColor.disabled = !point;
@@ -847,18 +1032,17 @@ function renderVolumeView(panel, dataset) {
     }
     if (editor.hover !== null) {
       const bin = Math.min(Math.round(editor.hover * 255), 255);
-      hint.textContent = 'Grauwert ' + formatNumber(Math.round(valueAt(editor.hover))) + ' · ' +
+      hint.textContent = 'Grauwert ' + label(editor.hover) + ' · ' +
         formatNumber(volume.histogram[bin]) + ' Voxel';
     } else {
       hint.textContent = editor.mode === 'threshold'
-        ? 'Schwelle Luft/Material: ' + formatNumber(Math.round(valueAt(editor.threshold))) +
-          ' · im Histogramm ziehen'
+        ? 'Schwelle Luft/Material: ' + label(editor.threshold) + ' · im Histogramm ziehen'
         : 'Kurve: Deckkraft je Grauwert · Klicken setzt einen Punkt, Ziehen verschiebt ihn, ' +
           'Doppelklick löscht ihn';
     }
   };
   const applyMode = () => {
-    volume.set({ mode: Number(mode.value) });
+    update({ mode: Number(mode.value) });
     const surfaceMode = volume.mode === 0;
     editor.setMode(surfaceMode ? 'threshold' : 'curve');
     curveTools.hidden = surfaceMode;
@@ -867,18 +1051,51 @@ function renderVolumeView(panel, dataset) {
   };
   mode.addEventListener('change', applyMode);
 
+  /// Uses a suggested rendering: transfer function mode with its curve and lighting.
+  const useSuggestion = (suggestion) => {
+    transfer.preset = null;
+    transfer.colorMap = suggestion.colorMap;
+    transfer.points = suggestion.points.map((p) => ({ ...p, color: [...p.color] }));
+    volume.set({ mode: 1, shading: suggestion.shading });
+    render();
+  };
+  const renderSuggestions = () => {
+    const suggestions = state.suggestions;
+    if (!suggestions?.items.length) {
+      suggestionRow.hidden = true;
+      return;
+    }
+    suggestionRow.hidden = false;
+    suggestionRow.replaceChildren(el('b', {}, 'Vorschläge'),
+      ...suggestions.items.map((suggestion, i) => el('button', {
+        className: 'suggestion', onclick: () => useSuggestion(suggestion),
+        title: suggestion.description + ' (Grauwerte ' + label(suggestion.range[0]) + ' bis ' +
+          label(suggestion.range[1]) + ')',
+      }, suggestions.images[i] ? el('img', { src: suggestions.images[i], alt: '' }) : null,
+      el('span', {}, el('b', {}, suggestion.name), el('br'), suggestion.description))));
+  };
+
   volume.onChange = () => {
     const v = volume.volume;
     if (!v) return;
+    if (state.suggestions?.key !== v.key) {
+      state.suggestions = { key: v.key, items: suggestTransfers(volume.histogram), images: [] };
+    }
     if (transfer.key !== v.key || !transfer.points) {
+      // A new volume starts with the first suggestion, or a preset when there is none.
+      const first = state.suggestions.items[0];
       transfer.key = v.key;
-      transfer.points = transferPreset(transfer.preset, volume.threshold);
+      transfer.preset = first ? null : 'durchsicht';
+      transfer.colorMap = first ? first.colorMap : 'stahl';
+      transfer.points = first ? first.points : transferPreset('durchsicht', volume.threshold);
+      colorMap.value = transfer.colorMap;
     }
     editor.threshold = volume.threshold;
     editor.points = transfer.points;
     editor.setHistogram(volume.histogram);
     volume.setTransfer(lookupTable(editor.points));
     editor.onSelect();
+    renderSuggestions();
     status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
       formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
   };
@@ -886,8 +1103,8 @@ function renderVolumeView(panel, dataset) {
     el('label', { className: 'group' }, shading, 'Beleuchtung'),
     el('label', { className: 'group' }, 'Schnitt x', cut),
     el('label', { className: 'group' }, pores, 'Poren', poreColor, zoneColor),
-    el('label', { className: 'group' }, 'Hintergrund', background)),
-  canvas, status,
+    el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
+  canvas, status, suggestionRow,
   el('div', { className: 'transfer-editor' },
     el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogramm'), curveTools, surfaceTools),
     histogram, hint));
@@ -898,7 +1115,28 @@ function renderVolumeView(panel, dataset) {
     status.textContent = error.message;
     return;
   }
-  volume.load(dataset.step.id, porosity).then(() => volume.onChange()).catch((error) => {
+  volume.load(dataset.step.id, porosity).then(() => {
+    const key = volume.volume.key;
+    const restore = state.restore;
+    if (restore?.volume || restore?.transfer) {
+      // A saved view of this volume: its settings replace the ones the controls were built with.
+      if (restore.volume?.key === key) volume.setState(restore.volume);
+      if (restore.transfer?.key === key && restore.transfer.points?.length >= 2) {
+        Object.assign(transfer, restore.transfer);
+      }
+      restore.volume = null;
+      restore.transfer = null;
+      render();
+      return;
+    }
+    volume.onChange();
+    if (state.suggestions && !state.suggestions.images.length) {
+      // Small pictures of the suggestions, rendered once per volume.
+      state.suggestions.images = state.suggestions.items.map((suggestion) => volume.renderPreview(
+        { mode: 1, shading: suggestion.shading }, lookupTable(suggestion.points)));
+      renderSuggestions();
+    }
+  }).catch((error) => {
     status.textContent = error.message;
   });
   volume.onChange();
@@ -914,10 +1152,12 @@ function render() {
   renderStages();
   const panel = $('stage');
   panel.replaceChildren();
+  state.capture = null;
   if (state.stage === 'dataset') renderDatasetStage(panel);
   else if (state.stage === 'analysis') renderAnalysisStage(panel);
   else if (state.stage === 'view') renderViewStage(panel);
   else renderReportStage(panel);
+  scheduleViewSave();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -928,7 +1168,6 @@ async function newProject() {
   if (!chosen) return;
   await action(async () => {
     await api('project_create', { path: chosen.path });
-    state.stage = 'dataset';
   });
 }
 
@@ -937,7 +1176,6 @@ async function openProject() {
   if (!chosen) return;
   await action(async () => {
     await api('project_open', { path: chosen.path });
-    state.stage = latestOutput('report') ? 'report' : 'dataset';
   });
 }
 
@@ -988,9 +1226,6 @@ async function start() {
   try {
     state.operations = (await api('list_operations')).operations;
     await refresh();
-    if (latestOutput('report')) state.stage = 'report';
-    else if (latestOutput('dataset')) state.stage = 'analysis';
-    render();
   } catch (error) {
     showError(error);
   }

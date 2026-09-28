@@ -4,6 +4,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,15 @@ struct Step {
   std::string finished;
   std::vector<std::string> messages;
   nlohmann::json summary = nlohmann::json::object();
+};
+
+/// A view saved under a name: the view state of the UI and a picture of it (views/<id>.png).
+struct SavedView {
+  int id = 0;
+  std::string name;
+  std::string created;
+  nlohmann::json state = nlohmann::json::object();
+  bool has_image = false;
 };
 
 /// A project: a directory with project.json and one directory per step (ADR 0008). Every change
@@ -70,6 +80,23 @@ class Project {
   /// Copies the project to `dir` (which must not exist) and continues there.
   void saveAs(const std::filesystem::path& dir);
 
+  /// How the project was last shown (stage, viewer, camera, transfer function, ...), so opening it
+  /// shows it the same way. Views are presentation, not processing: they are not steps and not
+  /// part of undo (ADR 0008).
+  [[nodiscard]] const nlohmann::json& view() const { return view_; }
+  void setView(const nlohmann::json& state);
+  [[nodiscard]] const std::vector<SavedView>& savedViews() const { return saved_views_; }
+  /// Saves a view under a name, with a PNG picture of it when `png` is not empty.
+  const SavedView& saveView(const std::string& name, const nlohmann::json& state,
+                            std::span<const std::uint8_t> png = {});
+  void renameView(int id, const std::string& name);
+  void deleteView(int id);
+  [[nodiscard]] const SavedView& savedView(int id) const;
+  [[nodiscard]] std::filesystem::path viewImage(int id) const;
+  /// Takes the view state and saved views of `other`, the same project changed meanwhile (an
+  /// operation runs on a copy while the UI keeps saving views).
+  void adoptViews(const Project& other);
+
   /// Absolute path of a step output.
   [[nodiscard]] std::filesystem::path resolve(const ArtifactRef& ref) const;
   /// Latest active output of the given type.
@@ -90,6 +117,9 @@ class Project {
   std::vector<Step> steps_;
   std::size_t cursor_ = 0;
   int next_id_ = 1;
+  nlohmann::json view_ = nlohmann::json::object();
+  std::vector<SavedView> saved_views_;
+  int next_view_id_ = 1;
 };
 
 }  // namespace voxelsieve
