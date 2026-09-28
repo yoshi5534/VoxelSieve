@@ -47,3 +47,13 @@ streamed to disk or straight into `writeDataset`.
 - Not modelled yet: streaks and metal artefacts, cone-beam artefacts, scatter, detector blur
   (the partial-volume ramp stands in for it), gas pores as separate spheres, and defects placed
   from a file. They can be added to `SyntheticSpec` without changing the output format.
+
+## Addendum (2026-09-28): unsharpness and sample parts
+
+Real scans have no sharp one-voxel partial-volume edges: focal spot, detector and reconstruction
+filter blur them. `SyntheticSpec::blur_sigma_mm` convolves the grey values with a Gaussian point
+spread function before rings and noise are added. The blur keeps the sum of the grey values, so
+volumes stay exact, and regions are computed with a halo so the result does not depend on how the
+volume is split. `voxelsieve/parts.hpp` adds sample castings (housing, bracket, hub) defined as
+signed distance functions, so defect and surface analyses are tested on realistic geometry
+(ADR 0009).

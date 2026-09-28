@@ -121,12 +121,38 @@ artefacts, plus a JSON sidecar with the ground truth. It is the test bed for def
 - `--loosening N`: zones of loosened microstructure (Gefügeauflockerung), many small pores near or
   below the voxel size up to `--loosening-porosity` (default 5 %).
 - `--noise`, `--cupping` (beam hardening), `--rings` (ring artefacts around the z axis).
-- `--box X Y Z` uses a box instead of an STL file.
+- `--blur MM`: unsharpness of the imaging chain, a Gaussian point spread function with this sigma.
+- `--box X Y Z` uses a box instead of an STL file; `--part housing|bracket|hub` uses a sample
+  casting with walls, ribs, bosses, bores and fillets (`--scale`, `--stl` writes its mesh).
+
+![Sample parts: gearbox housing, angle bracket and wheel hub](docs/images/sample-parts.png)
 
 `part.json` lists every defect with its position, size and void volume, and the total porosity.
 The grey values carry the void volume exactly, even for pores much smaller than a voxel (see
 `docs/adr/0005-synthetic-scans-from-meshes.md`). The scan is computed on demand and streamed to
 disk: 1040 × 840 × 640 voxels (1.1 GB) with 15 defects take 41 s on 4 cores.
+
+## Surface
+
+`vs-surface` locates the surface of the part (ISO 50 % by default) and stores it as a voxel mask
+with 4 bits per voxel that encode the signed distance to the surface in steps of 1/7 voxel within
+±1 voxel; everything farther is just "material" or "air". Only 8³ blocks that touch the surface
+are stored, zstd-compressed per brick, so the file grows with the surface area, not with the scan:
+
+```sh
+./build/release/apps/vs-synth/vs-synth --part housing --voxel-size 0.1 --blur 0.05 --out housing
+./build/release/apps/vs-sieve/vs-sieve housing.raw --out housing.vsieve
+./build/release/apps/vs-surface/vs-surface housing.vsieve --out housing.vss --stl housing.stl
+```
+
+The housing above (520 × 400 × 220 voxels) gives a 156 kB file, 588 : 1 against the 16-bit raw
+volume, and its triangulated surface lies 0.033 voxels (RMS) from the analytic surface.
+`voxelsieve::SurfaceMask` reads codes and distances of single voxels or regions, and converts to a
+VDB level set or a mesh; `--vdb` exports the level set for Blender or Houdini. The studio runs it
+as the operation "Oberfläche" and shows the middle slices of the mask. Format and measurements:
+`docs/adr/0009-surface-distance-mask.md`.
+
+![Surface operation in the studio](docs/images/surface-operation.png)
 
 ## Porosity analysis
 
@@ -189,7 +215,7 @@ change their inputs.
 
 ```cpp
 voxelsieve::OperationRegistry registry;
-voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, porosity, report
+voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, porosity, surface, report
 registry.loadPlugins("plugins");                    // every *.so in the directory
 auto project = voxelsieve::Project::create("casting.vsproj", "Casting 4711");
 project.run(registry, "import_raw", {{"path", "scan.raw"}});
