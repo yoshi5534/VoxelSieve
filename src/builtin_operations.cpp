@@ -16,6 +16,7 @@
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -141,6 +142,73 @@ class ImportRaw final : public Operation {
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
     result.summary["header_bytes"] = source.headerBytes();
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class ImportTiff final : public Operation {
+ public:
+  ImportTiff() {
+    info_.id = "import_tiff";
+    info_.title = "TIFF-Stapel importieren";
+    info_.description =
+        "Removes the outside air from a TIFF stack and writes a bricked dataset. Reads a "
+        "directory of slices, a multi-page TIFF or a ZIP archive of either without extracting "
+        "it; slices are sorted by name, numbers by value.";
+    info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"path", {{"type", "string"}, {"description", "Directory, TIFF file or ZIP archive"}}},
+          {"folder",
+           {{"type", "string"},
+            {"description",
+             "Folder of the slices when there are several; default: the grey values, not "
+             "labels or masks"}}},
+          {"voxel_size_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description", "Default: from the files, else 1 mm"}}},
+          {"threshold",
+           {{"type", "number"}, {"description", "Air/material grey value; default: Otsu"}}},
+          {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
+          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
+        {"required", {"path"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    TiffStackOptions tiff;
+    tiff.folder = p.value("folder", std::string());
+    if (p.contains("voxel_size_mm")) {
+      tiff.voxel_size_mm = p.at("voxel_size_mm").get<double>();
+    }
+    const TiffStackSource source(p.at("path").get<std::string>(), tiff);
+    if (!source.folder().empty()) {
+      context.log("Slices from " + source.folder());
+    }
+    for (const std::string& other : source.otherFolders()) {
+      context.log("Also in the input: " + other + " (choose with 'folder')");
+    }
+    if (!tiff.voxel_size_mm && source.fileVoxelSizeMm() <= 0.0) {
+      context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
+    }
+    DatasetOptions options;
+    if (p.contains("threshold")) {
+      options.threshold = p.at("threshold").get<float>();
+    }
+    options.margin_voxels = p.at("margin_voxels").get<int>();
+    options.brick_size = p.at("brick_size").get<std::int64_t>();
+    const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
+    OperationResult result;
+    result.outputs["dataset"] = "dataset.vsieve";
+    result.summary = datasetSummary(info);
+    result.summary["slices"] = source.dims()[2];
+    result.summary["bits_per_sample"] = source.bitsPerSample();
     return result;
   }
 
@@ -439,6 +507,7 @@ class Report final : public Operation {
 void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<OpenDataset>());
   registry.add(std::make_shared<ImportRaw>());
+  registry.add(std::make_shared<ImportTiff>());
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());

@@ -38,12 +38,15 @@ add_library(voxelsieve SHARED
   dataset_reader.cpp
   detail/blocks.cpp
   detail/png.cpp
+  detail/tiff.cpp
+  detail/zip.cpp
   sieve.cpp
   source.cpp
   surface.cpp
   compare.cpp
   render.cpp
   synthetic.cpp
+  tiff.cpp
   vdb.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
