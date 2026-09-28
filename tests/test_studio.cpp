@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -99,6 +100,20 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     EXPECT_NE(std::find(names.begin(), names.end(), name), names.end()) << name;
   }
 
+  // Nominal-actual comparison with the box as CAD model, placed elsewhere.
+  writeStl(dir_ / "cad.stl", boxMesh({6.0, 5.0, 4.0}, {10.0, -3.0, 2.0}));
+  const Json compared = studio.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}});
+  EXPECT_EQ(compared.at("status"), "done");
+  EXPECT_GT(compared.at("summary").at("within_tolerance_percent").get<double>(), 90.0);
+  EXPECT_LT(std::abs(compared.at("summary").at("deviation_mean_mm").get<double>()), 0.02);
+  const auto deviation = studio.deviationMesh(std::nullopt);
+  EXPECT_FALSE(deviation->mesh.triangles.empty());
+  EXPECT_EQ(deviation->deviation_mm.size(), deviation->mesh.points.size());
+  EXPECT_DOUBLE_EQ(deviation->tolerance_mm, 0.1);
+  EXPECT_EQ(studio.deviationMesh(std::nullopt), deviation);  // cached
+  EXPECT_THROW((void)studio.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
+               std::exception);
+
   // Explicit inputs by step id.
   const Json histogram = studio.call(
       "run_histogram", {{"bins", 8}, {"inputs", {{"dataset", {{"step", imported.at("id")}}}}}});
@@ -113,7 +128,7 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Studio other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 4U);
+  EXPECT_EQ(reopened.at("steps").size(), 6U);
 
   EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);

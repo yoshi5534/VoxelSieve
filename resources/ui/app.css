@@ -124,6 +124,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .viewer-tools input[type=number] { width: 90px; }
 .viewer-tools .group { display: flex; gap: 4px; align-items: center; }
 .viewer-tools button.on { border-color: var(--accent); color: var(--accent); }
+.deviation-legend { margin-top: 8px; font-size: 12px; color: var(--muted); max-width: 520px; }
+.deviation-legend .legend-bar { height: 12px; border-radius: 3px; }
+.deviation-legend .legend-labels { position: relative; height: 16px; margin-top: 3px;
+  font-variant-numeric: tabular-nums; }
+.deviation-legend .legend-labels span { position: absolute; white-space: nowrap; }
+.deviation-legend .legend-note { margin-top: 2px; }
 .viewer-status { color: var(--muted); font-size: 12px; margin-top: 6px; font-variant-numeric: tabular-nums; }
 .pores { max-height: 72vh; overflow-y: auto; font-size: 12px; }
 .pores table { border-collapse: collapse; width: 100%; }

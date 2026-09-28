@@ -290,7 +290,7 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 5U);
+  EXPECT_EQ(registry.all().size(), 6U);
 
   SyntheticSpec spec;
   spec.noise_sigma = 300.0;

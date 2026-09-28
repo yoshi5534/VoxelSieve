@@ -3,7 +3,8 @@
 // "Transferfunktion" composites colour and opacity per grey value (transfer.js) and
 // "Maximumprojektion" shows the densest value along each ray. Pores and zones of a porosity
 // analysis are drawn in their own colours. A cut along x opens the part. "Extrahierte Oberfläche"
-// draws the mesh of a surface step (ADR 0009) instead of the grey values.
+// draws the mesh of a surface step (ADR 0009) instead of the grey values, "Soll-Ist-Abweichung"
+// the surface of a nominal-actual comparison coloured by its deviation from the CAD model.
 'use strict';
 
 const VOLUME_VERTEX = `#version 300 es
@@ -27,6 +28,7 @@ const BACKGROUNDS = {
 // The surface mesh in level-0 voxel coordinates, projected like the rays of VOLUME_FRAGMENT.
 const MESH_VERTEX = `#version 300 es
 in vec3 position;
+in float deviation;   // mm, for mode 4
 uniform vec3 extent;  // level-0 voxels that span the texture (preview dims times 2^level)
 uniform vec3 box;
 uniform vec3 eye;
@@ -36,7 +38,9 @@ uniform vec3 forward;
 uniform float aspect;
 out vec3 world;
 out vec3 tex;
+out float dev;
 void main() {
+  dev = deviation;
   tex = (position + 0.5) / extent;
   world = (tex - 0.5) * 2.0 * box;
   vec3 d = world - eye;
@@ -51,12 +55,23 @@ const MESH_FRAGMENT = `#version 300 es
 precision highp float;
 in vec3 world;
 in vec3 tex;
+in float dev;
 out vec4 color;
 uniform vec3 eye;
 uniform vec3 right;
 uniform vec3 up;
 uniform float cut;
 uniform vec3 surfaceColor;
+uniform int deviationColors;  // 1: colour by the deviation, as deviationColor in compare.cpp
+uniform float tolerance;
+uniform float range;
+vec3 deviationColor(float d) {
+  float a = abs(d);
+  if (a <= tolerance) return vec3(60.0, 190.0, 90.0) / 255.0;
+  float t = clamp((a - tolerance) / max(range - tolerance, 1e-6), 0.0, 1.0);
+  if (d > 0.0) return mix(vec3(240.0, 225.0, 40.0), vec3(215.0, 30.0, 30.0), t) / 255.0;
+  return mix(vec3(40.0, 205.0, 240.0), vec3(40.0, 60.0, 215.0), t) / 255.0;
+}
 void main() {
   if (tex.x > cut) discard;
   vec3 normal = normalize(cross(dFdx(world), dFdy(world)));
@@ -65,7 +80,8 @@ void main() {
   float diffuse = abs(dot(normal, light));
   vec3 halfway = normalize(light - direction);
   float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
-  color = vec4(surfaceColor * (0.25 + 0.75 * diffuse) + vec3(specular), 1.0);
+  vec3 base = deviationColors == 1 ? deviationColor(dev) : surfaceColor;
+  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), 1.0);
 }`;
 
 const VOLUME_FRAGMENT = `#version 300 es
@@ -154,7 +170,7 @@ vec3 backgroundAt() {
 
 void main() {
   vec3 background = backgroundAt();
-  if (mode == 3) {
+  if (mode >= 3) {
     color = vec4(background, 1.0);
     return;
   }
@@ -427,18 +443,31 @@ class VolumeViewer {
   }
 
   /// Loads the mesh of a surface step for mode 3.
-  async loadSurface(step) {
-    const key = String(step);
+  loadSurface(step) {
+    return this.loadMesh('surface', step);
+  }
+
+  /// Loads the compared surface of a nominal-actual comparison step for mode 4.
+  loadDeviation(step) {
+    return this.loadMesh('deviation', step);
+  }
+
+  async loadMesh(kind, step) {
+    const key = kind + ':' + step;
     if (this.surface?.key === key) return this.surface;
-    const response = await fetch('api/surface?' + new URLSearchParams({ step }));
+    const response = await fetch('api/' + kind + '?' + new URLSearchParams({ step }));
     if (!response.ok) throw new Error((await response.json()).error);
     const vertices = Number(response.headers.get('X-Vertices'));
     const triangles = Number(response.headers.get('X-Triangles'));
     const buffer = await response.arrayBuffer();
+    const deviations = kind === 'deviation' ? vertices : 0;
     this.surface = {
-      key, triangles,
+      key, kind, triangles,
       points: new Float32Array(buffer, 0, vertices * 3),
-      indices: new Uint32Array(buffer, vertices * 12, triangles * 3),
+      deviation: deviations ? new Float32Array(buffer, vertices * 12, vertices) : null,
+      indices: new Uint32Array(buffer, vertices * 12 + deviations * 4, triangles * 3),
+      tolerance: Number(response.headers.get('X-Tolerance') ?? 0),
+      range: Number(response.headers.get('X-Range') ?? 0),
     };
     if (this.meshBuffers && this.gl) {
       this.meshBuffers.forEach((b) => this.gl.deleteBuffer(b));
@@ -459,10 +488,22 @@ class VolumeViewer {
     const location = gl.getAttribLocation(this.meshProgram, 'position');
     gl.enableVertexAttribArray(location);
     gl.vertexAttribPointer(location, 3, gl.FLOAT, false, 0, 0);
+    this.meshBuffers = [points, indices];
+    const deviation = gl.getAttribLocation(this.meshProgram, 'deviation');
+    if (this.surface.deviation) {
+      const values = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, values);
+      gl.bufferData(gl.ARRAY_BUFFER, this.surface.deviation, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(deviation);
+      gl.vertexAttribPointer(deviation, 1, gl.FLOAT, false, 0, 0);
+      this.meshBuffers.push(values);
+    } else if (deviation >= 0) {
+      gl.disableVertexAttribArray(deviation);
+      gl.vertexAttrib1f(deviation, 0);
+    }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.surface.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
-    this.meshBuffers = [points, indices];
   }
 
   drawMesh(eye, right, up, forward, aspect, box) {
@@ -481,6 +522,9 @@ class VolumeViewer {
     gl.uniform1f(uniform('aspect'), aspect);
     gl.uniform1f(uniform('cut'), this.cut);
     gl.uniform3fv(uniform('surfaceColor'), this.surfaceColor.map((c) => c / 255));
+    gl.uniform1i(uniform('deviationColors'), this.surface.deviation ? 1 : 0);
+    gl.uniform1f(uniform('tolerance'), this.surface.tolerance);
+    gl.uniform1f(uniform('range'), this.surface.range);
     gl.enable(gl.DEPTH_TEST);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.bindVertexArray(this.meshVao);
@@ -602,7 +646,8 @@ class VolumeViewer {
     gl.uniform1i(uniform('backgroundStyle'), this.background.style);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    if (this.mode === 3 && this.surface) {
+    const meshKind = { 3: 'surface', 4: 'deviation' }[this.mode];
+    if (meshKind && this.surface?.kind === meshKind) {
       this.drawMesh(eye, right, up, forward, width / height,
         [x / largest / 2, y / largest / 2, z / largest / 2]);
     }

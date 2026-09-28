@@ -7,6 +7,7 @@
 #include <iterator>
 #include <stdexcept>
 
+#include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -266,6 +267,82 @@ class Surface final : public Operation {
   OperationInfo info_;
 };
 
+class CompareCad final : public Operation {
+ public:
+  CompareCad() {
+    info_.id = "compare_cad";
+    info_.title = "Soll-Ist-Vergleich";
+    info_.description =
+        "Aligns the nominal geometry (CAD model as STL, mm) to the extracted surface and measures "
+        "the signed deviation of every surface point from it: positive where the part has more "
+        "material than nominal. Writes compare.json, deviation.ply (coloured mesh), views "
+        "along the axes and optionally the CAD model in scan coordinates (cad_aligned.stl).";
+    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan"}};
+    info_.outputs = {{"comparison", artifact::kComparison, "Deviations from the CAD model"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"cad_path", {{"type", "string"}, {"description", "CAD model as STL in mm"}}},
+          {"alignment",
+           {{"type", "string"},
+            {"enum", {"auto", "refine", "none"}},
+            {"default", "auto"},
+            {"description",
+             "auto: coarse by the principal axes, then fine (best fit); refine: fine only, the "
+             "CAD model already lies about in scan coordinates; none: as it is"}}},
+          {"tolerance_mm",
+           {{"type", "number"}, {"minimum", 0.001}, {"maximum", 100}, {"default", 0.1}}},
+          {"outer_surface_only",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Leave the surfaces of closed internal voids (pores) out"}}},
+          {"aligned_stl", {{"type", "boolean"}, {"default", false}}}}},
+        {"required", {"cad_path"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const std::filesystem::path cad_path =
+        std::filesystem::absolute(p.at("cad_path").get<std::string>());
+    CompareOptions options;
+    options.alignment = alignmentFromString(p.at("alignment").get<std::string>());
+    options.tolerance_mm = p.at("tolerance_mm").get<double>();
+    options.outer_surface_only = p.at("outer_surface_only").get<bool>();
+    const Mesh cad = readStl(cad_path);
+    context.progress(0.1);
+    const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
+    const CompareResult compared = compareToCad(mask, cad, options);
+    context.progress(0.8);
+    const auto dir = context.output_dir / "comparison";
+    writeComparison(compared, dir);
+    if (p.at("aligned_stl").get<bool>()) {
+      writeAlignedCad(compared, cad, dir / "cad_aligned.stl");
+    }
+    Json json = toJson(compared);
+    json["cad_path"] = cad_path.string();
+    writeJson(dir / "compare.json", json);
+    const DeviationStats& s = compared.stats;
+    OperationResult result;
+    result.outputs["comparison"] = "comparison";
+    result.summary = {{"deviation_mean_mm", s.mean_mm},
+                      {"deviation_rms_mm", s.rms_mm},
+                      {"deviation_min_mm", s.min_mm},
+                      {"deviation_max_mm", s.max_mm},
+                      {"within_tolerance_percent", 100.0 * s.within_tolerance},
+                      {"above_tolerance_percent", 100.0 * s.above_tolerance},
+                      {"below_tolerance_percent", 100.0 * s.below_tolerance},
+                      {"tolerance_mm", compared.tolerance_mm},
+                      {"fit_rms_mm", compared.fit_rms_mm},
+                      {"rotation_deg", compared.cad_to_scan.angleDegrees()},
+                      {"dropped_components", compared.dropped_components}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class Report final : public Operation {
  public:
   Report() {
@@ -352,6 +429,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportRaw>());
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<Surface>());
+  registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());
 }
 

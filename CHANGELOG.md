@@ -38,6 +38,10 @@ First version: from a raw CT volume to an inspection report.
   few hundredths of a voxel; export as mesh or VDB level set (ADR 0009).
 - **Surface view**: the 3D view shows only the extracted surface as a mesh at full resolution,
   coarsened to a triangle budget (`surfaceDisplayMesh`, `/api/surface`).
+- **Nominal-actual comparison** (`vs-compare`, operation `compare_cad`): aligns a CAD model (STL)
+  to the scanned surface (principal axes, then a robust best fit) and measures the signed
+  deviation per surface point. Writes statistics, a coloured PLY and views; the 3D view shows the
+  deviation in colour (ADR 0010).
 - **Porosity analysis** (`vs-porosity`): pores with partial-volume void volumes and zones of
   loosened microstructure against a depth-dependent material level, so cupping is not reported
   as porosity (ADR 0006). JSON, projection images and a VDB with pores and zones.

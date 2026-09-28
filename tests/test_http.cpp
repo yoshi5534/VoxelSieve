@@ -203,6 +203,16 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/surface?max_triangles=10").status,
             400U);
 
+  // A nominal-actual comparison: points, one float32 deviation per point, then triangles.
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/deviation").status, 400U);  // none yet
+  writeStl(dir_ / "cad.stl", boxMesh({3.0, 3.0, 3.0}));
+  const Reply compared = call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}});
+  ASSERT_EQ(compared.status, 200U) << compared.body;
+  const Reply deviation = request(server_->port(), http::verb::get, "/api/deviation");
+  ASSERT_EQ(deviation.status, 200U) << deviation.body;
+  EXPECT_GT(deviation.body.size(), 1000U);
+  EXPECT_EQ(deviation.body.size() % 4U, 0U);
+
   const Reply browsed = call("browse", {{"path", dir_.string()}});
   ASSERT_EQ(browsed.status, 200U) << browsed.body;
   const Json listing = browsed.json();

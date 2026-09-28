@@ -154,6 +154,37 @@ as the operation "Oberfläche" and shows the middle slices of the mask. Format a
 
 ![Surface operation in the studio](docs/images/surface-operation.png)
 
+## Nominal-actual comparison
+
+`vs-compare` compares the surface of a scan with the CAD model of the part (STL in mm). It aligns
+the CAD model to the scan and measures the signed deviation of every surface point: positive where
+the part has more material than nominal, negative where material is missing.
+
+```sh
+./build/release/apps/vs-compare/vs-compare housing.vss housing-cad.stl --out housing.compare \
+    --tolerance 0.1
+```
+
+- **Alignment:** by default the principal axes of both surfaces give the coarse alignment, and a
+  robust best fit (point-to-plane ICP) refines it. The CAD model may lie anywhere and in any
+  orientation. `--align refine` starts the best fit from `--initial`, and `--align none` uses
+  `--initial` as it is, for example when the CAD model is already in scan coordinates.
+- **Outputs:**
+  - `compare.json`: the transform, the fit, the mean, RMS, extremes and percentiles, the area in
+    and out of tolerance, and a histogram.
+  - `deviation.ply`: the scanned surface with the deviation and a colour per vertex.
+  - `deviation_[xyz].png`: views along the axes.
+  - `cad_aligned.stl` with `--aligned-stl`: the CAD model moved into scan coordinates.
+- **Internal voids:** surfaces of closed internal voids (pores) are left out by default; they
+  belong to the porosity analysis.
+
+On synthetic castings the fit finds the pose of the CAD model to 0.15 voxels, and it measures a
+0.4 mm dent to 0.02 mm. The studio runs the comparison as the operation "Soll-Ist-Vergleich" and
+shows the coloured surface in the 3D view as "Soll-Ist-Abweichung". Method and decisions:
+`docs/adr/0010-nominal-actual-comparison.md`.
+
+![Deviation of a warped housing with a dent from its CAD model](docs/images/nominal-actual.png)
+
 ## Porosity analysis
 
 `vs-porosity` finds internal pores and zones of loosened microstructure in a sieved dataset:

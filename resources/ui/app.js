@@ -46,6 +46,11 @@ const LABELS = {
   iso_value: 'Oberflächen-Grauwert',
   stl: 'STL-Netz schreiben',
   vdb: 'VDB-Levelset schreiben',
+  cad_path: 'CAD-Modell (STL)',
+  alignment: 'Ausrichtung',
+  tolerance_mm: 'Toleranz (± mm)',
+  outer_surface_only: 'Nur die Außenhaut vergleichen',
+  aligned_stl: 'Ausgerichtetes CAD-Modell als STL schreiben',
 };
 
 const SUMMARY_LABELS = {
@@ -73,6 +78,17 @@ const SUMMARY_LABELS = {
   step_voxels: 'Abstandsstufe (Voxel)',
   iso_value: 'Oberflächen-Grauwert',
   surface_volume_mm3: 'Volumen aus der Oberfläche (mm³)',
+  deviation_mean_mm: 'Mittlere Abweichung (mm)',
+  deviation_rms_mm: 'RMS der Abweichung (mm)',
+  deviation_min_mm: 'Kleinste Abweichung (mm)',
+  deviation_max_mm: 'Größte Abweichung (mm)',
+  within_tolerance_percent: 'In Toleranz (% der Fläche)',
+  above_tolerance_percent: 'Über Toleranz (% der Fläche)',
+  below_tolerance_percent: 'Unter Toleranz (% der Fläche)',
+  tolerance_mm: 'Toleranz (± mm)',
+  fit_rms_mm: 'Restfehler der Ausrichtung (mm)',
+  rotation_deg: 'Drehung CAD → Scan (°)',
+  dropped_components: 'Ausgelassene innere Flächen',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -102,6 +118,9 @@ function formatNumber(value) {
 function formatValue(key, value) {
   if (key === 'porosity' && typeof value === 'number') return formatNumber(value * 100) + ' %';
   if (key === 'passed') return value ? 'bestanden' : 'nicht bestanden';
+  if (key.endsWith('_percent') && typeof value === 'number') {
+    return value.toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' %';
+  }
   if (Array.isArray(value)) return value.map(formatNumber).join(' × ');
   if (value !== null && typeof value === 'object') return JSON.stringify(value);
   return formatNumber(value);
@@ -913,13 +932,45 @@ function renderViewStage(panel) {
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
 
 const VOLUME_MODES = ['Oberfläche', 'Transferfunktion', 'Maximumprojektion',
-  'Extrahierte Oberfläche'];
+  'Extrahierte Oberfläche', 'Soll-Ist-Abweichung'];
 
 /// Latest surface step computed from the dataset of `datasetStep`.
 function surfaceOf(datasetStep) {
   const steps = activeSteps().filter((step) => step.operation === 'surface' &&
     step.inputs.dataset?.step === datasetStep);
   return steps.length ? steps[steps.length - 1].id : null;
+}
+
+/// Latest nominal-actual comparison of a surface of the dataset of `datasetStep`.
+function comparisonOf(datasetStep) {
+  const surfaces = activeSteps().filter((step) => step.operation === 'surface' &&
+    step.inputs.dataset?.step === datasetStep).map((step) => step.id);
+  const steps = activeSteps().filter((step) => step.operation === 'compare_cad' &&
+    surfaces.includes(step.inputs.surface?.step));
+  return steps.length ? steps[steps.length - 1].id : null;
+}
+
+/// Colour bar of the deviation colours (deviationColor in compare.cpp) with its limits.
+function deviationLegend(tolerance, range) {
+  const edge = (100 * (range - tolerance) / (2 * range)).toFixed(2);
+  const inner = (100 - edge).toFixed(2);
+  const bar = el('div', { className: 'legend-bar' });
+  bar.style.background = 'linear-gradient(to right, rgb(40,60,215) 0%, rgb(40,205,240) ' +
+    edge + '%, rgb(60,190,90) ' + edge + '%, rgb(60,190,90) ' + inner +
+    '%, rgb(240,225,40) ' + inner + '%, rgb(215,30,30) 100%)';
+  const mm = (value) => (value > 0 ? '+' : '') + formatNumber(value) + ' mm';
+  const label = (text, percent, align) => {
+    const span = el('span', {}, text);
+    span.style.left = percent + '%';
+    span.style.transform = 'translateX(' + align + '%)';
+    return span;
+  };
+  return el('div', { className: 'deviation-legend' }, bar,
+    el('div', { className: 'legend-labels' },
+      label('≤ ' + mm(-range), 0, 0), label(mm(-tolerance), edge, -50), label('0', 50, -50),
+      label(mm(tolerance), inner, -50), label('≥ ' + mm(range), 100, -100)),
+    el('div', { className: 'legend-note' },
+      'Blau: Material fehlt · Grün: in Toleranz · Rot: Material zu viel'));
 }
 
 function renderVolumeView(panel, dataset) {
@@ -929,14 +980,17 @@ function renderVolumeView(panel, dataset) {
     (state.transfer = { key: null, preset: null, colorMap: 'viridis', points: null });
   const porosity = porosityOf(dataset.step.id);
   const surfaceStep = surfaceOf(dataset.step.id);
-  // Without a surface step the extracted surface cannot be shown; fall back to the grey values.
-  if (volume.mode === 3 && surfaceStep === null) volume.mode = 0;
+  const comparisonStep = comparisonOf(dataset.step.id);
+  // Without a surface or comparison step its mesh cannot be shown; fall back to the grey values.
+  if ((volume.mode === 3 && surfaceStep === null) ||
+      (volume.mode === 4 && comparisonStep === null)) volume.mode = 0;
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
     title: 'Klicken setzt einen Punkt, Ziehen verschiebt ihn, Doppelklick oder Entf löscht ihn' });
   const editor = new TransferEditor(histogram);
   const status = el('div', { className: 'viewer-status' }, 'Lade Übersicht …');
   const hint = el('div', { className: 'viewer-status' });
+  const legend = el('div', { hidden: true });
   const suggestionRow = el('div', { className: 'suggestions' });
   // Every change of the picture is also kept in the project.
   const update = (settings) => {
@@ -952,10 +1006,12 @@ function renderVolumeView(panel, dataset) {
     return input;
   };
   const mode = el('select', { title: 'Darstellung' },
-    VOLUME_MODES.map((name, i) => el('option', {
-      value: i, selected: volume.mode === i, disabled: i === 3 && surfaceStep === null,
-      title: i === 3 && surfaceStep === null ? 'Zuerst die Operation „Oberfläche“ ausführen'
-        : null }, name)));
+    VOLUME_MODES.map((name, i) => {
+      const missing = (i === 3 && surfaceStep === null) || (i === 4 && comparisonStep === null);
+      return el('option', { value: i, selected: volume.mode === i, disabled: missing,
+        title: missing ? 'Zuerst die Operation „' + (i === 3 ? 'Oberfläche' : 'Soll-Ist-Vergleich') +
+          '“ ausführen' : null }, name);
+    }));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
   shading.addEventListener('change', () => update({ shading: shading.checked }));
   const surface = colorInput('Farbe der Oberfläche', () => volume.surfaceColor,
@@ -1070,13 +1126,15 @@ function renderVolumeView(panel, dataset) {
   };
   const applyMode = () => {
     update({ mode: Number(mode.value) });
-    const surfaceMode = volume.mode === 0 || volume.mode === 3;
+    const surfaceMode = volume.mode === 0 || volume.mode >= 3;
     editor.setMode(surfaceMode ? 'threshold' : 'curve');
     curveTools.hidden = surfaceMode;
     surfaceTools.hidden = !surfaceMode;
     shading.parentElement.hidden = volume.mode !== 1;
-    pores.parentElement.hidden = volume.mode === 3;
+    pores.parentElement.hidden = volume.mode >= 3;
+    legend.hidden = volume.mode !== 4;
     if (volume.mode === 3) showSurface();
+    if (volume.mode === 4) showDeviation();
   };
   /// Loads the mesh of the latest surface step of this dataset and says what is shown.
   const showSurface = () => {
@@ -1084,6 +1142,18 @@ function renderVolumeView(panel, dataset) {
     volume.loadSurface(surfaceStep).then((mesh) => {
       if (volume.mode !== 3) return;
       status.textContent = 'Extrahierte Oberfläche aus Schritt ' + surfaceStep + ' · ' +
+        formatNumber(mesh.triangles) + ' Dreiecke · Ziehen dreht, Mausrad zoomt';
+    }).catch((error) => {
+      status.textContent = error.message;
+    });
+  };
+  /// Loads the compared surface of the latest nominal-actual comparison of this dataset.
+  const showDeviation = () => {
+    status.textContent = 'Lade Soll-Ist-Vergleich aus Schritt ' + comparisonStep + ' …';
+    volume.loadDeviation(comparisonStep).then((mesh) => {
+      if (volume.mode !== 4) return;
+      legend.replaceChildren(deviationLegend(mesh.tolerance, mesh.range));
+      status.textContent = 'Soll-Ist-Abweichung aus Schritt ' + comparisonStep + ' · ' +
         formatNumber(mesh.triangles) + ' Dreiecke · Ziehen dreht, Mausrad zoomt';
     }).catch((error) => {
       status.textContent = error.message;
@@ -1136,7 +1206,7 @@ function renderVolumeView(panel, dataset) {
     volume.setTransfer(lookupTable(editor.points));
     editor.onSelect();
     renderSuggestions();
-    if (volume.mode === 3 && volume.surface) return;  // the surface status stays
+    if (volume.mode >= 3 && volume.surface) return;  // the mesh status stays
     status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
       formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
   };
@@ -1145,7 +1215,7 @@ function renderVolumeView(panel, dataset) {
     el('label', { className: 'group' }, 'Schnitt x', cut),
     el('label', { className: 'group' }, pores, 'Poren', poreColor, zoneColor),
     el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
-  canvas, status, suggestionRow,
+  canvas, legend, status, suggestionRow,
   el('div', { className: 'transfer-editor' },
     el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogramm'), curveTools, surfaceTools),
     histogram, hint));
