@@ -95,3 +95,7 @@ dependency.
 The 3D view loads the finest level whose largest dimension is at most 256 voxels as 8-bit grey
 values plus the overlay (`readVolumePreview`, at most 32 MB) and ray-casts it in WebGL2; on the
 830 MB scan this is level 3 (129 × 97 × 66, 1.6 MB, 40 ms).
+Colour and opacity per grey value come from a transfer function that the browser keeps as a
+256-entry lookup texture; its histogram is counted from the same 8-bit preview, so editing it needs
+no server round trip. Opacities hold per 1/128 of the largest axis, so the picture does not change
+with the level shown. The transfer function is a view setting and is not stored in the project.
