@@ -286,8 +286,8 @@ TEST_F(CompareTest, WritesAndReadsItsFiles) {
   const CompareResult result = compareToCad(mask, block);
   writeComparison(result, dir_ / "out");
   writeAlignedCad(result, block, dir_ / "out" / "cad_aligned.stl");
-  for (const char* name : {"compare.json", "deviation.ply", "cad_aligned.stl", "deviation_x.png",
-                           "deviation_y.png", "deviation_z.png"}) {
+  for (const char* name : {"compare.json", "deviation.ply", "cad_aligned.stl",
+                           "deviation_view_1.png", "deviation_view_2.png"}) {
     EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / name)) << name;
   }
   const DeviationMesh read = readDeviationPly(dir_ / "out" / "deviation.ply");

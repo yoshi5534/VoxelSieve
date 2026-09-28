@@ -14,7 +14,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts;
     `parts.hpp` sample castings (housing, bracket, hub) with an analytic surface
   - `surface.hpp` the surface as a few-bit distance mask (`.vss`, ADR 0009); `compare.hpp` the
-    nominal-actual comparison of that surface with a CAD model (ADR 0010)
+    nominal-actual comparison of that surface with a CAD model (ADR 0010); `render.hpp` a CPU
+    renderer for shaded report and documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
     the built-in template is `resources/report_template.html`, compiled in

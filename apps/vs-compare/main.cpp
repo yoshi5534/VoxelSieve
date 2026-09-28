@@ -24,7 +24,7 @@ constexpr std::string_view kUsage =
 Aligns the CAD model (STL in mm) to the surface of a scan written by vs-surface and measures the
 signed deviation of every surface point from it: positive where the part has more material than
 nominal, negative where material is missing. Writes compare.json, deviation.ply (the surface with
-the deviation and a colour per vertex) and deviation_[xyz].png.
+the deviation and a colour per vertex) and deviation_view_[12].png.
 
 Options:
   --out <dir>             Output directory (required)

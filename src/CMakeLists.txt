@@ -42,6 +42,7 @@ add_library(voxelsieve SHARED
   source.cpp
   surface.cpp
   compare.cpp
+  render.cpp
   synthetic.cpp
   vdb.cpp
 )
