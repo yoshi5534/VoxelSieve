@@ -16,13 +16,16 @@ All three images come from one synthetic scan of 1025 × 775 × 525 voxels (830 
 `vs-synth --box 80 60 40 --voxel-size 0.08 --lunker 6 --loosening 3 --noise 500 --cupping 0.1
 --seed 7`. Every lunker volume and every zone is found within 2 % of the ground truth.
 
-Status: early development (0.1.0, see [CHANGELOG.md](CHANGELOG.md)). The tools:
+Status: early development, first release 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)). The tools:
 
 | Tool | Does |
 |---|---|
 | `vs-sieve` | raw volume (with vendor header) → sparse bricked dataset, streamed, out of core |
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
+| `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
+| `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
+| `vs-studio` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
 | `vs-phantom` | simple box phantom with analytic ground truth |
 
@@ -343,6 +346,12 @@ come from the operations, errors come back as tool errors with the reason, and l
 report progress. Datasets are never sent over the protocol, only their metadata and small text
 results such as `porosity.json` or `report.json`.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Commits are signed off under the Developer Certificate of
+Origin.
+
 ## License
 
-Apache-2.0, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE). Third-party libraries and their licenses are listed in
+[NOTICE](NOTICE).
