@@ -135,7 +135,8 @@ vec3 gradientAt(vec3 t) {
 }
 
 vec3 normalAt(vec3 t) {
-  vec3 g = gradientAt(t);
+  // Per voxel to per world unit, so voxels that are not cubes shade right.
+  vec3 g = gradientAt(t) / (box * voxel);
   return length(g) > 1e-5 ? -normalize(g) : vec3(0.0);
 }
 
@@ -331,7 +332,8 @@ class VolumeViewer {
     this.volume = {
       key, dims, window,
       level: Number(response.headers.get('X-Level')),
-      voxelSize: Number(response.headers.get('X-Voxel-Size')),
+      // Edge lengths x, y, z in mm; voxels need not be cubes (ADR 0012).
+      voxelSize: response.headers.get('X-Voxel-Size').split(',').map(Number),
       grey: buffer.subarray(0, count),
       overlay: buffer.subarray(count, 2 * count),
     };
@@ -610,7 +612,9 @@ class VolumeViewer {
     if (!this.uploaded) this.upload();
     if (!this.transferUploaded) this.uploadTransfer();
     const [x, y, z] = this.volume.dims;
-    const largest = Math.max(x, y, z);
+    // The box in true proportions: voxel counts times edge lengths.
+    const [sx, sy, sz] = this.volume.dims.map((d, a) => d * this.volume.voxelSize[a]);
+    const largest = Math.max(sx, sy, sz);
     // Camera orbiting the centre, z up.
     const eye = [
       this.distance * Math.cos(this.pitch) * Math.cos(this.yaw),
@@ -630,7 +634,7 @@ class VolumeViewer {
     gl.uniform3fv(uniform('up'), up);
     gl.uniform3fv(uniform('forward'), forward);
     gl.uniform1f(uniform('aspect'), width / height);
-    gl.uniform3fv(uniform('box'), [x / largest / 2, y / largest / 2, z / largest / 2]);
+    gl.uniform3fv(uniform('box'), [sx / largest / 2, sy / largest / 2, sz / largest / 2]);
     gl.uniform3fv(uniform('voxel'), [1 / x, 1 / y, 1 / z]);
     gl.uniform1f(uniform('threshold'), this.threshold);
     gl.uniform1i(uniform('mode'), this.mode);
@@ -649,7 +653,7 @@ class VolumeViewer {
     const meshKind = { 3: 'surface', 4: 'deviation' }[this.mode];
     if (meshKind && this.surface?.kind === meshKind) {
       this.drawMesh(eye, right, up, forward, width / height,
-        [x / largest / 2, y / largest / 2, z / largest / 2]);
+        [sx / largest / 2, sy / largest / 2, sz / largest / 2]);
     }
   }
 }

@@ -28,6 +28,8 @@ const LABELS = {
   path: 'Datei',
   dims: 'Abmessungen (Voxel)',
   voxel_size_mm: 'Voxelgröße (mm)',
+  slice_thickness_mm: 'Schichtdicke (mm)',
+  folder: 'Ordner',
   sample_type: 'Datentyp',
   big_endian: 'Big Endian',
   header_bytes: 'Header (Bytes)',
@@ -57,6 +59,7 @@ const LABELS = {
 const SUMMARY_LABELS = {
   dims: 'Abmessungen',
   voxel_size_mm: 'Voxelgröße (mm)',
+  slice_thickness_mm: 'Schichtdicke (mm)',
   levels: 'Auflösungsstufen',
   bricks: 'Bricks',
   active_voxels: 'Aktive Voxel',
@@ -114,6 +117,11 @@ function formatNumber(value) {
   if (typeof value !== 'number') return String(value);
   if (Number.isInteger(value)) return value.toLocaleString('de-DE');
   return value.toLocaleString('de-DE', { maximumSignificantDigits: 4 });
+}
+
+/// A voxel size: a number for cubes, [x, y, z] otherwise (ADR 0012).
+function formatVoxelSize(value) {
+  return Array.isArray(value) ? value.map(formatNumber).join(' × ') : formatNumber(value);
 }
 
 function formatValue(key, value) {
@@ -526,7 +534,23 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
     const label = (LABELS[name] ?? name) + (required.includes(name) ? ' *' : '');
     const field = el('div', { className: 'field' });
     let read;
-    if (property.type === 'integer' || property.type === 'number') {
+    if (Array.isArray(property.type) && property.type.includes('number') &&
+        property.type.includes('array')) {
+      // One value for all axes, or x, y and z (voxel sizes, ADR 0012).
+      const values = Array.isArray(value) ? value : [value, undefined, undefined];
+      const inputs = ['x (oder alle)', 'y', 'z'].map((placeholder, i) => el('input', {
+        type: 'number', step: 'any', min: 0, value: values[i] ?? '', placeholder,
+        name: name + i }));
+      field.append(...inputs);
+      read = () => {
+        const given = inputs.map((input) => input.value !== '');
+        if (!given.some(Boolean)) return undefined;
+        if (given[0] && !given[1] && !given[2]) return Number(inputs[0].value);
+        if (given.every(Boolean)) return inputs.map((input) => Number(input.value));
+        throw new Error((LABELS[name] ?? name) + ': einen Wert für alle Achsen oder x, y und z ' +
+          'angeben');
+      };
+    } else if (property.type === 'integer' || property.type === 'number') {
       const input = el('input', {
         type: 'number', step: property.type === 'integer' ? 1 : 'any',
         min: property.minimum, max: property.maximum, value: value ?? '', name,
@@ -888,7 +912,7 @@ function renderViewStage(panel) {
     const level = viewer.level();
     let text = SLICE_AXIS_NAMES[axis] + ' = ' + viewer.index[axis] + ' · ' + u + ' nach rechts, ' +
       v + ' nach unten · Stufe ' + level + ' (' +
-      formatNumber(viewer.info.levels[level].voxel_size_mm) + ' mm)';
+      formatVoxelSize(viewer.info.levels[level].voxel_size_mm) + ' mm)';
     if (viewer.hover) {
       const value = viewer.hover.value;
       text += ' · Voxel ' + viewer.hover.voxel.join(', ') +
@@ -1217,7 +1241,8 @@ function renderVolumeView(panel, dataset) {
     renderSuggestions();
     if (volume.mode >= 3 && volume.surface) return;  // the mesh status stays
     status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
-      formatNumber(v.voxelSize) + ' mm · Ziehen dreht, Mausrad zoomt';
+      formatVoxelSize(v.voxelSize.every((s) => s === v.voxelSize[0]) ? v.voxelSize[0] : v.voxelSize) +
+      ' mm · Ziehen dreht, Mausrad zoomt';
   };
   panel.append(el('div', { className: 'viewer-tools' }, mode,
     el('label', { className: 'group' }, shading, 'Beleuchtung'),

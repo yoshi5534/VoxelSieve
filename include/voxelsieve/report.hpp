@@ -11,6 +11,7 @@
 
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -65,7 +66,7 @@ struct Evaluation {
 };
 
 /// Largest extent of a pore in mm: the longest edge of its bounding box.
-[[nodiscard]] double poreSizeMm(const DetectedPore& pore, double voxel_size_mm);
+[[nodiscard]] double poreSizeMm(const DetectedPore& pore, const VoxelSize& voxel_size);
 
 /// Assigns pores and loosened zones to the inspection zones by their centre and checks the limits.
 /// A pore or zone can belong to several overlapping inspection zones.

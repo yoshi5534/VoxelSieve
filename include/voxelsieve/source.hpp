@@ -10,6 +10,7 @@
 
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/volume.hpp"
+#include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
@@ -34,7 +35,7 @@ class VolumeSource {
   virtual ~VolumeSource() = default;
 
   [[nodiscard]] virtual std::array<std::int64_t, 3> dims() const = 0;
-  [[nodiscard]] virtual double voxelSizeMm() const = 0;
+  [[nodiscard]] virtual VoxelSize voxelSize() const = 0;
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
   /// `out.size()` must equal `box.voxelCount()`.
@@ -46,7 +47,7 @@ class MemorySource final : public VolumeSource {
  public:
   explicit MemorySource(const Volume16& volume) : volume_(volume) {}
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return volume_.dims; }
-  [[nodiscard]] double voxelSizeMm() const override { return volume_.voxel_size_mm; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return volume_.voxel_size; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
  private:
@@ -59,7 +60,7 @@ enum class SampleType : std::uint8_t { kUInt8, kUInt16 };
 /// followed by a footer, both of which are skipped.
 struct RawLayout {
   std::array<std::int64_t, 3> dims{0, 0, 0};
-  double voxel_size_mm = 1.0;
+  VoxelSize voxel_size;
   SampleType sample_type = SampleType::kUInt16;
   std::endian byte_order = std::endian::little;
   /// Bytes before the voxel data. When unset, everything in the file beyond the voxel data is
@@ -74,11 +75,11 @@ class MappedRawSource final : public VolumeSource {
   MappedRawSource(const std::filesystem::path& path, const RawLayout& layout);
   /// Headerless little-endian uint16 file.
   MappedRawSource(const std::filesystem::path& path, const std::array<std::int64_t, 3>& dims,
-                  double voxel_size_mm);
+                  const VoxelSize& voxel_size);
   ~MappedRawSource() override;
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
-  [[nodiscard]] double voxelSizeMm() const override { return layout_.voxel_size_mm; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
   /// Header size in bytes, as given or detected.
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
@@ -96,7 +97,7 @@ class PhantomSource final : public VolumeSource {
  public:
   explicit PhantomSource(PhantomSpec spec) : spec_(std::move(spec)) {}
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return spec_.dims; }
-  [[nodiscard]] double voxelSizeMm() const override { return spec_.voxel_size_mm; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return spec_.voxel_size; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
  private:

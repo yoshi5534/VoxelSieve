@@ -917,9 +917,9 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   CompareResult result;
   result.alignment = options.alignment;
   result.tolerance_mm = options.tolerance_mm;
-  result.voxel_size_mm = mask.info().voxel_size_mm;
+  result.voxel_size = mask.info().voxel_size;
   result.cad_triangles = cad.triangles.size();
-  const double v = result.voxel_size_mm;
+  const VoxelSize& v = result.voxel_size;
   const MeshDistance nominal(cad);
 
   // The scanned surface in mm, split into connected surfaces.
@@ -928,8 +928,8 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
     throw std::invalid_argument("The scan has no surface");
   }
   for (auto& p : surface.points) {
-    for (float& c : p) {
-      c = static_cast<float>(c * v);
+    for (std::size_t k = 0; k < 3; ++k) {
+      p[k] = static_cast<float>(p[k] * v[k]);
     }
   }
   std::vector<std::uint32_t> parent(surface.points.size());
@@ -1016,7 +1016,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   }
 
   // Alignment, as scan to CAD.
-  const double floor_mm = 0.5 * v;
+  const double floor_mm = 0.5 * v.minMm();
   RigidTransform scan_to_cad = options.initial.inverse();
   if (options.alignment == CompareOptions::Alignment::kAuto) {
     const Moments scan_moments = surfaceMoments([&](const auto& visit) {
@@ -1078,7 +1078,7 @@ nlohmann::json toJson(const CompareResult& result) {
             {"inliers", result.fit_inliers},
             {"iterations", result.fit_iterations}}},
           {"tolerance_mm", result.tolerance_mm},
-          {"voxel_size_mm", result.voxel_size_mm},
+          {"voxel_size_mm", result.voxel_size},
           {"cad_triangles", result.cad_triangles},
           {"components", result.components},
           {"dropped_components", result.dropped_components},

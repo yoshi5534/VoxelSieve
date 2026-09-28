@@ -160,7 +160,7 @@ VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
   }
   const LevelInfo& level = dataset.level(preview.level);
   preview.dims = level.dims;
-  preview.voxel_size_mm = level.voxel_size_mm;
+  preview.voxel_size = level.voxel_size;
   const auto plane = static_cast<std::size_t>(level.dims[0] * level.dims[1]);
   const auto depth = static_cast<std::size_t>(level.dims[2]);
   std::vector<float> grey(plane * depth);

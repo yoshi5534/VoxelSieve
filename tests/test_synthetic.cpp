@@ -35,7 +35,7 @@ double measuredMaterialMm3(const SyntheticScan& scan) {
   for (const std::uint16_t value : render(scan)) {
     fraction += (static_cast<double>(value) - spec.air_value) / contrast;
   }
-  return fraction * std::pow(spec.voxel_size_mm, 3);
+  return fraction * spec.voxel_size.volumeMm3();
 }
 
 /// Distance from `p` to the nearest face of the box mesh, positive inside.
@@ -137,7 +137,7 @@ TEST(Synthetic, SubVoxelPoresAreVolumeTrue) {
     spec.loosening_count = 2;
     spec.loosening_radius_mm = 0.8;
     spec.loosening_porosity = 0.1;
-    spec.loosening_pore_radius_mm = pore_voxels * spec.voxel_size_mm;
+    spec.loosening_pore_radius_mm = pore_voxels * spec.voxel_size[0];
     const SyntheticScan scan(boxMesh(kBoxSize), spec);
     double void_volume = 0.0;
     for (const Defect& defect : scan.defects()) {
@@ -247,7 +247,7 @@ TEST(Synthetic, SieveKeepsDefects) {
   SyntheticSpec spec = defectSpec();
   spec.noise_sigma = 300.0;
   const SyntheticScan scan(boxMesh(kBoxSize), spec);
-  Volume16 volume(scan.dims(), scan.voxelSizeMm());
+  Volume16 volume(scan.dims(), scan.voxelSize());
   scan.readRegion({{0, 0, 0}, volume.dims}, volume.data);
   const SieveResult result = sieve(volume);
   const auto accessor = result.grid->getConstAccessor();
@@ -255,9 +255,9 @@ TEST(Synthetic, SieveKeepsDefects) {
   for (const Defect& defect : scan.defects()) {
     const auto& c = defect.center_mm;
     const openvdb::Coord voxel(
-        static_cast<int>(std::lround((c[0] - origin[0]) / spec.voxel_size_mm)),
-        static_cast<int>(std::lround((c[1] - origin[1]) / spec.voxel_size_mm)),
-        static_cast<int>(std::lround((c[2] - origin[2]) / spec.voxel_size_mm)));
+        static_cast<int>(std::lround((c[0] - origin[0]) / spec.voxel_size[0])),
+        static_cast<int>(std::lround((c[1] - origin[1]) / spec.voxel_size[1])),
+        static_cast<int>(std::lround((c[2] - origin[2]) / spec.voxel_size[2])));
     EXPECT_TRUE(accessor.isValueOn(voxel)) << toString(defect.type) << " at " << voxel;
   }
 }

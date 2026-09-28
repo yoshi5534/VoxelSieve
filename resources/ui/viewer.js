@@ -10,6 +10,11 @@ const MAX_REQUESTS = 4;         // concurrent tile requests
 const AXIS_NAMES = ['x', 'y', 'z'];
 const IN_PLANE = [[1, 2], [0, 2], [0, 1]];
 
+/// Voxel edge lengths [x, y, z] in mm; datasets store a number for cubic voxels (ADR 0012).
+function voxelPitch(size) {
+  return Array.isArray(size) ? size : [size, size, size];
+}
+
 class SliceViewer {
   constructor() {
     this.tiles = new Map();     // key -> {data, overlay, canvas, rendered, used}
@@ -22,7 +27,7 @@ class SliceViewer {
     this.porosity = null;       // porosity step id for the overlay
     this.axis = 2;
     this.index = [0, 0, 0];
-    this.zoom = 1;              // screen pixels per level-0 voxel
+    this.zoom = 1;              // screen pixels per level-0 voxel along the finer in-plane axis
     this.center = [0, 0];       // level-0 voxel coordinates of the view centre (u, v)
     this.window = null;         // [low, high]
     this.showOverlay = true;
@@ -94,8 +99,9 @@ class SliceViewer {
     });
     canvas.addEventListener('pointermove', (event) => {
       if (drag) {
-        this.center = [drag.center[0] - (event.clientX - drag.x) / this.zoom,
-          drag.center[1] - (event.clientY - drag.y) / this.zoom];
+        const [su, sv] = this.stretch();
+        this.center = [drag.center[0] - (event.clientX - drag.x) / (this.zoom * su),
+          drag.center[1] - (event.clientY - drag.y) / (this.zoom * sv)];
         this.requestDraw();
       }
       this.hover = this.voxelAt(event);
@@ -133,18 +139,30 @@ class SliceViewer {
     return [this.info.dims[u], this.info.dims[v]];
   }
 
+  /// Screen size of a voxel along the in-plane axes relative to the finer one: voxels that are
+  /// not cubes are drawn stretched, so the slice shows the part in its true proportions.
+  stretch() {
+    const pitch = voxelPitch(this.info.voxel_size_mm);
+    const [u, v] = this.planeAxes();
+    const finer = Math.min(pitch[u], pitch[v]);
+    return [pitch[u] / finer, pitch[v] / finer];
+  }
+
   maxLevel() {
     return this.info.levels.length - 1;
   }
 
   minZoom() {
     const [w, h] = this.planeDims();
-    return Math.min(this.canvas.clientWidth / w, this.canvas.clientHeight / h) / 8;
+    const [su, sv] = this.stretch();
+    return Math.min(this.canvas.clientWidth / (w * su), this.canvas.clientHeight / (h * sv)) / 8;
   }
 
   fit() {
     const [w, h] = this.planeDims();
-    this.zoom = Math.min(this.canvas.clientWidth / w, this.canvas.clientHeight / h) * 0.95;
+    const [su, sv] = this.stretch();
+    this.zoom = Math.min(this.canvas.clientWidth / (w * su), this.canvas.clientHeight / (h * sv)) *
+      0.95;
     this.center = [w / 2, h / 2];
   }
 
@@ -186,8 +204,9 @@ class SliceViewer {
   }
 
   screenToVoxel(x, y) {
-    return [this.center[0] + (x - this.canvas.clientWidth / 2) / this.zoom,
-      this.center[1] + (y - this.canvas.clientHeight / 2) / this.zoom];
+    const [su, sv] = this.stretch();
+    return [this.center[0] + (x - this.canvas.clientWidth / 2) / (this.zoom * su),
+      this.center[1] + (y - this.canvas.clientHeight / 2) / (this.zoom * sv)];
   }
 
   voxelAt(event) {
@@ -228,8 +247,9 @@ class SliceViewer {
     });
   }
 
-  /// Visible tiles of a level: [tu, tv, x, y, size] with screen position and size.
+  /// Visible tiles of a level: [tu, tv, x, y, w, h] with screen position and size.
   visibleTiles(level) {
+    const [su, sv] = this.stretch();
     const scale = 1 << level;
     const extent = TILE * scale;
     const width = this.canvas.clientWidth;
@@ -240,9 +260,9 @@ class SliceViewer {
     const tiles = [];
     for (let tv = Math.max(0, Math.floor(v0 / extent)); tv * extent < Math.min(v1, dv); tv += 1) {
       for (let tu = Math.max(0, Math.floor(u0 / extent)); tu * extent < Math.min(u1, du); tu += 1) {
-        const x = (tu * extent - this.center[0]) * this.zoom + width / 2;
-        const y = (tv * extent - this.center[1]) * this.zoom + height / 2;
-        tiles.push([tu, tv, x, y, extent * this.zoom]);
+        const x = (tu * extent - this.center[0]) * this.zoom * su + width / 2;
+        const y = (tv * extent - this.center[1]) * this.zoom * sv + height / 2;
+        tiles.push([tu, tv, x, y, extent * this.zoom * su, extent * this.zoom * sv]);
       }
     }
     return tiles;
@@ -272,26 +292,27 @@ class SliceViewer {
     const level = this.level();
     // Coarser tiles first as placeholders, then the wanted level on top.
     for (let l = Math.min(level + 3, this.maxLevel()); l >= level; l -= 1) {
-      for (const [tu, tv, x, y, size] of this.visibleTiles(l)) {
+      for (const [tu, tv, x, y, w, h] of this.visibleTiles(l)) {
         const tile = this.tiles.get(this.key(l, tu, tv));
         if (!tile) continue;
         tile.used = performance.now();
-        context.drawImage(this.renderTile(tile), x, y, size, size);
+        context.drawImage(this.renderTile(tile), x, y, w, h);
       }
     }
     // Outline of the volume.
     const [du, dv] = this.planeDims();
+    const [su, sv] = this.stretch();
     context.strokeStyle = 'rgba(255,255,255,0.25)';
-    context.strokeRect((0 - this.center[0]) * this.zoom + width / 2,
-      (0 - this.center[1]) * this.zoom + height / 2, du * this.zoom, dv * this.zoom);
+    context.strokeRect((0 - this.center[0]) * this.zoom * su + width / 2,
+      (0 - this.center[1]) * this.zoom * sv + height / 2, du * this.zoom * su, dv * this.zoom * sv);
 
     this.queue = this.visibleTiles(level)
       .filter(([tu, tv]) => {
         const key = this.key(level, tu, tv);
         return !this.tiles.has(key) && !this.loading.has(key) && !this.failed.has(key);
       })
-      .map(([tu, tv, x, y, size]) => ({ level, tu, tv,
-        distance: Math.hypot(x + size / 2 - width / 2, y + size / 2 - height / 2) }))
+      .map(([tu, tv, x, y, w, h]) => ({ level, tu, tv,
+        distance: Math.hypot(x + w / 2 - width / 2, y + h / 2 - height / 2) }))
       .sort((a, b) => a.distance - b.distance);
     this.pump();
   }

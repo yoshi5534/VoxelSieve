@@ -18,4 +18,9 @@ namespace voxelsieve::detail {
 void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::uint32_t height,
                  std::span<const std::uint8_t> rgb);
 
+/// As above for pixels of `pixel_width` x `pixel_height` (e.g. mm): the image is stretched along
+/// the coarser axis, nearest neighbour, so that it shows true proportions (ADR 0012).
+void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::uint32_t height,
+                 std::span<const std::uint8_t> rgb, double pixel_width, double pixel_height);
+
 }  // namespace voxelsieve::detail

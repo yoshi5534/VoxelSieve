@@ -16,6 +16,7 @@ add_executable(voxelsieve_tests
   test_render.cpp
   test_synthetic.cpp
   test_tiff.cpp
+  test_voxel_size.cpp
   test_vdb.cpp
 )
 target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers)
@@ -43,6 +44,19 @@ set_tests_properties(vs_sieve_dataset_cli_clean PROPERTIES FIXTURES_SETUP cli_da
 add_test(NAME vs_sieve_dataset_cli
          COMMAND vs-sieve --phantom 64 --brick-size 32 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset)
 set_tests_properties(vs_sieve_dataset_cli PROPERTIES FIXTURES_REQUIRED cli_dataset)
+# Voxels that are not cubes: the sidecar carries [x, y, z], vs-sieve prints and keeps it.
+add_test(NAME vs_phantom_anisotropic_cli
+         COMMAND vs-phantom --out ${CMAKE_CURRENT_BINARY_DIR}/cli_anisotropic --dims 32
+                 --voxel-size 0.4,0.4,0.8)
+add_test(NAME vs_sieve_anisotropic_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_anisotropic.vsieve)
+set_tests_properties(vs_sieve_anisotropic_cli_clean PROPERTIES FIXTURES_SETUP cli_anisotropic)
+add_test(NAME vs_sieve_anisotropic_cli
+         COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_anisotropic.raw --brick-size 16
+                 --slice-thickness 0.5 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_anisotropic.vsieve)
+set_tests_properties(vs_sieve_anisotropic_cli PROPERTIES DEPENDS vs_phantom_anisotropic_cli
+                     FIXTURES_REQUIRED cli_anisotropic
+                     PASS_REGULAR_EXPRESSION "0.4 x 0.4 x 0.8 mm, slices 0.5 mm thick")
 add_test(NAME vs_synth_cli COMMAND vs-synth --box 6 5 4 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_synth
          --voxel-size 0.2 --lunker 2 --loosening 1 --rings 3 --cupping 0.1)
 add_test(NAME vs_porosity_cli_clean

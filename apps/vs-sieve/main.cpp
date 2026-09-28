@@ -13,8 +13,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/sieve.hpp"
@@ -43,7 +45,10 @@ Output:
 Options:
   --out <path>            Output dataset directory or .vdb file (required)
   --dims <x> <y> <z>      Volume dimensions in voxels
-  --voxel-size <mm>       Voxel edge length in mm
+  --voxel-size <mm>       Voxel edge length in mm, or x,y,z when the voxels are not cubes
+                          (e.g. 0.33,0.33,0.6 for a coarser slice spacing)
+  --slice-thickness <mm>  Slices thinner than their spacing (a gap between slices); recorded,
+                          measurements use the spacing
   --type <uint16|uint8>   Sample type of the raw file (default uint16)
   --big-endian            16-bit samples are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
@@ -61,7 +66,8 @@ struct Options {
   std::filesystem::path input;
   std::filesystem::path out;
   std::optional<std::array<std::int64_t, 3>> dims;
-  std::optional<double> voxel_size_mm;
+  std::optional<voxelsieve::VoxelSize> voxel_size;
+  std::optional<double> slice_thickness_mm;
   voxelsieve::SampleType sample_type = voxelsieve::SampleType::kUInt16;
   std::endian byte_order = std::endian::little;
   std::optional<std::uint64_t> header_bytes;
@@ -108,7 +114,9 @@ std::optional<Options> parse(int argc, char** argv) {
     } else if (arg == "--header") {
       options.header_bytes = std::stoull(next());
     } else if (arg == "--voxel-size") {
-      options.voxel_size_mm = std::stod(next());
+      options.voxel_size = voxelsieve::parseVoxelSize(next());
+    } else if (arg == "--slice-thickness") {
+      options.slice_thickness_mm = std::stod(next());
     } else if (arg == "--threshold") {
       options.sieve.threshold = std::stof(next());
       options.dataset.threshold = options.sieve.threshold;
@@ -140,13 +148,22 @@ std::optional<Options> parse(int argc, char** argv) {
 
 struct Geometry {
   std::array<std::int64_t, 3> dims{};
-  double voxel_size_mm = 0.0;
+  voxelsieve::VoxelSize voxel_size;
 };
+
+/// The voxel size with the slice thickness from the command line applied.
+voxelsieve::VoxelSize withThickness(voxelsieve::VoxelSize size, const Options& options) {
+  if (options.slice_thickness_mm) {
+    size.slice_thickness_mm = *options.slice_thickness_mm;
+  }
+  size.validate();
+  return size;
+}
 
 /// Takes dims and voxel size from the command line, falling back to the JSON sidecar.
 Geometry resolveGeometry(const Options& options) {
-  if (options.dims && options.voxel_size_mm) {
-    return {*options.dims, *options.voxel_size_mm};
+  if (options.dims && options.voxel_size) {
+    return {*options.dims, withThickness(*options.voxel_size, options)};
   }
   auto sidecar = options.input;
   sidecar.replace_extension(".json");
@@ -156,7 +173,8 @@ Geometry resolveGeometry(const Options& options) {
   std::ifstream in(sidecar);
   const auto json = nlohmann::json::parse(in);
   return {options.dims ? *options.dims : json.at("dims").get<std::array<std::int64_t, 3>>(),
-          options.voxel_size_mm ? *options.voxel_size_mm : json.at("voxel_size_mm").get<double>()};
+          withThickness(options.voxel_size ? *options.voxel_size : voxelsieve::readVoxelSize(json),
+                        options)};
 }
 
 double megabytes(std::uintmax_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
@@ -195,7 +213,12 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
   if (isTiffInput(options)) {
     voxelsieve::TiffStackOptions tiff;
     tiff.folder = options.folder;
-    tiff.voxel_size_mm = options.voxel_size_mm;
+    tiff.voxel_size = options.voxel_size;
+    if (options.slice_thickness_mm) {
+      tiff.voxel_size = withThickness(
+          tiff.voxel_size.value_or(voxelsieve::TiffStackSource(options.input, tiff).voxelSize()),
+          options);
+    }
     auto source = std::make_unique<voxelsieve::TiffStackSource>(options.input, tiff);
     const auto dims = source->dims();
     std::cout << "tiff stack         " << dims[2] << " slices of " << dims[0] << "x" << dims[1]
@@ -204,26 +227,28 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
     for (const std::string& other : source->otherFolders()) {
       std::cout << "also in input      " << other << " (choose with --folder)\n";
     }
-    if (!options.voxel_size_mm && source->fileVoxelSizeMm() <= 0.0) {
+    if (!tiff.voxel_size && !source->fileVoxelSize()) {
       std::cout << "voxel size         unknown in the files, 1 mm assumed (set --voxel-size)\n";
+    } else {
+      std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
     }
     return source;
   }
   const Geometry geometry = resolveGeometry(options);
   auto source = std::make_unique<voxelsieve::MappedRawSource>(
-      options.input,
-      voxelsieve::RawLayout{geometry.dims, geometry.voxel_size_mm, options.sample_type,
-                            options.byte_order, options.header_bytes});
+      options.input, voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
+                                           options.byte_order, options.header_bytes});
   if (source->headerBytes() > 0) {
     std::cout << "header             " << source->headerBytes() << " bytes skipped\n";
   }
+  std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
   return source;
 }
 
 void runSingleGrid(const Options& options) {
   const auto start = std::chrono::steady_clock::now();
   const auto source = openSource(options);
-  voxelsieve::Volume16 volume(source->dims(), source->voxelSizeMm());
+  voxelsieve::Volume16 volume(source->dims(), source->voxelSize());
   source->readRegion({{0, 0, 0}, volume.dims}, volume.data);
   const auto loaded = std::chrono::steady_clock::now();
 
@@ -262,7 +287,7 @@ void runDataset(const Options& options) {
     voxelsieve::PhantomSpec spec = voxelsieve::defaultPhantomSpec();
     const std::int64_t n = *options.phantom;
     spec.dims = {n, n, n};
-    spec.voxel_size_mm = 12.8 / static_cast<double>(n);  // same geometry at any resolution
+    spec.voxel_size = 12.8 / static_cast<double>(n);  // same geometry at any resolution
     spec.noise_sigma = 500.0;
     source = std::make_unique<voxelsieve::PhantomSource>(spec);
   } else {

@@ -32,7 +32,7 @@ TEST_F(IoTest, RawRoundTrip) {
   writeRaw(path, original);
   EXPECT_EQ(std::filesystem::file_size(path), 16U * 24U * 8U * 2U);
 
-  const Volume16 loaded = readRaw(path, spec.dims, spec.voxel_size_mm);
+  const Volume16 loaded = readRaw(path, spec.dims, spec.voxel_size);
   EXPECT_EQ(loaded.dims, original.dims);
   EXPECT_EQ(loaded.data, original.data);
 }

@@ -140,13 +140,13 @@ class CompareTest : public ::testing::Test {
   }
   void TearDown() override { std::filesystem::remove_all(dir_); }
 
-  static SyntheticSpec spec(double voxel_size_mm) {
+  static SyntheticSpec spec(double voxel_size) {
     SyntheticSpec spec;
-    spec.voxel_size_mm = voxel_size_mm;
-    spec.padding_mm = 4.0 * voxel_size_mm;
+    spec.voxel_size = voxel_size;
+    spec.padding_mm = 4.0 * voxel_size;
     spec.noise_sigma = 400.0;
     spec.cupping = 0.1;
-    spec.blur_sigma_mm = 0.5 * voxel_size_mm;
+    spec.blur_sigma_mm = 0.5 * voxel_size;
     return spec;
   }
 

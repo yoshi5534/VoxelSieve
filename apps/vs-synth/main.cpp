@@ -98,7 +98,7 @@ std::optional<Options> parse(int argc, char** argv) {
     } else if (arg == "--blur") {
       spec.blur_sigma_mm = std::stod(next());
     } else if (arg == "--voxel-size") {
-      spec.voxel_size_mm = std::stod(next());
+      spec.voxel_size = std::stod(next());
     } else if (arg == "--padding") {
       spec.padding_mm = std::stod(next());
     } else if (arg == "--seed") {
@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
       voxelsieve::SamplePartOptions part;
       part.scale = options->scale;
       // Facets about as large as the voxels; the mesh is the ground truth either way.
-      part.resolution_mm = options->spec.voxel_size_mm;
+      part.resolution_mm = options->spec.voxel_size[0];
       mesh = voxelsieve::samplePartMesh(options->part, part);
     } else {
       mesh = voxelsieve::readStl(options->input);

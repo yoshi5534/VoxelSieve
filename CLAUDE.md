@@ -7,6 +7,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 ## Layout
 
 - `include/voxelsieve/` public headers, `src/` library implementation (target `VoxelSieve::voxelsieve`)
+  - `voxel_size.hpp` voxel edge length per axis and slice thickness (ADR 0012)
   - `source.hpp` read access to volumes larger than RAM (`MappedRawSource`, `PhantomSource`, ...)
     and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
@@ -55,6 +56,9 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Volumes are x-fastest, then y, then z. Raw files are headerless little-endian `uint16` with a
   JSON sidecar (`<name>.json`) describing dims, voxel size and format.
 - Grey values are stored losslessly (`FloatGrid`, see ADR 0002). Never quantise silently.
+- Voxels need not be cubes: `VoxelSize` (`voxel_size.hpp`, ADR 0012) has a pitch per axis. Work
+  in voxel indices and convert with `toMm`/`toVoxels` or `voxel_size[axis]`; never multiply by one
+  scalar voxel size.
 - Code that must scale to XXL scans reads through `VolumeSource` and never assumes the volume fits
   in memory (ADR 0004).
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose

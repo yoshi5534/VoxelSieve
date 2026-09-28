@@ -63,7 +63,7 @@ TEST_F(DatasetTest, MappedRawSourceReadsRegions) {
   const auto path = dir_ / "volume.raw";
   writeRaw(path, volume);
 
-  const MappedRawSource mapped(path, phantom.dims, phantom.voxel_size_mm);
+  const MappedRawSource mapped(path, phantom.dims, phantom.voxel_size);
   const Box box{{2, 1, 3}, {20, 15, 9}};
   std::vector<std::uint16_t> expected(static_cast<std::size_t>(box.voxelCount()));
   std::vector<std::uint16_t> actual(expected.size());
@@ -192,7 +192,7 @@ TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
   EXPECT_EQ(written.levels[1].dims, (Index3{64, 64, 64}));
   EXPECT_EQ(written.levels[2].dims, (Index3{32, 32, 32}));
   EXPECT_EQ(written.levels[2].bricks, (std::vector<Index3>{{0, 0, 0}}));
-  EXPECT_DOUBLE_EQ(written.levels[2].voxel_size_mm, 4 * phantom.voxel_size_mm);
+  EXPECT_EQ(written.levels[2].voxel_size, phantom.voxel_size.scaled(4.0));
 
   const DatasetInfo read = readDatasetInfo(dir_);
   EXPECT_EQ(read.dims, written.dims);
@@ -203,14 +203,14 @@ TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
 
   // The overview maps world positions correctly: the wall is material, the far corner is gone.
   const auto overview = readBrick(dir_ / "overview.vdb", false);
-  EXPECT_DOUBLE_EQ(overview->voxelSize()[0], 4 * phantom.voxel_size_mm);
+  EXPECT_DOUBLE_EQ(overview->voxelSize()[0], 4 * phantom.voxel_size[0]);
   const auto accessor = overview->getConstAccessor();
   const auto at_world_mm = [&](double x, double y, double z) {
     // World space is level-0 index space scaled by the voxel size; the phantom is centred.
     const double offset = static_cast<double>(phantom.dims[0]) / 2.0 - 0.5;
-    const openvdb::Vec3d world((x / phantom.voxel_size_mm + offset) * phantom.voxel_size_mm,
-                               (y / phantom.voxel_size_mm + offset) * phantom.voxel_size_mm,
-                               (z / phantom.voxel_size_mm + offset) * phantom.voxel_size_mm);
+    const VoxelSize& v = phantom.voxel_size;
+    const openvdb::Vec3d world((x / v[0] + offset) * v[0], (y / v[1] + offset) * v[1],
+                               (z / v[2] + offset) * v[2]);
     return overview->transform().worldToIndexCellCentered(world);
   };
   const openvdb::Coord wall = at_world_mm(0.0, 3.25, 0.0);
@@ -222,7 +222,7 @@ TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
 TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
   PhantomSpec phantom = spec();
   phantom.dims = {64, 64, 64};
-  phantom.voxel_size_mm = 0.2;
+  phantom.voxel_size = 0.2;
   const DatasetInfo info = writeDataset(PhantomSource(phantom), dir_);  // brick size 256
   ASSERT_EQ(info.levels.size(), 1U);
   EXPECT_EQ(readBrick(dir_ / "overview.vdb", false)->activeVoxelCount(),
