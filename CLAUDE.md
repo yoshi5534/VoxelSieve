@@ -11,7 +11,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
-  - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts
+  - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts;
+    `parts.hpp` sample castings (housing, bracket, hub) with an analytic surface
+  - `surface.hpp` the surface as a few-bit distance mask (`.vss`, ADR 0009)
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
     the built-in template is `resources/report_template.html`, compiled in
@@ -23,7 +25,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     reads slice tiles with the pore and zone overlay. New studio
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
+  `vs-porosity`, `vs-surface`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
   and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats

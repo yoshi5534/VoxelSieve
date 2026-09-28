@@ -30,7 +30,12 @@ First version: from a raw CT volume to an inspection report.
 - **Read API** (`voxelsieve::Dataset`): samples, regions across bricks and parallel brick
   iteration through an LRU brick cache with a memory budget.
 - **Synthetic scans** (`vs-synth`): STL meshes to raw volumes with shrinkage cavities, loosened
-  microstructure, noise, cupping and ring artefacts, and a JSON ground truth (ADR 0005).
+  microstructure, noise, cupping, ring artefacts and unsharpness, and a JSON ground truth
+  (ADR 0005). Sample castings with a known surface: housing, bracket and hub (`--part`).
+- **Surface** (`vs-surface`, operation `surface`): the surface as a voxel mask with a few bits per
+  voxel that encode the distance to it; only 8³ blocks at the surface are stored, compressed with
+  zstd. Several hundred to over a thousand times smaller than the raw scan, surface accurate to a
+  few hundredths of a voxel; export as mesh or VDB level set (ADR 0009).
 - **Porosity analysis** (`vs-porosity`): pores with partial-volume void volumes and zones of
   loosened microstructure against a depth-dependent material level, so cupping is not reported
   as porosity (ADR 0006). JSON, projection images and a VDB with pores and zones.

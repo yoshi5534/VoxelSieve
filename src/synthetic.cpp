@@ -18,6 +18,57 @@
 namespace voxelsieve {
 namespace {
 
+/// Separable Gaussian blur of `values` (the voxels of `region`, x fastest) with `sigma` voxels,
+/// truncated at `radius`. Outside the volume the border voxel is repeated; inside it, the region
+/// must reach `radius` beyond the voxels whose result is used.
+void blurRegion(std::vector<double>& values, const Box& region, double sigma, std::int64_t radius) {
+  std::vector<double> weights(static_cast<std::size_t>(2 * radius + 1));
+  double total = 0.0;
+  for (std::int64_t i = -radius; i <= radius; ++i) {
+    const double w = std::exp(-0.5 * static_cast<double>(i * i) / (sigma * sigma));
+    weights[static_cast<std::size_t>(i + radius)] = w;
+    total += w;
+  }
+  for (double& w : weights) {
+    w /= total;
+  }
+  const std::array<std::int64_t, 3> size{region.size(0), region.size(1), region.size(2)};
+  const std::array<std::int64_t, 3> stride{1, size[0], size[0] * size[1]};
+  std::vector<double> line;
+  std::vector<double> result;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const std::size_t u = axis == 0 ? 1 : 0;
+    const std::size_t v = 3 - axis - u;
+    const std::int64_t n = size[axis];
+    line.resize(static_cast<std::size_t>(n));
+    result.resize(static_cast<std::size_t>(n));
+    for (std::int64_t b = 0; b < size[v]; ++b) {
+      for (std::int64_t a = 0; a < size[u]; ++a) {
+        const std::int64_t start = a * stride[u] + b * stride[v];
+        for (std::int64_t i = 0; i < n; ++i) {
+          line[static_cast<std::size_t>(i)] =
+              values[static_cast<std::size_t>(start + i * stride[axis])];
+        }
+        for (std::int64_t i = 0; i < n; ++i) {
+          double sum = 0.0;
+          for (std::int64_t k = -radius; k <= radius; ++k) {
+            // Clamp to the region; at the volume border that repeats the border voxel, elsewhere
+            // the halo keeps the clamped samples away from the voxels that are used.
+            const std::int64_t j = std::clamp<std::int64_t>(i + k, 0, n - 1);
+            sum +=
+                weights[static_cast<std::size_t>(k + radius)] * line[static_cast<std::size_t>(j)];
+          }
+          result[static_cast<std::size_t>(i)] = sum;
+        }
+        for (std::int64_t i = 0; i < n; ++i) {
+          values[static_cast<std::size_t>(start + i * stride[axis])] =
+              result[static_cast<std::size_t>(i)];
+        }
+      }
+    }
+  }
+}
+
 using Vec3 = std::array<double, 3>;
 
 constexpr double kHalfBandVoxels = 3.0;
@@ -484,8 +535,8 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
   if (mesh.triangles.empty()) {
     throw std::invalid_argument("Mesh has no triangles");
   }
-  if (spec.voxel_size_mm <= 0.0 || spec.padding_mm < 0.0) {
-    throw std::invalid_argument("voxel size must be > 0 and padding >= 0");
+  if (spec.voxel_size_mm <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0) {
+    throw std::invalid_argument("voxel size must be > 0, padding and blur >= 0");
   }
   openvdb::initialize();
   Impl& impl = *impl_;
@@ -546,11 +597,21 @@ void SyntheticScan::readRegion(const Box& box, std::span<std::uint16_t> out) con
   const double air = spec.air_value;
   const double cupping_depth =
       spec.cupping_depth_mm > 0.0 ? spec.cupping_depth_mm : 0.2 * impl.smallestExtent();
+  // The blur needs the sharp values around the box; the volume border is replicated, so every
+  // voxel gets the same value however the volume is split into regions.
+  const double sigma = spec.blur_sigma_mm / spec.voxel_size_mm;
+  const auto halo = sigma > 0.0 ? static_cast<std::int64_t>(std::ceil(3.0 * sigma)) : 0;
+  Box region;
+  for (std::size_t i = 0; i < 3; ++i) {
+    region.min[i] = std::max<std::int64_t>(0, box.min[i] - halo);
+    region.max[i] = std::min(impl.dims[i], box.max[i] + halo);
+  }
+  std::vector<double> sharp(static_cast<std::size_t>(region.voxelCount()));
   Impl::Evaluator eval(impl);
   std::size_t offset = 0;
-  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+  for (std::int64_t z = region.min[2]; z < region.max[2]; ++z) {
+    for (std::int64_t y = region.min[1]; y < region.max[1]; ++y) {
+      for (std::int64_t x = region.min[0]; x < region.max[0]; ++x) {
         double value = air;
         if (const double fraction = eval.fraction(x, y, z); fraction > 0.0) {
           double material = spec.material_value;
@@ -560,6 +621,20 @@ void SyntheticScan::readRegion(const Box& box, std::span<std::uint16_t> out) con
           }
           value += fraction * (material - air);
         }
+        sharp[offset++] = value;
+      }
+    }
+  }
+  if (halo > 0) {
+    blurRegion(sharp, region, sigma, halo);
+  }
+  offset = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+        double value = sharp[static_cast<std::size_t>(
+            (x - region.min[0]) +
+            region.size(0) * ((y - region.min[1]) + region.size(1) * (z - region.min[2])))];
         value += impl.ringOffset(x, y);
         if (spec.noise_sigma > 0.0) {
           const auto index = static_cast<std::uint64_t>(x + impl.dims[0] * (y + impl.dims[1] * z));
@@ -607,6 +682,7 @@ nlohmann::json SyntheticScan::toJson() const {
         {"seed", s.seed},
         {"noise_sigma", s.noise_sigma},
         {"cupping", s.cupping},
+        {"blur_sigma_mm", s.blur_sigma_mm},
         {"ring_count", s.ring_count},
         {"ring_strength", s.ring_strength}}},
       {"ground_truth",

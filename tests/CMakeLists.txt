@@ -11,6 +11,7 @@ add_executable(voxelsieve_tests
   test_slice.cpp
   test_report.cpp
   test_sieve.cpp
+  test_surface.cpp
   test_synthetic.cpp
   test_vdb.cpp
 )
@@ -55,6 +56,24 @@ add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_po
 set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
 add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
 set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Prüfbericht")
+
+add_test(NAME vs_synth_part_cli
+         COMMAND vs-synth --part hub --scale 0.3 --voxel-size 0.2 --blur 0.1 --noise 300
+                 --stl ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl --out ${CMAKE_CURRENT_BINARY_DIR}/cli_hub)
+add_test(NAME vs_surface_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve)
+set_tests_properties(vs_surface_cli_clean PROPERTIES FIXTURES_SETUP cli_surface)
+add_test(NAME vs_surface_cli_sieve
+         COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.raw --brick-size 32
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve)
+set_tests_properties(vs_surface_cli_sieve PROPERTIES DEPENDS vs_synth_part_cli FIXTURES_REQUIRED cli_surface)
+add_test(NAME vs_surface_cli
+         COMMAND vs-surface ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss --stl ${CMAKE_CURRENT_BINARY_DIR}/cli_hub_surface.stl
+                 --vdb ${CMAKE_CURRENT_BINARY_DIR}/cli_hub_surface.vdb)
+set_tests_properties(vs_surface_cli PROPERTIES DEPENDS vs_surface_cli_sieve PASS_REGULAR_EXPRESSION "bit/band voxel")
+add_test(NAME vs_surface_cli_info COMMAND vs-surface --info ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss)
+set_tests_properties(vs_surface_cli_info PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "against 16-bit raw")
 
 add_test(NAME vs_studio_mcp_cli
   COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")

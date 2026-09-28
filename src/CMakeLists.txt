@@ -28,6 +28,7 @@ add_library(voxelsieve SHARED
   ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp
   io.cpp
   mesh.cpp
+  parts.cpp
   phantom.cpp
   porosity.cpp
   report.cpp
@@ -39,6 +40,7 @@ add_library(voxelsieve SHARED
   detail/png.cpp
   sieve.cpp
   source.cpp
+  surface.cpp
   synthetic.cpp
   vdb.cpp
 )
