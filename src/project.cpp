@@ -1,5 +1,6 @@
 #include "voxelsieve/project.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <ctime>
@@ -12,6 +13,8 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr int kProjectFormat = 1;
+constexpr std::size_t kMaxViewNameBytes = 200;
+constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
 
 std::string nowUtc() {
   const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -112,6 +115,17 @@ Project Project::open(const std::filesystem::path& dir) {
     project.steps_.push_back(std::move(step));
   }
   project.cursor_ = std::min(json.value("cursor", project.steps_.size()), project.steps_.size());
+  project.view_ = json.value("view", Json::object());
+  for (const Json& item : json.value("saved_views", Json::array())) {
+    SavedView view;
+    view.id = item.at("id").get<int>();
+    view.name = item.value("name", "");
+    view.created = item.value("created", "");
+    view.state = item.value("state", Json::object());
+    view.has_image = item.value("has_image", false);
+    project.next_view_id_ = std::max(project.next_view_id_, view.id + 1);
+    project.saved_views_.push_back(std::move(view));
+  }
   if (changed) {
     project.save();
   }
@@ -287,16 +301,117 @@ void Project::saveAs(const std::filesystem::path& dir) {
   save();
 }
 
+namespace {
+
+void checkViewName(const std::string& name) {
+  if (name.empty() || name.size() > kMaxViewNameBytes) {
+    throw std::invalid_argument("A view name needs 1 to 200 characters");
+  }
+}
+
+void checkViewState(const Json& state) {
+  if (!state.is_object()) {
+    throw std::invalid_argument("A view state must be an object");
+  }
+  if (state.dump().size() > kMaxViewStateBytes) {
+    throw std::invalid_argument("A view state must be smaller than 256 kB");
+  }
+}
+
+}  // namespace
+
+void Project::setView(const Json& state) {
+  checkViewState(state);
+  view_ = state;
+  save();
+}
+
+const SavedView& Project::saveView(const std::string& name, const Json& state,
+                                   std::span<const std::uint8_t> png) {
+  checkViewName(name);
+  checkViewState(state);
+  constexpr std::array<std::uint8_t, 8> kPngSignature = {0x89, 'P',  'N',  'G',
+                                                         '\r', '\n', 0x1A, '\n'};
+  if (!png.empty() && (png.size() < kPngSignature.size() ||
+                       !std::equal(kPngSignature.begin(), kPngSignature.end(), png.begin()))) {
+    throw std::invalid_argument("The picture of a view must be a PNG");
+  }
+  SavedView view;
+  view.id = next_view_id_;
+  view.name = name;
+  view.created = nowUtc();
+  view.state = state;
+  view.has_image = !png.empty();
+  if (view.has_image) {
+    std::filesystem::create_directories(dir_ / "views");
+    const auto file = viewImage(view.id);
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    if (!out) {
+      throw std::runtime_error("Cannot write " + file.string());
+    }
+  }
+  ++next_view_id_;
+  saved_views_.push_back(std::move(view));
+  save();
+  return saved_views_.back();
+}
+
+const SavedView& Project::savedView(int id) const {
+  const auto found = std::find_if(saved_views_.begin(), saved_views_.end(),
+                                  [id](const SavedView& view) { return view.id == id; });
+  if (found == saved_views_.end()) {
+    throw std::invalid_argument("No saved view " + std::to_string(id));
+  }
+  return *found;
+}
+
+void Project::renameView(int id, const std::string& name) {
+  checkViewName(name);
+  (void)savedView(id);  // throws for an unknown id
+  for (SavedView& view : saved_views_) {
+    if (view.id == id) {
+      view.name = name;
+    }
+  }
+  save();
+}
+
+void Project::deleteView(int id) {
+  const bool had_image = savedView(id).has_image;
+  std::erase_if(saved_views_, [id](const SavedView& view) { return view.id == id; });
+  save();
+  if (had_image) {
+    std::filesystem::remove(viewImage(id));
+  }
+}
+
+std::filesystem::path Project::viewImage(int id) const {
+  return dir_ / "views" / (std::to_string(id) + ".png");
+}
+
+void Project::adoptViews(const Project& other) {
+  view_ = other.view_;
+  saved_views_ = other.saved_views_;
+  next_view_id_ = other.next_view_id_;
+  save();
+}
+
 Json Project::toJson() const {
   Json steps = Json::array();
   for (const Step& step : steps_) {
     steps.push_back(stepToJson(step));
   }
-  return {{"format", kProjectFormat},
-          {"name", name_},
-          {"created", created_},
-          {"cursor", cursor_},
-          {"steps", steps}};
+  Json views = Json::array();
+  for (const SavedView& view : saved_views_) {
+    views.push_back({{"id", view.id},
+                     {"name", view.name},
+                     {"created", view.created},
+                     {"state", view.state},
+                     {"has_image", view.has_image}});
+  }
+  return {{"format", kProjectFormat}, {"name", name_}, {"created", created_}, {"cursor", cursor_},
+          {"steps", steps},           {"view", view_}, {"saved_views", views}};
 }
 
 void Project::save() const {
