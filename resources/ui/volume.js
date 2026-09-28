@@ -1,6 +1,8 @@
 // Simple 3D view of VoxelSieve Studio (ADR 0008): ray casting of a coarse level of the dataset
-// (at most 256 voxels per axis) in WebGL2. "Oberfläche" shades the part surface, "Durchsicht"
-// shows the part translucent with its pores and zones inside. A cut along x opens the part.
+// (at most 256 voxels per axis) in WebGL2. "Oberfläche" shades the part surface at a threshold,
+// "Transferfunktion" composites colour and opacity per grey value (transfer.js) and
+// "Maximumprojektion" shows the densest value along each ray. Pores and zones of a porosity
+// analysis are drawn in their own colours. A cut along x opens the part.
 'use strict';
 
 const VOLUME_VERTEX = `#version 300 es
@@ -18,6 +20,7 @@ in vec2 ndc;
 out vec4 color;
 uniform sampler3D grey;
 uniform sampler3D overlay;
+uniform sampler2D transfer; // 256 x 1 RGBA: colour and opacity per grey value
 uniform vec3 eye;
 uniform vec3 right;
 uniform vec3 up;
@@ -26,9 +29,18 @@ uniform float aspect;
 uniform vec3 box;        // half extent of the volume, largest axis 0.5
 uniform vec3 voxel;      // one voxel in texture coordinates
 uniform float threshold; // material threshold on the 0..1 grey scale
-uniform int mode;        // 0 surface, 1 translucent
+uniform int mode;        // 0 surface, 1 transfer function, 2 maximum intensity projection
+uniform bool shading;
 uniform bool pores;
 uniform float cut;       // texture x beyond which the part is cut away
+uniform vec3 surfaceColor;
+uniform vec3 poreColor;
+uniform vec3 zoneColor;
+uniform vec3 background;
+
+// Opacities of the transfer function hold for this path length (1/128 of the largest axis), so
+// the picture does not depend on the level shown.
+const float kReferenceLength = 1.0 / 128.0;
 
 bool hitBox(vec3 origin, vec3 direction, out float near, out float far) {
   vec3 inverse = 1.0 / direction;
@@ -41,37 +53,51 @@ bool hitBox(vec3 origin, vec3 direction, out float near, out float far) {
   return far > max(near, 0.0);
 }
 
-vec3 normalAt(vec3 t) {
-  vec3 g = vec3(
+vec3 gradientAt(vec3 t) {
+  return vec3(
     texture(grey, t + vec3(voxel.x, 0, 0)).r - texture(grey, t - vec3(voxel.x, 0, 0)).r,
     texture(grey, t + vec3(0, voxel.y, 0)).r - texture(grey, t - vec3(0, voxel.y, 0)).r,
     texture(grey, t + vec3(0, 0, voxel.z)).r - texture(grey, t - vec3(0, 0, voxel.z)).r);
+}
+
+vec3 normalAt(vec3 t) {
+  vec3 g = gradientAt(t);
   return length(g) > 1e-5 ? -normalize(g) : vec3(0.0);
 }
 
 vec3 shade(vec3 base, vec3 normal, vec3 direction) {
   vec3 light = normalize(-direction + up * 0.4 + right * 0.3);
   float diffuse = abs(dot(normal, light));
-  return base * (0.25 + 0.75 * diffuse);
+  vec3 halfway = normalize(light - direction);
+  float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
+  return base * (0.25 + 0.75 * diffuse) + vec3(specular);
 }
 
 int classAt(vec3 t) {
   return int(texture(overlay, t).r * 255.0 + 0.5);
 }
 
+// Opacity of one step of the given length for an opacity per reference length.
+float stepOpacity(float opacity, float stepSize) {
+  return 1.0 - pow(1.0 - min(opacity, 0.999), stepSize / kReferenceLength);
+}
+
 void main() {
   vec3 direction = normalize(forward + ndc.x * aspect * 0.35 * right + ndc.y * 0.35 * up);
   float near;
   float far;
-  vec3 background = vec3(0.07);
   if (!hitBox(eye, direction, near, far)) {
     color = vec4(background, 1.0);
     return;
   }
   near = max(near, 0.0);
   float stepSize = min(min(voxel.x * box.x, voxel.y * box.y), voxel.z * box.z) * 1.2;
+  // A per-pixel offset of the first sample turns the rings of regular sampling into fine noise.
+  near += stepSize * fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   vec3 accumulated = vec3(0.0);
   float alpha = 0.0;
+  float highest = 0.0;
+  bool porous = false;
   bool entered = false;
   for (float t = near; t < far; t += stepSize) {
     vec3 p = eye + direction * t;
@@ -84,32 +110,49 @@ void main() {
     float value = texture(grey, tex).r;
     if (mode == 0) {
       if (pores && kind == 1) {
-        vec3 n = normalAt(tex);
-        color = vec4(shade(vec3(0.9, 0.15, 0.12), n, direction), 1.0);
+        color = vec4(shade(poreColor, normalAt(tex), direction), 1.0);
         return;
       }
       if (value >= threshold) {
         // On the cut face the grey gradient says nothing; light it as the plane it is.
         bool onCut = cut < 1.0 && tex.x > cut - 1.5 * voxel.x && !entered;
         vec3 n = onCut ? vec3(1.0, 0.0, 0.0) : normalAt(tex);
-        vec3 base = (pores && kind == 2) ? vec3(0.95, 0.8, 0.3) : vec3(0.82, 0.84, 0.86);
+        vec3 base = (pores && kind == 2) ? zoneColor : surfaceColor;
         color = vec4(shade(base, n, direction), 1.0);
         return;
       }
       entered = true;
+    } else if (mode == 2) {
+      highest = max(highest, value);
+      porous = porous || (pores && kind == 1);
     } else {
-      vec4 sample_ = vec4(0.0);
+      vec4 sample_;
       if (pores && kind == 1) {
-        sample_ = vec4(0.95, 0.15, 0.1, 0.5);
+        sample_ = vec4(poreColor, 0.6);
       } else if (pores && kind == 2) {
-        sample_ = vec4(1.0, 0.8, 0.2, 0.08);
-      } else if (value >= threshold) {
-        sample_ = vec4(0.85, 0.88, 0.92, 0.012);
+        sample_ = vec4(zoneColor, 0.1);
+      } else {
+        sample_ = texture(transfer, vec2(value, 0.5));
+        // Quadratic, so the low opacities that matter for looking through get room on the curve.
+        sample_.a *= sample_.a;
       }
-      accumulated += (1.0 - alpha) * sample_.a * sample_.rgb;
-      alpha += (1.0 - alpha) * sample_.a;
-      if (alpha > 0.97) break;
+      float a = stepOpacity(sample_.a, stepSize);
+      if (a < 0.0005) continue;
+      vec3 rgb = sample_.rgb;
+      if (shading) {
+        vec3 g = gradientAt(tex);
+        float strength = smoothstep(0.02, 0.12, length(g));
+        if (strength > 0.0) rgb = mix(rgb, shade(rgb, -normalize(g), direction), strength);
+      }
+      accumulated += (1.0 - alpha) * a * rgb;
+      alpha += (1.0 - alpha) * a;
+      if (alpha > 0.98) break;
     }
+  }
+  if (mode == 2) {
+    vec3 mapped = mix(background, texture(transfer, vec2(highest, 0.5)).rgb, highest);
+    color = vec4(porous ? mix(mapped, poreColor, 0.65) : mapped, 1.0);
+    return;
   }
   color = vec4(accumulated + (1.0 - alpha) * background, 1.0);
 }`;
@@ -121,6 +164,13 @@ class VolumeViewer {
     this.pores = true;
     this.cut = 1;
     this.threshold = 0.5;
+    this.shading = true;
+    this.surfaceColor = [209, 214, 219];
+    this.poreColor = [230, 38, 31];
+    this.zoneColor = [242, 204, 77];
+    this.background = [18, 18, 18];
+    this.histogram = new Array(256).fill(0);
+    this.transfer = null;       // lookup table of 256 RGBA bytes
     this.yaw = 0.8;
     this.pitch = 0.45;
     this.distance = 2.2;
@@ -149,6 +199,8 @@ class VolumeViewer {
       grey: buffer.subarray(0, count),
       overlay: buffer.subarray(count, 2 * count),
     };
+    this.histogram = new Array(256).fill(0);
+    for (let i = 0; i < count; i += 1) this.histogram[this.volume.grey[i]] += 1;
     // Default threshold halfway between air and material.
     this.threshold = this.suggestThreshold();
     this.uploaded = false;
@@ -159,7 +211,7 @@ class VolumeViewer {
   /// Middle between the two main peaks of the grey histogram (air and material).
   suggestThreshold() {
     const histogram = new Array(256).fill(0);
-    for (let i = 0; i < this.volume.grey.length; i += 3) histogram[this.volume.grey[i]] += 1;
+    this.histogram.forEach((count, v) => { histogram[v] = count; });
     let air = 0;
     for (let v = 0; v < 128; v += 1) if (histogram[v] > histogram[air]) air = v;
     let material = 128;
@@ -171,7 +223,11 @@ class VolumeViewer {
     this.canvas = canvas;
     this.gl = canvas.getContext('webgl2');
     if (!this.gl) throw new Error('Der Browser unterstützt kein WebGL2');
+    // A new canvas has a new context; textures of the old one are gone with it.
     this.uploaded = false;
+    this.textures = null;
+    this.transferUploaded = false;
+    this.transferTexture = null;
     this.program = this.createProgram();
     let drag = null;
     canvas.addEventListener('pointerdown', (event) => {
@@ -245,6 +301,28 @@ class VolumeViewer {
     this.uploaded = true;
   }
 
+  /// Sets the transfer function as 256 RGBA bytes (see lookupTable in transfer.js).
+  setTransfer(table) {
+    this.transfer = table;
+    this.transferUploaded = false;
+    this.requestDraw();
+  }
+
+  uploadTransfer() {
+    const gl = this.gl;
+    if (!this.transferTexture) this.transferTexture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.transferTexture);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const table = this.transfer ?? new Uint8Array(256 * 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, table);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.transferUploaded = true;
+  }
+
   set(settings) {
     Object.assign(this, settings);
     this.requestDraw();
@@ -271,10 +349,12 @@ class VolumeViewer {
       canvas.height = height;
     }
     gl.viewport(0, 0, width, height);
-    gl.clearColor(0.07, 0.07, 0.07, 1);
+    const background = this.background.map((c) => c / 255);
+    gl.clearColor(...background, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     if (!this.volume) return;
     if (!this.uploaded) this.upload();
+    if (!this.transferUploaded) this.uploadTransfer();
     const [x, y, z] = this.volume.dims;
     const largest = Math.max(x, y, z);
     // Camera orbiting the centre, z up.
@@ -290,6 +370,7 @@ class VolumeViewer {
     const uniform = (name) => gl.getUniformLocation(this.program, name);
     gl.uniform1i(uniform('grey'), 0);
     gl.uniform1i(uniform('overlay'), 1);
+    gl.uniform1i(uniform('transfer'), 2);
     gl.uniform3fv(uniform('eye'), eye);
     gl.uniform3fv(uniform('right'), right);
     gl.uniform3fv(uniform('up'), up);
@@ -301,6 +382,12 @@ class VolumeViewer {
     gl.uniform1i(uniform('mode'), this.mode);
     gl.uniform1i(uniform('pores'), this.pores ? 1 : 0);
     gl.uniform1f(uniform('cut'), this.cut);
+    gl.uniform1i(uniform('shading'), this.shading ? 1 : 0);
+    const color = (name, rgb) => gl.uniform3fv(uniform(name), rgb.map((c) => c / 255));
+    color('surfaceColor', this.surfaceColor);
+    color('poreColor', this.poreColor);
+    color('zoneColor', this.zoneColor);
+    color('background', this.background);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

@@ -17,8 +17,10 @@ First version: from a raw CT volume to an inspection report.
 - **Slice view**: tiled slices along x, y and z from the matching resolution level, with pores and
   zones tinted, in the studio and as `view_slice` for MCP. `Dataset` can load bricks on access
   (`BrickLoading::kOnAccess`) for sparse reads.
-- **3D view**: WebGL2 ray casting of a coarse level with surface and translucent modes, pores
-  and zones, and a cut along x.
+- **3D view**: WebGL2 ray casting of a coarse level as a surface, with a transfer function or
+  as a maximum intensity projection. Histogram editor for the transfer function (control points
+  with opacity and colour, colour maps, presets) and the surface threshold; colours for pores,
+  zones, surface and background; gradient lighting; a cut along x.
 - **MCP** (`vs-studio --mcp`): the studio API as Model Context Protocol tools for AI systems
   (`voxelsieve::Studio`, `voxelsieve::McpServer`).
 - **Read API** (`voxelsieve::Dataset`): samples, regions across bricks and parallel brick
