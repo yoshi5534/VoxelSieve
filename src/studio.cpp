@@ -453,6 +453,34 @@ VolumePreview Studio::volumePreview(std::optional<int> dataset_step,
   return readVolumePreview(*dataset, max_size, porosity.get());
 }
 
+std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surface_step,
+                                                       std::size_t max_triangles) const {
+  std::filesystem::path file;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = surface_step ? Json{{"step", *surface_step}} : Json::object();
+    file = project().resolve(artifactRef(params, artifact::kSurface)) / "surface.vss";
+  }
+  const std::filesystem::path key = file.string() + "#" + std::to_string(max_triangles);
+  {
+    const std::scoped_lock lock(surface_mutex_);
+    for (const auto& [path, mesh] : surface_meshes_) {
+      if (path == key) {
+        return mesh;
+      }
+    }
+  }
+  // Built without a lock: meshing runs in parallel with TBB.
+  auto mesh = std::make_shared<const IndexedMesh>(
+      surfaceDisplayMesh(SurfaceMask::open(file), max_triangles));
+  const std::scoped_lock lock(surface_mutex_);
+  surface_meshes_.emplace_back(key, mesh);
+  if (surface_meshes_.size() > kOpenDatasets) {
+    surface_meshes_.erase(surface_meshes_.begin());
+  }
+  return mesh;
+}
+
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Studio::openView(
     std::optional<int> dataset_step, std::optional<int> porosity_step) const {
   std::filesystem::path dataset_dir;

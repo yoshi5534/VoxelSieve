@@ -1,6 +1,7 @@
 #include "voxelsieve/surface.hpp"
 
 #include <openvdb/tools/Dense.h>
+#include <openvdb/tools/GridTransformer.h>
 #include <openvdb/tools/LevelSetRebuild.h>
 #include <openvdb/tools/SignedFloodFill.h>
 #include <openvdb/tools/VolumeToMesh.h>
@@ -864,6 +865,45 @@ Mesh SurfaceMask::toMesh(double adaptivity) const {
     }
   }
   return mesh;
+}
+
+IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles) {
+  // Merges coplanar cells into larger polygons; a quarter keeps curved parts smooth.
+  constexpr double kAdaptivity = 0.25;
+  constexpr int kMaxCoarsening = 5;
+  const double v = mask.info().voxel_size_mm;
+  openvdb::FloatGrid::Ptr grid = mask.toLevelSet();
+  IndexedMesh mesh;
+  for (int coarsening = 0;; ++coarsening) {
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+    openvdb::tools::volumeToMesh(*grid, points, triangles, quads, 0.0, kAdaptivity);
+    const std::size_t count = triangles.size() + 2 * quads.size();
+    if (count <= max_triangles || coarsening == kMaxCoarsening) {
+      mesh.points.reserve(points.size());
+      for (const openvdb::Vec3s& p : points) {
+        mesh.points.push_back({static_cast<float>(p.x() / v), static_cast<float>(p.y() / v),
+                               static_cast<float>(p.z() / v)});
+      }
+      mesh.triangles.reserve(count);
+      for (const openvdb::Vec3I& t : triangles) {
+        mesh.triangles.push_back({t[0], t[1], t[2]});
+      }
+      for (const openvdb::Vec4I& q : quads) {
+        mesh.triangles.push_back({q[0], q[1], q[2]});
+        mesh.triangles.push_back({q[0], q[2], q[3]});
+      }
+      return mesh;
+    }
+    // Twice the voxel size: about a quarter of the triangles.
+    auto coarse = openvdb::FloatGrid::create(grid->background() * 2.0F);
+    coarse->setGridClass(openvdb::GRID_LEVEL_SET);
+    coarse->setTransform(
+        openvdb::math::Transform::createLinearTransform(grid->voxelSize()[0] * 2.0));
+    openvdb::tools::resampleToMatch<openvdb::tools::BoxSampler>(*grid, *coarse);
+    grid = coarse;
+  }
 }
 
 void writeSurfaceImages(const SurfaceMask& mask, const std::filesystem::path& dir,

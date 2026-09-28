@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -118,6 +119,17 @@ class SurfaceMask {
   explicit SurfaceMask(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
+
+/// Triangle mesh with shared vertices.
+struct IndexedMesh {
+  std::vector<std::array<float, 3>> points;
+  std::vector<std::array<std::uint32_t, 3>> triangles;
+};
+
+/// Mesh of the surface for display, in level-0 voxel coordinates (voxel index, not mm). Flat
+/// regions are meshed with larger triangles; when the mesh still has more than `max_triangles`,
+/// the surface is resampled at 2, 4, ... times the voxel size until it fits.
+[[nodiscard]] IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles);
 
 /// Writes the middle slice along x, y and z as surface_[xyz].png: material grey, air black and the
 /// band coloured from blue (in material) to red (in air). Slices larger than `max_pixels` are

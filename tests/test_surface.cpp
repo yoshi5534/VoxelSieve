@@ -354,6 +354,36 @@ TEST_F(SurfaceTest, LevelSetAndMeshFollowTheCodes) {
   EXPECT_NEAR(meshVolumeMm3(mesh), mask.info().volume_mm3, 0.01 * mask.info().volume_mm3);
 }
 
+TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
+  const auto scan = scanOf("hub", 0.3, 0.15);
+  const Dataset dataset = sieve(*scan, "scan.vsieve");
+  (void)writeSurface(dataset, dir_ / "surface.vss");
+  const SurfaceMask mask = SurfaceMask::open(dir_ / "surface.vss");
+  const double v = mask.info().voxel_size_mm;
+  const auto origin = scan->originMm();
+  const IndexedMesh full = surfaceDisplayMesh(mask, 10000000);
+  ASSERT_FALSE(full.triangles.empty());
+  // Points in level-0 voxel coordinates, on the true surface within a fraction of a voxel.
+  double squares = 0.0;
+  for (const auto& p : full.points) {
+    const double d =
+        scan->signedDistanceMm({origin[0] + p[0] * v, origin[1] + p[1] * v, origin[2] + p[2] * v}) /
+        v;
+    squares += d * d;
+  }
+  EXPECT_LT(std::sqrt(squares / static_cast<double>(full.points.size())), 0.15);
+  for (const auto& t : full.triangles) {
+    for (const std::uint32_t index : t) {
+      ASSERT_LT(index, full.points.size());
+    }
+  }
+  // A small budget coarsens the surface until it fits.
+  const std::size_t budget = full.triangles.size() / 5;
+  const IndexedMesh coarse = surfaceDisplayMesh(mask, budget);
+  EXPECT_LE(coarse.triangles.size(), budget);
+  EXPECT_GT(coarse.triangles.size(), budget / 20);
+}
+
 TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {
   const auto scan = scanOf("bracket", 0.2, 0.2);
   const Dataset dataset = sieve(*scan, "scan.vsieve");
