@@ -67,6 +67,7 @@ Json datasetInfoJson(const DatasetInfo& info) {
                {"threshold", info.threshold},
                {"air_level", info.air_level},
                {"margin_voxels", info.margin_voxels},
+               {"min_material_voxels", info.min_material_voxels},
                {"active_voxels", info.active_voxel_count},
                {"levels", levels}});
   return json;

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Noise-robust sieve for datasets** (`DatasetOptions::min_material_voxels`, `vs-sieve
+  --min-material`, parameter `min_material_voxels` of `import_raw` and `import_tiff`): an 8^3
+  block counts as material only with at least n voxels above the threshold, so speckle noise in
+  the air no longer keeps whole blocks. Voxel-identical to the in-memory sieve; recorded in
+  `index.json`. On the Me 163 scan (512 x 3584 x 512, threshold 2500), n = 8 keeps 14 % of the
+  voxels instead of 70 % and still covers 99.4 % of the blocks with structure.
 - **Voxels that are not cubes** (`voxelsieve::VoxelSize`, ADR 0012): an edge length per axis, for
   scans with a coarser slice spacing, and the slice thickness when slices are thinner than their
   spacing. Volumes, positions, pore sizes, surfaces, the nominal-actual comparison, report images

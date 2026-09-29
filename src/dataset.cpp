@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -50,20 +51,25 @@ Index3 unravel(std::size_t index, const Index3& dims) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Pass 1: histogram and maximum grey value per 8^3 block.
+// Pass 1: histogram and the k-th largest grey value per 8^3 block, k = min_material_voxels.
+// A block holds at least k voxels above the threshold exactly when its k-th largest value is
+// above it, so the threshold may still be chosen after the pass and the result matches the
+// voxel count of the in-memory sieve. Only one value per block is kept (2 bytes); the k largest
+// values live in per-task heaps for one row of blocks.
 
 struct BlockStatistics {
   Histogram histogram;
-  std::vector<std::uint16_t> block_max;
+  std::vector<std::uint16_t> block_kth;
   Index3 block_dims{};
 };
 
-BlockStatistics collectBlockStatistics(const VolumeSource& source) {
+BlockStatistics collectBlockStatistics(const VolumeSource& source, int k) {
   constexpr std::int64_t kB = kBlockSize;
   const Index3 dims = source.dims();
   BlockStatistics stats;
   stats.block_dims = ceilDiv3(dims, kB);
-  stats.block_max.assign(product(stats.block_dims), 0);
+  stats.block_kth.assign(product(stats.block_dims), 0);
+  const auto heap_size = static_cast<std::size_t>(k);
 
   tbb::combinable<Histogram> histograms([] { return Histogram(kHistogramBins, 0); });
   const std::int64_t rows = stats.block_dims[1] * stats.block_dims[2];
@@ -71,6 +77,8 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source) {
   tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, rows), [&](const auto& range) {
     Histogram& histogram = histograms.local();
     std::vector<std::uint16_t> buffer;
+    // Min-heaps of the k largest values seen so far, one per block of the row.
+    std::vector<std::uint16_t> heaps;
     for (std::int64_t row = range.begin(); row != range.end(); ++row) {
       const std::int64_t by = row % stats.block_dims[1];
       const std::int64_t bz = row / stats.block_dims[1];
@@ -78,18 +86,36 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source) {
                     {dims[0], std::min((by + 1) * kB, dims[1]), std::min((bz + 1) * kB, dims[2])}};
       buffer.resize(static_cast<std::size_t>(box.voxelCount()));
       source.readRegion(box, buffer);
-      std::uint16_t* block_max = &stats.block_max[static_cast<std::size_t>(
+      std::uint16_t* block_kth = &stats.block_kth[static_cast<std::size_t>(
           stats.block_dims[0] * (by + stats.block_dims[1] * bz))];
       std::size_t offset = 0;
-      for (std::int64_t z = 0; z < box.size(2); ++z) {
-        for (std::int64_t y = 0; y < box.size(1); ++y) {
+      const std::int64_t lines = box.size(1) * box.size(2);
+      if (heap_size == 1) {  // the common case: the block maximum
+        for (std::int64_t line = 0; line < lines; ++line) {
           for (std::int64_t x = 0; x < dims[0]; ++x) {
             const std::uint16_t value = buffer[offset++];
             ++histogram[value];
-            std::uint16_t& current = block_max[x / kB];
+            std::uint16_t& current = block_kth[x / kB];
             current = std::max(current, value);
           }
         }
+        continue;
+      }
+      heaps.assign(static_cast<std::size_t>(stats.block_dims[0]) * heap_size, 0);
+      for (std::int64_t line = 0; line < lines; ++line) {
+        for (std::int64_t x = 0; x < dims[0]; ++x) {
+          const std::uint16_t value = buffer[offset++];
+          ++histogram[value];
+          std::uint16_t* heap = &heaps[static_cast<std::size_t>(x / kB) * heap_size];
+          if (value > heap[0]) {
+            std::pop_heap(heap, heap + heap_size, std::greater<>());
+            heap[heap_size - 1] = value;
+            std::push_heap(heap, heap + heap_size, std::greater<>());
+          }
+        }
+      }
+      for (std::int64_t bx = 0; bx < stats.block_dims[0]; ++bx) {
+        block_kth[bx] = heaps[static_cast<std::size_t>(bx) * heap_size];
       }
     }
   });
@@ -106,10 +132,10 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source) {
 BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold) {
   BlockGrid blocks;
   blocks.dims = stats.block_dims;
-  blocks.states.resize(stats.block_max.size());
-  std::transform(stats.block_max.begin(), stats.block_max.end(), blocks.states.begin(),
-                 [threshold](std::uint16_t max) {
-                   return static_cast<float>(max) > threshold ? BlockState::kMaterial
+  blocks.states.resize(stats.block_kth.size());
+  std::transform(stats.block_kth.begin(), stats.block_kth.end(), blocks.states.begin(),
+                 [threshold](std::uint16_t kth) {
+                   return static_cast<float>(kth) > threshold ? BlockState::kMaterial
                                                               : BlockState::kAir;
                  });
   detail::floodFillOutsideAir(blocks);
@@ -241,6 +267,7 @@ nlohmann::json toJson(const DatasetInfo& info) {
                {"threshold", info.threshold},
                {"air_level", info.air_level},
                {"margin_voxels", info.margin_voxels},
+               {"min_material_voxels", info.min_material_voxels},
                {"active_voxel_count", info.active_voxel_count},
                {"overview", "overview.vdb"},
                {"levels", levels}});
@@ -275,6 +302,10 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   if (options.margin_voxels < 0) {
     throw std::invalid_argument("margin_voxels must be >= 0");
   }
+  if (options.min_material_voxels < 1 ||
+      options.min_material_voxels > kBlockSize * kBlockSize * kBlockSize) {
+    throw std::invalid_argument("min_material_voxels must be between 1 and 512");
+  }
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
   }
@@ -286,8 +317,9 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   info.voxel_size.validate();
   info.brick_size = options.brick_size;
   info.margin_voxels = options.margin_voxels;
+  info.min_material_voxels = options.min_material_voxels;
 
-  const BlockStatistics stats = collectBlockStatistics(source);
+  const BlockStatistics stats = collectBlockStatistics(source, options.min_material_voxels);
   const detail::ThresholdResult estimate = detail::otsuThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
@@ -382,6 +414,7 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   info.threshold = json.at("threshold").get<float>();
   info.air_level = json.at("air_level").get<float>();
   info.margin_voxels = json.at("margin_voxels").get<int>();
+  info.min_material_voxels = json.value("min_material_voxels", 1);  // absent before 0.2
   info.active_voxel_count = json.at("active_voxel_count").get<std::int64_t>();
   for (const auto& level : json.at("levels")) {
     info.levels.push_back({level.at("level").get<int>(), level.at("dims").get<Index3>(),
