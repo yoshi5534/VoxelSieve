@@ -1,10 +1,13 @@
 // vs-sieve: converts a raw CT volume into a sparse OpenVDB grid that keeps the part, its internal
 // voids and an air margin, and drops the air connected to the volume boundary.
 
+#include <unistd.h>  // isatty
+
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -359,6 +362,60 @@ void runSingleGrid(const Options& options) {
   reportClipped(floats);
 }
 
+/// Progress of the streaming sieve on stderr: one line per stage that is rewritten in place on a
+/// terminal, and a line every 10 % otherwise (logs).
+class ProgressPrinter {
+ public:
+  void operator()(std::string_view stage, double fraction) {
+    const auto now = std::chrono::steady_clock::now();
+    if (stage != stage_) {
+      finishLine();
+      stage_ = stage;
+      stage_start_ = now;
+      last_logged_ = -1;
+    }
+    const auto percent = static_cast<int>(fraction * 100.0);
+    if (!terminal_ && percent / 10 == last_logged_ / 10 && percent < 100) {
+      return;
+    }
+    last_logged_ = percent;
+    const double elapsed = seconds(stage_start_, now);
+    std::ostringstream line;
+    line << std::left << std::setw(19) << (label(stage) + " ") << std::right << std::setw(3)
+         << percent << " %, " << std::fixed << std::setprecision(0) << elapsed << " s";
+    if (fraction > 0.02 && fraction < 1.0) {
+      line << ", about " << elapsed * (1.0 - fraction) / fraction << " s left";
+    }
+    std::cerr << (terminal_ ? "\r\033[K" : "") << line.str() << (terminal_ ? "" : "\n")
+              << std::flush;
+    open_line_ = terminal_;
+  }
+
+  void finishLine() {
+    if (open_line_) {
+      std::cerr << "\n";
+      open_line_ = false;
+    }
+  }
+
+ private:
+  static std::string label(std::string_view stage) {
+    if (stage == "histogram") {
+      return "pass 1 (histogram)";
+    }
+    if (stage == "bricks") {
+      return "pass 2 (bricks)";
+    }
+    return std::string(stage);
+  }
+
+  bool terminal_ = isatty(fileno(stderr)) != 0;
+  std::string stage_;
+  std::chrono::steady_clock::time_point stage_start_;
+  int last_logged_ = -1;
+  bool open_line_ = false;
+};
+
 void runDataset(const Options& options) {
   std::unique_ptr<voxelsieve::VolumeSource> source;
   FloatInputs floats;
@@ -374,7 +431,13 @@ void runDataset(const Options& options) {
   }
 
   const auto start = std::chrono::steady_clock::now();
-  const auto info = voxelsieve::writeDataset(*source, options.out, options.dataset);
+  ProgressPrinter printer;
+  voxelsieve::DatasetOptions dataset = options.dataset;
+  dataset.progress = [&printer](std::string_view stage, double fraction) {
+    printer(stage, fraction);
+  };
+  const auto info = voxelsieve::writeDataset(*source, options.out, dataset);
+  printer.finishLine();
   const auto done = std::chrono::steady_clock::now();
 
   const auto dims = source->dims();

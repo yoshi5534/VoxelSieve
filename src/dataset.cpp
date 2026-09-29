@@ -8,6 +8,7 @@
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <fstream>
 #include <functional>
@@ -57,13 +58,52 @@ Index3 unravel(std::size_t index, const Index3& dims) {
 // voxel count of the in-memory sieve. Only one value per block is kept (2 bytes); the k largest
 // values live in per-task heaps for one row of blocks.
 
+/// Reports the fraction of `total` steps done through DatasetOptions::progress, at most once per
+/// whole percent, from any thread.
+class ProgressCounter {
+ public:
+  ProgressCounter(const DatasetOptions& options, std::string_view stage, std::size_t total)
+      : callback_(options.progress), stage_(stage), total_(total) {
+    report(0);
+  }
+  void step() {
+    if (callback_) {
+      report(done_.fetch_add(1) + 1);
+    }
+  }
+
+ private:
+  void report(std::size_t done) {
+    if (!callback_) {
+      return;
+    }
+    const std::scoped_lock lock(mutex_);
+    // A stage without steps is done at once.
+    const double fraction =
+        total_ == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total_);
+    const auto percent = static_cast<int>(fraction * 100.0);
+    if (percent > last_percent_) {
+      last_percent_ = percent;
+      callback_(stage_, fraction);
+    }
+  }
+
+  const std::function<void(std::string_view, double)>& callback_;
+  std::string_view stage_;
+  std::size_t total_;
+  std::atomic<std::size_t> done_ = 0;
+  std::mutex mutex_;
+  int last_percent_ = -1;
+};
+
 struct BlockStatistics {
   Histogram histogram;
   std::vector<std::uint16_t> block_kth;
   Index3 block_dims{};
 };
 
-BlockStatistics collectBlockStatistics(const VolumeSource& source, int k) {
+BlockStatistics collectBlockStatistics(const VolumeSource& source, int k,
+                                       const DatasetOptions& options) {
   constexpr std::int64_t kB = kBlockSize;
   const Index3 dims = source.dims();
   BlockStatistics stats;
@@ -73,6 +113,7 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source, int k) {
 
   tbb::combinable<Histogram> histograms([] { return Histogram(kHistogramBins, 0); });
   const std::int64_t rows = stats.block_dims[1] * stats.block_dims[2];
+  ProgressCounter progress(options, "histogram", static_cast<std::size_t>(rows));
   // One task per row of blocks: an 8 x 8 x dims[0] region, so memory per task stays small.
   tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, rows), [&](const auto& range) {
     Histogram& histogram = histograms.local();
@@ -88,6 +129,7 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source, int k) {
       source.readRegion(box, buffer);
       std::uint16_t* block_kth = &stats.block_kth[static_cast<std::size_t>(
           stats.block_dims[0] * (by + stats.block_dims[1] * bz))];
+      progress.step();
       std::size_t offset = 0;
       const std::int64_t lines = box.size(1) * box.size(2);
       if (heap_size == 1) {  // the common case: the block maximum
@@ -324,7 +366,8 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   info.margin_voxels = options.margin_voxels;
   info.min_material_voxels = options.min_material_voxels;
 
-  const BlockStatistics stats = collectBlockStatistics(source, options.min_material_voxels);
+  const BlockStatistics stats =
+      collectBlockStatistics(source, options.min_material_voxels, options);
   const detail::ThresholdResult estimate = detail::otsuThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
@@ -335,9 +378,11 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   std::mutex mutex;
+  ProgressCounter brick_progress(options, "bricks", product(brick_dims));
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
     auto grid = buildBrick(source, blocks, brick, options);
+    brick_progress.step();
     if (!grid) {
       return;
     }
@@ -355,6 +400,13 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   info.levels.push_back(std::move(level0));
 
   // Coarser levels until one brick holds the whole volume.
+  int level_count = 1;  // levels needed in all, for the progress
+  for (Index3 d = info.dims;
+       std::any_of(d.begin(), d.end(), [&](std::int64_t n) { return n > options.brick_size; });
+       d = ceilDiv3(d, 2)) {
+    ++level_count;
+  }
+  ProgressCounter level_progress(options, "levels", static_cast<std::size_t>(level_count - 1));
   while (true) {
     const LevelInfo& finer = info.levels.back();
     if (std::all_of(finer.dims.begin(), finer.dims.end(),
@@ -383,6 +435,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
     });
     std::sort(coarser.bricks.begin(), coarser.bricks.end());
     info.levels.push_back(std::move(coarser));
+    level_progress.step();
   }
 
   // Overview: the single brick of the coarsest level, or an empty grid for an empty dataset.

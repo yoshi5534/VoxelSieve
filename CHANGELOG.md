@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Progress of the streaming sieve** (`DatasetOptions::progress`): `vs-sieve` shows per pass the
+  percentage done, the time so far and the time left (one line rewritten in place on a terminal,
+  a line every 10 % in logs); `import_raw` and `import_tiff` report it to the studio.
+
 - **Float TIFF stacks** (`TiffStackOptions::value_range`, `vs-sieve --value-range`, parameter
   `value_range` of `import_tiff`, ADR 0015): 32 and 64-bit float slices, as reconstruction
   software writes them (attenuation values, negative ones included), also with the

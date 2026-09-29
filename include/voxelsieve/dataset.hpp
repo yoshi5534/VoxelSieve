@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "voxelsieve/source.hpp"
@@ -36,6 +37,10 @@ struct DatasetOptions {
   /// A block counts as material once it holds at least this many voxels above the threshold,
   /// 1 to 512. Values above 1 keep isolated noise spikes in the air from counting as material.
   int min_material_voxels = 1;
+  /// Called as the sieve advances, with the stage ("histogram": pass 1 over the input,
+  /// "bricks": pass 2, "levels": the coarser levels) and the fraction of that stage done, 0 to 1.
+  /// Called from one thread at a time, at most once per whole percent of a stage.
+  std::function<void(std::string_view stage, double fraction)> progress;
 };
 
 struct LevelInfo {

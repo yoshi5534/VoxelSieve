@@ -39,6 +39,16 @@ Json datasetSummary(const DatasetInfo& info) {
   return summary;
 }
 
+/// Forwards the progress of writeDataset as one fraction: pass 1 up to 45 %, pass 2 up to 90 %,
+/// the coarser levels the rest.
+std::function<void(std::string_view, double)> datasetProgress(const OperationContext& context) {
+  return [&context](std::string_view stage, double fraction) {
+    const double start = stage == "histogram" ? 0.0 : stage == "bricks" ? 0.45 : 0.9;
+    const double width = stage == "levels" ? 0.1 : 0.45;
+    context.progress(start + width * fraction);
+  };
+}
+
 /// Parameters for the voxel size: one edge length for cubic voxels or one per axis, and the slice
 /// thickness when slices are thinner than their spacing (ADR 0012).
 void addVoxelSizeParameters(Json& properties, const std::string& default_text) {
@@ -193,6 +203,7 @@ class ImportRaw final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
@@ -286,6 +297,7 @@ class ImportTiff final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
