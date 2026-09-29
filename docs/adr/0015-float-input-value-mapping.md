@@ -7,7 +7,8 @@ Status: accepted (2026-09-29)
 Reconstruction software often writes float slices instead of integers: attenuation coefficients
 in 1/mm or 1/pixel, with negative values from noise and reconstruction artefacts in the air. The
 first such dataset a user brought is a ZIP archive of 32-bit float TIFF slices of 1250 x 1250
-(a drill core in a tube), with values from -0.027 to 0.247 and a noise level of about 0.007.
+(LoDoInd, a pipe with 15 fillings, 4000 slices per volume), with values from -0.027 to 0.247 and
+a noise level of about 0.007.
 
 Until now `TiffStackSource` refused float images (ADR 0011), because every `VolumeSource` delivers
 16-bit grey values and ADR 0002 forbids silent quantisation. The streaming sieve, the Otsu
