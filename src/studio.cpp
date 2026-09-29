@@ -626,12 +626,14 @@ Json Studio::viewSlice(const Json& params) const {
   std::optional<int> porosity_step;
   std::shared_ptr<const MaterialVolume> materials;
   std::optional<int> materials_step;
-  const auto latest_step_of = [&](const std::string& operation) -> std::optional<int> {
+  const auto latest_step_of =
+      [&](const std::vector<std::string>& operations) -> std::optional<int> {
     for (std::size_t i = project().cursor(); i > 0; --i) {
       const Step& step = project().steps()[i - 1];
       const auto input = step.inputs.find("dataset");
-      if (step.status == "done" && step.operation == operation && input != step.inputs.end() &&
-          project().resolve(input->second) == dataset_dir) {
+      if (step.status == "done" &&
+          std::find(operations.begin(), operations.end(), step.operation) != operations.end() &&
+          input != step.inputs.end() && project().resolve(input->second) == dataset_dir) {
         return step.id;
       }
     }
@@ -641,7 +643,7 @@ Json Studio::viewSlice(const Json& params) const {
     if (params.contains("porosity_step")) {
       porosity_step = params.at("porosity_step").get<int>();
     } else {
-      porosity_step = latest_step_of("porosity");
+      porosity_step = latest_step_of({"porosity"});
     }
     if (porosity_step) {
       porosity = openPorosity(
@@ -650,7 +652,7 @@ Json Studio::viewSlice(const Json& params) const {
     if (params.contains("materials_step")) {
       materials_step = params.at("materials_step").get<int>();
     } else {
-      materials_step = latest_step_of("segment_materials");
+      materials_step = latest_step_of({"segment_materials", "segment_model"});
     }
     if (materials_step) {
       materials = openMaterials(
