@@ -15,6 +15,12 @@ function voxelPitch(size) {
   return Array.isArray(size) ? size : [size, size, size];
 }
 
+// Overlay value of material m is MATERIAL_OVERLAY + m (SliceOverlay::kMaterial); the colours
+// match those of the material volume (materials.cpp).
+const MATERIAL_OVERLAY = 16;
+const MATERIAL_COLORS = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
+  [142, 99, 190], [214, 190, 40], [23, 170, 170], [140, 110, 80]];
+
 class SliceViewer {
   constructor() {
     this.tiles = new Map();     // key -> {data, overlay, canvas, rendered, used}
@@ -25,6 +31,7 @@ class SliceViewer {
     this.info = null;           // dataset_info
     this.step = null;           // dataset step id
     this.porosity = null;       // porosity step id for the overlay
+    this.materials = null;      // material segmentation step id for the overlay
     this.axis = 2;
     this.index = [0, 0, 0];
     this.zoom = 1;              // screen pixels per level-0 voxel along the finer in-plane axis
@@ -37,12 +44,13 @@ class SliceViewer {
   }
 
   /// Shows a dataset; keeps the view when the dataset stays the same.
-  setDataset(info, step, porosity) {
+  setDataset(info, step, porosity, materials = null) {
     const same = this.step === step && this.info !== null;
     this.info = info;
     this.step = step;
-    if (this.porosity !== porosity) {
+    if (this.porosity !== porosity || this.materials !== materials) {
       this.porosity = porosity;
+      this.materials = materials;
       this.clearTiles();
     }
     if (!same) {
@@ -235,7 +243,8 @@ class SliceViewer {
 
   key(level, tu, tv) {
     const slice = this.index[this.axis] >> level;
-    return [this.step, this.porosity ?? '-', this.axis, level, slice, tu, tv].join('/');
+    return [this.step, this.porosity ?? '-', this.materials ?? '-', this.axis, level, slice, tu,
+      tv].join('/');
   }
 
   requestDraw() {
@@ -333,6 +342,7 @@ class SliceViewer {
       u: tu * TILE, v: tv * TILE, size: TILE,
     });
     if (this.porosity !== null) params.set('porosity', this.porosity);
+    if (this.materials !== null) params.set('materials', this.materials);
     try {
       const response = await fetch('api/tile?' + params);
       if (!response.ok) throw new Error((await response.json()).error);
@@ -415,6 +425,10 @@ class SliceViewer {
           r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
         } else if (overlay === 2) {
           r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
+        } else if (overlay > MATERIAL_OVERLAY) {
+          // Materials in their colour, half covering the grey value.
+          const [mr, mg, mb] = MATERIAL_COLORS[(overlay - MATERIAL_OVERLAY - 1) % 8];
+          r = 0.5 * grey + 0.5 * mr; g = 0.5 * grey + 0.5 * mg; b = 0.5 * grey + 0.5 * mb;
         }
       }
       const p = i * 4;
@@ -430,4 +444,5 @@ class SliceViewer {
 }
 
 window.SliceViewer = SliceViewer;
+window.MATERIAL_COLORS = MATERIAL_COLORS;
 window.SLICE_AXIS_NAMES = AXIS_NAMES;

@@ -34,6 +34,8 @@ const LABELS = {
   big_endian: 'Big Endian',
   header_bytes: 'Header (Bytes)',
   threshold: 'Schwellwert',
+  air_threshold: 'Luft-Schwellwert',
+  materials: 'Materialien',
   margin_voxels: 'Luftrand (Voxel)',
   brick_size: 'Brick-Größe (Voxel)',
   min_pore_voxels: 'Kleinste Pore (Voxel)',
@@ -64,6 +66,8 @@ const SUMMARY_LABELS = {
   bricks: 'Bricks',
   active_voxels: 'Aktive Voxel',
   threshold: 'Schwellwert',
+  air_threshold: 'Luft-Schwellwert',
+  materials: 'Materialien',
   header_bytes: 'Header (Bytes)',
   pores: 'Poren',
   pore_volume_mm3: 'Porenvolumen (mm³)',
@@ -129,6 +133,9 @@ function formatValue(key, value) {
   if (key === 'passed') return value ? 'bestanden' : 'nicht bestanden';
   if (key.endsWith('_percent') && typeof value === 'number') {
     return value.toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' %';
+  }
+  if (Array.isArray(value) && value.some((item) => item !== null && typeof item === 'object')) {
+    return value.map((item) => JSON.stringify(item)).join('; ');
   }
   if (Array.isArray(value)) return value.map(formatNumber).join(' × ');
   if (value !== null && typeof value === 'object') return JSON.stringify(value);
@@ -840,6 +847,13 @@ function porosityOf(datasetStep) {
   return steps.length ? steps[steps.length - 1].id : null;
 }
 
+/// Latest material segmentation computed from the dataset of `datasetStep`.
+function materialsOf(datasetStep) {
+  const steps = activeSteps().filter((step) => step.operation === 'segment_materials' &&
+    step.inputs.dataset?.step === datasetStep);
+  return steps.length ? steps[steps.length - 1] : null;
+}
+
 async function loadPores(step) {
   if (state.pores.step === step) return;
   state.pores = { step, list: [] };
@@ -873,6 +887,7 @@ function renderViewStage(panel) {
   }
   const viewer = state.viewer ?? (state.viewer = new SliceViewer());
   const porosity = porosityOf(dataset.step.id);
+  const materials = materialsOf(dataset.step.id);
   loadPores(porosity);
   const canvas = el('canvas', { tabindex: 0 });
   const status = el('div', { className: 'viewer-status' });
@@ -885,7 +900,7 @@ function renderViewStage(panel) {
     title: 'Schnitt senkrecht zur ' + SLICE_AXIS_NAMES[axis] + '-Achse',
   }, SLICE_AXIS_NAMES[axis].toUpperCase()));
   const overlay = el('input', { type: 'checkbox', checked: viewer.showOverlay,
-    disabled: porosity === null });
+    disabled: porosity === null && materials === null });
   overlay.addEventListener('change', () => viewer.setOverlay(overlay.checked));
   slider.addEventListener('input', () => viewer.setSlice(Number(slider.value)));
   sliceNumber.addEventListener('change', () => viewer.setSlice(Number(sliceNumber.value)));
@@ -927,7 +942,8 @@ function renderViewStage(panel) {
     slider, sliceNumber,
     el('div', { className: 'group' }, 'Fenster', low, high,
       el('button', { onclick: () => viewer.autoWindow() }, 'Auto')),
-    el('label', { className: 'group' }, overlay, 'Poren und Zonen'),
+    el('label', { className: 'group' }, overlay,
+      materials === null ? 'Poren und Zonen' : 'Poren, Zonen, Materialien'),
     el('button', { onclick: () => { viewer.fit(); viewer.requestDraw(); viewer.onChange(); } },
       'Einpassen'));
 
@@ -947,12 +963,23 @@ function renderViewStage(panel) {
         ? 'Nach der Porositätsanalyse erscheinen hier die Poren; ein Klick springt zur Pore.'
         : 'Keine Poren gefunden.'));
 
+  if (materials !== null) {
+    // Legend: the classes with the grey value they start at and their volume.
+    const rows = (materials.summary?.materials ?? []).map((material) => el('tr', {},
+      el('td', {}, el('span', { className: 'swatch', style: 'background: rgb(' +
+        MATERIAL_COLORS[(material.id - 1) % 8].join(',') + ')' }), ' ' + material.id),
+      el('td', {}, formatNumber(Math.round(material.from_grey_value))),
+      el('td', {}, formatNumber(material.volume_mm3))));
+    side.append(el('h3', {}, 'Materialien (Schritt ' + materials.id + ')'),
+      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Nr.'), el('th', {}, 'ab Grauwert'),
+        el('th', {}, 'mm³'))), el('tbody', {}, rows)));
+  }
   panel.append(el('div', { className: 'viewer' },
     el('div', {}, tools, canvas, status), side));
 
   state.capture = () => viewer.capture();
   api('dataset_info', { step: dataset.step.id }).then((info) => {
-    viewer.setDataset(info, dataset.step.id, porosity);
+    viewer.setDataset(info, dataset.step.id, porosity, materials?.id ?? null);
     viewer.attach(canvas);
     if (state.restore?.slice) {
       viewer.setState(state.restore.slice);

@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 add_executable(voxelsieve_tests
   test_dataset.cpp
   test_io.cpp
+  test_materials.cpp
   test_phantom.cpp
   test_porosity.cpp
   test_project.cpp
@@ -44,6 +45,14 @@ set_tests_properties(vs_sieve_dataset_cli_clean PROPERTIES FIXTURES_SETUP cli_da
 add_test(NAME vs_sieve_dataset_cli
          COMMAND vs-sieve --phantom 64 --brick-size 32 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset)
 set_tests_properties(vs_sieve_dataset_cli PROPERTIES FIXTURES_REQUIRED cli_dataset)
+# Materials of the sieved phantom (one class, the box).
+add_test(NAME vs_segment_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_materials)
+add_test(NAME vs_segment_cli
+         COMMAND vs-segment ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset --materials 1
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_materials)
+set_tests_properties(vs_segment_cli PROPERTIES DEPENDS "vs_sieve_dataset_cli;vs_segment_cli_clean"
+                     FIXTURES_REQUIRED cli_dataset PASS_REGULAR_EXPRESSION "material 1 ")
 # Voxels that are not cubes: the sidecar carries [x, y, z], vs-sieve prints and keeps it.
 add_test(NAME vs_phantom_anisotropic_cli
          COMMAND vs-phantom --out ${CMAKE_CURRENT_BINARY_DIR}/cli_anisotropic --dims 32

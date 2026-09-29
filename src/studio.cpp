@@ -307,7 +307,8 @@ std::vector<StudioMethod> Studio::methods() const {
        objectSchema(artifactProperties())},
       {"view_slice",
        "Renders a slice through a dataset as a PNG image, with pores in red and loosened zones in "
-       "yellow when a porosity analysis of the dataset exists. The whole slice is shown at the "
+       "yellow when a porosity analysis of the dataset exists, and materials in their colours "
+       "when a material segmentation exists. The whole slice is shown at the "
        "resolution level that fits max_pixels; the result says which axes run right and down. "
        "One pixel per voxel: pixel_size_mm gives its width and height, which differ when the "
        "voxels are not cubes.",
@@ -330,6 +331,10 @@ std::vector<StudioMethod> Studio::methods() const {
          properties["porosity_step"] = {
              {"type", "integer"},
              {"description", "Porosity step for the overlay; default: the latest of this dataset"}};
+         properties["materials_step"] = {
+             {"type", "integer"},
+             {"description",
+              "Material segmentation for the overlay; default: the latest of this dataset"}};
          properties.erase("output");
          return objectSchema(properties);
        }()},
@@ -484,16 +489,40 @@ std::shared_ptr<const PorosityResult> Studio::openPorosity(const std::filesystem
                 [&dir] { return std::make_shared<const PorosityResult>(loadPorosityResult(dir)); });
 }
 
+std::shared_ptr<const MaterialVolume> Studio::openMaterials(
+    std::optional<int> materials_step) const {
+  if (!materials_step) {
+    return nullptr;
+  }
+  std::filesystem::path dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    dir = project().resolve(artifactRef({{"step", *materials_step}}, artifact::kMaterials));
+  }
+  return openMaterials(dir);
+}
+
+std::shared_ptr<const MaterialVolume> Studio::openMaterials(
+    const std::filesystem::path& dir) const {
+  const std::scoped_lock lock(view_mutex_);
+  return cached(material_volumes_, dir, kOpenDatasets, [&dir] {
+    return std::make_shared<const MaterialVolume>(MaterialVolume::open(dir));
+  });
+}
+
 SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int> porosity_step,
-                             const SliceRequest& request) const {
+                             const SliceRequest& request, std::optional<int> materials_step) const {
   const auto [dataset, porosity] = openView(dataset_step, porosity_step);
-  return readSlice(*dataset, request, porosity.get());
+  const auto materials = openMaterials(materials_step);
+  return readSlice(*dataset, request, porosity.get(), materials.get());
 }
 
 VolumePreview Studio::volumePreview(std::optional<int> dataset_step,
-                                    std::optional<int> porosity_step, std::int64_t max_size) const {
+                                    std::optional<int> porosity_step, std::int64_t max_size,
+                                    std::optional<int> materials_step) const {
   const auto [dataset, porosity] = openView(dataset_step, porosity_step);
-  return readVolumePreview(*dataset, max_size, porosity.get());
+  const auto materials = openMaterials(materials_step);
+  return readVolumePreview(*dataset, max_size, porosity.get(), materials.get());
 }
 
 std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surface_step,
@@ -591,25 +620,41 @@ Json Studio::viewSlice(const Json& params) const {
   const auto dataset = openDataset(dataset_dir);
   const DatasetInfo& info = dataset->info();
 
-  // Overlay: the given porosity step, or the latest one computed from this dataset.
+  // Overlay: the given porosity and segmentation steps, or the latest ones computed from this
+  // dataset.
   std::shared_ptr<const PorosityResult> porosity;
   std::optional<int> porosity_step;
+  std::shared_ptr<const MaterialVolume> materials;
+  std::optional<int> materials_step;
+  const auto latest_step_of = [&](const std::string& operation) -> std::optional<int> {
+    for (std::size_t i = project().cursor(); i > 0; --i) {
+      const Step& step = project().steps()[i - 1];
+      const auto input = step.inputs.find("dataset");
+      if (step.status == "done" && step.operation == operation && input != step.inputs.end() &&
+          project().resolve(input->second) == dataset_dir) {
+        return step.id;
+      }
+    }
+    return std::nullopt;
+  };
   if (params.at("overlay").get<bool>()) {
     if (params.contains("porosity_step")) {
       porosity_step = params.at("porosity_step").get<int>();
     } else {
-      for (std::size_t i = project().cursor(); i > 0 && !porosity_step; --i) {
-        const Step& step = project().steps()[i - 1];
-        const auto input = step.inputs.find("dataset");
-        if (step.status == "done" && step.operation == "porosity" && input != step.inputs.end() &&
-            project().resolve(input->second) == dataset_dir) {
-          porosity_step = step.id;
-        }
-      }
+      porosity_step = latest_step_of("porosity");
     }
     if (porosity_step) {
       porosity = openPorosity(
           project().resolve(artifactRef({{"step", *porosity_step}}, artifact::kPorosity)));
+    }
+    if (params.contains("materials_step")) {
+      materials_step = params.at("materials_step").get<int>();
+    } else {
+      materials_step = latest_step_of("segment_materials");
+    }
+    if (materials_step) {
+      materials = openMaterials(
+          project().resolve(artifactRef({{"step", *materials_step}}, artifact::kMaterials)));
     }
   }
 
@@ -632,7 +677,7 @@ Json Studio::viewSlice(const Json& params) const {
   }
   const auto& dims = levels[static_cast<std::size_t>(request.level)].dims;
   request.size = {dims[static_cast<std::size_t>(u)], dims[static_cast<std::size_t>(v)]};
-  const SliceImage image = readSlice(*dataset, request, porosity.get());
+  const SliceImage image = readSlice(*dataset, request, porosity.get(), materials.get());
 
   float low = 0.0F;
   float high = 0.0F;
@@ -660,6 +705,14 @@ Json Studio::viewSlice(const Json& params) const {
       color = {channel(0.35F * g + 165.0F), channel(0.35F * g + 25.0F), channel(0.35F * g + 25.0F)};
     } else if (image.overlay[i] == static_cast<std::uint8_t>(SliceOverlay::kZone)) {
       color = {channel(0.5F * g + 125.0F), channel(0.5F * g + 100.0F), channel(0.4F * g)};
+    } else if (materials && image.overlay[i] > static_cast<std::uint8_t>(SliceOverlay::kMaterial)) {
+      // Materials in their colour, half covering the grey value.
+      const auto id = static_cast<std::size_t>(image.overlay[i] -
+                                               static_cast<std::uint8_t>(SliceOverlay::kMaterial));
+      const auto& tint = materials->info().materials.at(id - 1).color;
+      for (std::size_t c = 0; c < 3; ++c) {
+        color[c] = channel(0.5F * g + 0.5F * static_cast<float>(tint[c]));
+      }
     }
     std::copy(color.begin(), color.end(), rgb.begin() + static_cast<std::ptrdiff_t>(i * 3));
   }
@@ -681,6 +734,14 @@ Json Studio::viewSlice(const Json& params) const {
       {"window", {low, high}},
       {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
   result["porosity_step"] = porosity_step ? Json(*porosity_step) : Json();
+  result["materials_step"] = materials_step ? Json(*materials_step) : Json();
+  if (materials) {
+    Json legend = Json::array();
+    for (const Material& material : materials->info().materials) {
+      legend.push_back({{"id", material.id}, {"name", material.name}, {"color", material.color}});
+    }
+    result["materials"] = legend;
+  }
   return result;
 }
 

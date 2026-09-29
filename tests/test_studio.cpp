@@ -150,6 +150,34 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_THROW(studio.call("project_open", {{"path", 3}}), std::invalid_argument);
 }
 
+TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
+  Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
+  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json segmented = studio.call("run_segment_materials", {{"materials", 1}});
+  ASSERT_EQ(segmented.at("status"), "done");
+  // One material: the box of 6 x 5 x 4 mm with two lunkers of 0.5 mm radius.
+  const Json& material = segmented.at("summary").at("materials").at(0);
+  EXPECT_NEAR(material.at("volume_mm3").get<double>(), 120.0 - 2 * 4.0 / 3.0 * M_PI * 0.125, 3.0);
+
+  const Json slice = studio.call("view_slice", {});
+  EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
+  EXPECT_EQ(slice.at("materials").size(), 1U);
+
+  const Json info = studio.call("dataset_info", {});
+  SliceRequest request;
+  request.index = info.at("dims").at(2).get<std::int64_t>() / 2;
+  request.size = {info.at("dims").at(0).get<std::int64_t>(),
+                  info.at("dims").at(1).get<std::int64_t>()};
+  const SliceImage tile = studio.sliceTile(imported.at("id").get<int>(), std::nullopt, request,
+                                           segmented.at("id").get<int>());
+  const auto material_pixels = std::count(tile.overlay.begin(), tile.overlay.end(),
+                                          static_cast<std::uint8_t>(SliceOverlay::kMaterial) + 1);
+  EXPECT_GT(material_pixels, 0);
+  EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
+}
+
 TEST_F(StudioTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
   const auto project = (dir_ / "p").string();
   const Json state = {{"stage", "view"}, {"mode", "3d"}, {"transfer", {{"points", Json::array()}}}};

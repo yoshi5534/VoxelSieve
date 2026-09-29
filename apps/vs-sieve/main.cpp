@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -27,6 +28,7 @@ namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
        vs-sieve <slices/ | stack.tif | slices.zip> --out <output> [options]
+       vs-sieve <part1> <part2> ... --join <x|y|z> --out <output> [options]
        vs-sieve --phantom <n> --out <output> [options]
 
 Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json (as written by
@@ -36,6 +38,9 @@ from the file size and skipped; use --header when the file also has a footer.
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
 --voxel-size, else from the files, else 1 mm.
+
+Several inputs are joined one after another along --join (default z) into one volume, for scans
+reconstructed in parts. Their other dimensions and voxel sizes must match.
 
 Output:
   <dir>                   Bricked multi-resolution dataset (streaming, any volume size;
@@ -53,6 +58,7 @@ Options:
   --big-endian            16-bit samples are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
   --folder <name>         TIFF stacks: folder of the slices when there are several
+  --join <x|y|z>          Axis along which several inputs are joined (default z)
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
   --threshold <value>     Air/material grey value (default: Otsu estimate)
   --margin <voxels>       Air margin kept around the part (default 3)
@@ -64,7 +70,9 @@ Options:
 )";
 
 struct Options {
-  std::filesystem::path input;
+  std::filesystem::path input;  // the input being opened; the first of `inputs` while parsing
+  std::vector<std::filesystem::path> inputs;
+  int join_axis = 2;
   std::filesystem::path out;
   std::optional<std::array<std::int64_t, 3>> dims;
   std::optional<voxelsieve::VoxelSize> voxel_size;
@@ -133,8 +141,15 @@ std::optional<Options> parse(int argc, char** argv) {
       options.dataset.min_material_voxels = options.sieve.min_material_voxels;
     } else if (arg == "--dense") {
       options.dense = true;
-    } else if (!arg.starts_with("-") && options.input.empty()) {
-      options.input = arg;
+    } else if (arg == "--join") {
+      const std::string axis = next();
+      if (axis != "x" && axis != "y" && axis != "z") {
+        throw std::invalid_argument("--join must be x, y or z");
+      }
+      options.join_axis = axis[0] - 'x';
+    } else if (!arg.starts_with("-")) {
+      options.inputs.emplace_back(arg);
+      options.input = options.inputs.front();
     } else {
       throw std::invalid_argument("Unknown option: " + std::string(arg));
     }
@@ -211,7 +226,7 @@ bool isTiffInput(const Options& options) {
   return options.input.extension() != ".raw" && voxelsieve::isTiffStackPath(options.input);
 }
 
-std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
+std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options) {
   if (isTiffInput(options)) {
     voxelsieve::TiffStackOptions tiff;
     tiff.folder = options.folder;
@@ -245,6 +260,25 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
   }
   std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
   return source;
+}
+
+std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
+  if (options.inputs.size() <= 1) {
+    return openPart(options);
+  }
+  std::vector<std::unique_ptr<voxelsieve::VolumeSource>> parts;
+  for (const auto& input : options.inputs) {
+    std::cout << "part " << parts.size() + 1 << "             " << input.filename().string()
+              << "\n";
+    Options part = options;
+    part.input = input;
+    parts.push_back(openPart(part));
+  }
+  auto joined = std::make_unique<voxelsieve::ConcatSource>(std::move(parts), options.join_axis);
+  const auto dims = joined->dims();
+  std::cout << "joined along " << static_cast<char>('x' + options.join_axis) << "     " << dims[0]
+            << "x" << dims[1] << "x" << dims[2] << " voxels\n";
+  return joined;
 }
 
 void runSingleGrid(const Options& options) {

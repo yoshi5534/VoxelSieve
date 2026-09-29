@@ -57,15 +57,16 @@ class Studio {
 
   /// A slice rectangle of the dataset output of `dataset_step` (default: the latest dataset) for
   /// the viewer, with pores and zones of `porosity_step` in the overlay when given. Datasets and
-  /// porosity results stay open between calls, so repeated tiles only read bricks.
+  /// porosity results stay open between calls, so repeated tiles only read bricks. With
+  /// `materials_step`, the materials of that segmentation are in the overlay too.
   [[nodiscard]] SliceImage sliceTile(std::optional<int> dataset_step,
-                                     std::optional<int> porosity_step,
-                                     const SliceRequest& request) const;
+                                     std::optional<int> porosity_step, const SliceRequest& request,
+                                     std::optional<int> materials_step = std::nullopt) const;
 
   /// The volume of a dataset step for the 3D view (see readVolumePreview).
   [[nodiscard]] VolumePreview volumePreview(std::optional<int> dataset_step,
-                                            std::optional<int> porosity_step,
-                                            std::int64_t max_size) const;
+                                            std::optional<int> porosity_step, std::int64_t max_size,
+                                            std::optional<int> materials_step = std::nullopt) const;
 
   /// Display mesh of the surface output of `surface_step` (default: the latest surface) in
   /// level-0 voxel coordinates, with at most about `max_triangles` (see surfaceDisplayMesh). The
@@ -102,6 +103,11 @@ class Studio {
   [[nodiscard]] std::shared_ptr<const Dataset> openDataset(const std::filesystem::path& dir) const;
   [[nodiscard]] std::shared_ptr<const PorosityResult> openPorosity(
       const std::filesystem::path& dir) const;
+  /// Locks mutex_ to find the step's output; the path overload does not (for callers holding it).
+  [[nodiscard]] std::shared_ptr<const MaterialVolume> openMaterials(
+      std::optional<int> materials_step) const;
+  [[nodiscard]] std::shared_ptr<const MaterialVolume> openMaterials(
+      const std::filesystem::path& dir) const;
 
   OperationRegistry registry_;
   std::vector<std::string> plugin_messages_;
@@ -115,6 +121,8 @@ class Studio {
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
       porosity_results_;
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const MaterialVolume>>>
+      material_volumes_;
   mutable std::mutex view_mutex_;
   // Display meshes by surface file and triangle budget; never locked while a mesh is built.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const IndexedMesh>>>
