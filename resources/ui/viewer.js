@@ -24,7 +24,7 @@ const MATERIAL_COLORS = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60
 class SliceViewer {
   constructor() {
     this.tiles = new Map();     // key -> {data, overlay, canvas, rendered, used}
-    this.loading = new Set();
+    this.loading = new Map();   // key -> AbortController of the request
     this.failed = new Set();
     this.queue = [];
     this.active = 0;
@@ -93,6 +93,7 @@ class SliceViewer {
   }
 
   clearTiles() {
+    for (const controller of this.loading.values()) controller.abort();
     this.tiles.clear();
     this.failed.clear();
     this.queue = [];
@@ -242,9 +243,25 @@ class SliceViewer {
   }
 
   key(level, tu, tv) {
-    const slice = this.index[this.axis] >> level;
-    return [this.step, this.porosity ?? '-', this.materials ?? '-', this.axis, level, slice, tu,
+    return this.slot(level, tu, tv) + '@' + (this.index[this.axis] >> level);
+  }
+
+  /// A tile position independent of the slice.
+  slot(level, tu, tv) {
+    return [this.step, this.porosity ?? '-', this.materials ?? '-', this.axis, level, tu,
       tv].join('/');
+  }
+
+  /// Cached tile of the same position from the slice nearest to the current one, or undefined.
+  nearestTile(level, tu, tv) {
+    const slot = this.slot(level, tu, tv);
+    const slice = this.index[this.axis] >> level;
+    let best;
+    for (const tile of this.tiles.values()) {
+      if (tile.slot !== slot) continue;
+      if (!best || Math.abs(tile.slice - slice) < Math.abs(best.slice - slice)) best = tile;
+    }
+    return best;
   }
 
   requestDraw() {
@@ -299,10 +316,13 @@ class SliceViewer {
     context.imageSmoothingEnabled = false;
 
     const level = this.level();
-    // Coarser tiles first as placeholders, then the wanted level on top.
+    // Coarser tiles first as placeholders, then the wanted level on top. Until a tile of the
+    // wanted slice arrives, the one of the nearest cached slice stands in for it: scrolling
+    // through the slices then shows the previous picture instead of a black flash per step.
     for (let l = Math.min(level + 3, this.maxLevel()); l >= level; l -= 1) {
       for (const [tu, tv, x, y, w, h] of this.visibleTiles(l)) {
-        const tile = this.tiles.get(this.key(l, tu, tv));
+        const tile = this.tiles.get(this.key(l, tu, tv)) ??
+          (l === level ? this.nearestTile(l, tu, tv) : undefined);
         if (!tile) continue;
         tile.used = performance.now();
         context.drawImage(this.renderTile(tile), x, y, w, h);
@@ -327,6 +347,14 @@ class SliceViewer {
   }
 
   pump() {
+    if (this.queue.length && this.active >= MAX_REQUESTS) {
+      // Requests for slices scrolled past would delay the current one; give their places up.
+      const wanted = new Set(this.visibleTiles(this.level()).map(([tu, tv]) =>
+        this.key(this.level(), tu, tv)));
+      for (const [key, controller] of this.loading) {
+        if (!wanted.has(key)) controller.abort();
+      }
+    }
     while (this.active < MAX_REQUESTS && this.queue.length) {
       const { level, tu, tv } = this.queue.shift();
       this.fetchTile(level, tu, tv);
@@ -335,7 +363,10 @@ class SliceViewer {
 
   async fetchTile(level, tu, tv) {
     const key = this.key(level, tu, tv);
-    this.loading.add(key);
+    const slot = this.slot(level, tu, tv);
+    const slice = this.index[this.axis] >> level;
+    const controller = new AbortController();
+    this.loading.set(key, controller);
     this.active += 1;
     const params = new URLSearchParams({
       step: this.step, axis: this.axis, index: this.index[this.axis], level,
@@ -344,21 +375,23 @@ class SliceViewer {
     if (this.porosity !== null) params.set('porosity', this.porosity);
     if (this.materials !== null) params.set('materials', this.materials);
     try {
-      const response = await fetch('api/tile?' + params);
+      const response = await fetch('api/tile?' + params, { signal: controller.signal });
       if (!response.ok) throw new Error((await response.json()).error);
       const buffer = await response.arrayBuffer();
       const count = TILE * TILE;
       this.tiles.set(key, {
         data: new Float32Array(buffer, 0, count),
         overlay: new Uint8Array(buffer, count * 4, count),
-        canvas: null, rendered: null, used: performance.now(),
+        slot, slice, canvas: null, rendered: null, used: performance.now(),
       });
       this.evict();
     } catch (error) {
-      this.failed.add(key);
-      console.warn('Tile', key, error);
+      if (error.name !== 'AbortError') {
+        this.failed.add(key);
+        console.warn('Tile', key, error);
+      }
     } finally {
-      this.loading.delete(key);
+      if (this.loading.get(key) === controller) this.loading.delete(key);
       this.active -= 1;
       // The first window comes from the whole first view, air and material alike.
       if (!this.window && this.active === 0 && this.queue.length === 0) this.autoWindow();
