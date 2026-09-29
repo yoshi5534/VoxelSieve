@@ -51,5 +51,5 @@ the slice view shows the classes in colour.
   baseline for a learned segmentation.
 - Ground-truth materials come from grey values, so the per-material scores measure how well the
   voxel classes follow the component classes, not an independent material identification.
-- A learned model can write the same material volume format and be scored the same way, for
-  example as an operation plugin (ADR 0008) around an ONNX model.
+- A learned model can write the same material volume format and be scored the same way; ADR
+  0014 does this with models that VoxelSieve runs itself.

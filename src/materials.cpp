@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/material_volume.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
@@ -53,9 +54,7 @@ Index3 unravel(std::size_t index, const Index3& dims) {
 }
 
 std::filesystem::path brickFile(const std::filesystem::path& dir, const Index3& brick) {
-  return dir / "level0" /
-         (std::to_string(brick[0]) + "_" + std::to_string(brick[1]) + "_" +
-          std::to_string(brick[2]) + ".vdb");
+  return detail::materialBrickFile(dir, brick);
 }
 
 /// Box filter of radius `r` along one axis of a dense x-fastest array, in place.
@@ -119,6 +118,9 @@ Json toJson(const MaterialVolumeInfo& info) {
                {"min_neighbours", info.min_neighbours},
                {"materials", materials},
                {"bricks", info.bricks}});
+  if (!info.model.empty()) {
+    json["model"] = info.model;
+  }
   return json;
 }
 
@@ -257,7 +259,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
     Material material;
     material.id = m + 1;
     material.name = "Material " + std::to_string(m + 1);
-    material.color = kColors[static_cast<std::size_t>(m)];
+    material.color = detail::materialColor(m + 1);
     material.lower = m == 0 ? info.air_threshold : thresholds[static_cast<std::size_t>(m - 1)];
     info.materials.push_back(material);
   }
@@ -373,7 +375,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   for (Material& material : info.materials) {
     material.volume_mm3 = static_cast<double>(material.voxel_count) * voxel_mm3;
   }
-  writeJson(dir / "materials.json", toJson(info));
+  detail::writeMaterialVolumeInfo(dir, info);
   return info;
 }
 
@@ -406,6 +408,7 @@ MaterialVolumeInfo readMaterialVolumeInfo(const std::filesystem::path& dir) {
     info.materials.push_back(material);
   }
   info.bricks = json.at("bricks").get<std::vector<Index3>>();
+  info.model = json.value("model", std::string());
   return info;
 }
 
@@ -496,7 +499,7 @@ void MaterialVolume::readRegion(const Box& box, std::span<std::uint8_t> out,
 
 MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSource& labels,
                              const Dataset& dataset, const std::vector<std::int64_t>& part_starts,
-                             int part_axis) {
+                             int part_axis, const std::optional<Box>& region) {
   const MaterialVolumeInfo& info = segmentation.info();
   if (labels.dims() != info.dims || dataset.info().dims != info.dims) {
     throw std::invalid_argument("Labels, dataset and segmentation differ in size");
@@ -507,12 +510,23 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
     return it == part_starts.begin() ? 0U
                                      : static_cast<std::uint32_t>(it - part_starts.begin() - 1);
   };
+  Box scored{{0, 0, 0}, info.dims};
+  if (region) {
+    for (std::size_t a = 0; a < 3; ++a) {
+      scored.min[a] = std::clamp<std::int64_t>(region->min[a], 0, info.dims[a]);
+      scored.max[a] = std::clamp<std::int64_t>(region->max[a], scored.min[a], info.dims[a]);
+    }
+    if (scored.voxelCount() == 0) {
+      throw std::invalid_argument("The scoring region lies outside the volume");
+    }
+  }
   // Slabs of one brick height along z keep memory bounded.
   const std::int64_t slab = info.brick_size;
-  const auto slabs = ceilDiv(info.dims[2], slab);
+  const auto slabs = ceilDiv(scored.size(2), slab);
   const auto slab_box = [&](std::int64_t s) {
-    return Box{{0, 0, s * slab},
-               {info.dims[0], info.dims[1], std::min((s + 1) * slab, info.dims[2])}};
+    return Box{
+        {scored.min[0], scored.min[1], scored.min[2] + s * slab},
+        {scored.max[0], scored.max[1], std::min(scored.min[2] + (s + 1) * slab, scored.max[2])}};
   };
 
   // Pass 1: grey-value histogram per component (bins of 16 grey values).
@@ -611,5 +625,24 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
   }
   return score;
 }
+
+namespace detail {
+
+std::array<std::uint8_t, 3> materialColor(int id) {
+  return kColors[static_cast<std::size_t>(std::clamp(id, 1, kMaxMaterials) - 1)];
+}
+
+std::filesystem::path materialBrickFile(const std::filesystem::path& dir,
+                                        const std::array<std::int64_t, 3>& brick) {
+  return dir / "level0" /
+         (std::to_string(brick[0]) + "_" + std::to_string(brick[1]) + "_" +
+          std::to_string(brick[2]) + ".vdb");
+}
+
+void writeMaterialVolumeInfo(const std::filesystem::path& dir, const MaterialVolumeInfo& info) {
+  writeJson(dir / "materials.json", toJson(info));
+}
+
+}  // namespace detail
 
 }  // namespace voxelsieve

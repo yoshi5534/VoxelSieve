@@ -52,6 +52,8 @@ const LABELS = {
   stl: 'STL-Netz schreiben',
   vdb: 'VDB-Levelset schreiben',
   cad_path: 'CAD-Modell (STL)',
+  model_path: 'Gelerntes Modell (.vsm)',
+  tile: 'Kachelkante (Voxel)',
   alignment: 'Ausrichtung',
   tolerance_mm: 'Toleranz (± mm)',
   outer_surface_only: 'Nur die Außenhaut vergleichen',
@@ -67,6 +69,7 @@ const SUMMARY_LABELS = {
   active_voxels: 'Aktive Voxel',
   threshold: 'Schwellwert',
   air_threshold: 'Luft-Schwellwert',
+  model: 'Modell',
   materials: 'Materialien',
   header_bytes: 'Header (Bytes)',
   pores: 'Poren',
@@ -849,7 +852,8 @@ function porosityOf(datasetStep) {
 
 /// Latest material segmentation computed from the dataset of `datasetStep`.
 function materialsOf(datasetStep) {
-  const steps = activeSteps().filter((step) => step.operation === 'segment_materials' &&
+  const steps = activeSteps().filter((step) =>
+    ['segment_materials', 'segment_model'].includes(step.operation) &&
     step.inputs.dataset?.step === datasetStep);
   return steps.length ? steps[steps.length - 1] : null;
 }

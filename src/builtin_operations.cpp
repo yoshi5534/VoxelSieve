@@ -12,6 +12,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
@@ -635,6 +636,57 @@ class SegmentMaterials final : public Operation {
   OperationInfo info_;
 };
 
+class SegmentWithModel final : public Operation {
+ public:
+  SegmentWithModel() {
+    info_.id = "segment_model";
+    info_.title = "Gelernte Segmentierung";
+    info_.description =
+        "Splits the part into materials with a learned model (.vsm, a small 3D network trained "
+        "for example with tools/models). VoxelSieve runs it on the CPU tile by tile, so it works "
+        "on datasets larger than RAM. Writes a material volume like the threshold segmentation; "
+        "the slice view shows the materials in colour.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to segment"}};
+    info_.outputs = {{"materials", artifact::kMaterials, "Material volume"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"model_path", {{"type", "string"}, {"description", "Learned model (.vsm)"}}},
+          {"tile",
+           {{"type", "integer"},
+            {"minimum", 16},
+            {"default", 128},
+            {"description", "Edge of the tiles the model runs on, in voxels"}}}}},
+        {"required", {"model_path"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const Model model =
+        Model::load(std::filesystem::absolute(p.at("model_path").get<std::string>()));
+    ModelSegmentationOptions options;
+    options.tile = p.at("tile").get<std::int64_t>();
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const MaterialVolumeInfo info =
+        segmentMaterialsWithModel(dataset, model, context.output_dir / "materials", options);
+    OperationResult result;
+    result.outputs["materials"] = "materials";
+    Json materials = Json::array();
+    for (const Material& material : info.materials) {
+      materials.push_back({{"id", material.id},
+                           {"name", material.name},
+                           {"voxels", material.voxel_count},
+                           {"volume_mm3", material.volume_mm3}});
+    }
+    result.summary = {{"model", info.model}, {"materials", materials}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 }  // namespace
 
 void registerBuiltinOperations(OperationRegistry& registry) {
@@ -643,6 +695,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportTiff>());
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<SegmentMaterials>());
+  registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());

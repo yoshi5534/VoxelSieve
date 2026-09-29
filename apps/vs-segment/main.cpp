@@ -1,5 +1,5 @@
-// vs-segment: splits the part in a sieved dataset into materials by grey value and optionally
-// scores the result against labelled components (docs/adr/0013).
+// vs-segment: splits the part in a sieved dataset into materials by grey value or with a learned
+// model and optionally scores the result against labelled components (docs/adr/0013, 0014).
 
 #include <chrono>
 #include <exception>
@@ -19,6 +19,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/model.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/tiff.hpp"
 
@@ -30,7 +31,7 @@ Splits the part in a dataset written by vs-sieve into materials by grey value an
 material volume (materials.json and one integer brick per dataset brick). A voxel is material
 when it and enough of its neighbours are above the air threshold, which removes noise spikes but
 keeps walls one voxel thin; the classes are separated by thresholds (multi-level Otsu unless
-given).
+given). With --model, a learned model (.vsm, tools/models) decides instead.
 
 Options:
   --out <dir>             Material volume to write (required)
@@ -40,10 +41,14 @@ Options:
   --min-neighbours <n>    Voxels of the 3^3 neighbourhood above the threshold (default 6)
   --grow <n>              Hysteresis steps into voxels above the lower threshold (default 1)
   --grow-fraction <f>     Lower threshold between air level (0) and threshold (1) (default 0.5)
+  --model <file.vsm>      Segment with a learned model; the options above do not apply
+  --tile <n>              Edge of the tiles the model runs on (default 128)
   --truth <labels>...     Label volumes (TIFF stacks or ZIP archives) to score against;
                           several are joined along --join like in vs-sieve
   --folder <name>         Folder of the labels in the truth input (default target)
   --join <x|y|z>          Axis along which several truth inputs are joined (default z)
+  --region <x0,y0,z0,x1,y1,z1>
+                          Score only this box, for example data a model was not trained on
   --json <file>           Also write the materials and scores as JSON
   --cache <MB>            Brick cache size (default 1024)
   -h, --help              Show this help
@@ -53,11 +58,14 @@ struct Options {
   std::filesystem::path dataset;
   std::filesystem::path out;
   std::filesystem::path json;
+  std::filesystem::path model;
+  std::optional<voxelsieve::Box> region;
   std::vector<std::filesystem::path> truth;
   std::string folder = "target";
   int join_axis = 2;
   std::size_t cache_mb = 1024;
   voxelsieve::SegmentationOptions segmentation;
+  voxelsieve::ModelSegmentationOptions model_options;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -104,6 +112,22 @@ std::optional<Options> parse(int argc, char** argv) {
       options.segmentation.grow_steps = std::stoi(next());
     } else if (arg == "--grow-fraction") {
       options.segmentation.grow_fraction = std::stof(next());
+    } else if (arg == "--model") {
+      options.model = next();
+    } else if (arg == "--tile") {
+      options.model_options.tile = std::stoll(next());
+    } else if (arg == "--region") {
+      std::stringstream list(next());
+      std::vector<std::int64_t> values;
+      std::string item;
+      while (std::getline(list, item, ',')) {
+        values.push_back(std::stoll(item));
+      }
+      if (values.size() != 6) {
+        throw std::invalid_argument("--region needs x0,y0,z0,x1,y1,z1");
+      }
+      options.region =
+          voxelsieve::Box{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}};
     } else if (arg == "--truth") {
       options.truth.emplace_back(next());
       truth_list = true;
@@ -138,18 +162,30 @@ int main(int argc, char** argv) {
     }
     const auto start = std::chrono::steady_clock::now();
     const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
-    const auto info = voxelsieve::segmentMaterials(dataset, options->out, options->segmentation);
+    voxelsieve::MaterialVolumeInfo info;
+    if (options->model.empty()) {
+      info = voxelsieve::segmentMaterials(dataset, options->out, options->segmentation);
+    } else {
+      const auto model = voxelsieve::Model::load(options->model);
+      info = voxelsieve::segmentMaterialsWithModel(dataset, model, options->out,
+                                                   options->model_options);
+    }
     const auto segmented = std::chrono::steady_clock::now();
 
-    std::cout << std::fixed << std::setprecision(1) << "air threshold      " << info.air_threshold
-              << " (grows above " << info.grow_threshold << ", " << info.grow_steps << " steps, "
-              << info.min_neighbours << " of 27 neighbours)\n";
+    std::cout << std::fixed << std::setprecision(1);
+    if (info.model.empty()) {
+      std::cout << "air threshold      " << info.air_threshold << " (grows above "
+                << info.grow_threshold << ", " << info.grow_steps << " steps, "
+                << info.min_neighbours << " of 27 neighbours)\n";
+    } else {
+      std::cout << "model              " << info.model << "\n";
+    }
     nlohmann::json json = nlohmann::json::parse(
         std::ifstream(options->out / "materials.json"));  // written by segmentMaterials
     for (const auto& material : info.materials) {
-      std::cout << "material " << material.id << "         from " << std::setprecision(1)
-                << material.lower << ", " << material.voxel_count << " voxels, "
-                << std::setprecision(1) << material.volume_mm3 << " mm^3\n";
+      std::cout << "material " << material.id << "         " << material.name << " from "
+                << std::setprecision(1) << material.lower << ", " << material.voxel_count
+                << " voxels, " << std::setprecision(1) << material.volume_mm3 << " mm^3\n";
     }
     std::cout << std::setprecision(2) << "time               "
               << std::chrono::duration<double>(segmented - start).count() << " s\n";
@@ -167,8 +203,8 @@ int main(int argc, char** argv) {
         starts.push_back(labels.partStart(p));
       }
       const auto volume = voxelsieve::MaterialVolume::open(options->out);
-      const auto score =
-          voxelsieve::scoreMaterials(volume, labels, dataset, starts, options->join_axis);
+      const auto score = voxelsieve::scoreMaterials(volume, labels, dataset, starts,
+                                                    options->join_axis, options->region);
       std::cout << "components         " << score.components;
       for (std::size_t m = 1; m < score.components_per_material.size(); ++m) {
         std::cout << (m == 1 ? " (" : ", ") << score.components_per_material[m] << " material "
