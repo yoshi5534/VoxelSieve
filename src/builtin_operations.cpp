@@ -132,6 +132,14 @@ class ImportRaw final : public Operation {
           {"threshold",
            {{"type", "number"}, {"description", "Air/material grey value; default: Otsu"}}},
           {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
+          {"min_material_voxels",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 512},
+            {"default", 1},
+            {"description",
+             "Voxels above the threshold for an 8^3 block to count as material; raise it for "
+             "noisy scans"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
@@ -178,6 +186,7 @@ class ImportRaw final : public Operation {
     }
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
+    options.min_material_voxels = p.at("min_material_voxels").get<int>();
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
@@ -212,6 +221,14 @@ class ImportTiff final : public Operation {
           {"threshold",
            {{"type", "number"}, {"description", "Air/material grey value; default: Otsu"}}},
           {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
+          {"min_material_voxels",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 512},
+            {"default", 1},
+            {"description",
+             "Voxels above the threshold for an 8^3 block to count as material; raise it for "
+             "noisy scans"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
@@ -244,6 +261,7 @@ class ImportTiff final : public Operation {
     }
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
+    options.min_material_voxels = p.at("min_material_voxels").get<int>();
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";

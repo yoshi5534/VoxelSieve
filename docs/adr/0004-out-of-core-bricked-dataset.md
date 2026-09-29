@@ -94,8 +94,9 @@ adjacent bricks through the same cache instead of storing overlap on disk.
   of the bricks) can be added later if users need it.
 - Many files: 300 GB raw at 256³ bricks gives about 9,000 potential level-0 bricks, fewer after
   sieving. That is fine for local file systems; the brick size is a parameter.
-- `min_material_voxels > 1` needs more than the block maximum; pass 1 can store the k-th largest
-  value per block instead if noise makes this necessary.
+- `min_material_voxels > 1` needs more than the block maximum: pass 1 stores the k-th largest
+  value per block instead (still 2 bytes; the k largest values are kept in per-task heaps for
+  one row of blocks), so the threshold can still be chosen after pass 1.
 
 ## Implementation status
 
@@ -109,5 +110,5 @@ The access API is `Dataset` in `src/dataset_reader.cpp`: point sampling, region 
 bricks, parallel brick iteration and an LRU cache bounded by a byte budget. Cached bricks are
 loaded completely rather than delayed, so the memory counted against the budget does not grow
 behind the cache's back. Not yet implemented: halo reads for neighbourhood algorithms (a region
-read covers them for now), TIFF-stack input, and `min_material_voxels` for streaming (block
-maximum only).
+read covers them for now). TIFF stacks are read through `TiffStackSource` (ADR 0011). `min_material_voxels` works for streaming too
+(k-th largest value per block, see Consequences) and is recorded in `index.json`.

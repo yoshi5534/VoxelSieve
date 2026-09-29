@@ -33,6 +33,9 @@ struct DatasetOptions {
   int margin_voxels = 3;
   /// Brick edge length in voxels, a multiple of 8. The overview has at most this size.
   std::int64_t brick_size = 256;
+  /// A block counts as material once it holds at least this many voxels above the threshold,
+  /// 1 to 512. Values above 1 keep isolated noise spikes in the air from counting as material.
+  int min_material_voxels = 1;
 };
 
 struct LevelInfo {
@@ -49,6 +52,7 @@ struct DatasetInfo {
   float threshold = 0.0F;
   float air_level = 0.0F;
   int margin_voxels = 0;
+  int min_material_voxels = 1;
   std::int64_t active_voxel_count = 0;
   std::vector<LevelInfo> levels;
 };
