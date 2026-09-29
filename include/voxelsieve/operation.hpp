@@ -19,6 +19,7 @@ inline constexpr const char* kPorosity = "porosity";  // directory written by th
 inline constexpr const char* kReport = "report";      // directory with report.html and report.json
 inline constexpr const char* kSurface = "surface";    // directory with surface.vss (ADR 0009)
 inline constexpr const char* kComparison = "comparison";  // nominal-actual comparison with CAD
+inline constexpr const char* kMaterials = "materials";    // material volume (ADR 0013)
 }  // namespace artifact
 
 struct PortInfo {

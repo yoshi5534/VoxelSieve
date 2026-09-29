@@ -290,7 +290,7 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 7U);
+  EXPECT_EQ(registry.all().size(), 8U);
   EXPECT_NE(registry.find("import_tiff"), nullptr);
 
   SyntheticSpec spec;

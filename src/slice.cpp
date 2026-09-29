@@ -42,7 +42,7 @@ std::array<int, 2> sliceAxes(int axis) {
 }
 
 SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
-                     const PorosityResult* porosity) {
+                     const PorosityResult* porosity, const MaterialVolume* materials) {
   const auto [u, v] = sliceAxes(request.axis);
   const auto normal = static_cast<std::size_t>(request.axis);
   const auto ua = static_cast<std::size_t>(u);
@@ -90,6 +90,30 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     std::copy_n(region.begin() + y * nu, nu, image.grey.begin() + row * image.width + column);
   }
 
+  if (materials != nullptr) {
+    // Every 2^level-th level-0 voxel; the normal axis at the requested slice.
+    const std::int64_t stride = std::int64_t{1} << shift;
+    Box footprint0;
+    for (std::size_t a = 0; a < 3; ++a) {
+      footprint0.min[a] = box.min[a] << shift;
+      footprint0.max[a] = std::min(box.max[a] << shift, info.dims[a]);
+    }
+    footprint0.min[normal] = request.index;
+    footprint0.max[normal] = request.index + 1;
+    std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
+    materials->readRegion(footprint0, ids, stride);
+    for (std::int64_t y = 0; y < box.size(va); ++y) {
+      const std::int64_t row = box.min[va] - request.origin[1] + y;
+      const std::int64_t column = box.min[ua] - request.origin[0];
+      for (std::int64_t x = 0; x < nu; ++x) {
+        const std::uint8_t id = ids[static_cast<std::size_t>(y * nu + x)];
+        if (id != 0) {
+          image.overlay[static_cast<std::size_t>(row * image.width + column + x)] =
+              static_cast<std::uint8_t>(static_cast<int>(SliceOverlay::kMaterial) + id);
+        }
+      }
+    }
+  }
   if (porosity == nullptr) {
     return image;
   }
@@ -102,7 +126,7 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     const std::int64_t px = (std::int64_t{voxel[ua]} >> shift) - request.origin[0];
     const std::int64_t py = (std::int64_t{voxel[va]} >> shift) - request.origin[1];
     auto& pixel = image.overlay[static_cast<std::size_t>(py * image.width + px)];
-    if (pixel != static_cast<std::uint8_t>(SliceOverlay::kPore)) {
+    if (pixel != static_cast<std::uint8_t>(SliceOverlay::kPore)) {  // pores win over the rest
       pixel = static_cast<std::uint8_t>(value);
     }
   };
@@ -148,7 +172,7 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
 }
 
 VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
-                                const PorosityResult* porosity) {
+                                const PorosityResult* porosity, const MaterialVolume* materials) {
   const DatasetInfo& info = dataset.info();
   VolumePreview preview;
   preview.level = static_cast<int>(info.levels.size()) - 1;
@@ -171,7 +195,7 @@ VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
     request.level = preview.level;
     request.index = static_cast<std::int64_t>(z) << static_cast<unsigned>(preview.level);
     request.size = {level.dims[0], level.dims[1]};
-    const SliceImage slice = readSlice(dataset, request, porosity);
+    const SliceImage slice = readSlice(dataset, request, porosity, materials);
     std::copy(slice.grey.begin(), slice.grey.end(),
               grey.begin() + static_cast<std::ptrdiff_t>(z * plane));
     std::copy(slice.overlay.begin(), slice.overlay.end(),

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Material segmentation** (`voxelsieve::segmentMaterials`, `vs-segment`, studio operation
+  `segment_materials`, ADR 0013): splits the part into material classes by grey value with a
+  neighbourhood criterion that removes noise spikes but keeps walls one voxel thin, hysteresis and
+  multi-level Otsu thresholds. Writes a material volume with volumes per class; the slice view
+  shows the classes in colour. `vs-segment --truth` scores the result against labelled components
+  (Dice per material). On Me 163: Dice 0.878 material/air, 0.854 light, 0.943 dense.
+- **Scans in parts** (`voxelsieve::ConcatSource`, `vs-sieve <part>... --join <axis>`): several
+  volumes joined along an axis are read as one.
 - **Noise-robust sieve for datasets** (`DatasetOptions::min_material_voxels`, `vs-sieve
   --min-material`, parameter `min_material_voxels` of `import_raw` and `import_tiff`): an 8^3
   block counts as material only with at least n voxels above the threshold, so speckle noise in

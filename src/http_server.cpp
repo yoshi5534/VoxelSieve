@@ -234,7 +234,7 @@ struct HttpServer::Impl {
     return response;
   }
 
-  /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2]
+  /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2][&materials=3]
   /// Body: width * height float32 grey values (little endian, u fastest), then width * height
   /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
   http::message_generator tile(const Request& request, std::string_view query) {
@@ -254,7 +254,8 @@ struct HttpServer::Impl {
       const auto it = values.find(name);
       return it == values.end() ? std::nullopt : std::optional<int>(static_cast<int>(it->second));
     };
-    const SliceImage image = studio.sliceTile(optional("step"), optional("porosity"), slice);
+    const SliceImage image =
+        studio.sliceTile(optional("step"), optional("porosity"), slice, optional("materials"));
     std::string body(image.grey.size() * sizeof(float) + image.overlay.size(), '\0');
     static_assert(std::endian::native == std::endian::little, "tiles are sent little endian");
     std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
@@ -265,7 +266,7 @@ struct HttpServer::Impl {
         {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
   }
 
-  /// GET /api/volume?max=256[&step=1][&porosity=2]
+  /// GET /api/volume?max=256[&step=1][&porosity=2][&materials=3]
   /// Body: the volume preview (readVolumePreview) as one grey byte per voxel, then one overlay
   /// byte per voxel, x fastest. Headers give dims, level, voxel size and window.
   http::message_generator volume(const Request& request, std::string_view query) {
@@ -278,7 +279,8 @@ struct HttpServer::Impl {
     if (max < 16 || max > 512) {
       throw std::invalid_argument("max must be between 16 and 512");
     }
-    const VolumePreview preview = studio.volumePreview(optional("step"), optional("porosity"), max);
+    const VolumePreview preview =
+        studio.volumePreview(optional("step"), optional("porosity"), max, optional("materials"));
     std::string body(preview.grey.begin(), preview.grey.end());
     body.append(preview.overlay.begin(), preview.overlay.end());
     return binary(

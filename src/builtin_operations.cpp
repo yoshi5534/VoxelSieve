@@ -10,6 +10,7 @@
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/porosity.hpp"
@@ -561,6 +562,79 @@ class Report final : public Operation {
   OperationInfo info_;
 };
 
+class SegmentMaterials final : public Operation {
+ public:
+  SegmentMaterials() {
+    info_.id = "segment_materials";
+    info_.title = "Materialsegmentierung";
+    info_.description =
+        "Splits the part into materials by grey value: a voxel is material when it and enough "
+        "of its neighbours are above the air threshold (noise spikes go, walls one voxel thin "
+        "stay), material grows into touching voxels above a lower threshold, and the classes are "
+        "separated by thresholds (multi-level Otsu unless given). Writes a material volume with "
+        "volumes per material; the slice view shows the materials in colour.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to segment"}};
+    info_.outputs = {{"materials", artifact::kMaterials, "Material volume"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"materials", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}, {"default", 2}}},
+          {"air_threshold",
+           {{"type", "number"}, {"description", "Default: the dataset's threshold"}}},
+          {"material_thresholds",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"description",
+             "Thresholds between the classes (materials - 1, ascending); default: Otsu"}}},
+          {"min_neighbours",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 27},
+            {"default", 6},
+            {"description", "Voxels of the 3x3x3 neighbourhood above the air threshold"}}},
+          {"grow_steps", {{"type", "integer"}, {"minimum", 0}, {"default", 1}}},
+          {"grow_fraction",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"default", 0.5},
+            {"description", "Lower threshold between air level (0) and air threshold (1)"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    SegmentationOptions options;
+    options.materials = p.at("materials").get<int>();
+    if (p.contains("air_threshold")) {
+      options.air_threshold = p.at("air_threshold").get<float>();
+    }
+    if (p.contains("material_thresholds")) {
+      options.material_thresholds = p.at("material_thresholds").get<std::vector<float>>();
+    }
+    options.min_neighbours = p.at("min_neighbours").get<int>();
+    options.grow_steps = p.at("grow_steps").get<int>();
+    options.grow_fraction = p.at("grow_fraction").get<float>();
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const MaterialVolumeInfo info =
+        segmentMaterials(dataset, context.output_dir / "materials", options);
+    OperationResult result;
+    result.outputs["materials"] = "materials";
+    Json materials = Json::array();
+    for (const Material& material : info.materials) {
+      materials.push_back({{"id", material.id},
+                           {"from_grey_value", material.lower},
+                           {"voxels", material.voxel_count},
+                           {"volume_mm3", material.volume_mm3}});
+    }
+    result.summary = {{"air_threshold", info.air_threshold}, {"materials", materials}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 }  // namespace
 
 void registerBuiltinOperations(OperationRegistry& registry) {
@@ -568,6 +642,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportRaw>());
   registry.add(std::make_shared<ImportTiff>());
   registry.add(std::make_shared<Porosity>());
+  registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());

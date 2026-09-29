@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/volume.hpp"
@@ -102,6 +103,29 @@ class PhantomSource final : public VolumeSource {
 
  private:
   PhantomSpec spec_;
+};
+
+/// Several volumes placed one after another along `axis`, read as one volume. This joins scans
+/// that were reconstructed in parts, such as the sub-volumes of a long object. The other two
+/// dimensions and the voxel size of all parts must be equal.
+class ConcatSource final : public VolumeSource {
+ public:
+  ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int axis);
+
+  [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return dims_; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return parts_.front()->voxelSize(); }
+  void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
+
+  [[nodiscard]] int axis() const { return axis_; }
+  [[nodiscard]] std::size_t partCount() const { return parts_.size(); }
+  /// First voxel of part `i` along `axis`.
+  [[nodiscard]] std::int64_t partStart(std::size_t i) const { return starts_[i]; }
+
+ private:
+  std::vector<std::unique_ptr<VolumeSource>> parts_;
+  int axis_ = 2;
+  std::vector<std::int64_t> starts_;  // one more than parts: the last is dims_[axis_]
+  std::array<std::int64_t, 3> dims_{};
 };
 
 }  // namespace voxelsieve

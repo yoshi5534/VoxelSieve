@@ -5,13 +5,14 @@
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
-/// Overlay classes of a slice pixel.
-enum class SliceOverlay : std::uint8_t { kNone = 0, kPore = 1, kZone = 2 };
+/// Overlay classes of a slice pixel. Material m of a material volume is kMaterial + m.
+enum class SliceOverlay : std::uint8_t { kNone = 0, kPore = 1, kZone = 2, kMaterial = 16 };
 
 /// A rectangle of a slice through a dataset level (ADR 0008). The slice is normal to `axis`; its
 /// pixels run along the in-plane axes u and v (`sliceAxes`), u fastest.
@@ -39,9 +40,11 @@ struct SliceImage {
 
 /// Reads a slice rectangle. Only the bricks it touches are loaded, so the cost depends on the
 /// rectangle and level, not on the dataset size. With `porosity`, pores and zones are marked in
-/// the overlay; a pixel of a coarser level is marked if its footprint holds any.
+/// the overlay; a pixel of a coarser level is marked if its footprint holds any. With
+/// `materials`, other pixels carry the material of the first level-0 voxel of their footprint.
 [[nodiscard]] SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
-                                   const PorosityResult* porosity = nullptr);
+                                   const PorosityResult* porosity = nullptr,
+                                   const MaterialVolume* materials = nullptr);
 
 /// The whole volume at one level, as 8-bit values for 3D display in the browser.
 struct VolumePreview {
@@ -58,6 +61,7 @@ struct VolumePreview {
 /// Reads the finest level whose largest dimension is at most `max_size` (the coarsest level if
 /// none is that small). The window spans the 0.5 to 99.5 percentiles of the grey values.
 [[nodiscard]] VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
-                                              const PorosityResult* porosity = nullptr);
+                                              const PorosityResult* porosity = nullptr,
+                                              const MaterialVolume* materials = nullptr);
 
 }  // namespace voxelsieve
