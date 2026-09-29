@@ -7,6 +7,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace voxelsieve {
 namespace {
@@ -123,6 +125,65 @@ void PhantomSource::readRegion(const Box& box, std::span<std::uint16_t> out) con
     for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
       for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
         out[offset++] = phantomValue(spec_, x, y, z);
+      }
+    }
+  }
+}
+
+ConcatSource::ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int axis)
+    : parts_(std::move(parts)), axis_(axis) {
+  if (parts_.empty()) {
+    throw std::invalid_argument("ConcatSource needs at least one part");
+  }
+  if (axis < 0 || axis > 2) {
+    throw std::invalid_argument("ConcatSource axis must be 0, 1 or 2");
+  }
+  const auto a = static_cast<std::size_t>(axis);
+  dims_ = parts_.front()->dims();
+  dims_[a] = 0;
+  for (const auto& part : parts_) {
+    const auto d = part->dims();
+    for (std::size_t i = 0; i < 3; ++i) {
+      if (i != a && d[i] != dims_[i]) {
+        throw std::invalid_argument("Parts differ in size across the joining axis");
+      }
+    }
+    if (!(part->voxelSize() == parts_.front()->voxelSize())) {
+      throw std::invalid_argument("Parts differ in voxel size");
+    }
+    starts_.push_back(dims_[a]);
+    dims_[a] += d[a];
+  }
+  starts_.push_back(dims_[a]);
+}
+
+void ConcatSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
+  checkRegion(box, dims_, out);
+  const auto a = static_cast<std::size_t>(axis_);
+  std::vector<std::uint16_t> buffer;
+  for (std::size_t p = 0; p < parts_.size(); ++p) {
+    const std::int64_t lo = std::max(box.min[a], starts_[p]);
+    const std::int64_t hi = std::min(box.max[a], starts_[p + 1]);
+    if (lo >= hi) {
+      continue;
+    }
+    Box local = box;
+    local.min[a] = lo - starts_[p];
+    local.max[a] = hi - starts_[p];
+    buffer.resize(static_cast<std::size_t>(local.voxelCount()));
+    parts_[p]->readRegion(local, buffer);
+    // Scatter rows of the part into the output box.
+    std::array<std::int64_t, 3> offset{0, 0, 0};  // of the part region within the box
+    offset[a] = lo - box.min[a];
+    const std::int64_t row = local.size(0);
+    std::size_t source = 0;
+    for (std::int64_t z = 0; z < local.size(2); ++z) {
+      for (std::int64_t y = 0; y < local.size(1); ++y) {
+        const auto target = static_cast<std::size_t>(
+            offset[0] + box.size(0) * ((y + offset[1]) + box.size(1) * (z + offset[2])));
+        std::copy_n(buffer.begin() + static_cast<std::ptrdiff_t>(source), row,
+                    out.begin() + static_cast<std::ptrdiff_t>(target));
+        source += static_cast<std::size_t>(row);
       }
     }
   }

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -53,6 +54,53 @@ TEST(Sources, PhantomSourceMatchesGeneratedVolume) {
   MemorySource(volume).readRegion(box, from_memory);
   PhantomSource(spec).readRegion(box, from_phantom);
   EXPECT_EQ(from_memory, from_phantom);
+}
+
+TEST(Sources, ConcatSourceJoinsPartsAlongEachAxis) {
+  PhantomSpec spec = defaultPhantomSpec();
+  spec.dims = {40, 36, 20};
+  spec.noise_sigma = 300.0;
+  const Volume16 whole = generatePhantom(spec);
+  const MemorySource reference(whole);
+  for (int axis = 0; axis < 3; ++axis) {
+    const auto a = static_cast<std::size_t>(axis);
+    // Three parts of unequal length, cut out of the whole volume.
+    const std::array<std::int64_t, 4> cuts{0, 7, 8, spec.dims[a]};
+    std::vector<Volume16> pieces;
+    std::vector<std::unique_ptr<VolumeSource>> parts;
+    pieces.reserve(3);
+    for (std::size_t p = 0; p < 3; ++p) {
+      Box box{{0, 0, 0}, spec.dims};
+      box.min[a] = cuts[p];
+      box.max[a] = cuts[p + 1];
+      Volume16& piece = pieces.emplace_back();
+      piece.dims = {box.size(0), box.size(1), box.size(2)};
+      piece.voxel_size = whole.voxel_size;
+      piece.data.resize(static_cast<std::size_t>(box.voxelCount()));
+      reference.readRegion(box, piece.data);
+      parts.push_back(std::make_unique<MemorySource>(piece));
+    }
+    const ConcatSource joined(std::move(parts), axis);
+    ASSERT_EQ(joined.dims(), spec.dims);
+    EXPECT_EQ(joined.partStart(2), 8);
+    const Box box{{3, 5, 2}, {31, 30, 19}};
+    std::vector<std::uint16_t> expected(static_cast<std::size_t>(box.voxelCount()));
+    std::vector<std::uint16_t> actual(expected.size());
+    reference.readRegion(box, expected);
+    joined.readRegion(box, actual);
+    EXPECT_EQ(actual, expected) << "axis " << axis;
+  }
+}
+
+TEST(Sources, ConcatSourceRejectsMismatchedParts) {
+  PhantomSpec small = defaultPhantomSpec();
+  small.dims = {8, 8, 8};
+  PhantomSpec wide = small;
+  wide.dims = {16, 8, 8};
+  std::vector<std::unique_ptr<VolumeSource>> parts;
+  parts.push_back(std::make_unique<PhantomSource>(small));
+  parts.push_back(std::make_unique<PhantomSource>(wide));
+  EXPECT_THROW(ConcatSource(std::move(parts), 1), std::invalid_argument);
 }
 
 TEST_F(DatasetTest, MappedRawSourceReadsRegions) {
