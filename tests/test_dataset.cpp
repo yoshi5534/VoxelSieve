@@ -181,6 +181,38 @@ TEST_F(DatasetTest, Level0MatchesInMemorySieve) {
   }
 }
 
+TEST_F(DatasetTest, MinMaterialIgnoresNoiseSpikesInAir) {
+  // Heavy noise: about one voxel in 1300 of the air lies above the threshold, so a third of the
+  // air blocks hold a spike, but hardly any holds four. The walls start on a block boundary and
+  // are 15 voxels thick, so every wall block holds far more than four material voxels.
+  PhantomSpec noisy = defaultPhantomSpec();
+  noisy.noise_sigma = 3000.0;
+  PhantomSpec clean = noisy;
+  clean.noise_sigma = 0.0;
+  constexpr float kThreshold = 10500.0F;
+
+  DatasetOptions options;
+  options.threshold = kThreshold;
+  options.brick_size = 32;
+  const DatasetInfo reference = writeDataset(PhantomSource(clean), dir_ / "clean", options);
+  const DatasetInfo spiky = writeDataset(PhantomSource(noisy), dir_ / "k1", options);
+  options.min_material_voxels = 4;
+  const DatasetInfo robust = writeDataset(PhantomSource(noisy), dir_ / "k4", options);
+
+  EXPECT_GT(spiky.active_voxel_count, reference.active_voxel_count * 3 / 2);
+  EXPECT_EQ(robust.active_voxel_count, reference.active_voxel_count);
+  EXPECT_EQ(robust.min_material_voxels, 4);
+  EXPECT_EQ(readDatasetInfo(dir_ / "k4").min_material_voxels, 4);
+  EXPECT_EQ(readDatasetInfo(dir_ / "k1").min_material_voxels, 1);
+
+  // Voxel-identical to the in-memory sieve with the same block criterion.
+  SieveOptions sieve_options;
+  sieve_options.threshold = kThreshold;
+  sieve_options.min_material_voxels = 4;
+  const SieveResult in_memory = sieve(generatePhantom(noisy), sieve_options);
+  EXPECT_EQ(robust.active_voxel_count, in_memory.stats.active_voxel_count);
+}
+
 TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
   const PhantomSpec phantom = spec();
   DatasetOptions options;
@@ -237,6 +269,11 @@ TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   options.brick_size = 20;
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
   options.brick_size = 16;
+  options.min_material_voxels = 0;
+  EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+  options.min_material_voxels = 513;
+  EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+  options.min_material_voxels = 1;
   (void)writeDataset(source, dir_, options);
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
 }
