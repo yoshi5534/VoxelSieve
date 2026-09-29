@@ -23,6 +23,7 @@ Status: early development, first release 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)
 | `vs-sieve` | raw volume (with vendor header) or TIFF stack → sparse bricked dataset, streamed, out of core |
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
 | `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
+| `vs-segment` | dataset → material classes by grey value, scored against labels |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
 | `vs-studio` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
