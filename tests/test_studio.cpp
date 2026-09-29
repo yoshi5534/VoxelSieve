@@ -12,6 +12,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mcp.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/model.hpp"
 #include "voxelsieve/studio.hpp"
 #include "voxelsieve/synthetic.hpp"
 
@@ -176,6 +177,36 @@ TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
                                           static_cast<std::uint8_t>(SliceOverlay::kMaterial) + 1);
   EXPECT_GT(material_pixels, 0);
   EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
+}
+
+TEST_F(StudioTest, SegmentsWithALearnedModel) {
+  Studio studio;
+  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const auto threshold = studio.call("dataset_info", {}).at("threshold").get<float>();
+  // A one-layer model: material where the grey value is above the dataset's threshold.
+  Material material;
+  material.id = 1;
+  material.name = "Guss";
+  material.lower = threshold;
+  ModelSpec spec;
+  spec.name = "Schwelle";
+  spec.input_scale = 1e-3F;
+  spec.materials = {material};
+  spec.layers = {
+      {"conv", "scores", {"input"}, 1, 2, 1, false, {0.0F, 1.0F}, {0.0F, -threshold * 1e-3F}}};
+  writeModel(dir_ / "schwelle.vsm", spec);
+
+  const Json segmented =
+      studio.call("run_segment_model", {{"model_path", (dir_ / "schwelle.vsm").string()}});
+  ASSERT_EQ(segmented.at("status"), "done");
+  EXPECT_EQ(segmented.at("summary").at("model"), "Schwelle");
+  const Json& result = segmented.at("summary").at("materials").at(0);
+  EXPECT_EQ(result.at("name"), "Guss");
+  EXPECT_NEAR(result.at("volume_mm3").get<double>(), 120.0 - 2 * 4.0 / 3.0 * M_PI * 0.125, 3.0);
+  const Json slice = studio.call("view_slice", {});
+  EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
+  EXPECT_THROW((void)studio.call("run_segment_model", {}), std::invalid_argument);
 }
 
 TEST_F(StudioTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {

@@ -28,6 +28,7 @@ add_library(voxelsieve SHARED
   ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp
   io.cpp
   materials.cpp
+  model.cpp
   mesh.cpp
   parts.cpp
   phantom.cpp

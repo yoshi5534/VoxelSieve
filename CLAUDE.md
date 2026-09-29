@@ -20,7 +20,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     renderer for shaded report and documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `materials.hpp` segmentation into material classes, the material volume and scoring against
-    labels (ADR 0013)
+    labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
+    trained with the PyTorch scripts in `tools/models/`
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
     the built-in template is `resources/report_template.html`, compiled in
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;

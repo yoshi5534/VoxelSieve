@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Learned segmentation** (`voxelsieve::Model`, `segmentMaterialsWithModel`, `vs-segment
+  --model`, studio operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as
+  `.vsm` run on the CPU tile by tile with a halo and write the same material volume as the
+  threshold segmentation. Training and export with PyTorch in `tools/models/`. `vs-segment
+  --region` scores only a box. On Me 163, scored on volumes left out of training: Dice
+  material/air 0.861 → 0.898 (V2) and 0.843 → 0.922 (V6).
 - **Material segmentation** (`voxelsieve::segmentMaterials`, `vs-segment`, studio operation
   `segment_materials`, ADR 0013): splits the part into material classes by grey value with a
   neighbourhood criterion that removes noise spikes but keeps walls one voxel thin, hysteresis and

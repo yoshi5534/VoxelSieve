@@ -62,6 +62,8 @@ struct MaterialVolumeInfo {
   int min_neighbours = 0;
   std::vector<Material> materials;
   std::vector<std::array<std::int64_t, 3>> bricks;
+  /// Name of the learned model that made the volume; empty for the threshold segmentation.
+  std::string model;
 };
 
 /// Segments `dataset` and writes the material volume to `dir` (created, must be empty). Streams
@@ -110,11 +112,13 @@ struct MaterialScore {
 /// component ids, as in the target folder of a training dataset). A component's true material is
 /// the class of its median grey value in `dataset` under the segmentation's thresholds. When
 /// the labels were joined from parts numbered independently, `part_starts` (along `part_axis`)
-/// keeps equal ids of different parts apart.
+/// keeps equal ids of different parts apart. With `region`, only its voxels count, for example
+/// to score on data that a learned model did not see in training.
 [[nodiscard]] MaterialScore scoreMaterials(const MaterialVolume& segmentation,
                                            const VolumeSource& labels, const Dataset& dataset,
                                            const std::vector<std::int64_t>& part_starts = {},
-                                           int part_axis = 2);
+                                           int part_axis = 2,
+                                           const std::optional<Box>& region = std::nullopt);
 
 /// Thresholds that split `histogram` (one count per 16-bit grey value) into `classes` classes
 /// with the largest between-class variance (multi-level Otsu), ascending.
