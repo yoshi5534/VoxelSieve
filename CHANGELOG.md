@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Float TIFF stacks** (`TiffStackOptions::value_range`, `vs-sieve --value-range`, parameter
+  `value_range` of `import_tiff`, ADR 0015): 32 and 64-bit float slices, as reconstruction
+  software writes them (attenuation values, negative ones included), also with the
+  floating-point predictor. They are mapped linearly onto 16-bit grey values over a given or
+  estimated value range; the mapping is recorded in `index.json` (`value_mapping`) and in the
+  grid metadata of a single `.vdb`, and clipped values are counted.
+
 - **Learned segmentation** (`voxelsieve::Model`, `segmentMaterialsWithModel`, `vs-segment
   --model`, studio operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as
   `.vsm` run on the CPU tile by tile with a halo and write the same material volume as the

@@ -271,6 +271,10 @@ nlohmann::json toJson(const DatasetInfo& info) {
                {"active_voxel_count", info.active_voxel_count},
                {"overview", "overview.vdb"},
                {"levels", levels}});
+  if (!info.value_mapping.isIdentity()) {
+    json["value_mapping"] = {{"offset", info.value_mapping.offset},
+                             {"scale", info.value_mapping.scale}};
+  }
   return json;
 }
 
@@ -315,6 +319,7 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   info.dims = source.dims();
   info.voxel_size = source.voxelSize();
   info.voxel_size.validate();
+  info.value_mapping = source.valueMapping();
   info.brick_size = options.brick_size;
   info.margin_voxels = options.margin_voxels;
   info.min_material_voxels = options.min_material_voxels;
@@ -416,6 +421,10 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   info.margin_voxels = json.at("margin_voxels").get<int>();
   info.min_material_voxels = json.value("min_material_voxels", 1);  // absent before 0.2
   info.active_voxel_count = json.at("active_voxel_count").get<std::int64_t>();
+  if (json.contains("value_mapping")) {  // float scans only
+    info.value_mapping = {json.at("value_mapping").at("offset").get<double>(),
+                          json.at("value_mapping").at("scale").get<double>()};
+  }
   for (const auto& level : json.at("levels")) {
     info.levels.push_back({level.at("level").get<int>(), level.at("dims").get<Index3>(),
                            level.at("voxel_size_mm").get<VoxelSize>(),

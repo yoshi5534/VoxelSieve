@@ -54,6 +54,8 @@ struct DatasetInfo {
   int margin_voxels = 0;
   int min_material_voxels = 1;
   std::int64_t active_voxel_count = 0;
+  /// How the grey values relate to the values of the scan (float scans, ADR 0015).
+  ValueMapping value_mapping;
   std::vector<LevelInfo> levels;
 };
 

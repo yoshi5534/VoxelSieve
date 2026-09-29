@@ -1,7 +1,8 @@
 #pragma once
 
 // TIFF reading for grey-value slices: classic and BigTIFF, strips and tiles, uncompressed, LZW,
-// Deflate and PackBits, with horizontal differencing. Samples come out as 16-bit values.
+// Deflate and PackBits, with horizontal differencing (integers) or the floating-point predictor.
+// Integer samples come out as 16-bit values, float samples as doubles.
 
 #include <cstdint>
 #include <filesystem>
@@ -75,14 +76,19 @@ struct TiffPage {
 [[nodiscard]] std::vector<TiffPage> readTiffPages(
     const ByteSource& bytes, std::size_t max_pages = std::numeric_limits<std::size_t>::max());
 
-/// Throws unless the page is a single-channel unsigned 8, 16 or 32 bit image in a supported
-/// compression.
+/// Throws unless the page is a single-channel unsigned 8, 16 or 32 bit or float 32 or 64 bit image
+/// in a supported compression.
 void checkSupported(const TiffPage& page);
 
 /// Decodes one strip or tile into chunk_width x chunk_height samples (rows below the image are
 /// left 0). 32-bit samples must not exceed 65535, so that they are kept exactly.
 [[nodiscard]] std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes,
                                                          const TiffPage& page, std::size_t chunk);
+
+/// Decodes one strip or tile of a float image into chunk_width x chunk_height values (rows below
+/// the image are left 0).
+[[nodiscard]] std::vector<double> decodeTiffFloatChunk(const ByteSource& bytes,
+                                                       const TiffPage& page, std::size_t chunk);
 
 /// TIFF LZW (MSB first, early change); `expected` bounds the output.
 [[nodiscard]] std::vector<std::uint8_t> lzwDecode(std::span<const std::uint8_t> in,

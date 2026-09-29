@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <boost/iostreams/device/array.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
@@ -325,13 +326,15 @@ void checkSupported(const TiffPage& page) {
   if (page.samples_per_pixel != 1 || page.photometric > 1) {
     throw std::runtime_error("Only grey-value TIFF images are supported, not colour");
   }
-  if (page.sample_format != 1) {
+  if (page.sample_format == 3) {
+    if (page.bits != 32 && page.bits != 64) {
+      throw std::runtime_error("Float TIFF images with " + std::to_string(page.bits) +
+                               " bits per sample are not supported (32 or 64)");
+    }
+  } else if (page.sample_format != 1) {
     throw std::runtime_error(
-        page.sample_format == 3
-            ? "Float TIFF images are not supported: grey values are kept as 16-bit integers"
-            : "Signed TIFF images are not supported: grey values are kept as unsigned 16-bit");
-  }
-  if (page.bits != 8 && page.bits != 16 && page.bits != 32) {
+        "Signed TIFF images are not supported: grey values are kept as unsigned 16-bit");
+  } else if (page.bits != 8 && page.bits != 16 && page.bits != 32) {
     throw std::runtime_error("TIFF images with " + std::to_string(page.bits) +
                              " bits per sample are not supported (8, 16 or 32)");
   }
@@ -340,9 +343,11 @@ void checkSupported(const TiffPage& page) {
     throw std::runtime_error("TIFF compression " + std::to_string(page.compression) +
                              " is not supported (none, LZW, Deflate, PackBits)");
   }
-  if (page.predictor != 1 && page.predictor != 2) {
+  const bool is_float = page.sample_format == 3;
+  if (page.predictor != 1 && page.predictor != (is_float ? 3 : 2)) {
     throw std::runtime_error("TIFF predictor " + std::to_string(page.predictor) +
-                             " is not supported");
+                             " is not supported for " + (is_float ? "float" : "integer") +
+                             " images");
   }
 }
 
@@ -437,49 +442,69 @@ std::vector<std::uint8_t> packBitsDecode(std::span<const std::uint8_t> in, std::
   return out;
 }
 
-std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPage& page,
-                                           std::size_t chunk) {
+namespace {
+
+/// Decompressed bytes of one strip or tile and the number of its rows inside the image.
+struct ChunkBytes {
+  std::vector<std::uint8_t> data;
+  std::size_t rows = 0;
+  std::size_t row_bytes = 0;
+};
+
+ChunkBytes chunkBytes(const ByteSource& bytes, const TiffPage& page, std::size_t chunk) {
   checkSupported(page);
   if (chunk >= page.offsets.size()) {
     throw std::out_of_range("TIFF chunk out of range");
   }
-  const std::size_t sample_bytes = static_cast<std::size_t>(page.bits) / 8;
-  const std::size_t row_bytes = static_cast<std::size_t>(page.chunk_width) * sample_bytes;
+  ChunkBytes result;
+  result.row_bytes =
+      static_cast<std::size_t>(page.chunk_width) * static_cast<std::size_t>(page.bits / 8);
   // A strip at the bottom holds only the rows that are left; tiles are always complete.
-  std::size_t rows = page.chunk_height;
+  result.rows = page.chunk_height;
   if (page.chunks_across == 1 && page.chunk_width == page.width) {
     const std::size_t top = chunk * page.chunk_height;
-    rows = std::min<std::size_t>(page.chunk_height, page.height - top);
+    result.rows = std::min<std::size_t>(page.chunk_height, page.height - top);
   }
-  const std::size_t expected = rows * row_bytes;
+  const std::size_t expected = result.rows * result.row_bytes;
   std::vector<std::uint8_t> raw(page.byte_counts[chunk]);
   bytes.read(page.offsets[chunk], raw);
-  std::vector<std::uint8_t> data;
   switch (page.compression) {
     case 1:
-      data = std::move(raw);
+      result.data = std::move(raw);
       break;
     case 5:
-      data = lzwDecode(raw, expected);
+      result.data = lzwDecode(raw, expected);
       break;
     case 8:
     case 32946:
-      data.resize(expected);
-      inflate(raw, data);
+      result.data.resize(expected);
+      inflate(raw, result.data);
       break;
     case 32773:
-      data = packBitsDecode(raw, expected);
+      result.data = packBitsDecode(raw, expected);
       break;
     default:
       break;
   }
-  if (data.size() < expected) {
+  if (result.data.size() < expected) {
     throw std::runtime_error("TIFF strip or tile is shorter than its image");
   }
+  return result;
+}
+
+}  // namespace
+
+std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPage& page,
+                                           std::size_t chunk) {
+  if (page.sample_format == 3) {
+    throw std::invalid_argument("Float TIFF chunks are decoded with decodeTiffFloatChunk");
+  }
+  const ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
+  const std::size_t sample_bytes = static_cast<std::size_t>(page.bits) / 8;
   const Reader reader(bytes, page.big_endian);
   std::vector<std::uint16_t> out(static_cast<std::size_t>(page.chunk_width) * page.chunk_height, 0);
-  for (std::size_t y = 0; y < rows; ++y) {
-    const std::uint8_t* row = &data[y * row_bytes];
+  for (std::size_t y = 0; y < chunk_bytes.rows; ++y) {
+    const std::uint8_t* row = &chunk_bytes.data[y * chunk_bytes.row_bytes];
     std::uint64_t previous = 0;
     for (std::size_t x = 0; x < page.chunk_width; ++x) {
       std::uint64_t value =
@@ -494,6 +519,47 @@ std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPa
                                  " exceeds 65535 and cannot be kept exactly");
       }
       out[y * page.chunk_width + x] = static_cast<std::uint16_t>(value);
+    }
+  }
+  return out;
+}
+
+std::vector<double> decodeTiffFloatChunk(const ByteSource& bytes, const TiffPage& page,
+                                         std::size_t chunk) {
+  if (page.sample_format != 3) {
+    throw std::invalid_argument("decodeTiffFloatChunk needs a float TIFF image");
+  }
+  ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
+  const std::size_t sample_bytes = static_cast<std::size_t>(page.bits) / 8;
+  const std::size_t width = page.chunk_width;
+  std::vector<double> out(width * page.chunk_height, 0.0);
+  std::vector<std::uint8_t> sample(sample_bytes);
+  for (std::size_t y = 0; y < chunk_bytes.rows; ++y) {
+    std::uint8_t* row = &chunk_bytes.data[y * chunk_bytes.row_bytes];
+    if (page.predictor == 3) {
+      // Floating-point predictor: bytes are differenced along the row, and the row holds the
+      // most significant byte of every sample first, then the next byte, and so on.
+      for (std::size_t i = 1; i < chunk_bytes.row_bytes; ++i) {
+        row[i] = static_cast<std::uint8_t>(row[i] + row[i - 1]);
+      }
+    }
+    for (std::size_t x = 0; x < width; ++x) {
+      // Assemble the sample most significant byte first.
+      for (std::size_t b = 0; b < sample_bytes; ++b) {
+        if (page.predictor == 3) {
+          sample[b] = row[b * width + x];
+        } else {
+          sample[b] = row[x * sample_bytes + (page.big_endian ? b : sample_bytes - 1 - b)];
+        }
+      }
+      std::uint64_t word = 0;
+      for (const std::uint8_t byte : sample) {
+        word = (word << 8U) | byte;
+      }
+      out[y * width + x] =
+          sample_bytes == 4
+              ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(word)))
+              : std::bit_cast<double>(word);
     }
   }
   return out;

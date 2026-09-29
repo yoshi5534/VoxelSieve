@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <boost/crc.hpp>
 #include <boost/iostreams/device/back_inserter.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -171,18 +174,36 @@ std::vector<std::uint8_t> deflateEncode(const std::vector<std::uint8_t>& in, boo
 }
 
 /// One strip or tile of `pixels` (width x height, x fastest) in the file's layout and encoding.
+/// Float samples are given as their bit patterns.
 std::vector<std::uint8_t> encodeChunk(const TiffSpec& spec,
-                                      const std::vector<std::uint32_t>& pixels, std::uint32_t x0,
+                                      const std::vector<std::uint64_t>& pixels, std::uint32_t x0,
                                       std::uint32_t y0, std::uint32_t w, std::uint32_t h) {
   const std::size_t sample_bytes = static_cast<std::size_t>(spec.bits) / 8;
   const auto samples = static_cast<std::uint32_t>(spec.samples_per_pixel);
+  const auto pixel = [&](std::uint32_t x, std::uint32_t y) -> std::uint64_t {
+    return x < spec.width && y < spec.height ? pixels[std::size_t{y} * spec.width + x] : 0;
+  };
   Bytes bytes(spec.big_endian);
   for (std::uint32_t y = y0; y < y0 + h; ++y) {
+    if (spec.predictor == 3) {
+      // Floating-point predictor: byte planes, most significant first, differenced along the row.
+      std::vector<std::uint8_t> row(w * sample_bytes);
+      for (std::uint32_t x = 0; x < w; ++x) {
+        for (std::size_t b = 0; b < sample_bytes; ++b) {
+          row[b * w + x] =
+              static_cast<std::uint8_t>((pixel(x0 + x, y) >> (8 * (sample_bytes - 1 - b))) & 0xFFU);
+        }
+      }
+      for (std::size_t i = row.size() - 1; i > 0; --i) {
+        row[i] = static_cast<std::uint8_t>(row[i] - row[i - 1]);
+      }
+      bytes.append(row);
+      continue;
+    }
     std::uint64_t previous = 0;
     for (std::uint32_t x = x0; x < x0 + w; ++x) {
       for (std::uint32_t s = 0; s < samples; ++s) {
-        const std::uint64_t value =
-            x < spec.width && y < spec.height ? pixels[std::size_t{y} * spec.width + x] : 0;
+        const std::uint64_t value = pixel(x, y);
         const std::uint64_t mask = sample_bytes == 8 ? ~0ULL : (1ULL << (8 * sample_bytes)) - 1;
         bytes.put(spec.predictor == 2 ? (value - previous) & mask : value, sample_bytes);
         if (s + 1 == samples) {
@@ -225,7 +246,7 @@ std::size_t typeSize(std::uint16_t type) {
 
 /// A TIFF file with one page per entry of `pages`.
 std::vector<std::uint8_t> writeTiff(const TiffSpec& spec,
-                                    const std::vector<std::vector<std::uint32_t>>& pages) {
+                                    const std::vector<std::vector<std::uint64_t>>& pages) {
   Bytes out(spec.big_endian);
   out.put(spec.big_endian ? 0x4D4D : 0x4949, 2);
   const std::size_t offset_size = spec.bigtiff ? 8 : 4;
@@ -349,6 +370,16 @@ std::vector<std::uint8_t> writeTiff(const TiffSpec& spec,
     out.put(0, offset_size);
   }
   return out.data();
+}
+
+std::vector<std::uint8_t> writeTiff(const TiffSpec& spec,
+                                    const std::vector<std::vector<std::uint32_t>>& pages) {
+  std::vector<std::vector<std::uint64_t>> wide;
+  wide.reserve(pages.size());
+  for (const auto& page : pages) {
+    wide.emplace_back(page.begin(), page.end());
+  }
+  return writeTiff(spec, wide);
 }
 
 void writeFile(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
@@ -649,10 +680,19 @@ TEST_F(TiffTest, ReadsVoxelSize) {
 }
 
 TEST_F(TiffTest, RejectsWhatCannotBeKeptExactly) {
-  TiffSpec floating;
-  floating.bits = 32;
-  floating.sample_format = 3;
-  EXPECT_ANY_THROW(readAll(TiffStackSource(writeStack(floating, "float"))));
+  TiffSpec half;  // 16-bit float
+  half.bits = 16;
+  half.sample_format = 3;
+  EXPECT_ANY_THROW(readAll(TiffStackSource(writeStack(half, "half"))));
+
+  TiffSpec is_signed;
+  is_signed.sample_format = 2;
+  EXPECT_ANY_THROW(readAll(TiffStackSource(writeStack(is_signed, "signed"))));
+
+  // A value range is only for float slices.
+  TiffStackOptions ranged;
+  ranged.value_range = std::array<double, 2>{0.0, 1.0};
+  EXPECT_ANY_THROW(TiffStackSource(writeStack({}, "integer"), ranged));
 
   TiffSpec colour;
   colour.samples_per_pixel = 3;
@@ -664,7 +704,7 @@ TEST_F(TiffTest, RejectsWhatCannotBeKeptExactly) {
   wide.bits = 32;
   wide.width = 4;
   wide.height = 1;
-  writeFile(dir_ / "wide" / "a.tif", writeTiff(wide, {{1, 2, 70000, 4}}));
+  writeFile(dir_ / "wide" / "a.tif", writeTiff(wide, {std::vector<std::uint32_t>{1, 2, 70000, 4}}));
   EXPECT_ANY_THROW(readAll(TiffStackSource(dir_ / "wide")));
 
   // All slices must have the size of the first.
@@ -729,6 +769,182 @@ TEST_F(TiffTest, ReadsZipArchivesAndPrefersGreyValuesOverLabels) {
   *(at + static_cast<std::ptrdiff_t>(name.size()) + 500) ^= 0xFFU;  // a pixel of the first slice
   writeFile(dir_ / "broken.zip", bytes);
   EXPECT_ANY_THROW(readAll(TiffStackSource(dir_ / "broken.zip")));
+}
+
+// --- Float slices (ADR 0015) ---------------------------------------------------------------------
+
+/// Attenuation-like float values, negative ones included, that are not on any 16-bit grid.
+double floatValue(std::int64_t x, std::int64_t y, std::int64_t z) {
+  return -0.03 + 0.0011 * static_cast<double>(x) + 0.0023 * static_cast<double>(y) +
+         0.017 * static_cast<double>(z) + 1.3e-5 * static_cast<double>((x * 7 + y * 3) % 11);
+}
+
+/// The values of slice `z` as 32 or 64-bit bit patterns, with one not-a-number when `with_nan`.
+std::vector<std::uint64_t> floatPixels(std::int64_t z, int bits, bool with_nan = false) {
+  std::vector<std::uint64_t> pixels;
+  for (std::int64_t y = 0; y < kDims[1]; ++y) {
+    for (std::int64_t x = 0; x < kDims[0]; ++x) {
+      const double v = with_nan && x == 3 && y == 2 ? std::nan("") : floatValue(x, y, z);
+      pixels.push_back(bits == 32 ? std::bit_cast<std::uint32_t>(static_cast<float>(v))
+                                  : std::bit_cast<std::uint64_t>(v));
+    }
+  }
+  return pixels;
+}
+
+std::filesystem::path writeFloatStack(const std::filesystem::path& folder, TiffSpec spec) {
+  spec.width = static_cast<std::uint32_t>(kDims[0]);
+  spec.height = static_cast<std::uint32_t>(kDims[1]);
+  spec.sample_format = 3;
+  for (std::int64_t z = 0; z < kDims[2]; ++z) {
+    writeFile(folder / ("f" + std::to_string(z) + ".tif"),
+              writeTiff(spec, std::vector<std::vector<std::uint64_t>>{floatPixels(z, spec.bits)}));
+  }
+  return folder;
+}
+
+/// Every grey value maps back to its float value within half a grey step.
+void expectFloatValues(const TiffStackSource& source, int bits) {
+  ASSERT_EQ(source.dims(), kDims);
+  const ValueMapping mapping = source.valueMapping();
+  ASSERT_FALSE(mapping.isIdentity());
+  EXPECT_DOUBLE_EQ(mapping.toValue(0.0), source.valueRange()[0]);
+  EXPECT_NEAR(mapping.toValue(65535.0), source.valueRange()[1], 1e-12);
+  const auto grey = readAll(source);
+  std::size_t i = 0;
+  double worst = 0.0;
+  for (std::int64_t z = 0; z < kDims[2]; ++z) {
+    for (std::int64_t y = 0; y < kDims[1]; ++y) {
+      for (std::int64_t x = 0; x < kDims[0]; ++x, ++i) {
+        const double stored = bits == 32
+                                  ? static_cast<double>(static_cast<float>(floatValue(x, y, z)))
+                                  : floatValue(x, y, z);
+        worst = std::max(worst, std::abs(mapping.toValue(grey[i]) - stored));
+      }
+    }
+  }
+  EXPECT_LE(worst, 0.5 * mapping.scale * (1.0 + 1e-9));
+  EXPECT_EQ(source.clippedValues(), 0U);
+}
+
+TEST_F(TiffTest, MapsFloatSlicesOntoGreyValues) {
+  struct Case {
+    std::string name;
+    TiffSpec spec;
+  };
+  std::vector<Case> cases;
+  const auto add = [&cases](const std::string& name, auto&& change) {
+    TiffSpec spec;
+    spec.bits = 32;
+    change(spec);
+    cases.push_back({name, spec});
+  };
+  add("float32", [](TiffSpec&) {});
+  add("float32_deflate_predictor", [](TiffSpec& s) {
+    s.compression = 8;
+    s.predictor = 3;
+  });
+  add("float32_lzw_tiles_predictor", [](TiffSpec& s) {
+    s.compression = 5;
+    s.predictor = 3;
+    s.tile = 16;
+  });
+  add("float32_big_endian_strips", [](TiffSpec& s) {
+    s.big_endian = true;
+    s.rows_per_strip = 5;
+  });
+  add("float64", [](TiffSpec& s) { s.bits = 64; });
+  add("float64_deflate_predictor_big_endian", [](TiffSpec& s) {
+    s.bits = 64;
+    s.compression = 8;
+    s.predictor = 3;
+    s.big_endian = true;
+  });
+  const double low = floatValue(0, 0, 0);
+  const double high = floatValue(kDims[0] - 1, kDims[1] - 1, kDims[2] - 1);
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.name);
+    const auto folder = writeFloatStack(dir_ / c.name, c.spec);
+    const TiffStackSource estimated(folder);
+    EXPECT_TRUE(estimated.isFloat());
+    EXPECT_EQ(estimated.bitsPerSample(), c.spec.bits);
+    // The estimate covers every value with a margin of 5 % of the range on each side.
+    EXPECT_NEAR(estimated.valueRange()[0], low - 0.05 * (high - low), 1e-6);
+    EXPECT_NEAR(estimated.valueRange()[1], high + 0.05 * (high - low), 1e-6);
+    expectFloatValues(estimated, c.spec.bits);
+
+    TiffStackOptions options;
+    options.value_range = std::array<double, 2>{-0.1, 0.4};
+    const TiffStackSource given(folder, options);
+    EXPECT_EQ(given.valueRange(), options.value_range);
+    expectFloatValues(given, c.spec.bits);
+  }
+}
+
+TEST_F(TiffTest, CountsClippedFloatValuesOnce) {
+  TiffSpec spec;
+  spec.bits = 32;
+  spec.width = static_cast<std::uint32_t>(kDims[0]);
+  spec.height = static_cast<std::uint32_t>(kDims[1]);
+  spec.sample_format = 3;
+  spec.tile = 16;  // padding beyond the image must not count
+  for (std::int64_t z = 0; z < kDims[2]; ++z) {
+    writeFile(dir_ / "clip" / ("f" + std::to_string(z) + ".tif"),
+              writeTiff(spec, std::vector<std::vector<std::uint64_t>>{
+                                  floatPixels(z, 32, /*with_nan=*/z == 1)}));
+  }
+  TiffStackOptions options;
+  const double limit = 0.05;
+  options.value_range = std::array<double, 2>{0.0, limit};
+  const TiffStackSource source(dir_ / "clip", options);
+  std::uint64_t outside = 1;  // the not-a-number
+  for (std::int64_t z = 0; z < kDims[2]; ++z) {
+    for (std::int64_t y = 0; y < kDims[1]; ++y) {
+      for (std::int64_t x = 0; x < kDims[0]; ++x) {
+        const auto v = static_cast<double>(static_cast<float>(floatValue(x, y, z)));
+        const bool nan = z == 1 && x == 3 && y == 2;
+        outside += !nan && (std::round(v / limit * 65535.0) < 0.0 ||
+                            std::round(v / limit * 65535.0) > 65535.0)
+                       ? 1
+                       : 0;
+      }
+    }
+  }
+  const auto grey = readAll(source);
+  (void)readAll(source);  // a second pass, as the sieve makes, counts nothing new
+  EXPECT_EQ(source.clippedValues(), outside);
+  EXPECT_EQ(grey[0], 0);                                       // -0.03: below the range
+  EXPECT_EQ(grey[kDims[0] * kDims[1] + 2 * kDims[0] + 3], 0);  // not a number
+  EXPECT_EQ(grey.back(), 65535);                               // above the range
+}
+
+TEST_F(TiffTest, DatasetKeepsTheValueMapping) {
+  TiffSpec spec;
+  spec.bits = 32;
+  spec.compression = 8;
+  spec.predictor = 3;
+  const auto folder = writeFloatStack(dir_ / "float", spec);
+  const TiffStackSource source(folder);
+  DatasetOptions options;
+  options.brick_size = 16;
+  const DatasetInfo written = writeDataset(source, dir_ / "float.vsieve", options);
+  EXPECT_EQ(written.value_mapping, source.valueMapping());
+  const DatasetInfo read = readDatasetInfo(dir_ / "float.vsieve");
+  EXPECT_DOUBLE_EQ(read.value_mapping.offset, source.valueMapping().offset);
+  EXPECT_DOUBLE_EQ(read.value_mapping.scale, source.valueMapping().scale);
+  // Integer scans keep the identity.
+  const DatasetInfo integer =
+      writeDataset(TiffStackSource(writeStack({}, "integer")), dir_ / "integer.vsieve", options);
+  EXPECT_TRUE(readDatasetInfo(dir_ / "integer.vsieve").value_mapping.isIdentity());
+  EXPECT_EQ(integer.value_mapping, ValueMapping{});
+
+  // Joined parts must map their values alike.
+  TiffStackOptions other;
+  other.value_range = std::array<double, 2>{-1.0, 1.0};
+  std::vector<std::unique_ptr<VolumeSource>> parts;
+  parts.push_back(std::make_unique<TiffStackSource>(folder));
+  parts.push_back(std::make_unique<TiffStackSource>(folder, other));
+  EXPECT_THROW(ConcatSource(std::move(parts), 2), std::invalid_argument);
 }
 
 TEST_F(TiffTest, PhantomStackGivesTheSameDatasetAsTheRawVolume) {
@@ -812,6 +1028,19 @@ TEST_F(TiffTest, StudioBrowsesAndImportsTiffStacks) {
   EXPECT_NE(log.find("scan/data"), std::string::npos) << log;
   EXPECT_NE(log.find("scan/labels"), std::string::npos) << log;
   EXPECT_EQ(studio.call("dataset_info", {}).at("step"), imported.at("id"));
+
+  // Float slices with a given value range.
+  TiffSpec floating;
+  floating.bits = 32;
+  const auto folder = writeFloatStack(dir_ / "input" / "float", floating);
+  const auto from_float =
+      studio.call("run_import_tiff",
+                  {{"path", folder.string()}, {"value_range", {-0.1, 0.4}}, {"brick_size", 16}});
+  EXPECT_EQ(from_float.at("status"), "done");
+  EXPECT_EQ(from_float.at("summary").at("value_range"), (std::array<double, 2>{-0.1, 0.4}));
+  EXPECT_EQ(from_float.at("summary").at("clipped_values"), 0);
+  EXPECT_DOUBLE_EQ(from_float.at("summary").at("value_mapping").at("scale").get<double>(),
+                   0.5 / 65535.0);
 }
 
 }  // namespace

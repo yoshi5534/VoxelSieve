@@ -32,6 +32,10 @@ Json datasetSummary(const DatasetInfo& info) {
                   {"bricks", info.levels.empty() ? 0 : info.levels.front().bricks.size()},
                   {"active_voxels", info.active_voxel_count},
                   {"threshold", info.threshold}});
+  if (!info.value_mapping.isIdentity()) {
+    summary["value_mapping"] = {{"offset", info.value_mapping.offset},
+                                {"scale", info.value_mapping.scale}};
+  }
   return summary;
 }
 
@@ -209,12 +213,21 @@ class ImportTiff final : public Operation {
     info_.description =
         "Removes the outside air from a TIFF stack and writes a bricked dataset. Reads a "
         "directory of slices, a multi-page TIFF or a ZIP archive of either without extracting "
-        "it; slices are sorted by name, numbers by value.";
+        "it; slices are sorted by name, numbers by value. Float slices are mapped linearly onto "
+        "16-bit grey values, and the mapping is kept with the dataset.";
     info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
     info_.parameters = {
         {"type", "object"},
         {"properties",
          {{"path", {{"type", "string"}, {"description", "Directory, TIFF file or ZIP archive"}}},
+          {"value_range",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 2},
+            {"maxItems", 2},
+            {"description",
+             "Float slices: the values mapped to grey 0 and 65535; values outside are clipped. "
+             "Default: estimated from a few slices"}}},
           {"folder",
            {{"type", "string"},
             {"description",
@@ -241,6 +254,9 @@ class ImportTiff final : public Operation {
     const Json& p = context.params;
     TiffStackOptions tiff;
     tiff.folder = p.value("folder", std::string());
+    if (p.contains("value_range")) {
+      tiff.value_range = p.at("value_range").get<std::array<double, 2>>();
+    }
     if (!p.contains("voxel_size_mm") && p.contains("slice_thickness_mm")) {
       // The thickness alone: the spacing comes from the files.
       tiff.voxel_size = TiffStackSource(p.at("path").get<std::string>(), tiff).voxelSize();
@@ -257,6 +273,12 @@ class ImportTiff final : public Operation {
       context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
     }
     context.log("Voxel size " + describe(source.voxelSize()));
+    if (source.isFloat()) {
+      const auto range = source.valueRange();
+      context.log("Float values " + std::to_string(range[0]) + " to " + std::to_string(range[1]) +
+                  " mapped to grey 0 to 65535" +
+                  (tiff.value_range ? "" : " (estimated; set value_range)"));
+    }
     DatasetOptions options;
     if (p.contains("threshold")) {
       options.threshold = p.at("threshold").get<float>();
@@ -270,6 +292,14 @@ class ImportTiff final : public Operation {
     result.summary = datasetSummary(info);
     result.summary["slices"] = source.dims()[2];
     result.summary["bits_per_sample"] = source.bitsPerSample();
+    if (source.isFloat()) {
+      result.summary["value_range"] = source.valueRange();
+      result.summary["clipped_values"] = source.clippedValues();
+      if (source.clippedValues() > 0) {
+        context.log(std::to_string(source.clippedValues()) +
+                    " values lay outside the value range and were clipped; widen value_range");
+      }
+    }
     return result;
   }
 

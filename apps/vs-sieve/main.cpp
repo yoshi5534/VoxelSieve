@@ -37,7 +37,9 @@ from the file size and skipped; use --header when the file also has a footer.
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
---voxel-size, else from the files, else 1 mm.
+--voxel-size, else from the files, else 1 mm. Float slices are mapped linearly onto 16-bit grey
+values over --value-range (default: estimated from a few slices); the mapping is recorded in the
+dataset (docs/adr/0015).
 
 Several inputs are joined one after another along --join (default z) into one volume, for scans
 reconstructed in parts. Their other dimensions and voxel sizes must match.
@@ -58,6 +60,8 @@ Options:
   --big-endian            16-bit samples are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
   --folder <name>         TIFF stacks: folder of the slices when there are several
+  --value-range <lo,hi>   Float TIFF stacks: values mapped to grey 0 and 65535; values outside
+                          are clipped and counted
   --join <x|y|z>          Axis along which several inputs are joined (default z)
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
   --threshold <value>     Air/material grey value (default: Otsu estimate)
@@ -81,6 +85,7 @@ struct Options {
   std::endian byte_order = std::endian::little;
   std::optional<std::uint64_t> header_bytes;
   std::string folder;
+  std::optional<std::array<double, 2>> value_range;
   voxelsieve::SieveOptions sieve;
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
@@ -120,6 +125,13 @@ std::optional<Options> parse(int argc, char** argv) {
       options.byte_order = std::endian::big;
     } else if (arg == "--folder") {
       options.folder = next();
+    } else if (arg == "--value-range") {
+      const std::string text = next();
+      const auto comma = text.find(',');
+      if (comma == std::string::npos) {
+        throw std::invalid_argument("--value-range needs two numbers: <lo>,<hi>");
+      }
+      options.value_range = {std::stod(text.substr(0, comma)), std::stod(text.substr(comma + 1))};
     } else if (arg == "--header") {
       options.header_bytes = std::stoull(next());
     } else if (arg == "--voxel-size") {
@@ -226,10 +238,14 @@ bool isTiffInput(const Options& options) {
   return options.input.extension() != ".raw" && voxelsieve::isTiffStackPath(options.input);
 }
 
-std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options) {
+/// Float TIFF inputs, to report their clipped values after the run.
+using FloatInputs = std::vector<const voxelsieve::TiffStackSource*>;
+
+std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, FloatInputs& floats) {
   if (isTiffInput(options)) {
     voxelsieve::TiffStackOptions tiff;
     tiff.folder = options.folder;
+    tiff.value_range = options.value_range;
     tiff.voxel_size = options.voxel_size;
     if (options.slice_thickness_mm) {
       tiff.voxel_size = withThickness(
@@ -243,6 +259,14 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options) {
               << (source->folder().empty() ? "" : ", folder " + source->folder()) << "\n";
     for (const std::string& other : source->otherFolders()) {
       std::cout << "also in input      " << other << " (choose with --folder)\n";
+    }
+    if (source->isFloat()) {
+      const auto range = source->valueRange();
+      std::cout << "float values       " << range[0] << " .. " << range[1] << " -> grey 0 .. 65535"
+                << (options.value_range ? "" : " (estimated; set --value-range)") << "\n"
+                << "value              " << source->valueMapping().offset << " + "
+                << source->valueMapping().scale << " * grey\n";
+      floats.push_back(source.get());
     }
     if (!tiff.voxel_size && !source->fileVoxelSize()) {
       std::cout << "voxel size         unknown in the files, 1 mm assumed (set --voxel-size)\n";
@@ -262,9 +286,9 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options) {
   return source;
 }
 
-std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
+std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options, FloatInputs& floats) {
   if (options.inputs.size() <= 1) {
-    return openPart(options);
+    return openPart(options, floats);
   }
   std::vector<std::unique_ptr<voxelsieve::VolumeSource>> parts;
   for (const auto& input : options.inputs) {
@@ -272,7 +296,7 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
               << "\n";
     Options part = options;
     part.input = input;
-    parts.push_back(openPart(part));
+    parts.push_back(openPart(part, floats));
   }
   auto joined = std::make_unique<voxelsieve::ConcatSource>(std::move(parts), options.join_axis);
   const auto dims = joined->dims();
@@ -281,9 +305,21 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options) {
   return joined;
 }
 
+void reportClipped(const FloatInputs& floats) {
+  std::uint64_t clipped = 0;
+  for (const auto* source : floats) {
+    clipped += source->clippedValues();
+  }
+  if (!floats.empty()) {
+    std::cout << "clipped values     " << clipped
+              << (clipped > 0 ? " outside the value range (widen --value-range)" : "") << "\n";
+  }
+}
+
 void runSingleGrid(const Options& options) {
   const auto start = std::chrono::steady_clock::now();
-  const auto source = openSource(options);
+  FloatInputs floats;
+  const auto source = openSource(options, floats);
   voxelsieve::Volume16 volume(source->dims(), source->voxelSize());
   source->readRegion({{0, 0, 0}, volume.dims}, volume.data);
   const auto loaded = std::chrono::steady_clock::now();
@@ -298,6 +334,11 @@ void runSingleGrid(const Options& options) {
     std::cout << "threshold          " << s.threshold << " (air level " << s.air_level << ")\n"
               << "blocks             " << s.block_count << " total, " << s.material_block_count
               << " material, " << s.outside_air_block_count << " outside air\n";
+  }
+  if (const auto mapping = source->valueMapping(); !mapping.isIdentity()) {
+    // Float scans: value = value_offset + value_scale * grey (docs/adr/0015).
+    grid->insertMeta("value_offset", openvdb::DoubleMetadata(mapping.offset));
+    grid->insertMeta("value_scale", openvdb::DoubleMetadata(mapping.scale));
   }
   const auto converted = std::chrono::steady_clock::now();
   voxelsieve::writeVdb(options.out, {grid});
@@ -315,10 +356,12 @@ void runSingleGrid(const Options& options) {
             << 100.0 * static_cast<double>(vdb_bytes) / static_cast<double>(raw_bytes) << " %)\n"
             << "time               read " << seconds(start, loaded) << " s, convert "
             << seconds(loaded, converted) << " s, write " << seconds(converted, written) << " s\n";
+  reportClipped(floats);
 }
 
 void runDataset(const Options& options) {
   std::unique_ptr<voxelsieve::VolumeSource> source;
+  FloatInputs floats;
   if (options.phantom) {
     voxelsieve::PhantomSpec spec = voxelsieve::defaultPhantomSpec();
     const std::int64_t n = *options.phantom;
@@ -327,7 +370,7 @@ void runDataset(const Options& options) {
     spec.noise_sigma = 500.0;
     source = std::make_unique<voxelsieve::PhantomSource>(spec);
   } else {
-    source = openSource(options);
+    source = openSource(options, floats);
   }
 
   const auto start = std::chrono::steady_clock::now();
@@ -349,6 +392,7 @@ void runDataset(const Options& options) {
             << "size               " << raw_mb << " MB raw -> "
             << megabytes(directorySize(options.out)) << " MB dataset\n"
             << "time               " << seconds(start, done) << " s\n";
+  reportClipped(floats);
   if (const double peak = peakMemoryMb(); peak >= 0.0) {
     // VmHWM also counts pages of a memory-mapped input, which the OS can reclaim at any time.
     std::cout << "peak memory        " << peak << " MB (incl. mapped input pages)\n";

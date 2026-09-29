@@ -151,6 +151,10 @@ ConcatSource::ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int
     if (!(part->voxelSize() == parts_.front()->voxelSize())) {
       throw std::invalid_argument("Parts differ in voxel size");
     }
+    if (!(part->valueMapping() == parts_.front()->valueMapping())) {
+      throw std::invalid_argument(
+          "Parts map their values to 16 bit differently; give all parts the same value range");
+    }
     starts_.push_back(dims_[a]);
     dims_[a] += d[a];
   }
