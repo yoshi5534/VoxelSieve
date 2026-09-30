@@ -35,7 +35,7 @@ Status: early development, first release 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)
 Dependencies come from [vcpkg](https://vcpkg.io), pinned in `vcpkg.json`. On Ubuntu 24.04:
 
 ```sh
-sudo apt-get install cmake ninja-build g++ autoconf automake libtool pkg-config
+sudo apt-get install cmake ninja-build g++ git curl zip unzip tar autoconf automake libtool pkg-config
 tools/setup-vcpkg.sh && export VCPKG_ROOT=~/vcpkg
 cmake --preset release && cmake --build --preset release && ctest --preset release
 ./build/release/apps/vs-phantom/vs-phantom --out phantom --dims 256
@@ -45,7 +45,9 @@ This writes `phantom.raw` (uint16, little endian, x fastest) and `phantom.json` 
 description and the analytic ground truth (pores, wall thickness, material volume).
 
 The first configure builds OpenVDB, Boost and TBB from source, which takes a while; vcpkg keeps
-the result in its binary cache for later builds.
+the result in its binary cache for later builds. A build directory configured before the switch to
+vcpkg does not pick up its toolchain; configure it again with `--fresh`
+(`cmake --preset release --fresh`).
 
 ## Sieve a volume
 
