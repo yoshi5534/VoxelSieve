@@ -461,6 +461,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   if (options.stage_slow_sources && input.slowRandomAccess()) {
     staged = std::make_unique<StagedSource>(
         input, options.staging_dir.empty() ? dir : options.staging_dir, options);
+    // The copy is all the passes read, so its pages should stay in memory, not the input's.
+    input.releaseMemory();
   }
   const VolumeSource& source = staged ? staged->source() : input;
 

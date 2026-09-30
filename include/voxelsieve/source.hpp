@@ -56,6 +56,9 @@ class VolumeSource {
   /// slice by slice: slices that are stored compressed or decoded as a whole, such as TIFF stacks
   /// in a ZIP archive. `writeDataset` first copies such a volume to a temporary raw file.
   [[nodiscard]] virtual bool slowRandomAccess() const { return false; }
+  /// Lets go of memory held for faster reading, such as caches of decoded data or pages of a
+  /// memory-mapped input; later reads work as before. Called once a source has been copied.
+  virtual void releaseMemory() const {}
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
   /// `out.size()` must equal `box.voxelCount()`.
@@ -137,6 +140,7 @@ class ConcatSource final : public VolumeSource {
     return parts_.front()->valueMapping();
   }
   [[nodiscard]] bool slowRandomAccess() const override;
+  void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   [[nodiscard]] int axis() const { return axis_; }

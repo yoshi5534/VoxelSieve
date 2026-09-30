@@ -36,6 +36,10 @@ class ZipArchive {
   /// reader gets its own handle on the archive, so entries are inflated in parallel.
   [[nodiscard]] std::vector<std::uint8_t> read(const Entry& entry) const;
 
+  /// Tells the operating system that the pages of the archive read so far are no longer needed,
+  /// so they do not push other data out of memory. Later reads load them again.
+  void releasePages() const;
+
  private:
   struct Close {
     void operator()(zip* archive) const;

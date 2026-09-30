@@ -543,6 +543,9 @@ TEST_F(TiffTest, ReadsZipArchivesAndPrefersGreyValuesOverLabels) {
     EXPECT_EQ(source.folder(), "volume/data");
     EXPECT_EQ(source.otherFolders(), std::vector<std::string>{"volume/target"});
     expectGreyValues(source, 16);
+    // Letting go of the cache and the archive's pages changes nothing for later reads.
+    source.releaseMemory();
+    expectGreyValues(source, 16);
 
     TiffStackOptions options;
     options.folder = "target";

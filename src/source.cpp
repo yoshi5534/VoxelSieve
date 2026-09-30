@@ -166,6 +166,12 @@ bool ConcatSource::slowRandomAccess() const {
                      [](const auto& part) { return part->slowRandomAccess(); });
 }
 
+void ConcatSource::releaseMemory() const {
+  for (const auto& part : parts_) {
+    part->releaseMemory();
+  }
+}
+
 void ConcatSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   checkRegion(box, dims_, out);
   const auto a = static_cast<std::size_t>(axis_);
