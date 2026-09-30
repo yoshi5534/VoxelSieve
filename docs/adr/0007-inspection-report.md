@@ -19,7 +19,7 @@ renders a report from a template.
 
 - **Inspection order (JSON):** laboratory, customer, order, part, scan settings, measurement
   uncertainty, approval and the acceptance limits. Anything VoxelSieve cannot measure comes from
-  the order. Mandatory fields that are missing appear in the report as "nicht angegeben" and are
+  the order. Mandatory fields that are missing appear in the report as "not given" and are
   listed as warnings, so a report is never silently incomplete.
 - **Evaluation (BDG P 202 scheme):** inspection zones are axis-aligned boxes in dataset
   coordinates or the whole part. Per zone, optional limits: largest pore extent (longest edge of
@@ -29,7 +29,7 @@ renders a report from a template.
   the material per 8³ block, weighted by the block's overlap with the box, plus the voids in it.
   The limits themselves come from the drawing or customer; VoxelSieve ships none.
 - **Template:** a Mustache subset (variables, sections, inverted sections, comments), implemented
-  in about 200 lines instead of adding a dependency. The built-in German A4 template is compiled
+  in about 200 lines instead of adding a dependency. The built-in English A4 template is compiled
   in from `resources/report_template.html`; `--template` replaces it and `--print-template`
   prints it as a starting point. The report is one self-contained HTML file with the projection
   images as data URIs, printed to PDF from the browser. `report.json` holds the same data for

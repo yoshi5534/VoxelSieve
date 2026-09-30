@@ -17,7 +17,7 @@ class Histogram final : public voxelsieve::Operation {
  public:
   Histogram() {
     info_.id = "histogram";
-    info_.title = "Grauwert-Histogramm";
+    info_.title = "Grey value histogram";
     info_.description = "Counts the grey values of the kept voxels of a dataset level in bins.";
     info_.inputs = {{"dataset", voxelsieve::artifact::kDataset, "Dataset"}};
     info_.outputs = {{"histogram", "table", "histogram.json"}};

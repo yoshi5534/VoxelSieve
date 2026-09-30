@@ -216,7 +216,7 @@ TEST_F(ProjectTest, ViewStateAndSavedViewsPersistOutsideTheProtocol) {
   const int second = project.saveView("Ohne Bild", {{"stage", "report"}}).id;
   EXPECT_NE(first, second);
   EXPECT_TRUE(std::filesystem::exists(project.viewImage(first)));
-  project.renameView(second, "Bericht");
+  project.renameView(second, "Report");
   // Views are no steps: undo leaves them alone.
   EXPECT_TRUE(project.undo());
   EXPECT_EQ(project.savedViews().size(), 2U);
@@ -226,7 +226,7 @@ TEST_F(ProjectTest, ViewStateAndSavedViewsPersistOutsideTheProtocol) {
   ASSERT_EQ(reopened.savedViews().size(), 2U);
   EXPECT_EQ(reopened.savedView(first).name, "Übersicht");
   EXPECT_TRUE(reopened.savedView(first).has_image);
-  EXPECT_EQ(reopened.savedView(second).name, "Bericht");
+  EXPECT_EQ(reopened.savedView(second).name, "Report");
   EXPECT_FALSE(reopened.savedView(second).has_image);
 
   reopened.deleteView(first);

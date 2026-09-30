@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Prüfbericht {{report.number}}</title>
+<title>Test report {{report.number}}</title>
 {{! VoxelSieve report template. Placeholders use a Mustache subset, see include/voxelsieve/report.hpp.
-    The structure follows the report contents of DIN EN ISO/IEC 17025 (7.8) and the test report
-    of DIN EN ISO 15708-3; the evaluation follows the scheme of BDG P 202. Copy this file with
+    The structure follows the report contents of ISO/IEC 17025 (7.8) and the test report
+    of ISO 15708-3; the evaluation follows the scheme of BDG P 202. Copy this file with
     "vs-report --print-template" to adapt it to your own layout. }}
 <style>
   @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
@@ -47,102 +47,102 @@
 
 <header>
   <div>
-    <h1>Prüfbericht</h1>
-    <div>Nr. {{report.number}} vom {{report.date}}</div>
+    <h1>Test report</h1>
+    <div>No. {{report.number}} of {{report.date}}</div>
   </div>
   <div class="lab">{{laboratory.name}}<br>{{laboratory.address}}</div>
 </header>
 
 <section>
-<h2>1 Auftrag</h2>
+<h2>1 Order</h2>
 <table class="fields">
-  <tr><th>Auftraggeber</th><td>{{customer.name}}{{#customer.address}}, {{customer.address}}{{/customer.address}}</td></tr>
-  <tr><th>Auftragsnummer</th><td>{{order.number}}</td></tr>
-  {{#order.received}}<tr><th>Eingang des Prüfgegenstands</th><td>{{order.received}}</td></tr>{{/order.received}}
-  <tr><th>Prüfdatum</th><td>{{order.test_date}}</td></tr>
+  <tr><th>Customer</th><td>{{customer.name}}{{#customer.address}}, {{customer.address}}{{/customer.address}}</td></tr>
+  <tr><th>Order number</th><td>{{order.number}}</td></tr>
+  {{#order.received}}<tr><th>Date of receipt of the test item</th><td>{{order.received}}</td></tr>{{/order.received}}
+  <tr><th>Date of test</th><td>{{order.test_date}}</td></tr>
 </table>
 </section>
 
 <section>
-<h2>2 Prüfgegenstand</h2>
+<h2>2 Test item</h2>
 <table class="fields">
-  <tr><th>Bezeichnung</th><td>{{part.name}}</td></tr>
-  <tr><th>Zeichnungsnummer</th><td>{{part.drawing}}</td></tr>
-  <tr><th>Werkstoff</th><td>{{part.material}}</td></tr>
-  <tr><th>Seriennummer / Charge</th><td>{{part.serial}}</td></tr>
-  {{#part.condition}}<tr><th>Zustand bei Eingang</th><td>{{part.condition}}</td></tr>{{/part.condition}}
+  <tr><th>Designation</th><td>{{part.name}}</td></tr>
+  <tr><th>Drawing number</th><td>{{part.drawing}}</td></tr>
+  <tr><th>Material</th><td>{{part.material}}</td></tr>
+  <tr><th>Serial number / batch</th><td>{{part.serial}}</td></tr>
+  {{#part.condition}}<tr><th>Condition on receipt</th><td>{{part.condition}}</td></tr>{{/part.condition}}
 </table>
 </section>
 
 <section>
-<h2>3 Prüfverfahren</h2>
+<h2>3 Test method</h2>
 <table class="fields">
-  <tr><th>Verfahren</th><td>Industrielle Computertomographie nach DIN EN ISO 15708</td></tr>
-  <tr><th>Auswertung</th><td>Porositätsanalyse{{#comparison}} und Soll-Ist-Vergleich{{/comparison}} mit {{software.name}} {{software.version}}{{#evaluation}}, Bewertung nach {{evaluation.guideline}}{{/evaluation}}</td></tr>
-  <tr><th>Abweichungen vom Verfahren</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}keine{{/method.deviations}}</td></tr>
+  <tr><th>Method</th><td>Industrial computed tomography according to ISO 15708</td></tr>
+  <tr><th>Evaluation</th><td>Porosity analysis{{#comparison}} and nominal-actual comparison{{/comparison}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Deviations from the method</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}none{{/method.deviations}}</td></tr>
 </table>
 </section>
 
 <section>
-<h2>4 Prüfeinrichtung und Aufnahmeparameter</h2>
+<h2>4 Test equipment and acquisition parameters</h2>
 <table class="fields">
-  <tr><th>CT-Anlage</th><td>{{scan.device}}</td></tr>
-  <tr><th>Röhrenspannung</th><td>{{scan.voltage_kv}} kV</td></tr>
-  <tr><th>Röhrenstrom</th><td>{{scan.current_ua}} µA</td></tr>
-  <tr><th>Vorfilter</th><td>{{scan.filter}}</td></tr>
-  {{#scan.detector}}<tr><th>Detektor</th><td>{{scan.detector}}</td></tr>{{/scan.detector}}
-  <tr><th>Anzahl Projektionen</th><td>{{scan.projections}}</td></tr>
-  <tr><th>Belichtungszeit</th><td>{{scan.exposure_ms}} ms</td></tr>
-  <tr><th>Rekonstruktion</th><td>{{scan.reconstruction}}</td></tr>
-  <tr><th>Voxelgröße</th><td>{{analysis.voxel_size}}</td></tr>
+  <tr><th>CT system</th><td>{{scan.device}}</td></tr>
+  <tr><th>Tube voltage</th><td>{{scan.voltage_kv}} kV</td></tr>
+  <tr><th>Tube current</th><td>{{scan.current_ua}} µA</td></tr>
+  <tr><th>Pre-filter</th><td>{{scan.filter}}</td></tr>
+  {{#scan.detector}}<tr><th>Detector</th><td>{{scan.detector}}</td></tr>{{/scan.detector}}
+  <tr><th>Number of projections</th><td>{{scan.projections}}</td></tr>
+  <tr><th>Exposure time</th><td>{{scan.exposure_ms}} ms</td></tr>
+  <tr><th>Reconstruction</th><td>{{scan.reconstruction}}</td></tr>
+  <tr><th>Voxel size</th><td>{{analysis.voxel_size}}</td></tr>
 </table>
 </section>
 
 <section>
-<h2>5 Auswerteparameter und Nachweisgrenzen</h2>
+<h2>5 Evaluation parameters and detection limits</h2>
 <table class="fields">
-  <tr><th>Grauwert Luft / Material</th><td>{{analysis.air_level}} / {{analysis.material_level}} (Rauschen σ = {{analysis.noise_sigma}})</td></tr>
-  <tr><th>Kleinste ausgewertete Pore</th><td>{{analysis.min_pore_voxels}} Voxel ({{analysis.min_pore_volume}}, Kugeldurchmesser {{analysis.min_pore_diameter}})</td></tr>
-  <tr><th>Gefügeauflockerung</th><td>Blöcke von {{analysis.zone_block}} Kantenlänge, ab {{analysis.zone_min_porosity}} Porosität und {{analysis.zone_sigma}} σ über dem Rauschen, Materialbezug in gleicher Tiefe unter der Oberfläche</td></tr>
-  <tr><th>Messunsicherheit</th><td>{{uncertainty}}</td></tr>
+  <tr><th>Grey value air / material</th><td>{{analysis.air_level}} / {{analysis.material_level}} (noise σ = {{analysis.noise_sigma}})</td></tr>
+  <tr><th>Smallest evaluated pore</th><td>{{analysis.min_pore_voxels}} voxels ({{analysis.min_pore_volume}}, sphere diameter {{analysis.min_pore_diameter}})</td></tr>
+  <tr><th>Loosened microstructure</th><td>Blocks of {{analysis.zone_block}} edge length, from {{analysis.zone_min_porosity}} porosity and {{analysis.zone_sigma}} σ above the noise, material reference at the same depth below the surface</td></tr>
+  <tr><th>Measurement uncertainty</th><td>{{uncertainty}}</td></tr>
 </table>
 </section>
 
 <section>
-<h2>6 Ergebnisse</h2>
+<h2>6 Results</h2>
 <table class="fields">
-  <tr><th>Bauteilvolumen</th><td>{{results.part_volume}}</td></tr>
-  <tr><th>Poren</th><td>{{results.pore_count}}, zusammen {{results.pore_volume}}</td></tr>
-  <tr><th>Zonen mit Gefügeauflockerung</th><td>{{results.zone_count}}, Porenvolumen {{results.zone_void_volume}}</td></tr>
-  <tr><th>Porosität gesamt</th><td>{{results.porosity}}</td></tr>
+  <tr><th>Part volume</th><td>{{results.part_volume}}</td></tr>
+  <tr><th>Pores</th><td>{{results.pore_count}}, in total {{results.pore_volume}}</td></tr>
+  <tr><th>Zones with loosened microstructure</th><td>{{results.zone_count}}, void volume {{results.zone_void_volume}}</td></tr>
+  <tr><th>Total porosity</th><td>{{results.porosity}}</td></tr>
 </table>
 
 {{#images.part}}
 <div class="renders">
-  <figure><img src="{{{images.part}}}" alt="Bauteil"><figcaption>Bauteil, Oberfläche aus dem CT-Volumen</figcaption></figure>
-  <figure><img src="{{{images.pores}}}" alt="Poren im Bauteil"><figcaption>Poren (rot) und Zonen mit Gefügeauflockerung (gelb) im Bauteil, maßstäblich; sehr kleine Befunde vergrößert</figcaption></figure>
+  <figure><img src="{{{images.part}}}" alt="Part"><figcaption>Part, surface from the CT volume</figcaption></figure>
+  <figure><img src="{{{images.pores}}}" alt="Pores in the part"><figcaption>Pores (red) and zones with loosened microstructure (yellow) in the part, to scale; very small findings enlarged</figcaption></figure>
 </div>
 {{/images.part}}
 <div class="images">
-  <figure><img src="{{{images.z}}}" alt="Projektion entlang z"><figcaption>Projektion entlang z</figcaption></figure>
-  <figure><img src="{{{images.y}}}" alt="Projektion entlang y"><figcaption>Projektion entlang y</figcaption></figure>
-  <figure><img src="{{{images.x}}}" alt="Projektion entlang x"><figcaption>Projektion entlang x</figcaption></figure>
+  <figure><img src="{{{images.z}}}" alt="Projection along z"><figcaption>Projection along z</figcaption></figure>
+  <figure><img src="{{{images.y}}}" alt="Projection along y"><figcaption>Projection along y</figcaption></figure>
+  <figure><img src="{{{images.x}}}" alt="Projection along x"><figcaption>Projection along x</figcaption></figure>
 </div>
-<p class="note">Grau: Wanddicke in Strahlrichtung. Rot: Poren. Gelb: Gefügeauflockerung.</p>
+<p class="note">Grey: wall thickness along the ray. Red: pores. Yellow: loosened microstructure.</p>
 
 {{#has_pores}}
-<h2>Poren nach Größe{{#pores_more}} (die {{pores_listed}} größten von {{results.pore_count}}){{/pores_more}}</h2>
+<h2>Pores by size{{#pores_more}} (the {{pores_listed}} largest of {{results.pore_count}}){{/pores_more}}</h2>
 <table>
-  <tr><th>Nr.</th><th>Lage x; y; z in mm</th><th class="num">Ausdehnung mm</th><th class="num">Kugel-Ø mm</th><th class="num">Volumen mm³</th></tr>
+  <tr><th>No.</th><th>Position x, y, z in mm</th><th class="num">Extent mm</th><th class="num">Sphere Ø mm</th><th class="num">Volume mm³</th></tr>
   {{#pores}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{volume}}</td></tr>
   {{/pores}}
 </table>
 {{/has_pores}}
 
 {{#has_zones}}
-<h2>Zonen mit Gefügeauflockerung</h2>
+<h2>Zones with loosened microstructure</h2>
 <table>
-  <tr><th>Nr.</th><th>Lage x; y; z in mm</th><th class="num">Volumen mm³</th><th class="num">Porenvolumen mm³</th><th class="num">Porosität %</th></tr>
+  <tr><th>No.</th><th>Position x, y, z in mm</th><th class="num">Volume mm³</th><th class="num">Void volume mm³</th><th class="num">Porosity %</th></tr>
   {{#zones}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{volume}}</td><td class="num">{{void_volume}}</td><td class="num">{{porosity}}</td></tr>
   {{/zones}}
 </table>
@@ -151,34 +151,34 @@
 
 {{#comparison}}
 <section>
-<h2>7 Soll-Ist-Vergleich</h2>
+<h2>7 Nominal-actual comparison</h2>
 <table class="fields">
-  <tr><th>Soll-Geometrie (CAD)</th><td>{{cad}}</td></tr>
-  <tr><th>Ausrichtung</th><td>{{alignment}}, Restabweichung der Ausrichtung {{fit_rms}} (RMS)</td></tr>
-  <tr><th>Toleranz</th><td>{{tolerance}}</td></tr>
-  <tr><th>Anteil der Oberfläche in Toleranz</th><td>{{within}} (darüber {{above}}, darunter {{below}})</td></tr>
-  <tr><th>Mittelwert / Standardabweichung</th><td>{{mean}} / {{std}}</td></tr>
-  <tr><th>Kleinste / größte Abweichung</th><td>{{min}} / {{max}}</td></tr>
-  <tr><th>5 % / 95 % der Oberfläche</th><td>unter {{p5}} / unter {{p95}}</td></tr>
-  <tr><th>Verglichene Oberfläche</th><td>{{area}}, Außenfläche ohne {{dropped}} innere Porenflächen</td></tr>
+  <tr><th>Nominal geometry (CAD)</th><td>{{cad}}</td></tr>
+  <tr><th>Alignment</th><td>{{alignment}}, residual alignment deviation {{fit_rms}} (RMS)</td></tr>
+  <tr><th>Tolerance</th><td>{{tolerance}}</td></tr>
+  <tr><th>Share of the surface within tolerance</th><td>{{within}} (above {{above}}, below {{below}})</td></tr>
+  <tr><th>Mean / standard deviation</th><td>{{mean}} / {{std}}</td></tr>
+  <tr><th>Smallest / largest deviation</th><td>{{min}} / {{max}}</td></tr>
+  <tr><th>5 % / 95 % of the surface</th><td>below {{p5}} / below {{p95}}</td></tr>
+  <tr><th>Compared surface</th><td>{{area}}, outer surface without {{dropped}} internal pore surfaces</td></tr>
 </table>
 <div class="renders">
-  <figure><img src="{{{images.deviation_1}}}" alt="Abweichung, Ansicht von oben"><figcaption>Abweichung, Ansicht von oben</figcaption></figure>
-  <figure><img src="{{{images.deviation_2}}}" alt="Abweichung, Ansicht von unten"><figcaption>Abweichung, Ansicht von unten</figcaption></figure>
+  <figure><img src="{{{images.deviation_1}}}" alt="Deviation, view from above"><figcaption>Deviation, view from above</figcaption></figure>
+  <figure><img src="{{{images.deviation_2}}}" alt="Deviation, view from below"><figcaption>Deviation, view from below</figcaption></figure>
 </div>
-<figure class="histogram">{{{images.deviation_histogram}}}<figcaption>Häufigkeitsverteilung der Abweichung, Toleranzbereich hinterlegt</figcaption></figure>
-<p class="note">Positive Abweichung (gelb bis rot): mehr Material als die Soll-Geometrie. Negative Abweichung (türkis bis blau): Material fehlt. Grün: innerhalb der Toleranz. Farbskala gesättigt bei {{range}}. Die Häufigkeit ist auf die Fläche bezogen.</p>
+<figure class="histogram">{{{images.deviation_histogram}}}<figcaption>Distribution of the deviation, tolerance band shaded</figcaption></figure>
+<p class="note">Positive deviation (yellow to red): more material than the nominal geometry. Negative deviation (turquoise to blue): material missing. Green: within tolerance. Colour scale saturates at {{range}}. Frequencies are weighted by surface area.</p>
 </section>
 {{/comparison}}
 
 <section>
-<h2>{{#comparison}}8{{/comparison}}{{^comparison}}7{{/comparison}} Bewertung</h2>
+<h2>{{#comparison}}8{{/comparison}}{{^comparison}}7{{/comparison}} Assessment</h2>
 {{#evaluation}}
-<p>Bewertung nach {{guideline}}. Poren und Zonen werden der Prüfzone zugeordnet, in der ihr Schwerpunkt liegt.</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.</p>
 {{#zones}}
 <table>
-  <tr><th colspan="4">{{name}}: {{region}}, Bauteilvolumen {{part_volume}}</th></tr>
-  <tr><th>Merkmal</th><th class="num">Befund</th><th class="num">Grenzwert</th><th>Ergebnis</th></tr>
+  <tr><th colspan="4">{{name}}: {{region}}, part volume {{part_volume}}</th></tr>
+  <tr><th>Characteristic</th><th class="num">Finding</th><th class="num">Limit</th><th>Result</th></tr>
   {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
   {{/criteria}}
 </table>
@@ -186,16 +186,16 @@
 <div class="verdict {{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</div>
 {{/evaluation}}
 {{^evaluation}}
-<p>Es wurden keine Grenzwerte vorgegeben; der Bericht enthält nur die Befunde.</p>
+<p>No acceptance limits were given; the report contains the findings only.</p>
 {{/evaluation}}
-<p class="note">Die Ergebnisse beziehen sich ausschließlich auf den geprüften Gegenstand. Der Bericht darf ohne
-Genehmigung des Prüflaboratoriums nicht auszugsweise vervielfältigt werden.</p>
+<p class="note">The results relate only to the item tested. This report shall not be reproduced except in full
+without the approval of the testing laboratory.</p>
 </section>
 
 <section class="signatures">
-  <div>Prüfer: {{approval.inspector}}</div>
-  <div>Freigabe: {{approval.approver}}{{#approval.approver_role}}, {{approval.approver_role}}{{/approval.approver_role}}</div>
-  <div>Datum: {{report.date}}</div>
+  <div>Inspector: {{approval.inspector}}</div>
+  <div>Approved by: {{approval.approver}}{{#approval.approver_role}}, {{approval.approver_role}}{{/approval.approver_role}}</div>
+  <div>Date: {{report.date}}</div>
 </section>
 
 </body>

@@ -78,7 +78,7 @@ struct Evaluation {
 [[nodiscard]] std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order);
 
 /// Everything a report template can use: the inspection order as given, completed with
-/// "nicht angegeben" for missing mandatory fields, the analysis settings and results formatted
+/// "not given" for missing mandatory fields, the analysis settings and results formatted
 /// for print, the evaluation and the projection images as data URIs. `warnings` receives one
 /// line per missing mandatory field.
 [[nodiscard]] nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& result,

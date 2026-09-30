@@ -30,7 +30,7 @@ faster and leaner we need the same numbers from every operation, per phase, kept
   (`Step::telemetry` in `project.json`), the whole record into `telemetry.json` in the step
   directory. A failed step keeps its summary. The studio method `step_telemetry` (and so the MCP
   tool of the same name) returns the whole record; the UI shows a line per step and, under
-  "Laufzeit und Ressourcen", the phases, hints and the timeline.
+  "Run time and resources", the phases, hints and the timeline.
 - Command-line tools print a table of the phases to stderr at the end and write the whole record
   with `--telemetry <file.json>`.
 - A record carries hints for phases that take at least 5 s: few cores busy with many major page
