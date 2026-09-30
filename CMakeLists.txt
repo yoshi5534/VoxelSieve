@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
 project(VoxelSieve VERSION 0.1.0 LANGUAGES CXX)
 
+# The presets set VCPKG_TARGET_TRIPLET. CMake only loads a toolchain on the first configure of a
+# build directory, so a directory configured before the switch to vcpkg silently keeps finding the
+# system libraries; stop with a hint instead.
+if(DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TOOLCHAIN)
+  message(FATAL_ERROR
+    "vcpkg's toolchain is not active in ${CMAKE_BINARY_DIR}. The directory was probably configured "
+    "before VoxelSieve used vcpkg. Run tools/setup-vcpkg.sh, export VCPKG_ROOT and configure again "
+    "with --fresh, e.g. cmake --preset release --fresh")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
