@@ -500,6 +500,18 @@ std::uint64_t TiffStackSource::clippedValues() const {
   return impl_->clipped;
 }
 
+void TiffStackSource::releaseMemory() const {
+  {
+    const std::lock_guard lock(impl_->mutex);
+    impl_->lru.clear();
+    impl_->cached.clear();
+    impl_->cached_bytes = 0;
+  }
+  if (impl_->zip) {
+    impl_->zip->releasePages();
+  }
+}
+
 const std::string& TiffStackSource::folder() const { return impl_->folder; }
 
 const std::vector<std::string>& TiffStackSource::otherFolders() const {

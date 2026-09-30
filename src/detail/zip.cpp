@@ -4,6 +4,10 @@
 
 #include <stdexcept>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
+
 namespace voxelsieve::detail {
 
 void ZipArchive::Close::operator()(zip* archive) const { zip_discard(archive); }
@@ -37,6 +41,11 @@ ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
   if (!file_.is_open()) {
     throw std::runtime_error("Cannot map " + file.string());
   }
+#if defined(__unix__) || defined(__APPLE__)
+  // Entries are read front to back, and each once when a stack is copied: read ahead, and let
+  // the pages go first when memory runs short. Only a hint; failure changes nothing.
+  (void)madvise(const_cast<char*>(file_.data()), file_.size(), MADV_SEQUENTIAL);
+#endif
   Handle archive = open();
   const zip_int64_t count = zip_get_num_entries(archive.get(), 0);
   entries_.reserve(static_cast<std::size_t>(std::max<zip_int64_t>(count, 0)));
@@ -53,6 +62,13 @@ ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
 }
 
 ZipArchive::~ZipArchive() = default;
+
+void ZipArchive::releasePages() const {
+#if defined(__unix__) || defined(__APPLE__)
+  // The mapping is read-only, so dropped pages are read from the file again when needed.
+  (void)madvise(const_cast<char*>(file_.data()), file_.size(), MADV_DONTNEED);
+#endif
+}
 
 std::vector<std::uint8_t> ZipArchive::read(const Entry& entry) const {
   Handle archive;
