@@ -40,8 +40,15 @@ struct DatasetOptions {
   int min_material_voxels = 1;
   /// Where outside air enters (see SieveOptions::outside_air_axes).
   AirAxes outside_air_axes = kAllAxes;
-  /// Called as the sieve advances, with the stage ("histogram": pass 1 over the input,
-  /// "bricks": pass 2, "levels": the coarser levels) and the fraction of that stage done, 0 to 1.
+  /// Sources with slow random access (`VolumeSource::slowRandomAccess`, such as TIFF stacks) are
+  /// first copied slice by slice to a temporary raw file of 2 bytes per voxel, so that every
+  /// slice is decoded once instead of once per brick. Off: they are read directly.
+  bool stage_slow_sources = true;
+  /// Directory of that temporary file; empty: the output directory. It is removed at the end.
+  std::filesystem::path staging_dir;
+  /// Called as the sieve advances, with the stage ("staging": copying a slow source, "histogram":
+  /// pass 1 over the input, "bricks": pass 2, "levels": the coarser levels) and the fraction of
+  /// that stage done, 0 to 1.
   /// Called from one thread at a time, at most once per whole percent of a stage.
   std::function<void(std::string_view stage, double fraction)> progress;
 };

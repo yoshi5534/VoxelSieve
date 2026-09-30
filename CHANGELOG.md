@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Faster TIFF import** (`VolumeSource::slowRandomAccess`, `DatasetOptions::stage_slow_sources`
+  and `staging_dir`, `vs-sieve --staging-dir` and `--no-staging`, ADR 0011 amendment): a TIFF
+  stack is first decoded once, slice by slice on all cores, into a temporary raw file (2 bytes per
+  voxel, removed at the end) that both passes then read. Before, pass 2 inflated and decoded
+  every slice again for each brick it touched as soon as a brick layer did not fit into the 1 GiB
+  slice cache. A float stack of 512 slices of 1250² in a ZIP now takes 41 s instead of 302 s on 4
+  cores, with an identical dataset. The coarser levels are built leaf by leaf, a third faster,
+  and the float value range is estimated from its 33 slices in parallel.
+
 - **Slice view scrolls by whole slices**: a slice once started loads completely before the next
   one starts, and the view shows the nearest complete slice until the current one is there, so
   scrolling no longer leaves single tiles of other slices behind.

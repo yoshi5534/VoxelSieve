@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <boost/iostreams/device/mapped_file.hpp>
+#include <chrono>
 #include <cstddef>
 #include <fstream>
 #include <functional>
@@ -51,13 +53,6 @@ Index3 unravel(std::size_t index, const Index3& dims) {
   return {i % dims[0], (i / dims[0]) % dims[1], i / (dims[0] * dims[1])};
 }
 
-// ---------------------------------------------------------------------------------------------
-// Pass 1: histogram and the k-th largest grey value per 8^3 block, k = min_material_voxels.
-// A block holds at least k voxels above the threshold exactly when its k-th largest value is
-// above it, so the threshold may still be chosen after the pass and the result matches the
-// voxel count of the in-memory sieve. Only one value per block is kept (2 bytes); the k largest
-// values live in per-task heaps for one row of blocks.
-
 /// Reports the fraction of `total` steps done through DatasetOptions::progress, at most once per
 /// whole percent, from any thread.
 class ProgressCounter {
@@ -95,6 +90,83 @@ class ProgressCounter {
   std::mutex mutex_;
   int last_percent_ = -1;
 };
+
+// ---------------------------------------------------------------------------------------------
+// Staging: a source with slow random access is copied once, slice by slice, to a raw file. The
+// passes then read small regions in any order from the memory-mapped copy. Without it, pass 2
+// decodes every slice again for each brick it touches whenever the slices of a brick layer do
+// not fit into the source's own cache.
+
+/// A temporary raw copy of a source, removed on destruction.
+class StagedSource {
+ public:
+  StagedSource(const VolumeSource& source, const std::filesystem::path& dir,
+               const DatasetOptions& options) {
+    const Index3 dims = source.dims();
+    const std::uint64_t bytes = product(dims) * sizeof(std::uint16_t);
+    std::filesystem::create_directories(dir);
+    const std::uint64_t available = std::filesystem::space(dir).available;
+    if (available < bytes) {
+      constexpr double kGb = 1024.0 * 1024.0 * 1024.0;
+      throw std::runtime_error(
+          "Staging the input needs " + std::to_string(static_cast<double>(bytes) / kGb) +
+          " GB in " + dir.string() + ", but only " +
+          std::to_string(static_cast<double>(available) / kGb) +
+          " GB are free; choose another staging directory or turn staging off");
+    }
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    path_ = dir / (".voxelsieve-staging-" + std::to_string(stamp) + ".raw");
+    try {
+      {
+        boost::iostreams::mapped_file_params params(path_.string());
+        params.flags = boost::iostreams::mapped_file::readwrite;
+        params.new_file_size = static_cast<boost::iostreams::stream_offset>(bytes);
+        const boost::iostreams::mapped_file file(params);
+        auto* data = reinterpret_cast<std::uint16_t*>(file.data());
+        const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
+        ProgressCounter progress(options, "staging", static_cast<std::size_t>(dims[2]));
+        // One slice per task: each slice is decoded exactly once, all cores in parallel.
+        tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, dims[2], 1), [&](const auto& range) {
+          for (std::int64_t z = range.begin(); z != range.end(); ++z) {
+            source.readRegion(Box{{0, 0, z}, {dims[0], dims[1], z + 1}},
+                              {data + static_cast<std::size_t>(z) * slice_voxels, slice_voxels});
+            progress.step();
+          }
+        });
+      }
+      raw_ = std::make_unique<MappedRawSource>(
+          path_, RawLayout{dims, source.voxelSize(), SampleType::kUInt16, std::endian::native,
+                           std::uint64_t{0}});
+    } catch (...) {
+      remove();
+      throw;
+    }
+  }
+  StagedSource(const StagedSource&) = delete;
+  StagedSource& operator=(const StagedSource&) = delete;
+  StagedSource(StagedSource&&) = delete;
+  StagedSource& operator=(StagedSource&&) = delete;
+  ~StagedSource() { remove(); }
+
+  [[nodiscard]] const VolumeSource& source() const { return *raw_; }
+
+ private:
+  void remove() {
+    raw_.reset();
+    std::error_code ignored;
+    std::filesystem::remove(path_, ignored);
+  }
+
+  std::filesystem::path path_;
+  std::unique_ptr<MappedRawSource> raw_;
+};
+
+// ---------------------------------------------------------------------------------------------
+// Pass 1: histogram and the k-th largest grey value per 8^3 block, k = min_material_voxels.
+// A block holds at least k voxels above the threshold exactly when its k-th largest value is
+// above it, so the threshold may still be chosen after the pass and the result matches the
+// voxel count of the in-memory sieve. Only one value per block is kept (2 bytes); the k largest
+// values live in per-task heaps for one row of blocks.
 
 struct BlockStatistics {
   Histogram histogram;
@@ -270,21 +342,35 @@ openvdb::FloatGrid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& 
 /// Mean of the active children of each voxel, from up to 2x2x2 bricks of the finer level.
 /// Children are loaded one at a time to bound memory.
 openvdb::FloatGrid::Ptr downsample(const std::vector<std::filesystem::path>& children) {
+  using Leaf = openvdb::FloatTree::LeafNodeType;
   auto sum = openvdb::FloatGrid::create(0.0F);
   auto count = openvdb::FloatGrid::create(0.0F);
   auto sum_acc = sum->getAccessor();
   auto count_acc = count->getAccessor();
   for (const auto& path : children) {
     const auto child = readBrick(path, /*delay_load=*/false);
-    for (auto it = child->cbeginValueOn(); it; ++it) {
-      const openvdb::Coord c = it.getCoord();
-      const openvdb::Coord parent(c.x() >> 1, c.y() >> 1, c.z() >> 1);
-      sum_acc.setValue(parent, sum_acc.getValue(parent) + *it);
-      count_acc.setValue(parent, count_acc.getValue(parent) + 1.0F);
+    child->tree().voxelizeActiveTiles();
+    // A leaf of 8^3 voxels falls into one octant of a parent leaf, so each child leaf looks up
+    // its two parent leaves once and then adds voxel by voxel, in the same order as before.
+    for (auto leaf = child->tree().cbeginLeaf(); leaf; ++leaf) {
+      const openvdb::Coord origin = leaf->origin();
+      const openvdb::Coord parent_origin(origin.x() >> 1, origin.y() >> 1, origin.z() >> 1);
+      Leaf* sum_leaf = sum_acc.touchLeaf(parent_origin);
+      Leaf* count_leaf = count_acc.touchLeaf(parent_origin);
+      for (auto it = leaf->cbeginValueOn(); it; ++it) {
+        const openvdb::Coord c = it.getCoord();
+        const openvdb::Index n =
+            Leaf::coordToOffset(openvdb::Coord(c.x() >> 1, c.y() >> 1, c.z() >> 1));
+        sum_leaf->setValueOn(n, sum_leaf->getValue(n) + *it);
+        count_leaf->setValueOn(n, count_leaf->getValue(n) + 1.0F);
+      }
     }
   }
-  for (auto it = sum->beginValueOn(); it; ++it) {
-    it.setValue(*it / count_acc.getValue(it.getCoord()));
+  for (auto leaf = sum->tree().beginLeaf(); leaf; ++leaf) {
+    const Leaf* count_leaf = count_acc.probeConstLeaf(leaf->origin());
+    for (auto it = leaf->beginValueOn(); it; ++it) {
+      it.setValue(*it / count_leaf->getValue(it.pos()));
+    }
   }
   return sum;
 }
@@ -344,7 +430,7 @@ openvdb::FloatGrid::Ptr readBrick(const std::filesystem::path& file, bool delay_
   return grid;
 }
 
-DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path& dir,
+DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path& dir,
                          const DatasetOptions& options) {
   if (options.brick_size <= 0 || options.brick_size % kBlockSize != 0) {
     throw std::invalid_argument("brick_size must be a positive multiple of 8");
@@ -362,14 +448,21 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   openvdb::initialize();
 
   DatasetInfo info;
-  info.dims = source.dims();
-  info.voxel_size = source.voxelSize();
+  info.dims = input.dims();
+  info.voxel_size = input.voxelSize();
   info.voxel_size.validate();
-  info.value_mapping = source.valueMapping();
+  info.value_mapping = input.valueMapping();
   info.brick_size = options.brick_size;
   info.margin_voxels = options.margin_voxels;
   info.min_material_voxels = options.min_material_voxels;
   info.outside_air_axes = options.outside_air_axes;
+
+  std::unique_ptr<StagedSource> staged;
+  if (options.stage_slow_sources && input.slowRandomAccess()) {
+    staged = std::make_unique<StagedSource>(
+        input, options.staging_dir.empty() ? dir : options.staging_dir, options);
+  }
+  const VolumeSource& source = staged ? staged->source() : input;
 
   const BlockStatistics stats =
       collectBlockStatistics(source, options.min_material_voxels, options);

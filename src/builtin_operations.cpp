@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 
 #include "voxelsieve/compare.hpp"
@@ -39,13 +40,22 @@ Json datasetSummary(const DatasetInfo& info) {
   return summary;
 }
 
-/// Forwards the progress of writeDataset as one fraction: pass 1 up to 45 %, pass 2 up to 90 %,
-/// the coarser levels the rest.
+/// Forwards the progress of writeDataset as one fraction: staging a slow source up to 30 %, pass
+/// 1 up to 50 % (from 0 without staging), pass 2 up to 90 %, the coarser levels the rest.
 std::function<void(std::string_view, double)> datasetProgress(const OperationContext& context) {
-  return [&context](std::string_view stage, double fraction) {
-    const double start = stage == "histogram" ? 0.0 : stage == "bricks" ? 0.45 : 0.9;
-    const double width = stage == "levels" ? 0.1 : 0.45;
-    context.progress(start + width * fraction);
+  auto staged = std::make_shared<bool>(false);
+  return [&context, staged](std::string_view stage, double fraction) {
+    if (stage == "staging") {
+      *staged = true;
+      context.progress(0.3 * fraction);
+    } else if (stage == "histogram") {
+      const double start = *staged ? 0.3 : 0.0;
+      context.progress(start + (0.5 - start) * fraction);
+    } else if (stage == "bricks") {
+      context.progress(0.5 + 0.4 * fraction);
+    } else {
+      context.progress(0.9 + 0.1 * fraction);
+    }
   };
 }
 

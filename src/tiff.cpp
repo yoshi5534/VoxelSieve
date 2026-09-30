@@ -1,5 +1,7 @@
 #include "voxelsieve/tiff.hpp"
 
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -442,11 +444,13 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
       // A few slices spread over the stack, first and last included.
       constexpr std::size_t kSampleSlices = 33;
       const std::size_t count = std::min(kSampleSlices, impl.slices.size());
+      std::vector<std::array<double, 2>> ranges(count);
+      tbb::parallel_for(std::size_t{0}, count, [&](std::size_t i) {
+        ranges[i] = impl.floatRange(count == 1 ? 0 : i * (impl.slices.size() - 1) / (count - 1));
+      });
       std::array<double, 2> found{std::numeric_limits<double>::infinity(),
                                   -std::numeric_limits<double>::infinity()};
-      for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t z = count == 1 ? 0 : i * (impl.slices.size() - 1) / (count - 1);
-        const auto range = impl.floatRange(z);
+      for (const auto& range : ranges) {
         found = {std::min(found[0], range[0]), std::max(found[1], range[1])};
       }
       if (!(found[0] <= found[1])) {

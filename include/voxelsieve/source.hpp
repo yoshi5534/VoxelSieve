@@ -52,6 +52,10 @@ class VolumeSource {
   [[nodiscard]] virtual VoxelSize voxelSize() const = 0;
   /// How the grey values of `readRegion` relate to the values of the scan.
   [[nodiscard]] virtual ValueMapping valueMapping() const { return {}; }
+  /// Whether reading small regions in any order costs much more than reading the volume once,
+  /// slice by slice: slices that are stored compressed or decoded as a whole, such as TIFF stacks
+  /// in a ZIP archive. `writeDataset` first copies such a volume to a temporary raw file.
+  [[nodiscard]] virtual bool slowRandomAccess() const { return false; }
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
   /// `out.size()` must equal `box.voxelCount()`.
@@ -132,6 +136,7 @@ class ConcatSource final : public VolumeSource {
   [[nodiscard]] ValueMapping valueMapping() const override {
     return parts_.front()->valueMapping();
   }
+  [[nodiscard]] bool slowRandomAccess() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   [[nodiscard]] int axis() const { return axis_; }

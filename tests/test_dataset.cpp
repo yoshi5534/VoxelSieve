@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -375,6 +376,95 @@ TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
   ASSERT_EQ(info.levels.size(), 1U);
   EXPECT_EQ(readBrick(dir_ / "overview.vdb", false)->activeVoxelCount(),
             static_cast<openvdb::Index64>(info.active_voxel_count));
+}
+
+/// A phantom that claims slow random access, like a TIFF stack, and counts the voxels read.
+class SlowPhantomSource final : public VolumeSource {
+ public:
+  explicit SlowPhantomSource(const PhantomSpec& spec) : phantom_(spec) {}
+  [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return phantom_.dims(); }
+  [[nodiscard]] VoxelSize voxelSize() const override { return phantom_.voxelSize(); }
+  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
+    voxels_read_ += box.voxelCount();
+    phantom_.readRegion(box, out);
+  }
+  [[nodiscard]] std::int64_t voxelsRead() const { return voxels_read_; }
+
+ private:
+  PhantomSource phantom_;
+  mutable std::atomic<std::int64_t> voxels_read_ = 0;
+};
+
+/// Every brick of every level and the overview of two datasets hold the same voxels.
+void expectSameDataset(const std::filesystem::path& a, const std::filesystem::path& b) {
+  const DatasetInfo info_a = readDatasetInfo(a);
+  const DatasetInfo info_b = readDatasetInfo(b);
+  EXPECT_EQ(info_a.active_voxel_count, info_b.active_voxel_count);
+  EXPECT_EQ(info_a.threshold, info_b.threshold);
+  ASSERT_EQ(info_a.levels.size(), info_b.levels.size());
+  for (std::size_t level = 0; level < info_a.levels.size(); ++level) {
+    ASSERT_EQ(info_a.levels[level].bricks, info_b.levels[level].bricks);
+    for (const Index3& brick : info_a.levels[level].bricks) {
+      const auto grid_a = readBrick(brickPath(a, static_cast<int>(level), brick), false);
+      const auto grid_b = readBrick(brickPath(b, static_cast<int>(level), brick), false);
+      ASSERT_EQ(grid_a->activeVoxelCount(), grid_b->activeVoxelCount());
+      const auto accessor = grid_b->getConstAccessor();
+      for (auto it = grid_a->cbeginValueOn(); it; ++it) {
+        ASSERT_TRUE(accessor.isValueOn(it.getCoord())) << it.getCoord();
+        ASSERT_EQ(accessor.getValue(it.getCoord()), *it) << it.getCoord();
+      }
+    }
+  }
+}
+
+TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
+  const PhantomSpec phantom = spec();
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.margin_voxels = 3;
+  std::vector<std::string> stages;
+  options.progress = [&stages](std::string_view stage, double) {
+    if (stages.empty() || stages.back() != stage) {
+      stages.emplace_back(stage);
+    }
+  };
+  const DatasetInfo reference = writeDataset(PhantomSource(phantom), dir_ / "direct", options);
+  EXPECT_EQ(stages, (std::vector<std::string>{"histogram", "bricks", "levels"}));
+
+  // Staged in the output directory: every voxel is read exactly once, and the copy is gone.
+  const SlowPhantomSource slow(phantom);
+  stages.clear();
+  const DatasetInfo staged = writeDataset(slow, dir_ / "staged", options);
+  EXPECT_EQ(stages, (std::vector<std::string>{"staging", "histogram", "bricks", "levels"}));
+  EXPECT_EQ(slow.voxelsRead(), phantom.dims[0] * phantom.dims[1] * phantom.dims[2]);
+  EXPECT_EQ(staged.active_voxel_count, reference.active_voxel_count);
+  expectSameDataset(dir_ / "direct", dir_ / "staged");
+  for (const auto& entry : std::filesystem::directory_iterator(dir_ / "staged")) {
+    EXPECT_NE(entry.path().extension(), ".raw") << entry.path();
+  }
+
+  // Staged elsewhere: that directory is left empty.
+  options.staging_dir = dir_ / "scratch";
+  (void)writeDataset(SlowPhantomSource(phantom), dir_ / "elsewhere", options);
+  expectSameDataset(dir_ / "direct", dir_ / "elsewhere");
+  EXPECT_TRUE(std::filesystem::is_empty(dir_ / "scratch"));
+
+  // Read directly when staging is off.
+  options.stage_slow_sources = false;
+  const SlowPhantomSource unstaged(phantom);
+  (void)writeDataset(unstaged, dir_ / "unstaged", options);
+  EXPECT_GT(unstaged.voxelsRead(), slow.voxelsRead());
+  expectSameDataset(dir_ / "direct", dir_ / "unstaged");
+
+  // Joined parts stage when any part is slow.
+  PhantomSpec half = phantom;
+  half.dims[2] /= 2;
+  std::vector<std::unique_ptr<VolumeSource>> parts;
+  parts.push_back(std::make_unique<PhantomSource>(half));
+  parts.push_back(std::make_unique<SlowPhantomSource>(half));
+  EXPECT_TRUE(ConcatSource(std::move(parts), 2).slowRandomAccess());
+  EXPECT_FALSE(PhantomSource(half).slowRandomAccess());
 }
 
 TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
