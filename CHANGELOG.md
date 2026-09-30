@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **English throughout**: the studio (labels, operation names, hints, 3D view presets), the
+  built-in report template, the report's field names and verdicts, and the example inspection
+  order are now in English; numbers in the report use a decimal point. Projects saved with German
+  step titles show the current English titles. A German report is still possible with an own
+  template (`--template`), except for the few phrases the report data itself carries.
+
 - **Telemetry for every operation** (`telemetry.hpp`, ADR 0017): each step of a project records
   wall time, CPU time and busy cores, peak memory (own and mapped file pages), bytes read and
   written and page faults, per phase, with a timeline sampled every second and hints such as

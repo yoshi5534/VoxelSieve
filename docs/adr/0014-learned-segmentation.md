@@ -35,7 +35,7 @@ not packaged for Ubuntu 24.04 and would be a large dependency for a few convolut
   CPU and leaves slabs out (`--holdout`) for honest scoring. Neither is needed to build or run
   VoxelSieve.
 - **Tools:** `vs-segment --model <file.vsm>` and the studio operation `segment_model`
-  ("Gelernte Segmentierung"); `vs-segment --region` and `scoreMaterials(..., region)` score only
+  ("Learned segmentation"); `vs-segment --region` and `scoreMaterials(..., region)` score only
   a box, such as the held-out part of a scan.
 
 ## Consequences

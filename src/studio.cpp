@@ -434,6 +434,10 @@ Json Studio::status() const {
     const Step& step = project_->steps()[i];
     json["steps"][i]["active"] = i < project_->cursor();
     json["steps"][i]["size_bytes"] = directorySize(project_->stepDir(step));
+    // Older projects stored German titles; show the operation's current one.
+    if (const auto operation = registry_.find(step.operation)) {
+      json["steps"][i]["title"] = operation->info().title;
+    }
   }
   json["open"] = true;
   json["dir"] = project_->dir().string();

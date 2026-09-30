@@ -191,7 +191,7 @@ The housing above (520 × 400 × 220 voxels) gives a 156 kB file, 588 : 1 agains
 volume, and its triangulated surface lies 0.033 voxels (RMS) from the analytic surface.
 `voxelsieve::SurfaceMask` reads codes and distances of single voxels or regions, and converts to a
 VDB level set or a mesh; `--vdb` exports the level set for Blender or Houdini. The studio runs it
-as the operation "Oberfläche" and shows the middle slices of the mask. Format and measurements:
+as the operation "Surface" and shows the middle slices of the mask. Format and measurements:
 `docs/adr/0009-surface-distance-mask.md`.
 
 ![Surface operation in the studio](docs/images/surface-operation.png)
@@ -221,8 +221,8 @@ the part has more material than nominal, negative where material is missing.
   belong to the porosity analysis.
 
 On synthetic castings the fit finds the pose of the CAD model to 0.15 voxels, and it measures a
-0.4 mm dent to 0.02 mm. The studio runs the comparison as the operation "Soll-Ist-Vergleich" and
-shows the coloured surface in the 3D view as "Soll-Ist-Abweichung". Method and decisions:
+0.4 mm dent to 0.02 mm. The studio runs the comparison as the operation "Nominal-actual comparison"
+and shows the coloured surface in the 3D view as "Nominal-actual deviation". Method and decisions:
 `docs/adr/0010-nominal-actual-comparison.md`.
 
 ![Deviation of a warped housing with a dent from its CAD model](docs/images/nominal-actual.png)
@@ -262,12 +262,12 @@ browser):
     --out part.report
 ```
 
-The report is structured after the report contents of DIN EN ISO/IEC 17025 (7.8) and the CT test
-report of DIN EN ISO 15708-3: order, part, method, scan settings, analysis parameters and
+The report is structured after the report contents of ISO/IEC 17025 (7.8) and the CT test
+report of ISO 15708-3: order, part, method, scan settings, analysis parameters and
 detection limits, results with projection images and pore list, evaluation and approval. The
 inspection order (`examples/inspection_order.json`) supplies what the scan cannot know, such as
 the customer, the part number or the tube voltage; missing mandatory fields are marked
-"nicht angegeben" in the report and printed as warnings.
+"not given" in the report and printed as warnings.
 
 Acceptance follows the scheme of BDG P 202: per inspection zone (a box in dataset coordinates, or
 the whole part) optional limits on the largest pore extent, the number of pores above a size, the
@@ -322,7 +322,7 @@ step. Plugins appear next to the built-in operations.
 
 ![Studio with protocol and porosity result](docs/images/studio.png)
 
-The view ("Ansicht") shows slices along x, y or z. It loads only the tiles on screen, from the
+The view shows slices along x, y or z. It loads only the tiles on screen, from the
 resolution level that matches the zoom, so it stays fast on scans of hundreds of GB. Wheel zooms,
 dragging pans, the arrow keys (or Shift and the wheel) step through slices; pores are tinted red
 and loosened zones yellow, and a click on a pore in the list jumps to it.
@@ -330,18 +330,18 @@ and loosened zones yellow, and a click on a pore in the list jumps to it.
 ![Slice view of an 830 MB scan zoomed onto a shrinkage cavity](docs/images/slice-view.png)
 
 The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis) in the browser:
-"Oberfläche" shades the part surface at a threshold dragged in the histogram, "Transferfunktion"
-composites colour and opacity per grey value, and "Maximumprojektion" shows the densest value
+"Surface" shades the part surface at a threshold dragged in the histogram, "Transfer function"
+composites colour and opacity per grey value, and "Maximum intensity projection" shows the densest value
 along each ray. The transfer function is edited on the histogram: click adds a control point,
-drag moves it, double click removes it; each point has its own colour, colour maps (Stahl,
-Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical settings. Pores
+drag moves it, double click removes it; each point has its own colour, colour maps (Steel,
+Viridis, Ember, Copper, Grey) recolour all points, and presets start from typical settings. Pores
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
 part. The background can be a studio light, a gradient or a plain colour. Drag turns the part,
 right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
 camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
 the coarse volume, so the resolution grows where you look.
 
-"Extrahierte Oberfläche" shows only the surface from a run of the operation "Oberfläche", as a
+"Extracted surface" shows only the surface from a run of the operation "Surface", as a
 triangle mesh at full resolution rather than the coarse level. Flat regions get larger triangles,
 and a surface that would exceed the triangle budget (`GET /api/surface?max_triangles=`, default
 1.5 million) is resampled at twice the voxel size until it fits. The cut along x opens it too.
@@ -355,9 +355,9 @@ loosened structure) and further peaks such as inclusions, or else the part as a 
 ![3D view with pores and loosened zones inside the translucent part](docs/images/volume-view.png)
 
 The project remembers how it was shown: stage, slice, zoom and window, camera, transfer function,
-colours and background come back when it is opened again. "Ansicht speichern" keeps the current
+colours and background come back when it is opened again. "Save view" keeps the current
 view under a name with a picture in the project (`views/<id>.png`); a click on it shows it again,
-and "Bild exportieren" downloads the picture. Views are presentation, not processing, so they are
+and "Export image" downloads the picture. Views are presentation, not processing, so they are
 not steps and undo leaves them alone.
 
 ![Saved views above the 3D view](docs/images/saved-views.png)

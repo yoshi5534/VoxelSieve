@@ -25,9 +25,9 @@ TEST(TemplateTest, VariablesAreEscapedUnlessTripleBraced) {
 }
 
 TEST(TemplateTest, DottedNamesAndComments) {
-  const Json data = {{"part", {{"name", "Gehäuse"}, {"serial", {{"no", "7"}}}}}};
+  const Json data = {{"part", {{"name", "Housing"}, {"serial", {{"no", "7"}}}}}};
   EXPECT_EQ(renderTemplate("{{! note }}{{part.name}} {{part.serial.no}} {{part.none.x}}", data),
-            "Gehäuse 7 ");
+            "Housing 7 ");
 }
 
 TEST(TemplateTest, SectionsIterateListsAndSeeOuterNames) {
@@ -202,8 +202,8 @@ TEST_F(ReportTest, ZonesAreReadFromTheOrder) {
 TEST_F(ReportTest, DefaultTemplateRendersReportWithMissingFieldsMarked) {
   analyzeBoxWithLunker();
   const Json order = Json::parse(R"({
-    "part": {"name": "Prüfkörper <1>"},
-    "acceptance": {"zones": [{"name": "Gesamt", "max_pore_size_mm": 0.01}]}})");
+    "part": {"name": "Test piece <1>"},
+    "acceptance": {"zones": [{"name": "Whole part", "max_pore_size_mm": 0.01}]}})");
   const auto zones = inspectionZonesFromJson(order);
   const Evaluation evaluation = evaluate(result_, zones);
   writePorosityImages(*dataset_, result_, dir_ / "out");
@@ -211,16 +211,16 @@ TEST_F(ReportTest, DefaultTemplateRendersReportWithMissingFieldsMarked) {
   std::vector<std::string> warnings;
   const Json data =
       reportData(order, result_, PorosityOptions{}, evaluation, dir_ / "out", &warnings);
-  EXPECT_EQ(data.at("part").at("name"), "Prüfkörper <1>");
-  EXPECT_EQ(data.at("part").at("drawing"), "nicht angegeben");
+  EXPECT_EQ(data.at("part").at("name"), "Test piece <1>");
+  EXPECT_EQ(data.at("part").at("drawing"), "not given");
   EXPECT_EQ(warnings.size(), 19U);  // every mandatory field except the part name
   EXPECT_FALSE(data.at("evaluation").at("passed").get<bool>());
   EXPECT_TRUE(data.at("images").at("z").get<std::string>().starts_with("data:image/png;base64,"));
 
   const std::string html = renderTemplate(defaultReportTemplate(), data);
-  EXPECT_NE(html.find("Prüfbericht"), std::string::npos);
-  EXPECT_NE(html.find("Prüfkörper &lt;1&gt;"), std::string::npos);
-  EXPECT_NE(html.find("Die Anforderungen sind nicht erfüllt."), std::string::npos);
+  EXPECT_NE(html.find("Test report"), std::string::npos);
+  EXPECT_NE(html.find("Test piece &lt;1&gt;"), std::string::npos);
+  EXPECT_NE(html.find("The requirements are not met."), std::string::npos);
   EXPECT_EQ(html.find("{{"), std::string::npos);
 }
 
@@ -234,8 +234,8 @@ TEST_F(ReportTest, ShowsPartViewsAndTheNominalActualComparison) {
 
   Json data = reportData(Json::object(), result_, PorosityOptions{}, Evaluation{}, dir_);
   const std::string without = renderTemplate(defaultReportTemplate(), data);
-  EXPECT_EQ(without.find("Soll-Ist-Vergleich"), std::string::npos);
-  EXPECT_NE(without.find("7 Bewertung"), std::string::npos);
+  EXPECT_EQ(without.find("Nominal-actual comparison"), std::string::npos);
+  EXPECT_NE(without.find("7 Assessment"), std::string::npos);
 
   addPartImages(data, mask, result_);
   addComparison(data, dir_ / "comparison", "box.stl");
@@ -249,12 +249,12 @@ TEST_F(ReportTest, ShowsPartViewsAndTheNominalActualComparison) {
   EXPECT_NE(histogram.find("<rect"), std::string::npos);
   const Json& comparison = data.at("comparison");
   EXPECT_EQ(comparison.at("cad"), "box.stl");
-  EXPECT_EQ(comparison.at("tolerance"), "± 0,100 mm");
+  EXPECT_EQ(comparison.at("tolerance"), "± 0.100 mm");
   EXPECT_TRUE(comparison.at("within").get<std::string>().ends_with(" %"));
 
   const std::string html = renderTemplate(defaultReportTemplate(), data);
-  EXPECT_NE(html.find("7 Soll-Ist-Vergleich"), std::string::npos);
-  EXPECT_NE(html.find("8 Bewertung"), std::string::npos);
+  EXPECT_NE(html.find("7 Nominal-actual comparison"), std::string::npos);
+  EXPECT_NE(html.find("8 Assessment"), std::string::npos);
   EXPECT_NE(html.find("box.stl"), std::string::npos);
   EXPECT_NE(html.find(images.at("pores").get<std::string>()), std::string::npos);
   EXPECT_EQ(html.find("{{"), std::string::npos);
