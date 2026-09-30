@@ -21,7 +21,8 @@ converted copy on disk, and without changing a grey value (ADR 0002).
 - classic TIFF and BigTIFF, little and big endian, strips and tiles;
 - no compression, LZW, Deflate and PackBits, with or without horizontal predictor (2);
 - one sample per pixel, unsigned 8 or 16 bit, and 32 bit when every value fits into 16 bit, so
-  that label volumes work. Float, signed and colour images are refused rather than quantised.
+  that label volumes work. Signed and colour images are refused rather than quantised; float
+  images are mapped onto 16 bit explicitly and with a recorded mapping since ADR 0015.
 
 Slices are sorted by name with digit runs compared by value. When several folders hold TIFF files,
 the one chosen is the one not named like labels or masks (`label*`, `mask*`, `seg*`, `gt`,

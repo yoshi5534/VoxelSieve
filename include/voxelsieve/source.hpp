@@ -24,6 +24,19 @@ struct Box {
   [[nodiscard]] std::int64_t voxelCount() const { return size(0) * size(1) * size(2); }
 };
 
+/// Linear map from the stored 16-bit grey values to the values of the scan, for scans whose values
+/// are not 16-bit integers, such as float reconstructions (ADR 0015): value = offset + scale *
+/// grey. The identity for integer scans.
+struct ValueMapping {
+  double offset = 0.0;
+  double scale = 1.0;
+
+  [[nodiscard]] bool isIdentity() const { return offset == 0.0 && scale == 1.0; }
+  [[nodiscard]] double toValue(double grey) const { return offset + scale * grey; }
+  [[nodiscard]] double toGrey(double value) const { return (value - offset) / scale; }
+  bool operator==(const ValueMapping&) const = default;
+};
+
 /// Read access to a volume that may be much larger than memory. Implementations must allow
 /// concurrent calls to `readRegion` from several threads.
 class VolumeSource {
@@ -37,6 +50,8 @@ class VolumeSource {
 
   [[nodiscard]] virtual std::array<std::int64_t, 3> dims() const = 0;
   [[nodiscard]] virtual VoxelSize voxelSize() const = 0;
+  /// How the grey values of `readRegion` relate to the values of the scan.
+  [[nodiscard]] virtual ValueMapping valueMapping() const { return {}; }
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
   /// `out.size()` must equal `box.voxelCount()`.
@@ -107,13 +122,16 @@ class PhantomSource final : public VolumeSource {
 
 /// Several volumes placed one after another along `axis`, read as one volume. This joins scans
 /// that were reconstructed in parts, such as the sub-volumes of a long object. The other two
-/// dimensions and the voxel size of all parts must be equal.
+/// dimensions, the voxel size and the value mapping of all parts must be equal.
 class ConcatSource final : public VolumeSource {
  public:
   ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int axis);
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return dims_; }
   [[nodiscard]] VoxelSize voxelSize() const override { return parts_.front()->voxelSize(); }
+  [[nodiscard]] ValueMapping valueMapping() const override {
+    return parts_.front()->valueMapping();
+  }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   [[nodiscard]] int axis() const { return axis_; }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 #include "voxelsieve/phantom.hpp"
@@ -105,6 +106,49 @@ TEST(Sieve, RemovesCavityThatIsOpenToTheOutside) {
   EXPECT_TRUE(accessor.isValueOn(coord(10, 24, 24)));   // wall
   EXPECT_FALSE(accessor.isValueOn(coord(24, 24, 40)));  // open interior, far from the walls
   EXPECT_FALSE(accessor.isValueOn(coord(2, 2, 2)));     // outside
+}
+
+/// Square pipe along z through the whole volume, walls 4 voxels thick: the first and last slice
+/// cut through it, so its inside is open towards them.
+Volume16 pipeVolume() {
+  constexpr std::int64_t kN = 48;
+  Volume16 volume({kN, kN, kN}, 0.1);
+  for (std::int64_t z = 0; z < kN; ++z) {
+    for (std::int64_t y = 0; y < kN; ++y) {
+      for (std::int64_t x = 0; x < kN; ++x) {
+        const bool in_outer = x >= 8 && x < 40 && y >= 8 && y < 40;
+        const bool in_inner = x >= 12 && x < 36 && y >= 12 && y < 36;
+        volume.at(x, y, z) = (in_outer && !in_inner) ? 20000 : 1000;
+      }
+    }
+  }
+  return volume;
+}
+
+TEST(Sieve, KeepsTheInsideOfAPipeWhenAirEntersOnlyFromTheSides) {
+  const Volume16 volume = pipeVolume();
+  SieveOptions options;
+  options.margin_voxels = 2;
+  const SieveResult all = sieve(volume, options);
+  const auto everywhere = all.grid->getConstAccessor();
+  EXPECT_FALSE(everywhere.isValueOn(coord(24, 24, 24)));  // reached through the end slices
+
+  options.outside_air_axes = parseAirAxes("xy");
+  const SieveResult from_sides = sieve(volume, options);
+  const auto sides = from_sides.grid->getConstAccessor();
+  EXPECT_TRUE(sides.isValueOn(coord(24, 24, 24)));  // the inside stays
+  EXPECT_TRUE(sides.isValueOn(coord(24, 24, 0)));
+  EXPECT_TRUE(sides.isValueOn(coord(10, 24, 24)));  // wall
+  EXPECT_FALSE(sides.isValueOn(coord(2, 2, 24)));   // outside the pipe
+  EXPECT_FALSE(sides.isValueOn(coord(2, 2, 0)));    // also in the end slices
+}
+
+TEST(Sieve, ParsesAirAxes) {
+  EXPECT_EQ(parseAirAxes("xy"), (AirAxes{true, true, false}));
+  EXPECT_EQ(parseAirAxes("zx"), (AirAxes{true, false, true}));
+  EXPECT_EQ(airAxesName(parseAirAxes("zyx")), "xyz");
+  EXPECT_THROW((void)parseAirAxes(""), std::invalid_argument);
+  EXPECT_THROW((void)parseAirAxes("xw"), std::invalid_argument);
 }
 
 TEST(Sieve, SolidVolumeWithoutAirKeepsEverything) {

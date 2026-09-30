@@ -10,8 +10,10 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
+#include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
@@ -36,6 +38,12 @@ struct DatasetOptions {
   /// A block counts as material once it holds at least this many voxels above the threshold,
   /// 1 to 512. Values above 1 keep isolated noise spikes in the air from counting as material.
   int min_material_voxels = 1;
+  /// Where outside air enters (see SieveOptions::outside_air_axes).
+  AirAxes outside_air_axes = kAllAxes;
+  /// Called as the sieve advances, with the stage ("histogram": pass 1 over the input,
+  /// "bricks": pass 2, "levels": the coarser levels) and the fraction of that stage done, 0 to 1.
+  /// Called from one thread at a time, at most once per whole percent of a stage.
+  std::function<void(std::string_view stage, double fraction)> progress;
 };
 
 struct LevelInfo {
@@ -53,7 +61,10 @@ struct DatasetInfo {
   float air_level = 0.0F;
   int margin_voxels = 0;
   int min_material_voxels = 1;
+  AirAxes outside_air_axes = kAllAxes;
   std::int64_t active_voxel_count = 0;
+  /// How the grey values relate to the values of the scan (float scans, ADR 0015).
+  ValueMapping value_mapping;
   std::vector<LevelInfo> levels;
 };
 

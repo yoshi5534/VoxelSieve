@@ -97,6 +97,7 @@ class SliceViewer {
     this.tiles.clear();
     this.failed.clear();
     this.queue = [];
+    this.frame = null;
   }
 
   attach(canvas) {
@@ -242,8 +243,8 @@ class SliceViewer {
     return undefined;
   }
 
-  key(level, tu, tv) {
-    return this.slot(level, tu, tv) + '@' + (this.index[this.axis] >> level);
+  key(level, tu, tv, index = this.index[this.axis]) {
+    return this.slot(level, tu, tv) + '@' + (index >> level);
   }
 
   /// A tile position independent of the slice.
@@ -260,6 +261,24 @@ class SliceViewer {
     for (const tile of this.tiles.values()) {
       if (tile.slot !== slot) continue;
       if (!best || Math.abs(tile.slice - slice) < Math.abs(best.slice - slice)) best = tile;
+    }
+    return best;
+  }
+
+  /// The slice (of the level) to show: the current one when all its visible tiles are there,
+  /// otherwise the complete one nearest to it, or undefined when there is none.
+  shownSlice(level, visible) {
+    const slots = visible.map(([tu, tv]) => this.slot(level, tu, tv));
+    if (!slots.length) return undefined;
+    const complete = (slice) => slots.every((slot) =>
+      this.tiles.has(slot + '@' + slice) || this.failed.has(slot + '@' + slice));
+    const current = this.index[this.axis] >> level;
+    if (complete(current)) return current;
+    let best;
+    for (const tile of this.tiles.values()) {
+      if (tile.slot !== slots[0] || tile.slice === best) continue;
+      if (best !== undefined && Math.abs(tile.slice - current) >= Math.abs(best - current)) continue;
+      if (complete(tile.slice)) best = tile.slice;
     }
     return best;
   }
@@ -316,13 +335,19 @@ class SliceViewer {
     context.imageSmoothingEnabled = false;
 
     const level = this.level();
-    // Coarser tiles first as placeholders, then the wanted level on top. Until a tile of the
-    // wanted slice arrives, the one of the nearest cached slice stands in for it: scrolling
-    // through the slices then shows the previous picture instead of a black flash per step.
+    const visible = this.visibleTiles(level);
+    // Coarser tiles first as placeholders, then the wanted level on top. Until every visible tile
+    // of the current slice is there, the nearest slice that is complete stands in for it, so
+    // scrolling shows whole slices instead of a black flash per step or a mix of tiles from
+    // different slices. Without a complete slice, each tile takes its nearest one.
+    const shown = this.shownSlice(level, visible);
     for (let l = Math.min(level + 3, this.maxLevel()); l >= level; l -= 1) {
-      for (const [tu, tv, x, y, w, h] of this.visibleTiles(l)) {
-        const tile = this.tiles.get(this.key(l, tu, tv)) ??
-          (l === level ? this.nearestTile(l, tu, tv) : undefined);
+      for (const [tu, tv, x, y, w, h] of l === level ? visible : this.visibleTiles(l)) {
+        let tile = this.tiles.get(this.key(l, tu, tv));
+        if (l === level && !tile) {
+          tile = shown === undefined ? this.nearestTile(l, tu, tv)
+            : this.tiles.get(this.slot(l, tu, tv) + '@' + shown);
+        }
         if (!tile) continue;
         tile.used = performance.now();
         context.drawImage(this.renderTile(tile), x, y, w, h);
@@ -335,41 +360,46 @@ class SliceViewer {
     context.strokeRect((0 - this.center[0]) * this.zoom * su + width / 2,
       (0 - this.center[1]) * this.zoom * sv + height / 2, du * this.zoom * su, dv * this.zoom * sv);
 
-    this.queue = this.visibleTiles(level)
-      .filter(([tu, tv]) => {
-        const key = this.key(level, tu, tv);
-        return !this.tiles.has(key) && !this.loading.has(key) && !this.failed.has(key);
-      })
-      .map(([tu, tv, x, y, w, h]) => ({ level, tu, tv,
+    // Tiles load slice by slice: a slice once started loads completely before the next one
+    // starts, at the slice current by then. Scrolling thus updates whole slices and skips those
+    // scrolled past, instead of starting every slice and finishing none.
+    const frameContext = this.slot(level, 0, 0);
+    const missing = (index) => visible.filter(([tu, tv]) => {
+      const key = this.key(level, tu, tv, index);
+      return !this.tiles.has(key) && !this.failed.has(key);
+    });
+    if (!this.frame || this.frame.context !== frameContext || !missing(this.frame.index).length) {
+      this.frame = { context: frameContext, index: this.index[this.axis] };
+    }
+    const index = this.frame.index;
+    this.queue = missing(index)
+      .filter(([tu, tv]) => !this.loading.has(this.key(level, tu, tv, index)))
+      .map(([tu, tv, x, y, w, h]) => ({ level, tu, tv, index,
         distance: Math.hypot(x + w / 2 - width / 2, y + h / 2 - height / 2) }))
       .sort((a, b) => a.distance - b.distance);
-    this.pump();
+    this.pump(new Set(visible.map(([tu, tv]) => this.key(level, tu, tv, index))));
   }
 
-  pump() {
-    if (this.queue.length && this.active >= MAX_REQUESTS) {
-      // Requests for slices scrolled past would delay the current one; give their places up.
-      const wanted = new Set(this.visibleTiles(this.level()).map(([tu, tv]) =>
-        this.key(this.level(), tu, tv)));
-      for (const [key, controller] of this.loading) {
-        if (!wanted.has(key)) controller.abort();
-      }
+  /// Starts queued requests; those not in `wanted` (after a zoom or pan) give their places up.
+  pump(wanted) {
+    for (const [key, controller] of this.loading) {
+      if (!wanted.has(key)) controller.abort();
     }
     while (this.active < MAX_REQUESTS && this.queue.length) {
-      const { level, tu, tv } = this.queue.shift();
-      this.fetchTile(level, tu, tv);
+      const { level, tu, tv, index } = this.queue.shift();
+      this.fetchTile(level, tu, tv, index);
     }
   }
 
-  async fetchTile(level, tu, tv) {
-    const key = this.key(level, tu, tv);
+  async fetchTile(level, tu, tv, index) {
+    const key = this.key(level, tu, tv, index);
     const slot = this.slot(level, tu, tv);
-    const slice = this.index[this.axis] >> level;
+    const slice = index >> level;
     const controller = new AbortController();
     this.loading.set(key, controller);
     this.active += 1;
     const params = new URLSearchParams({
-      step: this.step, axis: this.axis, index: this.index[this.axis], level,
+      step: this.step, axis: this.axis, index, level,
       u: tu * TILE, v: tv * TILE, size: TILE,
     });
     if (this.porosity !== null) params.set('porosity', this.porosity);

@@ -44,7 +44,9 @@ struct BlockGrid {
   return (a + b - 1) / b;
 }
 
-/// Marks air blocks that are face-connected to the volume boundary as outside air.
-void floodFillOutsideAir(BlockGrid& blocks);
+/// Marks air blocks that are face-connected to the volume boundary as outside air. Outside air
+/// enters only through the two boundary faces of each axis in `open_axes` (x, y, z).
+void floodFillOutsideAir(BlockGrid& blocks,
+                         const std::array<bool, 3>& open_axes = {true, true, true});
 
 }  // namespace voxelsieve::detail

@@ -1,5 +1,7 @@
 // Simple 3D view of VoxelSieve Studio (ADR 0008): ray casting of a coarse level of the dataset
-// (at most 256 voxels per axis) in WebGL2. "Oberfläche" shades the part surface at a threshold,
+// (at most 256 voxels per axis) in WebGL2. When the camera comes close, the part of the volume in
+// front of it is loaded again at a finer level and drawn from that detail texture wherever it
+// covers the ray, fading in at its border. "Oberfläche" shades the part surface at a threshold,
 // "Transferfunktion" composites colour and opacity per grey value (transfer.js) and
 // "Maximumprojektion" shows the densest value along each ray. Pores and zones of a porosity
 // analysis are drawn in their own colours. A cut along x opens the part. "Extrahierte Oberfläche"
@@ -92,6 +94,12 @@ out vec4 color;
 uniform sampler3D grey;
 uniform sampler3D overlay;
 uniform sampler2D transfer; // 256 x 1 RGBA: colour and opacity per grey value
+uniform sampler3D detailGrey;    // a finer level of the part near the camera
+uniform sampler3D detailOverlay;
+uniform bool hasDetail;
+uniform vec3 detailMin;          // the detail region in texture coordinates of the volume
+uniform vec3 detailMax;
+uniform vec3 detailVoxel;        // one voxel in texture coordinates of the detail
 uniform vec3 eye;
 uniform vec3 right;
 uniform vec3 up;
@@ -127,16 +135,62 @@ bool hitBox(vec3 origin, vec3 direction, out float near, out float far) {
   return far > max(near, 0.0);
 }
 
-vec3 gradientAt(vec3 t) {
+bool inDetail(vec3 t) {
+  return hasDetail && all(greaterThanEqual(t, detailMin)) && all(lessThanEqual(t, detailMax));
+}
+
+// Texture coordinates of the detail for volume texture coordinates t.
+vec3 detailAt(vec3 t) {
+  return (t - detailMin) / (detailMax - detailMin);
+}
+
+// Share of the detail at t: it fades in over the outer voxels of the detail, so its border does
+// not show as a step.
+float detailWeight(vec3 t) {
+  if (!inDetail(t)) return 0.0;
+  vec3 d = detailAt(t);
+  vec3 edge = min(d, 1.0 - d) / detailVoxel;
+  return clamp(min(min(edge.x, edge.y), edge.z) / 4.0, 0.0, 1.0);
+}
+
+float greyAt(vec3 t) {
+  float w = detailWeight(t);
+  float coarse = w < 1.0 ? texture(grey, t).r : 0.0;
+  float fine = w > 0.0 ? texture(detailGrey, detailAt(t)).r : 0.0;
+  return mix(coarse, fine, w);
+}
+
+// Differences of the grey values one voxel apart.
+vec3 coarseGradient(vec3 t) {
   return vec3(
     texture(grey, t + vec3(voxel.x, 0, 0)).r - texture(grey, t - vec3(voxel.x, 0, 0)).r,
     texture(grey, t + vec3(0, voxel.y, 0)).r - texture(grey, t - vec3(0, voxel.y, 0)).r,
     texture(grey, t + vec3(0, 0, voxel.z)).r - texture(grey, t - vec3(0, 0, voxel.z)).r);
 }
 
+vec3 detailGradient(vec3 t) {
+  vec3 d = detailAt(t);
+  vec3 v = detailVoxel;
+  return vec3(
+    texture(detailGrey, d + vec3(v.x, 0, 0)).r - texture(detailGrey, d - vec3(v.x, 0, 0)).r,
+    texture(detailGrey, d + vec3(0, v.y, 0)).r - texture(detailGrey, d - vec3(0, v.y, 0)).r,
+    texture(detailGrey, d + vec3(0, 0, v.z)).r - texture(detailGrey, d - vec3(0, 0, v.z)).r);
+}
+
+vec3 gradientAt(vec3 t) {
+  float w = detailWeight(t);
+  if (w <= 0.0) return coarseGradient(t);
+  if (w >= 1.0) return detailGradient(t);
+  return mix(coarseGradient(t), detailGradient(t), w);
+}
+
 vec3 normalAt(vec3 t) {
   // Per voxel to per world unit, so voxels that are not cubes shade right.
-  vec3 g = gradientAt(t) / (box * voxel);
+  float w = detailWeight(t);
+  vec3 g = w < 1.0 ? coarseGradient(t) / (box * voxel) : vec3(0.0);
+  if (w > 0.0) {
+    g = mix(g, detailGradient(t) / (box * (detailMax - detailMin) * detailVoxel), w);
+  }
   return length(g) > 1e-5 ? -normalize(g) : vec3(0.0);
 }
 
@@ -149,7 +203,8 @@ vec3 shade(vec3 base, vec3 normal, vec3 direction) {
 }
 
 int classAt(vec3 t) {
-  return int(texture(overlay, t).r * 255.0 + 0.5);
+  float value = detailWeight(t) > 0.5 ? texture(detailOverlay, detailAt(t)).r : texture(overlay, t).r;
+  return int(value * 255.0 + 0.5);
 }
 
 // Opacity of one step of the given length for an opacity per reference length.
@@ -183,7 +238,12 @@ void main() {
     return;
   }
   near = max(near, 0.0);
-  float stepSize = min(min(voxel.x * box.x, voxel.y * box.y), voxel.z * box.z) * 1.2;
+  // Steps of about 0.6 voxels, of the detail where the ray is in it.
+  vec3 coarseVoxel = voxel * box;
+  vec3 fineVoxel = box * (detailMax - detailMin) * detailVoxel;
+  float coarseStep = min(min(coarseVoxel.x, coarseVoxel.y), coarseVoxel.z) * 1.2;
+  float fineStep = hasDetail ? min(min(fineVoxel.x, fineVoxel.y), fineVoxel.z) * 1.2 : coarseStep;
+  float stepSize = inDetail((eye + direction * near) / (2.0 * box) + 0.5) ? fineStep : coarseStep;
   // A per-pixel offset of the first sample turns the rings of regular sampling into fine noise.
   near += stepSize * fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   vec3 accumulated = vec3(0.0);
@@ -194,12 +254,13 @@ void main() {
   for (float t = near; t < far; t += stepSize) {
     vec3 p = eye + direction * t;
     vec3 tex = p / (2.0 * box) + 0.5;
+    stepSize = inDetail(tex) ? fineStep : coarseStep;
     if (tex.x > cut) {
       entered = false;
       continue;
     }
     int kind = classAt(tex);
-    float value = texture(grey, tex).r;
+    float value = greyAt(tex);
     if (mode == 0) {
       if (pores && kind == 1) {
         color = vec4(shade(poreColor, normalAt(tex), direction), 1.0);
@@ -267,6 +328,12 @@ class VolumeViewer {
     this.yaw = 0.8;
     this.pitch = 0.45;
     this.distance = 2.2;
+    this.target = [0, 0, 0];  // the point the camera orbits, moved by panning
+    this.detail = null;       // finer level of the part near the camera, see updateDetail
+    this.detailWanted = null; // key of the region requested last
+    this.detailPending = null; // the region on its way
+    this.detailTimer = null;
+    this.onDetail = () => {}; // the detail changed
     this.canvas = null;
     this.gl = null;
     this.pending = false;
@@ -280,14 +347,14 @@ class VolumeViewer {
       key: this.volume?.key ?? null,
       mode: this.mode, shading: this.shading, pores: this.pores, cut: this.cut,
       threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
-      surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
+      target: this.target, surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
       background: this.background,
     };
   }
 
   setState(saved) {
     const keys = ['mode', 'shading', 'pores', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
-      'surfaceColor', 'poreColor', 'zoneColor', 'background'];
+      'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background'];
     for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
     this.requestDraw();
   }
@@ -321,6 +388,7 @@ class VolumeViewer {
   async load(step, porosity) {
     const key = step + '/' + (porosity ?? '-');
     if (this.volume?.key === key) return;
+    this.source = { step, porosity };
     const params = new URLSearchParams({ step, max: 256 });
     if (porosity !== null) params.set('porosity', porosity);
     const response = await fetch('api/volume?' + params);
@@ -337,6 +405,10 @@ class VolumeViewer {
       grey: buffer.subarray(0, count),
       overlay: buffer.subarray(count, 2 * count),
     };
+    this.detail = null;
+    this.detailWanted = null;
+    this.detailPending = null;
+    this.detailUploaded = false;
     this.histogram = new Array(256).fill(0);
     for (let i = 0; i < count; i += 1) this.histogram[this.volume.grey[i]] += 1;
     // Default threshold halfway between air and material.
@@ -364,20 +436,37 @@ class VolumeViewer {
     // A new canvas has a new context; textures of the old one are gone with it.
     this.uploaded = false;
     this.textures = null;
+    this.detailUploaded = false;
+    this.detailTextures = null;
     this.transferUploaded = false;
     this.transferTexture = null;
     this.program = this.createProgram();
     this.meshProgram = this.createMeshProgram();
     this.meshBuffers = null;
     let drag = null;
+    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     canvas.addEventListener('pointerdown', (event) => {
-      drag = { x: event.clientX, y: event.clientY, yaw: this.yaw, pitch: this.pitch };
+      // Left drag turns; right drag or shift drag moves the point the camera looks at.
+      drag = {
+        x: event.clientX, y: event.clientY, yaw: this.yaw, pitch: this.pitch,
+        target: [...this.target], pan: event.button === 2 || event.shiftKey,
+      };
       canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', (event) => {
       if (!drag) return;
-      this.yaw = drag.yaw - (event.clientX - drag.x) * 0.01;
-      this.pitch = Math.min(Math.max(drag.pitch + (event.clientY - drag.y) * 0.01, -1.5), 1.5);
+      const dx = event.clientX - drag.x;
+      const dy = event.clientY - drag.y;
+      if (drag.pan) {
+        const { right, up } = this.camera();
+        // The picture moves with the pointer: one canvas height spans 0.7 distance units.
+        const scale = 0.7 * this.distance / Math.max(canvas.clientHeight, 1);
+        this.target = drag.target.map((c, i) =>
+          Math.min(Math.max(c - (right[i] * dx - up[i] * dy) * scale, -0.6), 0.6));
+      } else {
+        this.yaw = drag.yaw - dx * 0.01;
+        this.pitch = Math.min(Math.max(drag.pitch + dy * 0.01, -1.5), 1.5);
+      }
       this.requestDraw();
     });
     canvas.addEventListener('pointerup', () => {
@@ -386,7 +475,7 @@ class VolumeViewer {
     });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
-      this.distance = Math.min(Math.max(this.distance * Math.exp(event.deltaY * 0.001), 0.6), 8);
+      this.distance = Math.min(Math.max(this.distance * Math.exp(event.deltaY * 0.001), 0.05), 8);
       this.requestDraw();
       this.onInteract();
     }, { passive: false });
@@ -535,6 +624,176 @@ class VolumeViewer {
     gl.disable(gl.DEPTH_TEST);
   }
 
+  /// Eye position and view axes of the camera, orbiting `target` with z up.
+  camera() {
+    const offset = [
+      this.distance * Math.cos(this.pitch) * Math.cos(this.yaw),
+      this.distance * Math.cos(this.pitch) * Math.sin(this.yaw),
+      this.distance * Math.sin(this.pitch),
+    ];
+    const eye = offset.map((c, i) => c + this.target[i]);
+    const forward = normalize(offset.map((c) => -c));
+    const right = normalize(cross(forward, [0, 0, 1]));
+    const up = cross(right, forward);
+    return { eye, forward, right, up };
+  }
+
+  /// Half extent of the volume box in world units, the largest axis 0.5.
+  boxHalf() {
+    const sizes = this.volume.dims.map((d, a) => d * this.volume.voxelSize[a]);
+    const largest = Math.max(...sizes);
+    return sizes.map((s) => s / largest / 2);
+  }
+
+  /// Whether the coarse voxel with this grey value and overlay class shows in the current mode.
+  visible(grey, kind) {
+    if (this.pores && kind === 1) return true;
+    if (this.mode === 1) return (this.transfer?.[grey * 4 + 3] ?? 0) > 8;
+    return grey >= this.threshold * 255;
+  }
+
+  /// The level-0 voxels the camera sees nearest: rays through a grid over the picture are
+  /// marched through the coarse volume to the first voxel that shows. The level is as fine as a
+  /// pixel at the nearest hit needs, and coarse enough that the hits up to half again as far fit
+  /// the voxel budget. Null when that needs no finer level than the coarse volume. `seen` is the
+  /// part around those hits, `region` the part to load: grown to the budget of the level, so the
+  /// border of the detail stays out of the picture where it can.
+  detailRegion() {
+    const { eye, forward, right, up } = this.camera();
+    const box = this.boxHalf();
+    const { dims, grey, overlay } = this.volume;
+    const aspect = this.canvas.clientWidth / Math.max(this.canvas.clientHeight, 1);
+    // One coarse voxel along the ray, in world units.
+    const step = Math.min(...box.map((b, k) => 2 * b / dims[k]));
+    const hits = [];
+    for (let j = 0; j <= 8; j += 1) {
+      for (let i = 0; i <= 8; i += 1) {
+        const d = normalize(forward.map((f, k) =>
+          f + (i / 4 - 1) * aspect * 0.35 * right[k] + (j / 4 - 1) * 0.35 * up[k]));
+        let near = 0;
+        let far = Infinity;
+        for (let k = 0; k < 3; k += 1) {
+          const t0 = (-box[k] - eye[k]) / d[k];
+          const t1 = (box[k] - eye[k]) / d[k];
+          near = Math.max(near, Math.min(t0, t1));
+          far = Math.min(far, Math.max(t0, t1));
+        }
+        for (let t = near; t < far; t += step) {
+          const tex = eye.map((e, k) => (e + d[k] * t) / (2 * box[k]) + 0.5);
+          if (tex[0] > this.cut) continue;
+          const v = tex.map((c, k) => Math.min(Math.max(Math.floor(c * dims[k]), 0), dims[k] - 1));
+          const index = v[0] + dims[0] * (v[1] + dims[1] * v[2]);
+          if (this.visible(grey[index], overlay[index])) {
+            hits.push({ t, d, near, far });
+            break;
+          }
+        }
+      }
+    }
+    if (!hits.length) return null;
+    const nearest = Math.min(...hits.map((h) => h.t));
+    // World to level-0 voxels: the texture spans the preview dims times 2^level.
+    const scale = 2 ** this.volume.level;
+    const extent = dims.map((n) => n * scale);
+    const toVoxel = (p, k) => (p / (2 * box[k]) + 0.5) * extent[k];
+    // What the nearest hits show: from just in front of them a little into the part.
+    const seen = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+    for (const h of hits.filter((hit) => hit.t <= 1.5 * nearest)) {
+      for (const t of [Math.max(h.near, h.t - 2 * step), Math.min(h.far, h.t + 0.2 * h.t)]) {
+        for (let k = 0; k < 3; k += 1) {
+          const v = toVoxel(eye[k] + h.d[k] * t, k);
+          seen[2 * k] = Math.min(seen[2 * k], Math.max(0, Math.floor(v)));
+          seen[2 * k + 1] = Math.max(seen[2 * k + 1], Math.min(extent[k], Math.ceil(v)));
+        }
+      }
+    }
+    if ([0, 1, 2].some((k) => seen[2 * k + 1] <= seen[2 * k])) return null;
+    // The level a pixel at the nearest hit needs: the picture is 0.7 distance units high.
+    const pixel = 0.7 * nearest / Math.max(this.canvas.height, 1);
+    const voxel = Math.min(...box.map((b, k) => 2 * b / extent[k]));
+    let level = Math.max(0, Math.floor(Math.log2(pixel / voxel)));
+    // The level the server reads for the seen part: the finest at which the voxels covering it
+    // are at most the budget per axis (readVolumePreview).
+    const budget = 256;
+    const fits = (r, l) => [0, 1, 2].every((k) =>
+      ((r[2 * k + 1] - 1) >> l) - (r[2 * k] >> l) + 1 <= budget);
+    while (!fits(seen, level)) level += 1;
+    if (level >= this.volume.level) return null;
+    // Grow the region around what is seen to the budget of that level, inside the volume.
+    const region = [];
+    for (let k = 0; k < 3; k += 1) {
+      const size = Math.min((budget - 1) << level, extent[k]);
+      const centre = (seen[2 * k] + seen[2 * k + 1]) / 2;
+      const a = Math.max(0, Math.min(Math.round(centre - size / 2), extent[k] - size));
+      region.push(a, a + size);
+    }
+    return { seen, region, level };
+  }
+
+  /// Loads the part near the camera at a finer level, once the camera has rested for a moment.
+  scheduleDetail() {
+    clearTimeout(this.detailTimer);
+    this.detailTimer = setTimeout(() => this.updateDetail().catch(() => {}), 350);
+  }
+
+  async updateDetail() {
+    if (!this.volume || !this.canvas || this.mode >= 3) return;
+    const wanted = this.detailRegion();
+    const key = wanted ? this.volume.key + ':' + wanted.region.join(',') : null;
+    if (key === this.detailWanted) return;
+    // A detail that already covers what is seen at the level wanted, loaded or on its way, stays.
+    const covers = (d) => d && d.key.startsWith(this.volume.key + ':') && d.level === wanted.level &&
+      [0, 1, 2].every((k) => d.min[k] <= wanted.seen[2 * k] && d.max[k] >= wanted.seen[2 * k + 1]);
+    if (wanted && (covers(this.detail) || covers(this.detailPending))) return;
+    this.detailWanted = key;
+    this.detailPending = wanted && {
+      key, level: wanted.level,
+      min: [0, 2, 4].map((i) => wanted.region[i]),
+      max: [1, 3, 5].map((i) => wanted.region[i]),
+    };
+    if (!wanted) {
+      this.detail = null;
+      this.requestDraw();
+      this.onDetail(null);
+      return;
+    }
+    const [x0, x1, y0, y1, z0, z1] = wanted.region;
+    const params = new URLSearchParams({
+      step: this.source.step, max: 256, x0, y0, z0, x1, y1, z1,
+      low: Math.round(this.volume.window[0]), high: Math.round(this.volume.window[1]),
+    });
+    if (this.source.porosity !== null) params.set('porosity', this.source.porosity);
+    // Only the latest region matters; a request for an earlier one stops.
+    this.detailAbort?.abort();
+    this.detailAbort = new AbortController();
+    let response;
+    try {
+      response = await fetch('api/volume?' + params, { signal: this.detailAbort.signal });
+    } finally {
+      // A failed request is asked again when the camera moves.
+      if (!response?.ok && this.detailPending?.key === key) this.detailPending = null;
+    }
+    if (!response.ok || this.detailWanted !== key) return;
+    const dims = response.headers.get('X-Dims').split(',').map(Number);
+    const origin = response.headers.get('X-Origin').split(',').map(Number);
+    const level = Number(response.headers.get('X-Level'));
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    if (this.detailWanted !== key || level >= this.volume.level) return;
+    const count = dims[0] * dims[1] * dims[2];
+    const scale = 2 ** level;
+    this.detail = {
+      key, dims, level,
+      min: origin.map((o) => o * scale),                // level-0 voxels
+      max: origin.map((o, k) => (o + dims[k]) * scale),
+      grey: buffer.subarray(0, count),
+      overlay: buffer.subarray(count, 2 * count),
+    };
+    this.detailPending = null;
+    this.detailUploaded = false;
+    this.requestDraw();
+    this.onDetail(this.detail);
+  }
+
   upload() {
     const gl = this.gl;
     const [x, y, z] = this.volume.dims;
@@ -555,6 +814,30 @@ class VolumeViewer {
     this.textures = [texture(0, this.volume.grey, gl.LINEAR),
       texture(1, this.volume.overlay, gl.NEAREST)];
     this.uploaded = true;
+  }
+
+  uploadDetail() {
+    const gl = this.gl;
+    if (this.detailTextures) this.detailTextures.forEach((t) => gl.deleteTexture(t));
+    this.detailUploaded = true;
+    // Without a detail, a single voxel keeps the samplers complete.
+    const [x, y, z] = this.detail ? this.detail.dims : [1, 1, 1];
+    const empty = new Uint8Array(1);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const texture = (unit, data, filter) => {
+      const handle = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_3D, handle);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, x, y, z, 0, gl.RED, gl.UNSIGNED_BYTE, data);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
+      for (const wrap of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
+        gl.texParameteri(gl.TEXTURE_3D, wrap, gl.CLAMP_TO_EDGE);
+      }
+      return handle;
+    };
+    this.detailTextures = [texture(3, this.detail?.grey ?? empty, gl.LINEAR),
+      texture(4, this.detail?.overlay ?? empty, gl.NEAREST)];
   }
 
   /// Sets the transfer function as 256 RGBA bytes (see lookupTable in transfer.js).
@@ -610,25 +893,33 @@ class VolumeViewer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     if (!this.volume || !this.program) return;
     if (!this.uploaded) this.upload();
+    if (!this.detailUploaded) this.uploadDetail();
     if (!this.transferUploaded) this.uploadTransfer();
     const [x, y, z] = this.volume.dims;
     // The box in true proportions: voxel counts times edge lengths.
     const [sx, sy, sz] = this.volume.dims.map((d, a) => d * this.volume.voxelSize[a]);
     const largest = Math.max(sx, sy, sz);
-    // Camera orbiting the centre, z up.
-    const eye = [
-      this.distance * Math.cos(this.pitch) * Math.cos(this.yaw),
-      this.distance * Math.cos(this.pitch) * Math.sin(this.yaw),
-      this.distance * Math.sin(this.pitch),
-    ];
-    const forward = normalize(eye.map((c) => -c));
-    const right = normalize(cross(forward, [0, 0, 1]));
-    const up = cross(right, forward);
+    const { eye, forward, right, up } = this.camera();
     gl.useProgram(this.program);
     const uniform = (name) => gl.getUniformLocation(this.program, name);
     gl.uniform1i(uniform('grey'), 0);
     gl.uniform1i(uniform('overlay'), 1);
     gl.uniform1i(uniform('transfer'), 2);
+    gl.uniform1i(uniform('detailGrey'), 3);
+    gl.uniform1i(uniform('detailOverlay'), 4);
+    const detail = this.detail;
+    gl.uniform1i(uniform('hasDetail'), detail ? 1 : 0);
+    if (detail) {
+      // Level-0 voxels to texture coordinates of the volume.
+      const extent = this.volume.dims.map((d) => d * 2 ** this.volume.level);
+      gl.uniform3fv(uniform('detailMin'), detail.min.map((m, k) => m / extent[k]));
+      gl.uniform3fv(uniform('detailMax'), detail.max.map((m, k) => m / extent[k]));
+      gl.uniform3fv(uniform('detailVoxel'), detail.dims.map((d) => 1 / d));
+    } else {
+      gl.uniform3fv(uniform('detailMin'), [0, 0, 0]);
+      gl.uniform3fv(uniform('detailMax'), [1, 1, 1]);
+      gl.uniform3fv(uniform('detailVoxel'), [1 / x, 1 / y, 1 / z]);
+    }
     gl.uniform3fv(uniform('eye'), eye);
     gl.uniform3fv(uniform('right'), right);
     gl.uniform3fv(uniform('up'), up);
@@ -650,6 +941,7 @@ class VolumeViewer {
     gl.uniform1i(uniform('backgroundStyle'), this.background.style);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.scheduleDetail();
     const meshKind = { 3: 'surface', 4: 'deviation' }[this.mode];
     if (meshKind && this.surface?.kind === meshKind) {
       this.drawMesh(eye, right, up, forward, width / height,

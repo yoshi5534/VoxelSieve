@@ -9,7 +9,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 - `include/voxelsieve/` public headers, `src/` library implementation (target `VoxelSieve::voxelsieve`)
   - `voxel_size.hpp` voxel edge length per axis and slice thickness (ADR 0012)
   - `source.hpp` read access to volumes larger than RAM (`MappedRawSource`, `PhantomSource`, ...)
-    and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011)
+    and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011); float
+    input is mapped onto 16 bit with a recorded `ValueMapping` (ADR 0015)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)

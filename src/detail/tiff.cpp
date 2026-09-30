@@ -311,11 +311,7 @@ std::vector<TiffPage> readTiffPages(const ByteSource& bytes, std::size_t max_pag
 }
 
 void checkSupported(const TiffPage& page) {
-  if (page.sample_format == SAMPLEFORMAT_IEEEFP) {
-    throw std::runtime_error(
-        "Float TIFF images are not supported: grey values are kept as 16-bit integers");
-  }
-  if (page.sample_format != SAMPLEFORMAT_UINT) {
+  if (page.sample_format != SAMPLEFORMAT_UINT && page.sample_format != SAMPLEFORMAT_IEEEFP) {
     throw std::runtime_error(
         "Signed TIFF images are not supported: grey values are kept as unsigned 16-bit");
   }
@@ -324,6 +320,9 @@ void checkSupported(const TiffPage& page) {
 
 std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPage& page,
                                            std::size_t chunk) {
+  if (page.sample_format == SAMPLEFORMAT_IEEEFP) {
+    throw std::invalid_argument("Float TIFF chunks are decoded with decodeTiffFloatChunk");
+  }
   checkSupported(page);
   const ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
   const std::size_t count = std::size_t{page.chunk_width} * chunk_bytes.rows;

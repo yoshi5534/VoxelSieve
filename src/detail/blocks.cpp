@@ -50,7 +50,7 @@ ThresholdResult otsuThreshold(const Histogram& histogram) {
           static_cast<float>(air_weight > 0.0 ? air_sum / air_weight : 0.0)};
 }
 
-void floodFillOutsideAir(BlockGrid& blocks) {
+void floodFillOutsideAir(BlockGrid& blocks, const std::array<bool, 3>& open_axes) {
   std::deque<std::array<std::int64_t, 3>> queue;
   const auto visit = [&](std::int64_t bx, std::int64_t by, std::int64_t bz) {
     if (bx < 0 || by < 0 || bz < 0 || bx >= blocks.dims[0] || by >= blocks.dims[1] ||
@@ -65,22 +65,28 @@ void floodFillOutsideAir(BlockGrid& blocks) {
   };
 
   const auto& d = blocks.dims;
-  for (std::int64_t a = 0; a < d[0]; ++a) {
+  if (open_axes[2]) {
+    for (std::int64_t a = 0; a < d[0]; ++a) {
+      for (std::int64_t b = 0; b < d[1]; ++b) {
+        visit(a, b, 0);
+        visit(a, b, d[2] - 1);
+      }
+    }
+  }
+  if (open_axes[1]) {
+    for (std::int64_t a = 0; a < d[0]; ++a) {
+      for (std::int64_t c = 0; c < d[2]; ++c) {
+        visit(a, 0, c);
+        visit(a, d[1] - 1, c);
+      }
+    }
+  }
+  if (open_axes[0]) {
     for (std::int64_t b = 0; b < d[1]; ++b) {
-      visit(a, b, 0);
-      visit(a, b, d[2] - 1);
-    }
-  }
-  for (std::int64_t a = 0; a < d[0]; ++a) {
-    for (std::int64_t c = 0; c < d[2]; ++c) {
-      visit(a, 0, c);
-      visit(a, d[1] - 1, c);
-    }
-  }
-  for (std::int64_t b = 0; b < d[1]; ++b) {
-    for (std::int64_t c = 0; c < d[2]; ++c) {
-      visit(0, b, c);
-      visit(d[0] - 1, b, c);
+      for (std::int64_t c = 0; c < d[2]; ++c) {
+        visit(0, b, c);
+        visit(d[0] - 1, b, c);
+      }
     }
   }
 

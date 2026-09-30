@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <deque>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "detail/blocks.hpp"
@@ -102,7 +104,7 @@ SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
   stats.air_level = estimate.air_level;
 
   BlockGrid blocks = classifyBlocks(volume, stats.threshold, options.min_material_voxels);
-  floodFillOutsideAir(blocks);
+  floodFillOutsideAir(blocks, options.outside_air_axes);
 
   // Topology: every block that is not outside air, as active tiles, then the air margin.
   auto grid = openvdb::FloatGrid::create(0.0F);
@@ -170,6 +172,31 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
                                                                   : openvdb::io::COMPRESS_ZIP);
   file.write(grids);
   file.close();
+}
+
+AirAxes parseAirAxes(std::string_view text) {
+  AirAxes axes{false, false, false};
+  for (const char c : text) {
+    if (c < 'x' || c > 'z') {
+      throw std::invalid_argument("Axes must be letters x, y and z, got '" + std::string(text) +
+                                  "'");
+    }
+    axes[static_cast<std::size_t>(c - 'x')] = true;
+  }
+  if (axes == AirAxes{false, false, false}) {
+    throw std::invalid_argument("Outside air needs at least one axis");
+  }
+  return axes;
+}
+
+std::string airAxesName(const AirAxes& axes) {
+  std::string name;
+  for (std::size_t a = 0; a < 3; ++a) {
+    if (axes[a]) {
+      name += static_cast<char>('x' + a);
+    }
+  }
+  return name;
 }
 
 }  // namespace voxelsieve

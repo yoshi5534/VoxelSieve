@@ -32,7 +32,21 @@ Json datasetSummary(const DatasetInfo& info) {
                   {"bricks", info.levels.empty() ? 0 : info.levels.front().bricks.size()},
                   {"active_voxels", info.active_voxel_count},
                   {"threshold", info.threshold}});
+  if (!info.value_mapping.isIdentity()) {
+    summary["value_mapping"] = {{"offset", info.value_mapping.offset},
+                                {"scale", info.value_mapping.scale}};
+  }
   return summary;
+}
+
+/// Forwards the progress of writeDataset as one fraction: pass 1 up to 45 %, pass 2 up to 90 %,
+/// the coarser levels the rest.
+std::function<void(std::string_view, double)> datasetProgress(const OperationContext& context) {
+  return [&context](std::string_view stage, double fraction) {
+    const double start = stage == "histogram" ? 0.0 : stage == "bricks" ? 0.45 : 0.9;
+    const double width = stage == "levels" ? 0.1 : 0.45;
+    context.progress(start + width * fraction);
+  };
 }
 
 /// Parameters for the voxel size: one edge length for cubic voxels or one per axis, and the slice
@@ -142,6 +156,13 @@ class ImportRaw final : public Operation {
             {"description",
              "Voxels above the threshold for an 8^3 block to count as material; raise it for "
              "noisy scans"}}},
+          {"outside_air_axes",
+           {{"type", "string"},
+            {"pattern", "^[xyz]+$"},
+            {"default", "xyz"},
+            {"description",
+             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+             "through the part (a pipe), so its inside is kept"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
@@ -189,6 +210,8 @@ class ImportRaw final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+    options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
@@ -209,12 +232,21 @@ class ImportTiff final : public Operation {
     info_.description =
         "Removes the outside air from a TIFF stack and writes a bricked dataset. Reads a "
         "directory of slices, a multi-page TIFF or a ZIP archive of either without extracting "
-        "it; slices are sorted by name, numbers by value.";
+        "it; slices are sorted by name, numbers by value. Float slices are mapped linearly onto "
+        "16-bit grey values, and the mapping is kept with the dataset.";
     info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
     info_.parameters = {
         {"type", "object"},
         {"properties",
          {{"path", {{"type", "string"}, {"description", "Directory, TIFF file or ZIP archive"}}},
+          {"value_range",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 2},
+            {"maxItems", 2},
+            {"description",
+             "Float slices: the values mapped to grey 0 and 65535; values outside are clipped. "
+             "Default: estimated from a few slices"}}},
           {"folder",
            {{"type", "string"},
             {"description",
@@ -231,6 +263,13 @@ class ImportTiff final : public Operation {
             {"description",
              "Voxels above the threshold for an 8^3 block to count as material; raise it for "
              "noisy scans"}}},
+          {"outside_air_axes",
+           {{"type", "string"},
+            {"pattern", "^[xyz]+$"},
+            {"default", "xyz"},
+            {"description",
+             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+             "through the part (a pipe), so its inside is kept"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
@@ -241,6 +280,9 @@ class ImportTiff final : public Operation {
     const Json& p = context.params;
     TiffStackOptions tiff;
     tiff.folder = p.value("folder", std::string());
+    if (p.contains("value_range")) {
+      tiff.value_range = p.at("value_range").get<std::array<double, 2>>();
+    }
     if (!p.contains("voxel_size_mm") && p.contains("slice_thickness_mm")) {
       // The thickness alone: the spacing comes from the files.
       tiff.voxel_size = TiffStackSource(p.at("path").get<std::string>(), tiff).voxelSize();
@@ -257,6 +299,12 @@ class ImportTiff final : public Operation {
       context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
     }
     context.log("Voxel size " + describe(source.voxelSize()));
+    if (source.isFloat()) {
+      const auto range = source.valueRange();
+      context.log("Float values " + std::to_string(range[0]) + " to " + std::to_string(range[1]) +
+                  " mapped to grey 0 to 65535" +
+                  (tiff.value_range ? "" : " (estimated; set value_range)"));
+    }
     DatasetOptions options;
     if (p.contains("threshold")) {
       options.threshold = p.at("threshold").get<float>();
@@ -264,12 +312,22 @@ class ImportTiff final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+    options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
     result.summary["slices"] = source.dims()[2];
     result.summary["bits_per_sample"] = source.bitsPerSample();
+    if (source.isFloat()) {
+      result.summary["value_range"] = source.valueRange();
+      result.summary["clipped_values"] = source.clippedValues();
+      if (source.clippedValues() > 0) {
+        context.log(std::to_string(source.clippedValues()) +
+                    " values lay outside the value range and were clipped; widen value_range");
+      }
+    }
     return result;
   }
 

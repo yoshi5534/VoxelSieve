@@ -75,12 +75,13 @@ struct TiffPage {
 [[nodiscard]] std::vector<TiffPage> readTiffPages(
     const ByteSource& bytes, std::size_t max_pages = std::numeric_limits<std::size_t>::max());
 
-/// Throws unless the page is a single-channel unsigned 8, 16 or 32 bit image in a compression
-/// libtiff can decode.
+/// Throws unless the page is a single-channel unsigned 8, 16 or 32 bit or float 32 or 64 bit
+/// image in a compression libtiff can decode.
 void checkSupported(const TiffPage& page);
 
 /// Decodes one strip or tile into chunk_width x chunk_height samples (rows below the image are
-/// left 0). 32-bit samples must not exceed 65535, so that they are kept exactly.
+/// left 0). 32-bit samples must not exceed 65535, so that they are kept exactly. Throws for float
+/// images, which decodeTiffFloatChunk reads.
 [[nodiscard]] std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes,
                                                          const TiffPage& page, std::size_t chunk);
 
