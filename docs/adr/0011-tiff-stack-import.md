@@ -52,7 +52,9 @@ copied, since they are memory-mapped already.
 The TIFF and ZIP readers were first written in the library on top of zlib and CRC-32 from Boost.
 Since ADR 0016 they are libtiff and libzip: `src/detail/tiff.cpp` feeds libtiff from a file or an
 inflated archive entry through `TIFFClientOpen`, and `src/detail/zip.cpp` keeps one libzip handle
-per concurrent reader.
+per concurrent reader. libzip reads the archive from a memory mapping
+(`zip_source_buffer_create`), not through stdio, whose 4 KiB reads with a seek before each
+made reading a cold archive slow.
 
 The studio gets the operation `import_tiff` (parameters like `import_raw` plus `folder`), and the
 file browser marks TIFF files, ZIP archives and directories with TIFF slices as kind `tiff`.
