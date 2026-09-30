@@ -75,6 +75,11 @@ Options:
                           part scanned in sections), so its inside is kept
   --min-material <n>      Voxels above threshold for an 8^3 block to count as material
                           (default 1); raise it for noisy scans
+  --staging-dir <dir>     TIFF stacks, datasets: where the input is first copied to a temporary
+                          raw file (2 bytes per voxel), so every slice is decoded only once
+                          (default: the output directory)
+  --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
+                          much slower when the slices of a brick layer do not fit in memory)
   --dense                 .vdb only: write every voxel without sieving (baseline)
   -h, --help              Show this help
 )";
@@ -160,6 +165,10 @@ std::optional<Options> parse(int argc, char** argv) {
     } else if (arg == "--min-material") {
       options.sieve.min_material_voxels = std::stoi(next());
       options.dataset.min_material_voxels = options.sieve.min_material_voxels;
+    } else if (arg == "--staging-dir") {
+      options.dataset.staging_dir = next();
+    } else if (arg == "--no-staging") {
+      options.dataset.stage_slow_sources = false;
     } else if (arg == "--dense") {
       options.dense = true;
     } else if (arg == "--join") {
@@ -406,6 +415,9 @@ class ProgressPrinter {
 
  private:
   static std::string label(std::string_view stage) {
+    if (stage == "staging") {
+      return "staging (decode)";
+    }
     if (stage == "histogram") {
       return "pass 1 (histogram)";
     }

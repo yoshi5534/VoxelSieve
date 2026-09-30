@@ -36,6 +36,19 @@ Pages are parsed on first access and strips or tiles are decoded on demand into 
 inflated as a whole when one of its chunks is needed, since deflate has no random access; slices
 are small compared with the cache, and stored entries could be read in place later if needed.
 
+**Amendment (staging).** The cache works for region reads, but not for the streaming sieve: pass
+2 builds bricks of 256³ voxels in parallel, each brick needs its 256 slices, and the threads work
+on different brick layers at once. As soon as those slices exceed the cache (at 1250² float
+slices, 16 threads need about 13 GB), every slice is inflated and decoded again for each brick
+that touches it: a 22 GB stack of 4000 slices took almost an hour on 16 cores. The source now
+reports `slowRandomAccess()`, and `writeDataset` first copies such a source slice by slice, in
+parallel, to a temporary raw file of 2 bytes per voxel (in the output directory, or
+`DatasetOptions::staging_dir`), which both passes read memory-mapped like a raw scan; the file is
+removed at the end. Every slice is decoded once, whatever the slice size, at the price of
+temporary disk space the size of a uint16 raw volume; `writeDataset` checks that it is free first.
+The copy is off with `stage_slow_sources = false` (`vs-sieve --no-staging`). Raw inputs are not
+copied, since they are memory-mapped already.
+
 The TIFF and ZIP readers were first written in the library on top of zlib and CRC-32 from Boost.
 Since ADR 0016 they are libtiff and libzip: `src/detail/tiff.cpp` feeds libtiff from a file or an
 inflated archive entry through `TIFFClientOpen`, and `src/detail/zip.cpp` keeps one libzip handle

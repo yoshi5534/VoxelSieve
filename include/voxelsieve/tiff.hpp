@@ -45,6 +45,8 @@ class TiffStackSource final : public VolumeSource {
   [[nodiscard]] VoxelSize voxelSize() const override;
   /// Identity for integer slices; for float slices value = offset + scale * grey.
   [[nodiscard]] ValueMapping valueMapping() const override;
+  /// True: slices are decoded strip by strip, and a slice in a ZIP archive as a whole.
+  [[nodiscard]] bool slowRandomAccess() const override { return true; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   /// Voxel size from the files: pixel width and height from a centimetre resolution or an ImageJ

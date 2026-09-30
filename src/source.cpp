@@ -161,6 +161,11 @@ ConcatSource::ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int
   starts_.push_back(dims_[a]);
 }
 
+bool ConcatSource::slowRandomAccess() const {
+  return std::any_of(parts_.begin(), parts_.end(),
+                     [](const auto& part) { return part->slowRandomAccess(); });
+}
+
 void ConcatSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   checkRegion(box, dims_, out);
   const auto a = static_cast<std::size_t>(axis_);
