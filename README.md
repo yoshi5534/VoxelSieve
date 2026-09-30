@@ -114,6 +114,9 @@ the input holds several folders of slices, the grey values are taken, not a fold
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
 comes from a centimetre resolution or an ImageJ description (including its slice `spacing`),
 otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
+For a dataset, the slices are first decoded once, on all cores, into a temporary raw file of 2
+bytes per voxel in the output directory (elsewhere with `--staging-dir`), which is removed at the
+end; `--no-staging` reads the slices directly, which is much slower for large stacks.
 
 ### Single grid
 
