@@ -12,6 +12,15 @@ option(VOXELSIEVE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindOpenVDBModule)
 find_package(OpenVDB REQUIRED)
+# vcpkg's TBB turns on TBB_USE_DEBUG for Debug builds, which fills the inlined OpenVDB and TBB code
+# with checks and nearly doubles the ASan test time; the dependencies are release builds anyway.
+if(TARGET TBB::tbb)
+  get_target_property(_vs_tbb_definitions TBB::tbb INTERFACE_COMPILE_DEFINITIONS)
+  if(_vs_tbb_definitions)
+    list(FILTER _vs_tbb_definitions EXCLUDE REGEX "TBB_USE_DEBUG")
+    set_target_properties(TBB::tbb PROPERTIES INTERFACE_COMPILE_DEFINITIONS "${_vs_tbb_definitions}")
+  endif()
+endif()
 find_package(nlohmann_json 3.10 REQUIRED)
 # File formats and compression come from established libraries, never our own code (ADR 0016).
 find_package(TIFF REQUIRED)
