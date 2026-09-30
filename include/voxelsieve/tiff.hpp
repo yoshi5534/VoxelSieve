@@ -47,6 +47,8 @@ class TiffStackSource final : public VolumeSource {
   [[nodiscard]] ValueMapping valueMapping() const override;
   /// True: slices are decoded strip by strip, and a slice in a ZIP archive as a whole.
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  /// Empties the cache of decoded strips and tiles and drops the pages of a ZIP archive.
+  void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   /// Voxel size from the files: pixel width and height from a centimetre resolution or an ImageJ

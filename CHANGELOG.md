@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Staging lets go of the input** (`VolumeSource::releaseMemory`): once a TIFF stack is copied,
+  its decoded-strip cache is emptied and the pages of the memory-mapped ZIP are dropped (and
+  marked sequential while reading), so they no longer push the copy that pass 2 reads out of
+  memory. With the 22 GB LoDoInd archive they had stayed resident (27.6 GB peak) and pass 2 took
+  101 s instead of 22 s.
+
 - **ZIP archives are read memory-mapped**: libzip now reads the archive from a memory mapping
   instead of through stdio, where it read 4 KiB at a time with a seek before each read (about
   11 million system calls for a 22 GB archive). The operating system now reads the file in large
