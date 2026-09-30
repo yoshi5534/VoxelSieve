@@ -128,10 +128,9 @@ the type as today. A project with one object behaves exactly as now.
 The nominal-actual comparison becomes an operation between two objects, a volume (its surface)
 and a mesh, that uses their current poses and measures in global coordinates. It no longer aligns
 on its own: alignment is the steps before it. The existing `compare_cad` with `cad_path` stays as
-a shortcut that adds the mesh object and runs `align_surfaces` first.
-The same measurement works between two volumes (the
-surface of one against the surface mesh of the other), which gives the deviation between two
-scans of a part.
+a shortcut that adds the mesh object and runs `align_surfaces` first. The
+same measurement works between two volumes (the surface of one against the surface mesh of the
+other), which gives the deviation between two scans of a part.
 
 ### Memory and data access
 
