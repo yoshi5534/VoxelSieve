@@ -91,8 +91,9 @@ std::optional<Json> McpServer::handle(const Json& message) {
     if (message.is_object() && (message.contains("result") || message.contains("error"))) {
       return std::nullopt;  // a response to a request we never send
     }
-    return errorResponse(message.is_object() ? message.value("id", Json()) : Json(),
-                         kInvalidRequest, "Invalid request");
+    return std::make_optional(
+        errorResponse(message.is_object() ? message.value("id", Json()) : Json(), kInvalidRequest,
+                      "Invalid request"));
   }
   const std::string method = message.at("method").get<std::string>();
   if (!message.contains("id")) {
@@ -108,14 +109,14 @@ std::optional<Json> McpServer::handle(const Json& message) {
           kProtocolVersions.end()) {
         version = requested;
       }
-      return resultResponse(
+      return std::make_optional(resultResponse(
           id, {{"protocolVersion", version},
                {"capabilities", {{"tools", Json::object()}}},
                {"serverInfo", {{"name", "voxelsieve"}, {"version", VOXELSIEVE_VERSION}}},
-               {"instructions", kInstructions}});
+               {"instructions", kInstructions}}));
     }
     if (method == "ping") {
-      return resultResponse(id, Json::object());
+      return std::make_optional(resultResponse(id, Json::object()));
     }
     if (method == "tools/list") {
       Json tools = Json::array();
@@ -124,16 +125,16 @@ std::optional<Json> McpServer::handle(const Json& message) {
                          {"description", tool.description},
                          {"inputSchema", tool.parameters}});
       }
-      return resultResponse(id, {{"tools", tools}});
+      return std::make_optional(resultResponse(id, {{"tools", tools}}));
     }
     if (method == "tools/call") {
-      return resultResponse(id, callTool(params));
+      return std::make_optional(resultResponse(id, callTool(params)));
     }
-    return errorResponse(id, kMethodNotFound, "Method not found: " + method);
+    return std::make_optional(errorResponse(id, kMethodNotFound, "Method not found: " + method));
   } catch (const std::invalid_argument& error) {
-    return errorResponse(id, kInvalidParams, error.what());
+    return std::make_optional(errorResponse(id, kInvalidParams, error.what()));
   } catch (const std::exception& error) {
-    return errorResponse(id, kInternalError, error.what());
+    return std::make_optional(errorResponse(id, kInternalError, error.what()));
   }
 }
 

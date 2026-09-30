@@ -6,6 +6,7 @@ Checks: >
   misc-const-correctness,
   modernize-*,
   -modernize-use-trailing-return-type,
+  -modernize-use-constraints,
   performance-*,
   readability-braces-around-statements,
   readability-identifier-naming

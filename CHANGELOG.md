@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **vcpkg** (ADR 0016): dependencies are declared in `vcpkg.json` and pinned by its baseline; the
+  CMake presets use vcpkg's toolchain, `tools/setup-vcpkg.sh` fetches it, and CI keeps built
+  packages in vcpkg's binary cache. File formats and compression come from established
+  libraries: TIFF is read with libtiff, ZIP archives with libzip, PNG is written with libpng and
+  PLY with tinyply; the own readers, decoders and checksums are gone. libtiff also reads float
+  slices with the floating-point predictor and every compression it is built with.
 - **Learned segmentation** (`voxelsieve::Model`, `segmentMaterialsWithModel`, `vs-segment
   --model`, studio operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as
   `.vsm` run on the CPU tile by tile with a halo and write the same material volume as the
