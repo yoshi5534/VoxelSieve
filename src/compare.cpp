@@ -2,20 +2,19 @@
 
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+#include <tinyply.h>
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <limits>
 #include <numbers>
 #include <numeric>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -527,49 +526,45 @@ DeviationStats deviationStats(const IndexedMesh& mesh, const std::vector<float>&
 // ---------------------------------------------------------------------------------------------
 // Output
 
-template <typename T>
-void appendLittleEndian(std::string& out, T value) {
-  static_assert(std::endian::native == std::endian::little, "PLY output assumes little endian");
-  std::array<char, sizeof(T)> bytes{};
-  std::memcpy(bytes.data(), &value, sizeof(T));
-  out.append(bytes.data(), sizeof(T));
-}
-
-constexpr std::string_view kPlyVertexProperties =
-    "property float x\nproperty float y\nproperty float z\nproperty float deviation\n"
-    "property uchar red\nproperty uchar green\nproperty uchar blue\n";
-constexpr std::string_view kPlyFaceProperties = "property list uchar int vertex_indices\n";
-
 void writePly(const std::filesystem::path& file, const CompareResult& result) {
-  std::ostringstream header;
-  header << "ply\nformat binary_little_endian 1.0\n"
-         << "comment VoxelSieve nominal-actual comparison: scanned surface in mm, deviation from "
-            "the CAD surface in mm (positive: more material)\n"
-         << "element vertex " << result.mesh.points.size() << '\n'
-         << kPlyVertexProperties << "element face " << result.mesh.triangles.size() << '\n'
-         << kPlyFaceProperties << "end_header\n";
-  std::string data = header.str();
-  data.reserve(data.size() + result.mesh.points.size() * 19 + result.mesh.triangles.size() * 13);
-  for (std::size_t i = 0; i < result.mesh.points.size(); ++i) {
-    for (const float c : result.mesh.points[i]) {
-      appendLittleEndian(data, c);
-    }
-    appendLittleEndian(data, result.deviation_mm[i]);
+  const std::size_t n = result.mesh.points.size();
+  std::vector<std::uint8_t> colors;
+  colors.reserve(n * 3);
+  for (std::size_t i = 0; i < n; ++i) {
     for (const std::uint8_t c :
          deviationColor(result.deviation_mm[i], result.tolerance_mm, result.stats.range_mm)) {
-      appendLittleEndian(data, c);
+      colors.push_back(c);
     }
   }
+  std::vector<std::int32_t> faces;
+  faces.reserve(result.mesh.triangles.size() * 3);
   for (const auto& t : result.mesh.triangles) {
-    appendLittleEndian(data, std::uint8_t{3});
     for (const std::uint32_t i : t) {
-      appendLittleEndian(data, static_cast<std::int32_t>(i));
+      faces.push_back(static_cast<std::int32_t>(i));
     }
   }
+  // tinyply only reads the buffers when writing, but takes them as non-const bytes.
+  const auto bytes = [](const auto* data) {
+    using T = std::remove_cvref_t<decltype(*data)>;
+    return reinterpret_cast<std::uint8_t*>(const_cast<T*>(data));
+  };
+  tinyply::PlyFile ply;
+  ply.get_comments().emplace_back(
+      "VoxelSieve nominal-actual comparison: scanned surface in mm, deviation from the CAD "
+      "surface in mm (positive: more material)");
+  ply.add_properties_to_element("vertex", {"x", "y", "z"}, tinyply::Type::FLOAT32, n,
+                                bytes(result.mesh.points.data()), tinyply::Type::INVALID, 0);
+  ply.add_properties_to_element("vertex", {"deviation"}, tinyply::Type::FLOAT32, n,
+                                bytes(result.deviation_mm.data()), tinyply::Type::INVALID, 0);
+  ply.add_properties_to_element("vertex", {"red", "green", "blue"}, tinyply::Type::UINT8, n,
+                                colors.data(), tinyply::Type::INVALID, 0);
+  ply.add_properties_to_element(
+      "face", {"vertex_indices"}, tinyply::Type::INT32, result.mesh.triangles.size(),
+      reinterpret_cast<std::uint8_t*>(faces.data()), tinyply::Type::UINT8, 3);
   const std::filesystem::path partial = file.string() + ".partial";
   {
     std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    ply.write(out, true);
     if (!out) {
       throw std::runtime_error("Cannot write " + file.string());
     }
@@ -1125,51 +1120,40 @@ DeviationMesh readDeviationPly(const std::filesystem::path& file) {
   if (!in) {
     throw std::runtime_error("Cannot open " + file.string());
   }
-  const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  const std::size_t end = data.find("end_header\n");
-  if (!data.starts_with("ply\nformat binary_little_endian 1.0\n") || end == std::string::npos) {
-    throw std::runtime_error("Not a deviation PLY written by VoxelSieve: " + file.string());
-  }
-  std::istringstream header(data.substr(0, end));
-  std::string line;
-  std::size_t vertices = 0;
-  std::size_t faces = 0;
-  std::string properties;
-  while (std::getline(header, line)) {
-    if (line.starts_with("element vertex ")) {
-      vertices = std::stoull(line.substr(15));
-    } else if (line.starts_with("element face ")) {
-      faces = std::stoull(line.substr(13));
-    } else if (line.starts_with("property ")) {
-      properties += line + '\n';
-    }
-  }
-  if (properties != std::string(kPlyVertexProperties) + std::string(kPlyFaceProperties)) {
-    throw std::runtime_error("Unexpected PLY layout in " + file.string());
-  }
-  const std::size_t body = end + 11;
-  if (data.size() != body + vertices * 19 + faces * 13) {
-    throw std::runtime_error("Truncated PLY: " + file.string());
-  }
   DeviationMesh out;
-  out.mesh.points.resize(vertices);
-  out.deviation_mm.resize(vertices);
-  const char* p = data.data() + body;
-  for (std::size_t i = 0; i < vertices; ++i, p += 19) {
-    std::memcpy(out.mesh.points[i].data(), p, 12);
-    std::memcpy(&out.deviation_mm[i], p + 12, 4);
-  }
-  out.mesh.triangles.resize(faces);
-  for (std::size_t i = 0; i < faces; ++i, p += 13) {
-    std::array<std::int32_t, 3> t{};
-    std::memcpy(t.data(), p + 1, 12);
-    for (std::size_t k = 0; k < 3; ++k) {
-      if (static_cast<std::uint8_t>(p[0]) != 3 || t[k] < 0 ||
-          static_cast<std::size_t>(t[k]) >= vertices) {
-        throw std::runtime_error("Invalid face in " + file.string());
-      }
-      out.mesh.triangles[i][k] = static_cast<std::uint32_t>(t[k]);
+  try {
+    tinyply::PlyFile ply;
+    if (!ply.parse_header(in)) {
+      throw std::runtime_error("no PLY header");
     }
+    const auto points = ply.request_properties_from_element("vertex", {"x", "y", "z"});
+    const auto deviation = ply.request_properties_from_element("vertex", {"deviation"});
+    const auto faces = ply.request_properties_from_element("face", {"vertex_indices"}, 3);
+    ply.read(in);
+    if (points->t != tinyply::Type::FLOAT32 || deviation->t != tinyply::Type::FLOAT32 ||
+        (faces->t != tinyply::Type::INT32 && faces->t != tinyply::Type::UINT32) ||
+        deviation->count != points->count) {
+      throw std::runtime_error("unexpected property types");
+    }
+    out.mesh.points.resize(points->count);
+    std::memcpy(out.mesh.points.data(), points->buffer.get(), points->buffer.size_bytes());
+    out.deviation_mm.resize(deviation->count);
+    std::memcpy(out.deviation_mm.data(), deviation->buffer.get(), deviation->buffer.size_bytes());
+    std::vector<std::int32_t> indices(faces->count * 3);
+    if (faces->buffer.size_bytes() != indices.size() * sizeof(std::int32_t)) {
+      throw std::runtime_error("faces that are not triangles");
+    }
+    std::memcpy(indices.data(), faces->buffer.get(), faces->buffer.size_bytes());
+    out.mesh.triangles.resize(faces->count);
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+      if (indices[i] < 0 || static_cast<std::size_t>(indices[i]) >= points->count) {
+        throw std::runtime_error("invalid face");
+      }
+      out.mesh.triangles[i / 3][i % 3] = static_cast<std::uint32_t>(indices[i]);
+    }
+  } catch (const std::exception& e) {
+    throw std::runtime_error("Not a deviation PLY written by VoxelSieve: " + file.string() + " (" +
+                             e.what() + ")");
   }
   return out;
 }

@@ -63,6 +63,7 @@ target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_VERSION="${PROJECT_VERS
 find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json
-  PRIVATE Boost::iostreams Boost::headers ${CMAKE_DL_LIBS}
+  PRIVATE Boost::iostreams Boost::headers TIFF::TIFF PNG::PNG libzip::zip tinyply
+          ${CMAKE_DL_LIBS}
   PRIVATE voxelsieve_warnings
 )

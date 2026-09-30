@@ -1,6 +1,6 @@
 #pragma once
 
-// Minimal PNG writer; the image data is compressed with zlib through Boost.Iostreams.
+// PNG writing through libpng (ADR 0016).
 
 #include <cstdint>
 #include <filesystem>

@@ -11,6 +11,10 @@ which are distributed under their own licenses:
 - oneTBB (https://github.com/uxlfoundation/oneTBB): Apache License 2.0
 - Boost (https://www.boost.org/): Boost Software License 1.0
 - nlohmann/json (https://github.com/nlohmann/json): MIT License
+- libtiff (https://libtiff.gitlab.io/libtiff/): libtiff License (BSD-style)
+- libzip (https://libzip.org/): BSD 3-Clause License
+- libpng (https://www.libpng.org/pub/png/libpng.html): PNG Reference Library License version 2
+- tinyply (https://github.com/ddiakopoulos/tinyply): public domain
 - zlib (https://zlib.net/): zlib License
 - Zstandard (https://facebook.github.io/zstd/): BSD License
 - GoogleTest (https://github.com/google/googletest), tests only: BSD 3-Clause License

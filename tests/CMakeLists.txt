@@ -21,7 +21,8 @@ add_executable(voxelsieve_tests
   test_voxel_size.cpp
   test_vdb.cpp
 )
-target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers)
+target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers
+                      TIFF::TIFF libzip::zip)
 # Tests of internals (detail/) see the private headers.
 target_include_directories(voxelsieve_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
