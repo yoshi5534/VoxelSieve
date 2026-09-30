@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -20,6 +21,7 @@
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -407,7 +409,10 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   const double air = info.air_level;
   const double voxel_volume = info.voxel_size.volumeMm3();
 
+  std::optional<TelemetryPhase> phase(std::in_place, "scan bricks");
   const Scan scan = scanBricks(dataset);
+  phase.reset();
+  phase.emplace("pores and zones");
   std::map<Coord, int> outside;
   const std::vector<std::vector<Coord>> components = internalComponents(scan, outside);
 

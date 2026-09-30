@@ -87,6 +87,11 @@ aside { border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; ba
 .summary { border-collapse: collapse; margin: 8px 0; }
 .summary td { padding: 2px 12px 2px 0; }
 .summary td:first-child { color: var(--muted); }
+.telemetry th { text-align: left; font-weight: normal; color: var(--muted); padding-right: 12px; }
+.telemetry td:not(:first-child) { text-align: right; white-space: nowrap; }
+.telemetry tr.total td { border-top: 1px solid var(--line); color: var(--text); }
+.telemetry-chart svg { width: 100%; height: 90px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.swatch { display: inline-block; width: 10px; height: 3px; margin: 0 4px 3px 6px; vertical-align: middle; }
 .images { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .images img { max-height: 220px; border: 1px solid var(--line); border-radius: 4px; background: #000; }
 .passed { color: var(--good); font-weight: 600; }

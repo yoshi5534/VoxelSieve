@@ -8,6 +8,13 @@
   step titles show the current English titles. A German report is still possible with an own
   template (`--template`), except for the few phrases the report data itself carries.
 
+- **Telemetry for every operation** (`telemetry.hpp`, ADR 0017): each step of a project records
+  wall time, CPU time and busy cores, peak memory (own and mapped file pages), bytes read and
+  written and page faults, per phase, with a timeline sampled every second and hints such as
+  "few cores busy while waiting for the disk". The studio shows it in the protocol and serves it
+  as `step_telemetry` (also over MCP); every command-line tool prints a table of its phases and
+  writes the whole record with `--telemetry <file.json>`. Everything stays local.
+
 - **Threshold for scans of several materials**: the estimated air threshold is now the valley
   between the air peak and the next material, not Otsu's split between the two largest classes
   (ADR 0004 amendment). In the LoDoInd pipe Otsu's split lay between mortar and stones, so the

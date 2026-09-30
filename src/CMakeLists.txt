@@ -48,6 +48,7 @@ add_library(voxelsieve SHARED
   compare.cpp
   render.cpp
   synthetic.cpp
+  telemetry.cpp
   tiff.cpp
   vdb.cpp
   voxel_size.cpp
