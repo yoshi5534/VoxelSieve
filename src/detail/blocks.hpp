@@ -21,6 +21,14 @@ struct ThresholdResult {
 /// Otsu's threshold for a 16-bit grey-value histogram. Throws if the histogram is empty.
 [[nodiscard]] ThresholdResult otsuThreshold(const Histogram& histogram);
 
+/// Threshold between air and the least dense material. Otsu's split alone lands between the two
+/// largest classes, which in a scan of several materials can lie above a whole material (a
+/// plastic pipe, organic fillings among stones), so that material would count as air. The air
+/// peak is the lowest clear peak of the smoothed histogram below Otsu's split; when a clear
+/// valley separates it from the next peak, the threshold lies in that valley, otherwise it is
+/// Otsu's. Throws if the histogram is empty.
+[[nodiscard]] ThresholdResult airThreshold(const Histogram& histogram);
+
 enum class BlockState : std::uint8_t { kAir, kMaterial, kOutsideAir };
 
 /// One state per 8^3 block, x fastest.
