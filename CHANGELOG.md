@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **English throughout**: the studio (labels, operation names, hints, 3D view presets), the
+  built-in report template, the report's field names and verdicts, and the example inspection
+  order are now in English; numbers in the report use a decimal point. Projects saved with German
+  step titles show the current English titles. A German report is still possible with an own
+  template (`--template`), except for the few phrases the report data itself carries.
+
 - **Threshold for scans of several materials**: the estimated air threshold is now the valley
   between the air peak and the next material, not Otsu's split between the two largest classes
   (ADR 0004 amendment). In the LoDoInd pipe Otsu's split lay between mortar and stones, so the

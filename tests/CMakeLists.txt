@@ -85,7 +85,7 @@ add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_po
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report)
 set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
 add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
-set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Prüfbericht")
+set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Test report")
 
 add_test(NAME vs_synth_part_cli
          COMMAND vs-synth --part hub --scale 0.3 --voxel-size 0.2 --blur 0.1 --noise 300

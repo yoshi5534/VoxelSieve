@@ -19,9 +19,9 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr std::size_t kMaxListedPores = 25;
-constexpr std::string_view kNotGiven = "nicht angegeben";
+constexpr std::string_view kNotGiven = "not given";
 
-/// Number with a decimal comma and thin spaces between thousands, as usual in German reports.
+/// Number with a decimal point and commas between thousands, "12,345.6".
 std::string formatNumber(double value, int decimals) {
   std::array<char, 64> buffer{};
   (void)std::snprintf(buffer.data(), buffer.size(), "%.*f", decimals, std::abs(value));
@@ -32,19 +32,19 @@ std::string formatNumber(double value, int decimals) {
   std::string grouped;
   for (std::size_t i = 0; i < integer.size(); ++i) {
     if (i > 0 && (integer.size() - i) % 3 == 0 && integer.size() > 4) {
-      grouped += " ";
+      grouped += ",";
     }
     grouped += integer[i];
   }
   std::string out = (value < 0.0 && std::stod(digits) != 0.0 ? "-" : "") + grouped;
   if (!fraction.empty()) {
-    out += "," + fraction;
+    out += "." + fraction;
   }
   return out;
 }
 
 std::string formatMm(const std::array<double, 3>& p) {
-  return formatNumber(p[0], 2) + "; " + formatNumber(p[1], 2) + "; " + formatNumber(p[2], 2);
+  return formatNumber(p[0], 2) + ", " + formatNumber(p[1], 2) + ", " + formatNumber(p[2], 2);
 }
 
 bool insideBox(const std::array<double, 3>& p_mm, const std::array<std::array<double, 3>, 2>& box) {
@@ -64,7 +64,7 @@ std::string voxelSizeText(const VoxelSize& v) {
                                " × " + formatNumber(v[2] * 1000.0, 1);
   text += " µm";
   if (v.slice_thickness_mm > 0.0) {
-    text += " (Schichtdicke " + formatNumber(v.slice_thickness_mm * 1000.0, 1) + " µm)";
+    text += " (slice thickness " + formatNumber(v.slice_thickness_mm * 1000.0, 1) + " µm)";
   }
   return text;
 }
@@ -111,10 +111,10 @@ std::string dataUri(const RenderImage& image) {
   return "data:image/png;base64," + base64(std::vector<char>(png.begin(), png.end()));
 }
 
-/// Signed number with a decimal comma, "+0,123" or "−0,123".
+/// Signed number with a decimal point, "+0.123" or "−0.123".
 std::string formatSigned(double value, int decimals) {
   std::string text = formatNumber(std::abs(value), decimals);
-  const bool zero = text.find_first_not_of("0,") == std::string::npos;
+  const bool zero = text.find_first_not_of("0.") == std::string::npos;
   if (zero) {
     return text;
   }
@@ -141,7 +141,7 @@ std::string deviationHistogramSvg(const std::vector<double>& histogram, double t
   svg.setf(std::ios::fixed);
   svg.precision(2);
   svg << R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 )" << kWidth << ' ' << kHeight
-      << R"(" role="img" aria-label="Häufigkeitsverteilung der Abweichung" )"
+      << R"(" role="img" aria-label="Distribution of the deviation" )"
       << R"(font-family="Helvetica Neue, Arial, sans-serif" font-size="11">)";
   const auto x = [&](double mm) { return kLeft + (mm + range) / (2.0 * range) * (kRight - kLeft); };
   if (range > 0.0 && tolerance < range) {
@@ -177,38 +177,38 @@ std::string deviationHistogramSvg(const std::vector<double>& histogram, double t
         << anchor << R"(" fill="#1d1d1f">)" << formatSigned(tick, 3) << "</text>";
   }
   svg << R"(<text x=")" << 0.5 * (kLeft + kRight) << R"(" y=")" << kBottom + 34.0
-      << R"(" text-anchor="middle" fill="#5f6368">Abweichung in mm (Rand: auch darüber hinaus)</text>)";
+      << R"(" text-anchor="middle" fill="#5f6368">Deviation in mm (edge bins include values beyond)</text>)";
   svg << "</svg>";
   return svg.str();
 }
 
-/// Mandatory fields of the report, from the report contents required by DIN EN ISO/IEC 17025
-/// (7.8.2.1) and the CT-specific settings a test report states under DIN EN ISO 15708-3.
+/// Mandatory fields of the report, from the report contents required by ISO/IEC 17025
+/// (7.8.2.1) and the CT-specific settings a test report states under ISO 15708-3.
 struct Field {
   std::string_view path;
   std::string_view label;
 };
 constexpr std::array kMandatoryFields{
-    Field{"report.number", "Berichtsnummer"},
-    Field{"report.date", "Ausstellungsdatum"},
-    Field{"laboratory.name", "Prüflaboratorium"},
-    Field{"laboratory.address", "Anschrift des Prüflaboratoriums"},
-    Field{"customer.name", "Auftraggeber"},
-    Field{"order.number", "Auftragsnummer"},
-    Field{"order.test_date", "Prüfdatum"},
-    Field{"part.name", "Bezeichnung des Prüfgegenstands"},
-    Field{"part.drawing", "Zeichnungsnummer"},
-    Field{"part.material", "Werkstoff"},
-    Field{"part.serial", "Seriennummer oder Charge"},
-    Field{"scan.device", "CT-Anlage"},
-    Field{"scan.voltage_kv", "Röhrenspannung"},
-    Field{"scan.current_ua", "Röhrenstrom"},
-    Field{"scan.filter", "Vorfilter"},
-    Field{"scan.projections", "Anzahl Projektionen"},
-    Field{"scan.exposure_ms", "Belichtungszeit"},
-    Field{"scan.reconstruction", "Rekonstruktion"},
-    Field{"uncertainty", "Messunsicherheit"},
-    Field{"approval.approver", "Freigabe durch"},
+    Field{"report.number", "Report number"},
+    Field{"report.date", "Date of issue"},
+    Field{"laboratory.name", "Testing laboratory"},
+    Field{"laboratory.address", "Address of the testing laboratory"},
+    Field{"customer.name", "Customer"},
+    Field{"order.number", "Order number"},
+    Field{"order.test_date", "Date of test"},
+    Field{"part.name", "Designation of the test item"},
+    Field{"part.drawing", "Drawing number"},
+    Field{"part.material", "Material"},
+    Field{"part.serial", "Serial number or batch"},
+    Field{"scan.device", "CT system"},
+    Field{"scan.voltage_kv", "Tube voltage"},
+    Field{"scan.current_ua", "Tube current"},
+    Field{"scan.filter", "Pre-filter"},
+    Field{"scan.projections", "Number of projections"},
+    Field{"scan.exposure_ms", "Exposure time"},
+    Field{"scan.reconstruction", "Reconstruction"},
+    Field{"uncertainty", "Measurement uncertainty"},
+    Field{"approval.approver", "Approved by"},
 };
 
 void completeMandatory(Json& data, std::vector<std::string>* warnings) {
@@ -227,7 +227,7 @@ void completeMandatory(Json& data, std::vector<std::string>* warnings) {
           value = kNotGiven;
           if (warnings != nullptr) {
             warnings->push_back(std::string(field.label) + " (" + std::string(field.path) +
-                                ") fehlt");
+                                ") missing");
           }
         }
         break;
@@ -240,40 +240,40 @@ void completeMandatory(Json& data, std::vector<std::string>* warnings) {
 
 std::string regionText(const InspectionZone& zone) {
   if (!zone.box_mm) {
-    return "gesamtes Bauteil";
+    return "whole part";
   }
   const auto& box = *zone.box_mm;
-  return "Quader von (" + formatMm(box[0]) + ") bis (" + formatMm(box[1]) + ") mm";
+  return "box from (" + formatMm(box[0]) + ") to (" + formatMm(box[1]) + ") mm";
 }
 
 std::string criterionLabel(const CriterionResult& criterion, const AcceptanceLimits& limits) {
   if (criterion.name == "max_pore_size_mm") {
-    return "Größte Ausdehnung einer Pore";
+    return "Largest extent of a pore";
   }
   if (criterion.name == "max_pore_count") {
     return limits.count_min_size_mm > 0.0
-               ? "Anzahl Poren ab " + formatNumber(limits.count_min_size_mm, 2) + " mm"
-               : "Anzahl Poren";
+               ? "Number of pores from " + formatNumber(limits.count_min_size_mm, 2) + " mm"
+               : "Number of pores";
   }
   if (criterion.name == "max_porosity_percent") {
-    return "Porosität (Poren und Gefügeauflockerung)";
+    return "Porosity (pores and loosened microstructure)";
   }
-  return "Gefügeauflockerung";
+  return "Loosened microstructure";
 }
 
 std::string criterionValue(const CriterionResult& criterion, bool limit) {
   const double value = limit ? criterion.limit : criterion.measured;
   if (criterion.name == "max_pore_size_mm") {
-    return !limit && value == 0.0 ? "keine Pore" : formatNumber(value, 2) + " mm";
+    return !limit && value == 0.0 ? "no pore" : formatNumber(value, 2) + " mm";
   }
   if (criterion.name == "max_porosity_percent") {
     return formatNumber(value, 3) + " %";
   }
   if (criterion.name == "loosening") {
     if (limit) {
-      return "nicht zulässig";
+      return "not permitted";
     }
-    return value > 0.0 ? formatNumber(value, 0) + " Zone(n)" : "keine";
+    return value > 0.0 ? formatNumber(value, 0) + " zone(s)" : "none";
   }
   return formatNumber(value, 0);
 }
@@ -475,14 +475,14 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
                             {"measured", criterionValue(criterion, false)},
                             {"limit", criterionValue(criterion, true)},
                             {"passed", criterion.passed},
-                            {"verdict", criterion.passed ? "erfüllt" : "nicht erfüllt"}});
+                            {"verdict", criterion.passed ? "passed" : "failed"}});
       }
       evaluated.push_back({{"name", zone.name},
                            {"region", regionText(spec)},
                            {"part_volume", formatNumber(zone.part_volume_mm3, 1) + " mm³"},
                            {"criteria", criteria},
                            {"passed", zone.passed()},
-                           {"verdict", zone.passed() ? "erfüllt" : "nicht erfüllt"}});
+                           {"verdict", zone.passed() ? "passed" : "failed"}});
     }
     const std::string guideline = order.contains("acceptance")
                                       ? order["acceptance"].value("guideline", "BDG P 202")
@@ -491,8 +491,8 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
         {"guideline", guideline},
         {"zones", evaluated},
         {"passed", evaluation.passed()},
-        {"verdict", evaluation.passed() ? "Die Anforderungen sind erfüllt."
-                                        : "Die Anforderungen sind nicht erfüllt."}};
+        {"verdict", evaluation.passed() ? "The requirements are met."
+                                        : "The requirements are not met."}};
   }
 
   data["images"] = {{"x", dataUri(image_dir / "projection_x.png")},
@@ -568,8 +568,8 @@ void addComparison(Json& data, const std::filesystem::path& dir, const std::stri
   const Json& p = d.at("percentiles_mm");
   data["comparison"] = {
       {"cad", cad.empty() ? std::string(kNotGiven) : cad},
-      {"alignment", compare.value("alignment", "auto") == "none" ? "vorgegebene Lage"
-                                                                 : "Best-Fit über die Außenfläche"},
+      {"alignment", compare.value("alignment", "auto") == "none" ? "given position"
+                                                                 : "best fit of the outer surface"},
       {"fit_rms", formatNumber(compare.at("fit").at("rms_mm").get<double>(), 3) + " mm"},
       {"tolerance", "± " + formatNumber(tolerance, 3) + " mm"},
       {"mean", mm(d.at("mean_mm").get<double>())},
