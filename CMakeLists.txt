@@ -13,6 +13,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindOpenVDBModule)
 find_package(OpenVDB REQUIRED)
 find_package(nlohmann_json 3.10 REQUIRED)
+# File formats and compression come from established libraries, never our own code (ADR 0016).
+find_package(TIFF REQUIRED)
+find_package(PNG REQUIRED)
+find_package(libzip CONFIG REQUIRED)
+find_package(tinyply CONFIG REQUIRED)
 
 add_library(voxelsieve_warnings INTERFACE)
 if(MSVC)

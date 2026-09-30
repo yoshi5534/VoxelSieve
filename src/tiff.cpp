@@ -209,7 +209,7 @@ struct TiffStackSource::Impl {
     std::vector<std::size_t> wanted{index};
     if (slice.entry != nullptr) {
       wanted.clear();
-      for (std::size_t i = 0; i < page.offsets.size(); ++i) {
+      for (std::size_t i = 0; i < page.chunk_count; ++i) {
         wanted.push_back(i);
       }
     }
