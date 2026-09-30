@@ -156,6 +156,13 @@ class ImportRaw final : public Operation {
             {"description",
              "Voxels above the threshold for an 8^3 block to count as material; raise it for "
              "noisy scans"}}},
+          {"outside_air_axes",
+           {{"type", "string"},
+            {"pattern", "^[xyz]+$"},
+            {"default", "xyz"},
+            {"description",
+             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+             "through the part (a pipe), so its inside is kept"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
@@ -203,6 +210,7 @@ class ImportRaw final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
     options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
@@ -255,6 +263,13 @@ class ImportTiff final : public Operation {
             {"description",
              "Voxels above the threshold for an 8^3 block to count as material; raise it for "
              "noisy scans"}}},
+          {"outside_air_axes",
+           {{"type", "string"},
+            {"pattern", "^[xyz]+$"},
+            {"default", "xyz"},
+            {"description",
+             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+             "through the part (a pipe), so its inside is kept"}}},
           {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
@@ -297,6 +312,7 @@ class ImportTiff final : public Operation {
     options.margin_voxels = p.at("margin_voxels").get<int>();
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
+    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
     options.progress = datasetProgress(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;

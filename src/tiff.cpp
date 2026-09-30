@@ -440,7 +440,7 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
       impl.value_range = *options.value_range;
     } else {
       // A few slices spread over the stack, first and last included.
-      constexpr std::size_t kSampleSlices = 9;
+      constexpr std::size_t kSampleSlices = 33;
       const std::size_t count = std::min(kSampleSlices, impl.slices.size());
       std::array<double, 2> found{std::numeric_limits<double>::infinity(),
                                   -std::numeric_limits<double>::infinity()};
@@ -452,7 +452,7 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
       if (!(found[0] <= found[1])) {
         throw std::runtime_error("The float slices hold no finite values");
       }
-      const double margin = found[1] > found[0] ? 0.05 * (found[1] - found[0]) : 0.5;
+      const double margin = found[1] > found[0] ? 0.1 * (found[1] - found[0]) : 0.5;
       impl.value_range = {found[0] - margin, found[1] + margin};
     }
     if (!(std::isfinite(impl.value_range[0]) && std::isfinite(impl.value_range[1]) &&

@@ -24,8 +24,8 @@ is kept wherever the data goes:
 - `ValueMapping` (`source.hpp`): `value = offset + scale * grey`. `VolumeSource::valueMapping()`
   is the identity for integer sources; `ConcatSource` requires all parts to map alike.
 - The value range (the values that become grey 0 and 65535) is given (`--value-range`,
-  `value_range`) or estimated from up to 9 slices spread over the stack, first and last included,
-  widened by 5 % of the range on each side. Values outside the range are clipped and not-a-number
+  `value_range`) or estimated from up to 33 slices spread over the stack, first and last included,
+  widened by 10 % of the range on each side (the step stays far below the noise). Values outside the range are clipped and not-a-number
   becomes 0; each clipped value is counted once and reported, so that nothing is lost silently.
 - `writeDataset` records the mapping in `index.json` as `value_mapping` (`offset`, `scale`), only
   when it is not the identity, so integer datasets keep their format. A single `.vdb` from

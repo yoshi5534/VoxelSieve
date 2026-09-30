@@ -333,6 +333,32 @@ TEST_F(DatasetTest, ReportsProgressPerStage) {
   EXPECT_LE(calls.size(), 3U * 101U);
 }
 
+TEST_F(DatasetTest, OutsideAirAxesMatchTheInMemorySieveAndAreRecorded) {
+  // A pipe along z that the first and last slice cut through.
+  Volume16 volume({48, 48, 40}, 0.1);
+  for (std::int64_t z = 0; z < 40; ++z) {
+    for (std::int64_t y = 0; y < 48; ++y) {
+      for (std::int64_t x = 0; x < 48; ++x) {
+        const bool wall =
+            x >= 8 && x < 40 && y >= 8 && y < 40 && !(x >= 12 && x < 36 && y >= 12 && y < 36);
+        volume.at(x, y, z) = wall ? 20000 : 1000;
+      }
+    }
+  }
+  DatasetOptions options;
+  options.brick_size = 16;
+  options.outside_air_axes = parseAirAxes("xy");
+  const DatasetInfo info = writeDataset(MemorySource(volume), dir_, options);
+  SieveOptions sieve_options;
+  sieve_options.outside_air_axes = options.outside_air_axes;
+  EXPECT_EQ(info.active_voxel_count,
+            static_cast<std::int64_t>(sieve(volume, sieve_options).grid->activeVoxelCount()));
+  const Dataset dataset = Dataset::open(dir_);
+  EXPECT_EQ(dataset.info().outside_air_axes, (AirAxes{true, true, false}));
+  EXPECT_TRUE(dataset.sample(0, {24, 24, 20}).has_value());  // the inside of the pipe
+  EXPECT_FALSE(dataset.sample(0, {2, 2, 20}).has_value());   // outside
+}
+
 TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
   PhantomSpec phantom = spec();
   phantom.dims = {64, 64, 64};

@@ -171,7 +171,8 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source, int k,
   return stats;
 }
 
-BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold) {
+BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold,
+                         const AirAxes& outside_air_axes) {
   BlockGrid blocks;
   blocks.dims = stats.block_dims;
   blocks.states.resize(stats.block_kth.size());
@@ -180,7 +181,7 @@ BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold) {
                    return static_cast<float>(kth) > threshold ? BlockState::kMaterial
                                                               : BlockState::kAir;
                  });
-  detail::floodFillOutsideAir(blocks);
+  detail::floodFillOutsideAir(blocks, outside_air_axes);
   return blocks;
 }
 
@@ -313,6 +314,9 @@ nlohmann::json toJson(const DatasetInfo& info) {
                {"active_voxel_count", info.active_voxel_count},
                {"overview", "overview.vdb"},
                {"levels", levels}});
+  if (info.outside_air_axes != kAllAxes) {
+    json["outside_air_axes"] = airAxesName(info.outside_air_axes);
+  }
   if (!info.value_mapping.isIdentity()) {
     json["value_mapping"] = {{"offset", info.value_mapping.offset},
                              {"scale", info.value_mapping.scale}};
@@ -365,13 +369,14 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
   info.brick_size = options.brick_size;
   info.margin_voxels = options.margin_voxels;
   info.min_material_voxels = options.min_material_voxels;
+  info.outside_air_axes = options.outside_air_axes;
 
   const BlockStatistics stats =
       collectBlockStatistics(source, options.min_material_voxels, options);
   const detail::ThresholdResult estimate = detail::otsuThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
-  const BlockGrid blocks = classifyBlocks(stats, info.threshold);
+  const BlockGrid blocks = classifyBlocks(stats, info.threshold, options.outside_air_axes);
 
   // Level 0.
   LevelInfo level0{0, info.dims, info.voxel_size, {}};
@@ -474,6 +479,9 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   info.margin_voxels = json.at("margin_voxels").get<int>();
   info.min_material_voxels = json.value("min_material_voxels", 1);  // absent before 0.2
   info.active_voxel_count = json.at("active_voxel_count").get<std::int64_t>();
+  if (json.contains("outside_air_axes")) {  // only when not all
+    info.outside_air_axes = parseAirAxes(json.at("outside_air_axes").get<std::string>());
+  }
   if (json.contains("value_mapping")) {  // float scans only
     info.value_mapping = {json.at("value_mapping").at("offset").get<double>(),
                           json.at("value_mapping").at("scale").get<double>()};

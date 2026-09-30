@@ -868,9 +868,9 @@ TEST_F(TiffTest, MapsFloatSlicesOntoGreyValues) {
     const TiffStackSource estimated(folder);
     EXPECT_TRUE(estimated.isFloat());
     EXPECT_EQ(estimated.bitsPerSample(), c.spec.bits);
-    // The estimate covers every value with a margin of 5 % of the range on each side.
-    EXPECT_NEAR(estimated.valueRange()[0], low - 0.05 * (high - low), 1e-6);
-    EXPECT_NEAR(estimated.valueRange()[1], high + 0.05 * (high - low), 1e-6);
+    // The estimate covers every value with a margin of 10 % of the range on each side.
+    EXPECT_NEAR(estimated.valueRange()[0], low - 0.1 * (high - low), 1e-6);
+    EXPECT_NEAR(estimated.valueRange()[1], high + 0.1 * (high - low), 1e-6);
     expectFloatValues(estimated, c.spec.bits);
 
     TiffStackOptions options;

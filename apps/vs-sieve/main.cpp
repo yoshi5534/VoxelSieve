@@ -70,6 +70,9 @@ Options:
   --threshold <value>     Air/material grey value (default: Otsu estimate)
   --margin <voxels>       Air margin kept around the part (default 3)
   --brick-size <voxels>   Brick edge length for datasets, multiple of 8 (default 256)
+  --air-from <axes>       Axes whose boundary faces let outside air in (default xyz). Use xy
+                          when the first and last slice cut through the part (a pipe, a long
+                          part scanned in sections), so its inside is kept
   --min-material <n>      Voxels above threshold for an 8^3 block to count as material
                           (default 1); raise it for noisy scans
   --dense                 .vdb only: write every voxel without sieving (baseline)
@@ -151,6 +154,9 @@ std::optional<Options> parse(int argc, char** argv) {
       options.dataset.brick_size = std::stoll(next());
     } else if (arg == "--phantom") {
       options.phantom = std::stoll(next());
+    } else if (arg == "--air-from") {
+      options.sieve.outside_air_axes = voxelsieve::parseAirAxes(next());
+      options.dataset.outside_air_axes = options.sieve.outside_air_axes;
     } else if (arg == "--min-material") {
       options.sieve.min_material_voxels = std::stoi(next());
       options.dataset.min_material_voxels = options.sieve.min_material_voxels;

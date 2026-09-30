@@ -28,7 +28,8 @@ struct TiffStackOptions {
   /// Overrides the voxel size of the files (edge length per axis, slice thickness).
   std::optional<VoxelSize> voxel_size;
   /// Float slices: the values mapped to grey 0 and 65535. Empty: estimated from a few slices
-  /// spread over the stack, widened by 5 % on each side. Values outside are clipped and counted.
+  /// spread over the stack (33), widened by 10 % on each side. Values outside are clipped and
+  /// counted.
   std::optional<std::array<double, 2>> value_range;
   /// Memory for decoded strips and tiles.
   std::size_t cache_bytes = std::size_t{1} << 30;

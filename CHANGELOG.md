@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Outside air only from some sides** (`outside_air_axes`, `vs-sieve --air-from xy`, parameter
+  of `import_raw` and `import_tiff`, ADR 0003 amendment): for parts that the first and last slice
+  cut through, such as pipes, the flood fill no longer enters through the end slices and removes
+  low-density fillings block by block.
+
 - **Progress of the streaming sieve** (`DatasetOptions::progress`): `vs-sieve` shows per pass the
   percentage done, the time so far and the time left (one line rewritten in place on a terminal,
   a line every 10 % in logs); `import_raw` and `import_tiff` report it to the studio.

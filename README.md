@@ -93,6 +93,7 @@ dataset.forEachBrick(1, [](const auto& brick, const openvdb::FloatGrid& grid) { 
 ./build/release/apps/vs-sieve/vs-sieve scan.zip --out scan.vsieve        # read without extracting
 ./build/release/apps/vs-sieve/vs-sieve scan.zip --folder target --threshold 0.5 --out labels.vsieve
 ./build/release/apps/vs-sieve/vs-sieve recon.zip --value-range -0.05,0.3 --out scan.vsieve  # float
+./build/release/apps/vs-sieve/vs-sieve pipe.zip --air-from xy --out pipe.vsieve  # cut at both ends
 ```
 
 A directory of slices, a multi-page TIFF or a ZIP archive of either is read directly
@@ -101,11 +102,12 @@ A directory of slices, a multi-page TIFF or a ZIP archive of either is read dire
 uncompressed, LZW, Deflate and PackBits, with or without horizontal predictor, and unsigned 8 or 16
 bit samples; 32-bit samples are accepted as long as they fit into 16 bits (label volumes). Float
 slices (32 or 64 bit, also with the floating-point predictor) are mapped linearly onto grey values
-0 to 65535 over a value range, given with `--value-range` or estimated from a few slices; the
+0 to 65535 over a value range, given with `--value-range` or estimated from 33 slices; the
 mapping is printed and recorded in the dataset's `index.json` (`value = offset + scale * grey`),
 and values outside the range are clipped and counted (ADR 0015). Colour and signed images are
-refused. When the input holds several folders of
-slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
+refused. When the first and last slice cut through the part (a pipe, a drill core), `--air-from
+xy` lets outside air in only from the sides, so the inside of the part is kept (ADR 0003). When
+the input holds several folders of slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
 comes from a centimetre resolution or an ImageJ description (including its slice `spacing`),
 otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
