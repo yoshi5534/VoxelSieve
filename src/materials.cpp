@@ -12,6 +12,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,7 @@
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -251,10 +253,13 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       info.air_level + options.grow_fraction * (info.air_threshold - info.air_level);
   info.grow_steps = options.grow_steps;
   info.min_neighbours = options.min_neighbours;
+  std::optional<TelemetryPhase> phase(std::in_place, "thresholds");
   const std::vector<float> thresholds =
       options.material_thresholds.empty()
           ? estimateMaterialThresholds(dataset, info.air_threshold, options.materials)
           : options.material_thresholds;
+  phase.reset();
+  phase.emplace("bricks");
   for (int m = 0; m < options.materials; ++m) {
     Material material;
     material.id = m + 1;

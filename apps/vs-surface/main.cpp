@@ -16,6 +16,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -37,6 +38,7 @@ Options:
   --vdb <file>            Also write it as a narrow-band level set "surface" for Blender/Houdini
   --json <file>           Also write the header as JSON
   --cache <MB>            Brick cache size (default 1024)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -49,6 +51,7 @@ struct Options {
   std::filesystem::path json;
   voxelsieve::SurfaceOptions surface;
   std::size_t cache_mb = 1024;
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -65,6 +68,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--info") {
       options.info = next();
     } else if (arg == "--stl") {
@@ -125,6 +130,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-surface");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
     std::filesystem::path file = options->info;
     if (file.empty()) {
@@ -154,6 +161,7 @@ int main(int argc, char** argv) {
       std::cout << std::setprecision(2) << "time               "
                 << std::chrono::duration<double>(written - start).count() << " s\n";
     }
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-surface: " << error.what() << "\n\n" << kUsage;

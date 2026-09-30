@@ -34,6 +34,9 @@ struct Step {
   std::string finished;
   std::vector<std::string> messages;
   nlohmann::json summary = nlohmann::json::object();
+  /// Time and resources the step used, per phase, without the timeline (telemetry.hpp); the whole
+  /// record with the timeline is telemetry.json in the step directory.
+  nlohmann::json telemetry = nlohmann::json::object();
 };
 
 /// A view saved under a name: the view state of the UI and a picture of it (views/<id>.png).

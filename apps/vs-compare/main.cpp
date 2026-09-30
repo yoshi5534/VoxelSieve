@@ -15,6 +15,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -35,6 +36,7 @@ Options:
   --tolerance <mm>        Deviations within +-tolerance are in tolerance (default 0.1)
   --all-surfaces          Also compare the surfaces of closed internal voids (pores)
   --aligned-stl           Also write the CAD model in scan coordinates (cad_aligned.stl)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -44,6 +46,7 @@ struct Options {
   std::filesystem::path out;
   bool aligned_stl = false;
   voxelsieve::CompareOptions compare;
+  std::filesystem::path telemetry;
 };
 
 std::vector<double> parseNumbers(const std::string& text) {
@@ -70,6 +73,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--align") {
       options.compare.alignment = voxelsieve::alignmentFromString(next());
     } else if (arg == "--initial") {
@@ -103,6 +108,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-compare");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto mask = voxelsieve::SurfaceMask::open(options->surface);
     const auto cad = voxelsieve::readStl(options->cad);
     const auto result = voxelsieve::compareToCad(mask, cad, options->compare);
@@ -131,6 +138,7 @@ int main(int argc, char** argv) {
               << "surface            " << s.vertices << " points, " << s.area_mm2 << " mm^2; "
               << result.dropped_components << " internal surfaces left out ("
               << result.dropped_area_mm2 << " mm^2)\n";
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-compare: " << error.what() << "\n\n" << kUsage;

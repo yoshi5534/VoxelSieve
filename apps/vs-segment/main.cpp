@@ -21,6 +21,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace {
@@ -51,6 +52,7 @@ Options:
                           Score only this box, for example data a model was not trained on
   --json <file>           Also write the materials and scores as JSON
   --cache <MB>            Brick cache size (default 1024)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -66,6 +68,7 @@ struct Options {
   std::size_t cache_mb = 1024;
   voxelsieve::SegmentationOptions segmentation;
   voxelsieve::ModelSegmentationOptions model_options;
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -94,6 +97,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--json") {
       options.json = next();
     } else if (arg == "--materials") {
@@ -160,6 +165,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-segment");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
     const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
     voxelsieve::MaterialVolumeInfo info;
@@ -226,6 +233,7 @@ int main(int argc, char** argv) {
     if (!options->json.empty()) {
       voxelsieve::writeJson(options->json, json);
     }
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-segment: " << error.what() << "\n\n" << kUsage;

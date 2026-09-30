@@ -16,6 +16,7 @@
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -42,6 +43,7 @@ Options:
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
   --cache <MB>            Brick cache size (default 1024)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -55,6 +57,7 @@ struct Options {
   bool print_template = false;
   voxelsieve::PorosityOptions porosity;
   std::size_t cache_mb = 1024;
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -73,6 +76,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.order = next();
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--surface") {
       options.surface = next();
     } else if (arg == "--comparison") {
@@ -119,6 +124,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-report");
+    const voxelsieve::TelemetryScope scope(telemetry);
     if (options->print_template) {
       std::cout << voxelsieve::defaultReportTemplate();
       return 0;
@@ -165,6 +172,7 @@ int main(int argc, char** argv) {
       }
       std::cout << "result             " << (evaluation.passed() ? "passed" : "FAILED") << "\n";
     }
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-report: " << error.what() << "\n\n" << kUsage;

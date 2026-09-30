@@ -17,6 +17,7 @@ add_executable(voxelsieve_tests
   test_compare.cpp
   test_render.cpp
   test_synthetic.cpp
+  test_telemetry.cpp
   test_tiff.cpp
   test_voxel_size.cpp
   test_vdb.cpp
@@ -78,7 +79,8 @@ add_test(NAME vs_porosity_cli_sieve
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve)
 set_tests_properties(vs_porosity_cli_sieve PROPERTIES DEPENDS vs_synth_cli FIXTURES_REQUIRED cli_porosity)
 add_test(NAME vs_porosity_cli COMMAND vs-porosity ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
-         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity)
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity
+         --telemetry ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity_telemetry.json)
 set_tests_properties(vs_porosity_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
 add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
          --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json

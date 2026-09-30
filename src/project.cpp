@@ -7,12 +7,15 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "voxelsieve/telemetry.hpp"
+
 namespace voxelsieve {
 namespace {
 
 using Json = nlohmann::json;
 
 constexpr int kProjectFormat = 1;
+constexpr const char* kTelemetryFile = "telemetry.json";
 constexpr std::size_t kMaxViewNameBytes = 200;
 constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
 
@@ -44,7 +47,8 @@ Json stepToJson(const Step& step) {
           {"started", step.started},
           {"finished", step.finished},
           {"messages", step.messages},
-          {"summary", step.summary}};
+          {"summary", step.summary},
+          {"telemetry", step.telemetry}};
 }
 
 Step stepFromJson(const Json& json) {
@@ -68,6 +72,7 @@ Step stepFromJson(const Json& json) {
   step.finished = json.value("finished", "");
   step.messages = json.value("messages", std::vector<std::string>{});
   step.summary = json.value("summary", Json::object());
+  step.telemetry = json.value("telemetry", Json::object());
   return step;
 }
 
@@ -247,8 +252,13 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
   }
   context.log = [&stored](const std::string& message) { stored.messages.push_back(message); };
   context.cancel = cancel;
+  Telemetry telemetry(info.id);
   try {
-    OperationResult result = operation->run(context);
+    OperationResult result;
+    {
+      const TelemetryScope scope(telemetry);
+      result = operation->run(context);
+    }
     for (const PortInfo& port : info.outputs) {
       const auto it = result.outputs.find(port.name);
       if (it == result.outputs.end()) {
@@ -265,10 +275,14 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
     stored.outputs.clear();
     stored.output_types.clear();
     std::filesystem::remove_all(dir);
+    stored.telemetry = telemetrySummary(telemetry.finish());
     stored.finished = nowUtc();
     save();
     throw;
   }
+  const Json record = telemetry.finish();
+  stored.telemetry = telemetrySummary(record);
+  std::ofstream(dir / kTelemetryFile) << record.dump() << '\n';
   stored.finished = nowUtc();
   save();
   return stored;

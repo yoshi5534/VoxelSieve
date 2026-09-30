@@ -642,6 +642,86 @@ function summaryTable(summary) {
   return rows.length ? el('table', { className: 'summary' }, rows) : null;
 }
 
+// Telemetry: time and resources of a step, per phase (step_telemetry for the timeline).
+
+const telemetryTimelines = new Map();
+
+function formatSeconds(seconds) {
+  if (seconds >= 90) return formatNumber(Math.round(seconds / 6) / 10) + ' min';
+  return formatNumber(Math.round(seconds * 10) / 10) + ' s';
+}
+
+function formatMb(mb) {
+  return formatBytes(Math.round(mb * 1024 * 1024));
+}
+
+function telemetryLine(telemetry) {
+  const total = telemetry?.total;
+  if (!total) return '';
+  const threads = telemetry.system?.threads;
+  return ' · ' + formatSeconds(total.wall_s) + ', ' + formatNumber(total.cores_used) +
+    (threads ? ' von ' + threads : '') + ' Kernen, ' + formatMb(total.peak_rss_mb) + ' Spitze';
+}
+
+function telemetryChart(timeline, system) {
+  const points = timeline.t_s ?? [];
+  if (points.length < 2) return el('p', { className: 'meta' }, 'Zu kurz für einen Zeitverlauf');
+  const width = 320;
+  const height = 90;
+  const end = points[points.length - 1];
+  const memory = points.map((_, i) => timeline.rss_anon_mb[i] + timeline.rss_file_mb[i]);
+  const series = [
+    { name: 'Kerne', values: timeline.cores_used, max: system?.threads || Math.max(...timeline.cores_used), color: 'var(--accent)' },
+    { name: 'Speicher', values: memory, max: Math.max(...memory, 1), color: 'var(--good)' },
+    { name: 'Lesen von Platte', values: timeline.disk_read_mb_s, max: Math.max(...timeline.disk_read_mb_s, 1), color: 'var(--bad)' },
+  ];
+  const lines = series.map((line) => {
+    const coordinates = line.values.map((value, i) =>
+      (points[i] / end * width).toFixed(1) + ',' + (height - Math.min(value / line.max, 1) * (height - 2) - 1).toFixed(1));
+    return '<polyline fill="none" stroke-width="1.5" stroke="' + line.color + '" points="' + coordinates.join(' ') + '"/>';
+  });
+  const chart = el('div', { className: 'telemetry-chart' });
+  chart.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' + lines.join('') + '</svg>';
+  const legend = el('div', { className: 'meta' }, series.map((line) => el('span', {},
+    el('span', { className: 'swatch', style: 'background:' + line.color }),
+    line.name + ' (max ' + (line.name === 'Kerne' ? formatNumber(line.max)
+      : line.name === 'Speicher' ? formatMb(line.max) : formatMb(line.max) + '/s') + ') ')),
+    ' · ' + formatSeconds(end));
+  return el('div', {}, chart, legend);
+}
+
+function telemetryDetails(step) {
+  const telemetry = step.telemetry;
+  if (!telemetry?.total) return null;
+  const rows = [...(telemetry.phases ?? []), { ...telemetry.total, name: 'Gesamt', depth: -1 }].map((phase) =>
+    el('tr', { className: phase.depth < 0 ? 'total' : null },
+      el('td', { style: 'padding-left:' + (Math.max(phase.depth, 0) * 12) + 'px' }, phase.name),
+      el('td', {}, formatSeconds(phase.wall_s)),
+      el('td', {}, formatNumber(phase.cores_used)),
+      el('td', {}, formatMb(phase.peak_rss_mb))));
+  const table = el('table', { className: 'summary telemetry' },
+    el('tr', {}, ['Phase', 'Zeit', 'Kerne', 'Speicher'].map((h) => el('th', {}, h))),
+    rows);
+  const total = telemetry.total;
+  const disk = el('div', { className: 'meta' }, 'Platte: ' + formatMb(total.disk_read_mb) + ' gelesen, ' +
+    formatMb(total.disk_write_mb) + ' geschrieben, ' + formatNumber(total.major_faults) + ' Seitenfehler');
+  const chart = el('div', {});
+  const key = step.id + '/' + step.started;
+  const load = async () => {
+    if (!telemetryTimelines.has(key)) {
+      telemetryTimelines.set(key, api('step_telemetry', { step: step.id }).catch(() => null));
+    }
+    const record = await telemetryTimelines.get(key);
+    chart.replaceChildren(record?.timeline ? telemetryChart(record.timeline, record.system) : '');
+  };
+  return el('details', { ontoggle: (event) => { if (event.target.open) load(); } },
+    el('summary', {}, 'Laufzeit und Ressourcen'),
+    table,
+    disk,
+    (telemetry.hints ?? []).map((hint) => el('div', { className: 'message' }, hint)),
+    chart);
+}
+
 function renderHeader() {
   const status = state.status;
   $('project-name').textContent = status.open ? status.name + ' — ' + status.dir : 'Kein Projekt';
@@ -664,11 +744,13 @@ function renderProtocol() {
       el('div', { className: 'title' }, statusText + ' ' + step.id + '. ' + step.title),
       el('div', { className: 'meta' }, formatTime(step.started),
         step.size_bytes ? ' · ' + formatBytes(step.size_bytes) : '',
+        telemetryLine(step.telemetry),
         step.active ? '' : ' · rückgängig gemacht'),
       step.messages.slice(-2).map((message) => el('div', { className: 'message' }, message)),
       el('details', {}, el('summary', {}, 'Details'),
         summaryTable(step.summary),
-        el('pre', {}, JSON.stringify({ params: step.params, inputs: step.inputs }, null, 1))));
+        el('pre', {}, JSON.stringify({ params: step.params, inputs: step.inputs }, null, 1))),
+      telemetryDetails(step));
     list.append(item);
   }
   list.lastElementChild?.scrollIntoView({ block: 'nearest' });

@@ -11,6 +11,7 @@
 #include <limits>
 #include <numbers>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,7 @@
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -915,6 +917,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   result.voxel_size = mask.info().voxel_size;
   result.cad_triangles = cad.triangles.size();
   const VoxelSize& v = result.voxel_size;
+  std::optional<TelemetryPhase> phase(std::in_place, "surface mesh");
   const MeshDistance nominal(cad);
 
   // The scanned surface in mm, split into connected surfaces.
@@ -1011,6 +1014,8 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   }
 
   // Alignment, as scan to CAD.
+  phase.reset();
+  phase.emplace("alignment");
   const double floor_mm = 0.5 * v.minMm();
   RigidTransform scan_to_cad = options.initial.inverse();
   if (options.alignment == CompareOptions::Alignment::kAuto) {
@@ -1044,6 +1049,8 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   result.cad_to_scan = scan_to_cad.inverse();
 
   // Deviation of every vertex of the scanned surface.
+  phase.reset();
+  phase.emplace("deviation");
   result.deviation_mm.resize(result.mesh.points.size());
   tbb::parallel_for(tbb::blocked_range<std::size_t>(0, result.mesh.points.size(), 1024),
                     [&](const tbb::blocked_range<std::size_t>& range) {

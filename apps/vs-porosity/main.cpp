@@ -13,6 +13,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -29,6 +30,7 @@ Options:
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
   --cache <MB>            Brick cache size (default 1024)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -37,6 +39,7 @@ struct Options {
   std::filesystem::path out;
   voxelsieve::PorosityOptions porosity;
   std::size_t cache_mb = 1024;
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -53,6 +56,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--min-pore") {
       options.porosity.min_pore_voxels = std::stoll(next());
     } else if (arg == "--zone-sigma") {
@@ -82,6 +87,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-porosity");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
     const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
     const auto result = voxelsieve::analyzePorosity(dataset, options->porosity);
@@ -105,6 +112,7 @@ int main(int argc, char** argv) {
               << "time               analyse "
               << std::chrono::duration<double>(analysed - start).count() << " s, write "
               << std::chrono::duration<double>(written - analysed).count() << " s\n";
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-porosity: " << error.what() << "\n\n" << kUsage;

@@ -11,6 +11,7 @@
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -25,12 +26,14 @@ Options:
   --noise <sigma>       Gaussian noise in grey values (default 500, 0 disables)
   --seed <n>            Noise seed (default 42)
   --solid               Solid box instead of a hollow one
+  --telemetry <file>    Write time and resource use per phase as JSON
   -h, --help            Show this help
 )";
 
 struct Options {
   std::filesystem::path out;
   voxelsieve::PhantomSpec spec = voxelsieve::defaultPhantomSpec();
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -48,6 +51,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--dims") {
       const std::int64_t n = std::stoll(next());
       options.spec.dims = {n, n, n};
@@ -78,11 +83,14 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-phantom");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto raw_path = std::filesystem::path(options->out).concat(".raw");
     const auto json_path = std::filesystem::path(options->out).concat(".json");
     voxelsieve::writeRaw(raw_path, voxelsieve::generatePhantom(options->spec));
     voxelsieve::writeJson(json_path, voxelsieve::phantomToJson(options->spec));
     std::cout << "Wrote " << raw_path.string() << " and " << json_path.string() << '\n';
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-phantom: " << error.what() << "\n\n" << kUsage;
