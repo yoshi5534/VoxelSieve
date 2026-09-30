@@ -27,7 +27,8 @@ inline constexpr AirAxes kAllAxes{true, true, true};
 [[nodiscard]] std::string airAxesName(const AirAxes& axes);
 
 struct SieveOptions {
-  /// Grey value separating air from material. Estimated with Otsu's method when unset.
+  /// Grey value separating air from material. Estimated from the histogram when unset: the
+  /// valley after the air peak, else Otsu's split.
   std::optional<float> threshold;
   /// Voxels of air kept around the part so sub-voxel surface determination still sees air.
   int margin_voxels = 3;
@@ -58,7 +59,8 @@ struct SieveResult {
   SieveStats stats;
 };
 
-/// Otsu threshold over a subsampled grey-value histogram.
+/// Air threshold over a subsampled grey-value histogram: the valley after the air peak, else
+/// Otsu's split.
 [[nodiscard]] float estimateThreshold(const Volume16& volume, int stride);
 
 /// Removes air connected to the volume boundary and keeps the part, its internal voids (pores,

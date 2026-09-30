@@ -24,16 +24,16 @@
 namespace voxelsieve {
 namespace {
 
+using detail::airThreshold;
 using detail::BlockGrid;
 using detail::BlockState;
 using detail::ceilDiv;
 using detail::floodFillOutsideAir;
 using detail::Histogram;
 using detail::kHistogramBins;
-using detail::otsuThreshold;
 using detail::ThresholdResult;
 
-ThresholdResult otsu(const Volume16& volume, int stride) {
+ThresholdResult estimateAirThreshold(const Volume16& volume, int stride) {
   if (stride < 1) {
     throw std::invalid_argument("histogram_stride must be >= 1");
   }
@@ -45,7 +45,7 @@ ThresholdResult otsu(const Volume16& volume, int stride) {
       }
     }
   }
-  return otsuThreshold(histogram);
+  return airThreshold(histogram);
 }
 
 BlockGrid classifyBlocks(const Volume16& volume, float threshold, int min_material_voxels) {
@@ -91,7 +91,7 @@ openvdb::Coord toCoord(std::int64_t x, std::int64_t y, std::int64_t z) {
 }  // namespace
 
 float estimateThreshold(const Volume16& volume, int stride) {
-  return otsu(volume, stride).threshold;
+  return estimateAirThreshold(volume, stride).threshold;
 }
 
 SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
@@ -102,7 +102,7 @@ SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
   SieveResult result;
   SieveStats& stats = result.stats;
 
-  const ThresholdResult estimate = otsu(volume, options.histogram_stride);
+  const ThresholdResult estimate = estimateAirThreshold(volume, options.histogram_stride);
   stats.threshold = options.threshold.value_or(estimate.threshold);
   stats.air_level = estimate.air_level;
 

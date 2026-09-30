@@ -468,7 +468,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
 
   const BlockStatistics stats =
       collectBlockStatistics(source, options.min_material_voxels, options);
-  const detail::ThresholdResult estimate = detail::otsuThreshold(stats.histogram);
+  const detail::ThresholdResult estimate = detail::airThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
   const BlockGrid blocks = classifyBlocks(stats, info.threshold, options.outside_air_axes);

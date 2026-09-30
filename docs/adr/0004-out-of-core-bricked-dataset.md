@@ -67,7 +67,8 @@ Memory stays bounded by the block map and a window of the input, independent of 
 
 1. **Pass 1, statistics:** stream the input in slabs (memory-mapped raw or slice images), build
    the full 16-bit histogram and store per 8³ block the maximum grey value (2 bytes per block,
-   about 600 MB for 5300³). Threshold by Otsu from the histogram.
+   about 600 MB for 5300³). Threshold by Otsu from the histogram. *Amended:* the valley after
+   the air peak when one lies below Otsu's split (see below).
 2. **Classify and flood-fill** on the block map in memory: material = block maximum above the
    threshold; outside air by flood fill from the volume faces (ADR 0003). The air margin is
    applied at block level first (neighbours of kept blocks), then trimmed to `margin_voxels`
@@ -112,3 +113,15 @@ loaded completely rather than delayed, so the memory counted against the budget 
 behind the cache's back. Not yet implemented: halo reads for neighbourhood algorithms (a region
 read covers them for now). TIFF stacks are read through `TiffStackSource` (ADR 0011). `min_material_voxels` works for streaming too
 (k-th largest value per block, see Consequences) and is recorded in `index.json`.
+
+## Amendment: threshold for scans of several materials
+
+Otsu's split falls between the two largest classes. In a scan of several materials (the LoDoInd
+pipe: plastic pipe, organic fillings, mortar and stones) that is between mortar and stones, so
+the pipe wall at the scan ends and the fillings counted as air: air entered the pipe through the
+weak wall at the ends and the fillings were cut out in 8³ blocks. The estimate now looks for the
+air peak, the lowest clear peak of the smoothed histogram (256 bins between the 0.1 and 99.9 %
+quantiles, grey 0 and 65535 left out as clipped or masked values), and puts the threshold into the
+valley towards the next peak when that valley lies at least 5 % of the highest bin below both
+peaks. Without such a valley below Otsu's split (air and one material) the threshold stays
+Otsu's. Both sieves use the same estimate (`detail::airThreshold`).

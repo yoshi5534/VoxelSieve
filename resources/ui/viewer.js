@@ -302,12 +302,18 @@ class SliceViewer {
     const [u0, v0] = this.screenToVoxel(0, 0);
     const [u1, v1] = this.screenToVoxel(width, height);
     const [du, dv] = this.planeDims();
+    // Tile edges snap to device pixels, so neighbouring tiles share an edge exactly. Fractional
+    // edges are antialiased on their own for each tile and leave a faint seam between them.
+    const ratio = window.devicePixelRatio || 1;
+    const snap = (value) => Math.round(value * ratio) / ratio;
     const tiles = [];
     for (let tv = Math.max(0, Math.floor(v0 / extent)); tv * extent < Math.min(v1, dv); tv += 1) {
       for (let tu = Math.max(0, Math.floor(u0 / extent)); tu * extent < Math.min(u1, du); tu += 1) {
-        const x = (tu * extent - this.center[0]) * this.zoom * su + width / 2;
-        const y = (tv * extent - this.center[1]) * this.zoom * sv + height / 2;
-        tiles.push([tu, tv, x, y, extent * this.zoom * su, extent * this.zoom * sv]);
+        const x0 = snap((tu * extent - this.center[0]) * this.zoom * su + width / 2);
+        const y0 = snap((tv * extent - this.center[1]) * this.zoom * sv + height / 2);
+        const x1 = snap(((tu + 1) * extent - this.center[0]) * this.zoom * su + width / 2);
+        const y1 = snap(((tv + 1) * extent - this.center[1]) * this.zoom * sv + height / 2);
+        tiles.push([tu, tv, x0, y0, x1 - x0, y1 - y0]);
       }
     }
     return tiles;
@@ -341,6 +347,15 @@ class SliceViewer {
     // scrolling shows whole slices instead of a black flash per step or a mix of tiles from
     // different slices. Without a complete slice, each tile takes its nearest one.
     const shown = this.shownSlice(level, visible);
+    // Tiles at the far edges reach past the volume; only the volume itself is drawn.
+    const [du, dv] = this.planeDims();
+    const [su, sv] = this.stretch();
+    const outline = [(0 - this.center[0]) * this.zoom * su + width / 2,
+      (0 - this.center[1]) * this.zoom * sv + height / 2, du * this.zoom * su, dv * this.zoom * sv];
+    context.save();
+    context.beginPath();
+    context.rect(...outline);
+    context.clip();
     for (let l = Math.min(level + 3, this.maxLevel()); l >= level; l -= 1) {
       for (const [tu, tv, x, y, w, h] of l === level ? visible : this.visibleTiles(l)) {
         let tile = this.tiles.get(this.key(l, tu, tv));
@@ -353,12 +368,10 @@ class SliceViewer {
         context.drawImage(this.renderTile(tile), x, y, w, h);
       }
     }
+    context.restore();
     // Outline of the volume.
-    const [du, dv] = this.planeDims();
-    const [su, sv] = this.stretch();
     context.strokeStyle = 'rgba(255,255,255,0.25)';
-    context.strokeRect((0 - this.center[0]) * this.zoom * su + width / 2,
-      (0 - this.center[1]) * this.zoom * sv + height / 2, du * this.zoom * su, dv * this.zoom * sv);
+    context.strokeRect(...outline);
 
     // Tiles load slice by slice: a slice once started loads completely before the next one
     // starts, at the slice current by then. Scrolling thus updates whole slices and skips those
