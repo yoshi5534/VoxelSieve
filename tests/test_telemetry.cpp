@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
+#include <sys/mman.h>
 
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -56,8 +58,12 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
     }
     {
       const TelemetryPhase memory("memory");
-      std::vector<std::uint8_t> block(kMemoryBytes, 1);  // touched, so resident
-      EXPECT_EQ(block[kMemoryBytes / 2], 1);
+      // Mapped directly, so it is returned on unmap (malloc and ASan's quarantine would keep it).
+      void* block =
+          mmap(nullptr, kMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      ASSERT_NE(block, MAP_FAILED);
+      std::memset(block, 1, kMemoryBytes);  // touched, so resident
+      munmap(block, kMemoryBytes);
     }
     {
       const TelemetryPhase write("write");
@@ -84,7 +90,7 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   EXPECT_GT(compute.at("cores_used").get<double>(), 0.0);
 
   const double memory_peak = phase(record, "memory").at("peak_rss_mb").get<double>();
-  EXPECT_GE(memory_peak, 90.0);
+  EXPECT_GE(memory_peak, phase(record, "compute").at("peak_rss_mb").get<double>() + 90.0);
   EXPECT_GE(record.at("total").at("peak_rss_mb").get<double>(), memory_peak);
   if (record.at("system").at("peak_per_phase").get<bool>()) {
     // The high-water mark restarts at each phase, so the write phase does not see the block.
