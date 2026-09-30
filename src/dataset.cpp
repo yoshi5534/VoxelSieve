@@ -16,12 +16,14 @@
 #include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
 #include "detail/blocks.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -459,6 +461,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
 
   std::unique_ptr<StagedSource> staged;
   if (options.stage_slow_sources && input.slowRandomAccess()) {
+    const TelemetryPhase phase("staging");
     staged = std::make_unique<StagedSource>(
         input, options.staging_dir.empty() ? dir : options.staging_dir, options);
     // The copy is all the passes read, so its pages should stay in memory, not the input's.
@@ -466,6 +469,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   }
   const VolumeSource& source = staged ? staged->source() : input;
 
+  std::optional<TelemetryPhase> phase(std::in_place, "pass 1 (histogram)");
   const BlockStatistics stats =
       collectBlockStatistics(source, options.min_material_voxels, options);
   const detail::ThresholdResult estimate = detail::otsuThreshold(stats.histogram);
@@ -474,6 +478,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   const BlockGrid blocks = classifyBlocks(stats, info.threshold, options.outside_air_axes);
 
   // Level 0.
+  phase.reset();
+  phase.emplace("pass 2 (bricks)");
   LevelInfo level0{0, info.dims, info.voxel_size, {}};
   const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
@@ -506,6 +512,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
        d = ceilDiv3(d, 2)) {
     ++level_count;
   }
+  phase.reset();
+  phase.emplace("levels");
   ProgressCounter level_progress(options, "levels", static_cast<std::size_t>(level_count - 1));
   while (true) {
     const LevelInfo& finer = info.levels.back();

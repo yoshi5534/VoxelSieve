@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include "voxelsieve/compare.hpp"
@@ -19,6 +20,7 @@
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -374,6 +376,7 @@ class Porosity final : public Operation {
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const PorosityResult porosity = analyzePorosity(dataset, options);
     context.progress(0.8);
+    const TelemetryPhase phase("write results");
     const auto dir = context.output_dir / "porosity";
     savePorosityResult(porosity, dir);
     writeJson(dir / "options.json", p);
@@ -433,8 +436,11 @@ class Surface final : public Operation {
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const auto dir = context.output_dir / "surface";
     std::filesystem::create_directories(dir);
+    std::optional<TelemetryPhase> phase(std::in_place, "surface mask");
     const SurfaceInfo info = writeSurface(dataset, dir / "surface.vss", options);
     context.progress(0.7);
+    phase.reset();
+    phase.emplace("images and meshes");
     const SurfaceMask mask = SurfaceMask::open(dir / "surface.vss");
     writeJson(dir / "surface.json", toJson(info));
     writeSurfaceImages(mask, dir);
@@ -511,6 +517,7 @@ class CompareCad final : public Operation {
     const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
     const CompareResult compared = compareToCad(mask, cad, options);
     context.progress(0.8);
+    const TelemetryPhase phase("write results");
     const auto dir = context.output_dir / "comparison";
     writeComparison(compared, dir);
     if (p.at("aligned_stl").get<bool>()) {
@@ -589,18 +596,23 @@ class Report final : public Operation {
       options.min_zone_void_fraction =
           used.value("min_zone_void_fraction", options.min_zone_void_fraction);
     }
+    std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
     const auto zones = inspectionZonesFromJson(order);
     const Evaluation evaluation = evaluate(porosity, zones);
     std::vector<std::string> warnings;
     Json data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
     if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
       context.log("Rendering the part and its pores");
+      phase.reset();
+      phase.emplace("images");
       addPartImages(data, SurfaceMask::open(surface->second / "surface.vss"), porosity);
     }
     if (const auto comparison = context.inputs.find("comparison");
         comparison != context.inputs.end()) {
       addComparison(data, comparison->second);
     }
+    phase.reset();
+    phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
     std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);

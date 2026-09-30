@@ -24,6 +24,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
 
@@ -81,6 +82,7 @@ Options:
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
   --dense                 .vdb only: write every voxel without sieving (baseline)
+  --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
 
@@ -101,6 +103,7 @@ struct Options {
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
   bool dense = false;
+  std::filesystem::path telemetry;
 
   [[nodiscard]] bool singleGrid() const { return out.extension() == ".vdb"; }
 };
@@ -119,6 +122,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--dims") {
       std::array<std::int64_t, 3> dims{};
       for (auto& d : dims) {
@@ -228,18 +233,6 @@ double megabytes(std::uintmax_t bytes) { return static_cast<double>(bytes) / (10
 
 double seconds(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
   return std::chrono::duration<double>(b - a).count();
-}
-
-/// Peak resident memory in MB from /proc (Linux), or a negative value where unavailable.
-double peakMemoryMb() {
-  std::ifstream status("/proc/self/status");
-  std::string line;
-  while (std::getline(status, line)) {
-    if (line.starts_with("VmHWM:")) {
-      return std::stod(line.substr(6)) / 1024.0;
-    }
-  }
-  return -1.0;
 }
 
 std::uintmax_t directorySize(const std::filesystem::path& dir) {
@@ -474,10 +467,6 @@ void runDataset(const Options& options) {
             << megabytes(directorySize(options.out)) << " MB dataset\n"
             << "time               " << seconds(start, done) << " s\n";
   reportClipped(floats);
-  if (const double peak = peakMemoryMb(); peak >= 0.0) {
-    // VmHWM also counts pages of a memory-mapped input, which the OS can reclaim at any time.
-    std::cout << "peak memory        " << peak << " MB (incl. mapped input pages)\n";
-  }
 }
 
 }  // namespace
@@ -489,11 +478,14 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-sieve");
+    const voxelsieve::TelemetryScope scope(telemetry);
     if (options->singleGrid()) {
       runSingleGrid(*options);
     } else {
       runDataset(*options);
     }
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-sieve: " << error.what() << "\n\n" << kUsage;
