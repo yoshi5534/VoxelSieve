@@ -30,8 +30,8 @@ is kept wherever the data goes:
 - `writeDataset` records the mapping in `index.json` as `value_mapping` (`offset`, `scale`), only
   when it is not the identity, so integer datasets keep their format. A single `.vdb` from
   `vs-sieve` carries `value_offset` and `value_scale` as grid metadata.
-- 32 and 64-bit float TIFFs are read, uncompressed or compressed as before, with the
-  floating-point predictor (3) as tifffile and libtiff write it.
+- 32 and 64-bit float TIFFs are read through libtiff (ADR 0016), uncompressed or compressed as
+  before, also with the floating-point predictor (3).
 
 The grids hold the grey values, as for every other input; `value_mapping` converts them back.
 

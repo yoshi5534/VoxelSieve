@@ -1,6 +1,6 @@
 # 0011: TIFF stacks and ZIP archives as input
 
-Status: accepted (2026-09-28)
+Status: accepted (2026-09-28); the readers are libtiff and libzip since ADR 0016
 
 ## Context
 
@@ -36,10 +36,10 @@ Pages are parsed on first access and strips or tiles are decoded on demand into 
 inflated as a whole when one of its chunks is needed, since deflate has no random access; slices
 are small compared with the cache, and stored entries could be read in place later if needed.
 
-The TIFF and ZIP readers are written in the library (`src/detail/tiff.cpp`, `src/detail/zip.cpp`,
-about 1000 lines) on top of zlib and CRC-32 from Boost, which VoxelSieve already uses. No new
-dependency: libtiff alone would not read from ZIP archives, and libzip plus libtiff for a
-read-only subset of both formats is more to install on every platform than the code it saves.
+The TIFF and ZIP readers were first written in the library on top of zlib and CRC-32 from Boost.
+Since ADR 0016 they are libtiff and libzip: `src/detail/tiff.cpp` feeds libtiff from a file or an
+inflated archive entry through `TIFFClientOpen`, and `src/detail/zip.cpp` keeps one libzip handle
+per concurrent reader.
 
 The studio gets the operation `import_tiff` (parameters like `import_raw` plus `folder`), and the
 file browser marks TIFF files, ZIP archives and directories with TIFF slices as kind `tiff`.

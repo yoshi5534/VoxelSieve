@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Slice view scrolls by whole slices**: a slice once started loads completely before the next
+  one starts, and the view shows the nearest complete slice until the current one is there, so
+  scrolling no longer leaves single tiles of other slices behind.
+
 - **Finer 3D view close up** (`VolumeRequest`, `readVolumePreview` with a region, `/api/volume`
   with `x0..z1`, `low`, `high`): when the camera comes close, the 3D view loads the part nearest
   it at the level a pixel there needs, up to 256 voxels per axis, and blends it into the coarse
@@ -22,6 +26,13 @@
   floating-point predictor. They are mapped linearly onto 16-bit grey values over a given or
   estimated value range; the mapping is recorded in `index.json` (`value_mapping`) and in the
   grid metadata of a single `.vdb`, and clipped values are counted.
+
+- **vcpkg** (ADR 0016): dependencies are declared in `vcpkg.json` and pinned by its baseline; the
+  CMake presets use vcpkg's toolchain, `tools/setup-vcpkg.sh` fetches it, and CI keeps built
+  packages in vcpkg's binary cache. File formats and compression come from established
+  libraries: TIFF is read with libtiff, ZIP archives with libzip, PNG is written with libpng and
+  PLY with tinyply; the own readers, decoders and checksums are gone. libtiff also reads float
+  slices with the floating-point predictor and every compression it is built with.
 
 - **Learned segmentation** (`voxelsieve::Model`, `segmentMaterialsWithModel`, `vs-segment
   --model`, studio operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as

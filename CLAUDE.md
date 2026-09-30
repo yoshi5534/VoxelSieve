@@ -40,8 +40,12 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 
 ## Build and test
 
-Dependencies (Ubuntu 24.04): `libopenvdb-dev libboost-iostreams-dev nlohmann-json3-dev libgtest-dev
-cmake ninja-build clang-format clang-tidy`.
+Dependencies come from vcpkg in manifest mode (`vcpkg.json`, versions pinned by
+`builtin-baseline`, ADR 0016). `tools/setup-vcpkg.sh` clones vcpkg at that commit into
+`$VCPKG_ROOT` (default `~/vcpkg`); export `VCPKG_ROOT` before configuring. The first configure
+builds OpenVDB, Boost and TBB from source; vcpkg's binary cache makes later ones fast. Tools from
+the system: `cmake ninja-build g++ clang-format clang-tidy` (plus `autoconf automake libtool` for
+some ports).
 
 ```sh
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
@@ -68,5 +72,8 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose
   geometry is known analytically. Defect analyses are scored against `SyntheticScan` ground truth. Prefer asserting against the analytic ground truth over
   snapshot values.
-- Keep dependencies minimal; adding one needs a short ADR.
+- Keep dependencies minimal; adding one needs a short ADR and goes into `vcpkg.json`.
+- File formats, compression and crypto always come from an established library (libtiff, libzip,
+  libpng, tinyply, Boost.Iostreams, OpenVDB, nlohmann/json, …), never our own parser, codec or
+  checksum (ADR 0016). Only VoxelSieve's own formats are written here.
 - Work happens on branches and pull requests; `main` stays green.

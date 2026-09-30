@@ -1,16 +1,16 @@
 #include <gtest/gtest.h>
+#include <tiffio.h>
+#include <unistd.h>
+#include <zip.h>
 
 #include <algorithm>
 #include <array>
-#include <bit>
-#include <boost/crc.hpp>
-#include <boost/iostreams/device/back_inserter.hpp>
-#include <boost/iostreams/filter/zlib.hpp>
-#include <boost/iostreams/filtering_stream.hpp>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -26,360 +26,146 @@
 namespace voxelsieve {
 namespace {
 
-// --- Writing TIFF files for the tests --------------------------------------------------------
+// --- Writing TIFF files and ZIP archives for the tests, with libtiff and libzip --------------
 
 struct TiffSpec {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   int bits = 16;
-  int sample_format = 1;
+  int sample_format = SAMPLEFORMAT_UINT;
   int samples_per_pixel = 1;
-  int compression = 1;  // 1 none, 5 LZW, 8 deflate, 32773 PackBits
-  int predictor = 1;
+  int compression = COMPRESSION_NONE;
+  int predictor = PREDICTOR_NONE;
   bool big_endian = false;
   bool bigtiff = false;
   std::uint32_t rows_per_strip = 0;  // 0: one strip
   std::uint32_t tile = 0;            // > 0: square tiles instead of strips
-  int resolution_unit = 2;
+  int resolution_unit = RESUNIT_INCH;
   double resolution = 0.0;  // pixels per unit, 0: no resolution tags
   std::string description;
 };
 
-class Bytes {
- public:
-  explicit Bytes(bool big_endian) : big_endian_(big_endian) {}
-  void put(std::uint64_t value, std::size_t size) {
-    for (std::size_t i = 0; i < size; ++i) {
-      const std::size_t shift = 8 * (big_endian_ ? size - 1 - i : i);
-      data_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFFU));
-    }
-  }
-  void append(const std::vector<std::uint8_t>& bytes) {
-    data_.insert(data_.end(), bytes.begin(), bytes.end());
-  }
-  void patch(std::size_t at, std::uint64_t value, std::size_t size) {
-    for (std::size_t i = 0; i < size; ++i) {
-      const std::size_t shift = 8 * (big_endian_ ? size - 1 - i : i);
-      data_[at + i] = static_cast<std::uint8_t>((value >> shift) & 0xFFU);
-    }
-  }
-  void align() {
-    if (data_.size() % 2 != 0) {
-      data_.push_back(0);
-    }
-  }
-  [[nodiscard]] std::size_t size() const { return data_.size(); }
-  [[nodiscard]] const std::vector<std::uint8_t>& data() const { return data_; }
-
- private:
-  bool big_endian_;
-  std::vector<std::uint8_t> data_;
-};
-
-/// TIFF LZW as libtiff writes it: MSB first, code width grows one code early, clear when full.
-std::vector<std::uint8_t> lzwEncode(const std::vector<std::uint8_t>& in) {
-  std::vector<std::uint8_t> out;
-  std::uint64_t buffer = 0;
-  int buffered = 0;
-  int width = 9;
-  const auto emit = [&](std::uint32_t code) {
-    buffer = (buffer << static_cast<unsigned>(width)) | code;
-    buffered += width;
-    while (buffered >= 8) {
-      buffered -= 8;
-      out.push_back(static_cast<std::uint8_t>((buffer >> static_cast<unsigned>(buffered)) & 0xFFU));
-    }
-  };
-  // Words as strings: GCC 13 at -O3 warns falsely on comparing vectors of bytes
-  // (stringop-overread).
-  std::map<std::string, std::uint32_t> table;
-  std::uint32_t next = 258;
-  emit(256);
-  std::string word;
-  const auto code = [&](const std::string& w) {
-    return w.size() == 1 ? std::uint32_t{static_cast<std::uint8_t>(w[0])} : table.at(w);
-  };
-  for (const std::uint8_t c : in) {
-    std::string longer = word;
-    longer.push_back(static_cast<char>(c));
-    if (word.empty() || longer.size() == 1 || table.contains(longer)) {
-      word = std::move(longer);
-      continue;
-    }
-    emit(code(word));
-    table[longer] = next++;
-    if (next == 4094) {
-      emit(256);
-      table.clear();
-      next = 258;
-      width = 9;
-    } else if (next > (1U << static_cast<unsigned>(width)) - 1) {
-      ++width;
-    }
-    word = std::string(1, static_cast<char>(c));
-  }
-  if (!word.empty()) {
-    emit(code(word));
-  }
-  emit(257);
-  if (buffered > 0) {
-    out.push_back(
-        static_cast<std::uint8_t>((buffer << static_cast<unsigned>(8 - buffered)) & 0xFFU));
-  }
-  return out;
+std::vector<std::uint8_t> readFile(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-std::vector<std::uint8_t> packBitsEncode(const std::vector<std::uint8_t>& in) {
-  std::vector<std::uint8_t> out;
-  std::size_t i = 0;
-  while (i < in.size()) {
-    std::size_t run = 1;
-    while (i + run < in.size() && run < 128 && in[i + run] == in[i]) {
-      ++run;
-    }
-    if (run >= 3) {
-      out.push_back(static_cast<std::uint8_t>(257 - run));  // -(run - 1)
-      out.push_back(in[i]);
-      i += run;
-      continue;
-    }
-    std::size_t literal = 0;
-    while (i + literal < in.size() && literal < 128 &&
-           (i + literal + 2 >= in.size() || in[i + literal] != in[i + literal + 1] ||
-            in[i + literal] != in[i + literal + 2])) {
-      ++literal;
-    }
-    literal = std::max<std::size_t>(literal, 1);
-    out.push_back(static_cast<std::uint8_t>(literal - 1));
-    out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(i),
-               in.begin() + static_cast<std::ptrdiff_t>(i + literal));
-    i += literal;
-  }
-  return out;
-}
-
-/// zlib stream, or raw deflate as in ZIP archives.
-std::vector<std::uint8_t> deflateEncode(const std::vector<std::uint8_t>& in, bool raw = false) {
-  namespace io = boost::iostreams;
-  std::string out;
-  {
-    io::zlib_params params;
-    params.noheader = raw;
-    io::filtering_ostream stream;
-    stream.push(io::zlib_compressor(params));
-    stream.push(io::back_inserter(out));
-    stream.write(reinterpret_cast<const char*>(in.data()), static_cast<std::streamsize>(in.size()));
-  }
-  return {out.begin(), out.end()};
-}
-
-/// One strip or tile of `pixels` (width x height, x fastest) in the file's layout and encoding.
-/// Float samples are given as their bit patterns.
-std::vector<std::uint8_t> encodeChunk(const TiffSpec& spec,
-                                      const std::vector<std::uint64_t>& pixels, std::uint32_t x0,
-                                      std::uint32_t y0, std::uint32_t w, std::uint32_t h) {
+/// Samples of `pixels` (width x height, x fastest) inside the chunk at x0, y0 of size w x h, in
+/// native byte order; float images hold the pixel values as floats.
+template <typename Pixel>
+std::vector<std::uint8_t> chunkSamples(const TiffSpec& spec, const std::vector<Pixel>& pixels,
+                                       std::uint32_t x0, std::uint32_t y0, std::uint32_t w,
+                                       std::uint32_t h) {
   const std::size_t sample_bytes = static_cast<std::size_t>(spec.bits) / 8;
-  const auto samples = static_cast<std::uint32_t>(spec.samples_per_pixel);
-  const auto pixel = [&](std::uint32_t x, std::uint32_t y) -> std::uint64_t {
-    return x < spec.width && y < spec.height ? pixels[std::size_t{y} * spec.width + x] : 0;
-  };
-  Bytes bytes(spec.big_endian);
+  const auto samples = static_cast<std::size_t>(spec.samples_per_pixel);
+  std::vector<std::uint8_t> out;
+  out.reserve(std::size_t{w} * h * samples * sample_bytes);
   for (std::uint32_t y = y0; y < y0 + h; ++y) {
-    if (spec.predictor == 3) {
-      // Floating-point predictor: byte planes, most significant first, differenced along the row.
-      std::vector<std::uint8_t> row(w * sample_bytes);
-      for (std::uint32_t x = 0; x < w; ++x) {
-        for (std::size_t b = 0; b < sample_bytes; ++b) {
-          row[b * w + x] =
-              static_cast<std::uint8_t>((pixel(x0 + x, y) >> (8 * (sample_bytes - 1 - b))) & 0xFFU);
-        }
-      }
-      for (std::size_t i = row.size() - 1; i > 0; --i) {
-        row[i] = static_cast<std::uint8_t>(row[i] - row[i - 1]);
-      }
-      bytes.append(row);
-      continue;
-    }
-    std::uint64_t previous = 0;
     for (std::uint32_t x = x0; x < x0 + w; ++x) {
-      for (std::uint32_t s = 0; s < samples; ++s) {
-        const std::uint64_t value = pixel(x, y);
-        const std::uint64_t mask = sample_bytes == 8 ? ~0ULL : (1ULL << (8 * sample_bytes)) - 1;
-        bytes.put(spec.predictor == 2 ? (value - previous) & mask : value, sample_bytes);
-        if (s + 1 == samples) {
-          previous = value;
-        }
+      const Pixel pixel =
+          x < spec.width && y < spec.height ? pixels[std::size_t{y} * spec.width + x] : Pixel{};
+      std::array<std::uint8_t, 8> bytes{};
+      if (spec.sample_format == SAMPLEFORMAT_IEEEFP && sample_bytes == 4) {
+        const auto f = static_cast<float>(pixel);
+        std::memcpy(bytes.data(), &f, 4);
+      } else if (spec.sample_format == SAMPLEFORMAT_IEEEFP) {
+        const auto d = static_cast<double>(pixel);
+        std::memcpy(bytes.data(), &d, 8);
+      } else if (sample_bytes == 1) {
+        bytes[0] = static_cast<std::uint8_t>(pixel);
+      } else if (sample_bytes == 2) {
+        const auto v = static_cast<std::uint16_t>(pixel);
+        std::memcpy(bytes.data(), &v, 2);
+      } else {
+        const auto v = static_cast<std::uint32_t>(pixel);
+        std::memcpy(bytes.data(), &v, 4);
+      }
+      for (std::size_t s = 0; s < samples; ++s) {
+        out.insert(out.end(), bytes.begin(),
+                   bytes.begin() + static_cast<std::ptrdiff_t>(sample_bytes));
       }
     }
   }
-  switch (spec.compression) {
-    case 5:
-      return lzwEncode(bytes.data());
-    case 8:
-      return deflateEncode(bytes.data());
-    case 32773:
-      return packBitsEncode(bytes.data());
-    default:
-      return bytes.data();
-  }
+  return out;
 }
 
-struct Field {
-  std::uint16_t tag;
-  std::uint16_t type;  // 2 ascii, 3 short, 4 long, 5 rational, 16 long8
-  std::vector<std::uint64_t> values;
-  std::string text;
-};
-
-std::size_t typeSize(std::uint16_t type) {
-  switch (type) {
-    case 2:
-      return 1;
-    case 3:
-      return 2;
-    case 4:
-      return 4;
-    default:
-      return 8;
-  }
-}
-
-/// A TIFF file with one page per entry of `pages`.
-std::vector<std::uint8_t> writeTiff(const TiffSpec& spec,
-                                    const std::vector<std::vector<std::uint64_t>>& pages) {
-  Bytes out(spec.big_endian);
-  out.put(spec.big_endian ? 0x4D4D : 0x4949, 2);
-  const std::size_t offset_size = spec.bigtiff ? 8 : 4;
-  std::size_t next_ifd_at = 0;
+/// A TIFF file with one page per entry of `pages`, written by libtiff.
+template <typename Pixel>
+std::vector<std::uint8_t> writeTiffPages(const TiffSpec& spec,
+                                         const std::vector<std::vector<Pixel>>& pages) {
+  const auto file = std::filesystem::temp_directory_path() /
+                    ("voxelsieve_tiff_writer_" + std::to_string(::getpid()) + ".tif");
+  std::string mode = "w";
+  mode += spec.big_endian ? "b" : "l";
   if (spec.bigtiff) {
-    out.put(43, 2);
-    out.put(8, 2);
-    out.put(0, 2);
-  } else {
-    out.put(42, 2);
+    mode += "8";
   }
-  next_ifd_at = out.size();
-  out.put(0, offset_size);
-  const std::uint16_t offset_type = spec.bigtiff ? 16 : 4;
+  TIFF* tiff = TIFFOpen(file.c_str(), mode.c_str());
+  EXPECT_NE(tiff, nullptr);
+  if (tiff == nullptr) {
+    return {};
+  }
   for (const auto& pixels : pages) {
-    const std::uint32_t chunk_w = spec.tile > 0 ? spec.tile : spec.width;
-    const std::uint32_t chunk_h =
-        spec.tile > 0 ? spec.tile : (spec.rows_per_strip > 0 ? spec.rows_per_strip : spec.height);
-    std::vector<std::uint64_t> offsets;
-    std::vector<std::uint64_t> counts;
-    for (std::uint32_t y = 0; y < spec.height; y += chunk_h) {
-      for (std::uint32_t x = 0; x < spec.width; x += chunk_w) {
-        // The last strip holds only the rows that are left; tiles are always whole.
-        const std::uint32_t h = spec.tile > 0 ? chunk_h : std::min(chunk_h, spec.height - y);
-        const auto chunk = encodeChunk(spec, pixels, x, y, chunk_w, h);
-        offsets.push_back(out.size());
-        counts.push_back(chunk.size());
-        out.append(chunk);
-        out.align();
-      }
+    TIFFSetField(tiff, TIFFTAG_IMAGEWIDTH, spec.width);
+    TIFFSetField(tiff, TIFFTAG_IMAGELENGTH, spec.height);
+    TIFFSetField(tiff, TIFFTAG_BITSPERSAMPLE, spec.bits);
+    TIFFSetField(tiff, TIFFTAG_SAMPLESPERPIXEL, spec.samples_per_pixel);
+    TIFFSetField(tiff, TIFFTAG_SAMPLEFORMAT, spec.sample_format);
+    TIFFSetField(tiff, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    TIFFSetField(tiff, TIFFTAG_PHOTOMETRIC,
+                 spec.samples_per_pixel == 3 ? PHOTOMETRIC_RGB : PHOTOMETRIC_MINISBLACK);
+    TIFFSetField(tiff, TIFFTAG_COMPRESSION, spec.compression);
+    if (spec.predictor != PREDICTOR_NONE) {
+      TIFFSetField(tiff, TIFFTAG_PREDICTOR, spec.predictor);
     }
-    std::vector<Field> fields = {
-        {256, 4, {spec.width}, {}},
-        {257, 4, {spec.height}, {}},
-        {258,
-         3,
-         std::vector<std::uint64_t>(static_cast<std::size_t>(spec.samples_per_pixel),
-                                    static_cast<std::uint64_t>(spec.bits)),
-         {}},
-        {259, 3, {static_cast<std::uint64_t>(spec.compression)}, {}},
-        {262, 3, {spec.samples_per_pixel == 3 ? 2U : 1U}, {}},
-        {277, 3, {static_cast<std::uint64_t>(spec.samples_per_pixel)}, {}},
-        {339, 3, {static_cast<std::uint64_t>(spec.sample_format)}, {}},
-    };
     if (!spec.description.empty()) {
-      fields.push_back({270, 2, {}, spec.description});
-    }
-    if (spec.tile > 0) {
-      fields.push_back({322, 3, {spec.tile}, {}});
-      fields.push_back({323, 3, {spec.tile}, {}});
-      fields.push_back({324, offset_type, offsets, {}});
-      fields.push_back({325, offset_type, counts, {}});
-    } else {
-      fields.push_back({273, offset_type, offsets, {}});
-      fields.push_back({278, 4, {chunk_h}, {}});
-      fields.push_back({279, offset_type, counts, {}});
-    }
-    if (spec.predictor != 1) {
-      fields.push_back({317, 3, {static_cast<std::uint64_t>(spec.predictor)}, {}});
+      TIFFSetField(tiff, TIFFTAG_IMAGEDESCRIPTION, spec.description.c_str());
     }
     if (spec.resolution > 0.0) {
-      const auto numerator = static_cast<std::uint64_t>(spec.resolution * 1000.0);
-      fields.push_back({282, 5, {numerator, 1000}, {}});
-      fields.push_back({283, 5, {numerator, 1000}, {}});
-      fields.push_back({296, 3, {static_cast<std::uint64_t>(spec.resolution_unit)}, {}});
+      TIFFSetField(tiff, TIFFTAG_XRESOLUTION, static_cast<float>(spec.resolution));
+      TIFFSetField(tiff, TIFFTAG_YRESOLUTION, static_cast<float>(spec.resolution));
+      TIFFSetField(tiff, TIFFTAG_RESOLUTIONUNIT, spec.resolution_unit);
     }
-    std::ranges::sort(fields, {}, &Field::tag);
-    // Values too large for the entry go before the directory.
-    std::vector<std::uint64_t> value_offsets;
-    for (const Field& field : fields) {
-      const std::size_t count = field.type == 2   ? field.text.size() + 1
-                                : field.type == 5 ? field.values.size() / 2
-                                                  : field.values.size();
-      if (count * typeSize(field.type) <= offset_size) {
-        value_offsets.push_back(0);
-        continue;
-      }
-      value_offsets.push_back(out.size());
-      if (field.type == 2) {
-        for (const char c : field.text) {
-          out.put(static_cast<std::uint8_t>(c), 1);
-        }
-        out.put(0, 1);
-      } else {
-        for (const std::uint64_t v : field.values) {
-          out.put(v, field.type == 5 ? 4 : typeSize(field.type));
+    if (spec.tile > 0) {
+      TIFFSetField(tiff, TIFFTAG_TILEWIDTH, spec.tile);
+      TIFFSetField(tiff, TIFFTAG_TILELENGTH, spec.tile);
+      std::uint32_t index = 0;
+      for (std::uint32_t y = 0; y < spec.height; y += spec.tile) {
+        for (std::uint32_t x = 0; x < spec.width; x += spec.tile) {
+          auto chunk = chunkSamples(spec, pixels, x, y, spec.tile, spec.tile);
+          EXPECT_GE(TIFFWriteEncodedTile(tiff, index++, chunk.data(),
+                                         static_cast<tmsize_t>(chunk.size())),
+                    0);
         }
       }
-      out.align();
-    }
-    out.patch(next_ifd_at, out.size(), offset_size);
-    out.put(fields.size(), spec.bigtiff ? 8 : 2);
-    for (std::size_t i = 0; i < fields.size(); ++i) {
-      const Field& field = fields[i];
-      const std::size_t count = field.type == 2   ? field.text.size() + 1
-                                : field.type == 5 ? field.values.size() / 2
-                                                  : field.values.size();
-      out.put(field.tag, 2);
-      out.put(field.type, 2);
-      out.put(count, offset_size);
-      if (value_offsets[i] != 0) {
-        out.put(value_offsets[i], offset_size);
-      } else {
-        std::size_t written = 0;
-        if (field.type == 2) {
-          for (const char c : field.text) {
-            out.put(static_cast<std::uint8_t>(c), 1);
-          }
-          out.put(0, 1);
-          written = field.text.size() + 1;
-        } else {
-          for (const std::uint64_t v : field.values) {
-            out.put(v, typeSize(field.type));
-            written += typeSize(field.type);
-          }
-        }
-        out.put(0, offset_size - written);
+    } else {
+      const std::uint32_t rows = spec.rows_per_strip > 0 ? spec.rows_per_strip : spec.height;
+      TIFFSetField(tiff, TIFFTAG_ROWSPERSTRIP, rows);
+      std::uint32_t index = 0;
+      for (std::uint32_t y = 0; y < spec.height; y += rows) {
+        auto chunk = chunkSamples(spec, pixels, 0, y, spec.width, std::min(rows, spec.height - y));
+        EXPECT_GE(
+            TIFFWriteEncodedStrip(tiff, index++, chunk.data(), static_cast<tmsize_t>(chunk.size())),
+            0);
       }
     }
-    next_ifd_at = out.size();
-    out.put(0, offset_size);
+    EXPECT_NE(TIFFWriteDirectory(tiff), 0);
   }
-  return out.data();
+  TIFFClose(tiff);
+  auto bytes = readFile(file);
+  std::filesystem::remove(file);
+  return bytes;
 }
 
 std::vector<std::uint8_t> writeTiff(const TiffSpec& spec,
                                     const std::vector<std::vector<std::uint32_t>>& pages) {
-  std::vector<std::vector<std::uint64_t>> wide;
-  wide.reserve(pages.size());
-  for (const auto& page : pages) {
-    wide.emplace_back(page.begin(), page.end());
-  }
-  return writeTiff(spec, wide);
+  return writeTiffPages(spec, pages);
+}
+
+/// Float slices with any values, negative and not-a-number included.
+std::vector<std::uint8_t> writeFloatTiff(const TiffSpec& spec,
+                                         const std::vector<std::vector<double>>& pages) {
+  return writeTiffPages(spec, pages);
 }
 
 void writeFile(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
@@ -389,63 +175,35 @@ void writeFile(const std::filesystem::path& path, const std::vector<std::uint8_t
              static_cast<std::streamsize>(bytes.size()));
 }
 
-/// A ZIP archive; entries are deflated unless `stored`.
+/// A ZIP archive written by libzip; entries are deflated unless `stored`.
 std::vector<std::uint8_t> writeZip(
     const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& entries, bool stored) {
-  Bytes out(false);
-  Bytes directory(false);
-  for (const auto& [name, data] : entries) {
-    boost::crc_32_type crc;
-    crc.process_bytes(data.data(), data.size());
-    const std::vector<std::uint8_t> payload = stored ? data : deflateEncode(data, true);
-    const std::uint16_t method = stored ? 0 : 8;
-    const std::size_t local_offset = out.size();
-    out.put(0x04034b50, 4);
-    out.put(20, 2);
-    out.put(0, 2);
-    out.put(method, 2);
-    out.put(0, 4);  // time and date
-    out.put(crc.checksum(), 4);
-    out.put(payload.size(), 4);
-    out.put(data.size(), 4);
-    out.put(name.size(), 2);
-    out.put(0, 2);
-    for (const char c : name) {
-      out.put(static_cast<std::uint8_t>(c), 1);
-    }
-    out.append(payload);
-
-    directory.put(0x02014b50, 4);
-    directory.put(20, 2);
-    directory.put(20, 2);
-    directory.put(0, 2);
-    directory.put(method, 2);
-    directory.put(0, 4);
-    directory.put(crc.checksum(), 4);
-    directory.put(payload.size(), 4);
-    directory.put(data.size(), 4);
-    directory.put(name.size(), 2);
-    directory.put(0, 2);  // extra
-    directory.put(0, 2);  // comment
-    directory.put(0, 2);  // disk
-    directory.put(0, 2);  // internal attributes
-    directory.put(0, 4);  // external attributes
-    directory.put(local_offset, 4);
-    for (const char c : name) {
-      directory.put(static_cast<std::uint8_t>(c), 1);
-    }
+  const auto file = std::filesystem::temp_directory_path() /
+                    ("voxelsieve_zip_writer_" + std::to_string(::getpid()) + ".zip");
+  std::filesystem::remove(file);
+  int error = 0;
+  zip_t* archive = zip_open(file.c_str(), ZIP_CREATE | ZIP_EXCL, &error);
+  EXPECT_NE(archive, nullptr);
+  if (archive == nullptr) {
+    return {};
   }
-  const std::size_t directory_offset = out.size();
-  out.append(directory.data());
-  out.put(0x06054b50, 4);
-  out.put(0, 2);
-  out.put(0, 2);
-  out.put(entries.size(), 2);
-  out.put(entries.size(), 2);
-  out.put(directory.size(), 4);
-  out.put(directory_offset, 4);
-  out.put(0, 2);
-  return out.data();
+  for (const auto& [name, data] : entries) {
+    zip_int64_t index = 0;
+    if (name.ends_with('/')) {
+      index = zip_dir_add(archive, name.c_str(), ZIP_FL_ENC_UTF_8);
+    } else {
+      // libzip reads the buffer when the archive is closed, so it must outlive this loop.
+      zip_source_t* source = zip_source_buffer(archive, data.data(), data.size(), 0);
+      index = zip_file_add(archive, name.c_str(), source, ZIP_FL_ENC_UTF_8);
+      zip_set_file_compression(archive, static_cast<zip_uint64_t>(index),
+                               stored ? ZIP_CM_STORE : ZIP_CM_DEFLATE, 0);
+    }
+    EXPECT_GE(index, 0) << zip_strerror(archive);
+  }
+  EXPECT_EQ(zip_close(archive), 0);
+  auto bytes = readFile(file);
+  std::filesystem::remove(file);
+  return bytes;
 }
 
 // --- Test data ----------------------------------------------------------------------------------
@@ -532,17 +290,6 @@ TEST(Tiff, NaturalOrderComparesNumbersByValue) {
   EXPECT_EQ(names, (std::vector<std::string>{"s1", "s9", "s10", "s100"}));
 }
 
-TEST(Tiff, LzwAndPackBitsRoundTrip) {
-  std::vector<std::uint8_t> data;
-  data.reserve(30500);
-  for (int i = 0; i < 30000; ++i) {
-    data.push_back(static_cast<std::uint8_t>(i % 7 == 0 ? 42 : (i * 31 + i / 100) % 251));
-  }
-  data.insert(data.end(), 500, 9);  // long runs
-  EXPECT_EQ(detail::lzwDecode(lzwEncode(data), data.size()), data);
-  EXPECT_EQ(detail::packBitsDecode(packBitsEncode(data), data.size()), data);
-}
-
 TEST_F(TiffTest, ReadsAllEncodings) {
   struct Case {
     std::string name;
@@ -591,6 +338,53 @@ TEST_F(TiffTest, ReadsAllEncodings) {
     const TiffStackSource source(folder);
     EXPECT_EQ(source.bitsPerSample(), c.spec.bits);
     expectGreyValues(source, c.spec.bits);
+  }
+}
+
+TEST(Tiff, DecodesFloatSlices) {
+  // Float input (ADR 0015): 32 and 64 bit, with the floating-point predictor, in strips and tiles.
+  struct Case {
+    std::string name;
+    int bits;
+    int compression;
+    int predictor;
+    std::uint32_t tile;
+  };
+  const std::vector<Case> cases = {
+      {"float32", 32, COMPRESSION_NONE, PREDICTOR_NONE, 0},
+      {"float32_deflate_predictor", 32, COMPRESSION_ADOBE_DEFLATE, PREDICTOR_FLOATINGPOINT, 0},
+      {"float64_lzw_predictor_tiles", 64, COMPRESSION_LZW, PREDICTOR_FLOATINGPOINT, 16},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.name);
+    TiffSpec spec;
+    spec.width = static_cast<std::uint32_t>(kDims[0]);
+    spec.height = static_cast<std::uint32_t>(kDims[1]);
+    spec.bits = c.bits;
+    spec.sample_format = SAMPLEFORMAT_IEEEFP;
+    spec.compression = c.compression;
+    spec.predictor = c.predictor;
+    spec.tile = c.tile;
+    // Big endian only without the predictor: libtiff 4.5 writes that combination wrongly.
+    spec.big_endian = c.predictor == PREDICTOR_NONE;
+    const detail::MemoryBytes bytes(writeTiff(spec, {slicePixels(0, 16)}));
+    const detail::TiffPage page = detail::readTiffPages(bytes).front();
+    EXPECT_EQ(page.sample_format, SAMPLEFORMAT_IEEEFP);
+    EXPECT_NO_THROW(detail::checkSupported(page));  // read and mapped by TiffStackSource
+    EXPECT_ANY_THROW((void)detail::decodeTiffChunk(bytes, page, 0));
+    std::size_t mismatches = 0;
+    for (std::uint32_t chunk = 0; chunk < page.chunk_count; ++chunk) {
+      const auto values = detail::decodeTiffFloatChunk(bytes, page, chunk);
+      const std::uint32_t x0 = (chunk % page.chunks_across) * page.chunk_width;
+      const std::uint32_t y0 = (chunk / page.chunks_across) * page.chunk_height;
+      for (std::uint32_t y = y0; y < std::min(y0 + page.chunk_height, page.height); ++y) {
+        for (std::uint32_t x = x0; x < std::min(x0 + page.chunk_width, page.width); ++x) {
+          const double value = values[std::size_t{y - y0} * page.chunk_width + (x - x0)];
+          mismatches += value != greyValue(x, y, 0, 16) ? 1 : 0;
+        }
+      }
+    }
+    EXPECT_EQ(mismatches, 0U);
   }
 }
 
@@ -682,11 +476,11 @@ TEST_F(TiffTest, ReadsVoxelSize) {
 TEST_F(TiffTest, RejectsWhatCannotBeKeptExactly) {
   TiffSpec half;  // 16-bit float
   half.bits = 16;
-  half.sample_format = 3;
+  half.sample_format = SAMPLEFORMAT_IEEEFP;
   EXPECT_ANY_THROW(readAll(TiffStackSource(writeStack(half, "half"))));
 
   TiffSpec is_signed;
-  is_signed.sample_format = 2;
+  is_signed.sample_format = SAMPLEFORMAT_INT;
   EXPECT_ANY_THROW(readAll(TiffStackSource(writeStack(is_signed, "signed"))));
 
   // A value range is only for float slices.
@@ -704,7 +498,7 @@ TEST_F(TiffTest, RejectsWhatCannotBeKeptExactly) {
   wide.bits = 32;
   wide.width = 4;
   wide.height = 1;
-  writeFile(dir_ / "wide" / "a.tif", writeTiff(wide, {std::vector<std::uint32_t>{1, 2, 70000, 4}}));
+  writeFile(dir_ / "wide" / "a.tif", writeTiff(wide, {{1, 2, 70000, 4}}));
   EXPECT_ANY_THROW(readAll(TiffStackSource(dir_ / "wide")));
 
   // All slices must have the size of the first.
@@ -779,14 +573,12 @@ double floatValue(std::int64_t x, std::int64_t y, std::int64_t z) {
          0.017 * static_cast<double>(z) + 1.3e-5 * static_cast<double>((x * 7 + y * 3) % 11);
 }
 
-/// The values of slice `z` as 32 or 64-bit bit patterns, with one not-a-number when `with_nan`.
-std::vector<std::uint64_t> floatPixels(std::int64_t z, int bits, bool with_nan = false) {
-  std::vector<std::uint64_t> pixels;
+/// The values of slice `z`, with one not-a-number when `with_nan`.
+std::vector<double> floatPixels(std::int64_t z, bool with_nan = false) {
+  std::vector<double> pixels;
   for (std::int64_t y = 0; y < kDims[1]; ++y) {
     for (std::int64_t x = 0; x < kDims[0]; ++x) {
-      const double v = with_nan && x == 3 && y == 2 ? std::nan("") : floatValue(x, y, z);
-      pixels.push_back(bits == 32 ? std::bit_cast<std::uint32_t>(static_cast<float>(v))
-                                  : std::bit_cast<std::uint64_t>(v));
+      pixels.push_back(with_nan && x == 3 && y == 2 ? std::nan("") : floatValue(x, y, z));
     }
   }
   return pixels;
@@ -795,10 +587,9 @@ std::vector<std::uint64_t> floatPixels(std::int64_t z, int bits, bool with_nan =
 std::filesystem::path writeFloatStack(const std::filesystem::path& folder, TiffSpec spec) {
   spec.width = static_cast<std::uint32_t>(kDims[0]);
   spec.height = static_cast<std::uint32_t>(kDims[1]);
-  spec.sample_format = 3;
+  spec.sample_format = SAMPLEFORMAT_IEEEFP;
   for (std::int64_t z = 0; z < kDims[2]; ++z) {
-    writeFile(folder / ("f" + std::to_string(z) + ".tif"),
-              writeTiff(spec, std::vector<std::vector<std::uint64_t>>{floatPixels(z, spec.bits)}));
+    writeFile(folder / ("f" + std::to_string(z) + ".tif"), writeFloatTiff(spec, {floatPixels(z)}));
   }
   return folder;
 }
@@ -841,12 +632,12 @@ TEST_F(TiffTest, MapsFloatSlicesOntoGreyValues) {
   };
   add("float32", [](TiffSpec&) {});
   add("float32_deflate_predictor", [](TiffSpec& s) {
-    s.compression = 8;
-    s.predictor = 3;
+    s.compression = COMPRESSION_ADOBE_DEFLATE;
+    s.predictor = PREDICTOR_FLOATINGPOINT;
   });
   add("float32_lzw_tiles_predictor", [](TiffSpec& s) {
-    s.compression = 5;
-    s.predictor = 3;
+    s.compression = COMPRESSION_LZW;
+    s.predictor = PREDICTOR_FLOATINGPOINT;
     s.tile = 16;
   });
   add("float32_big_endian_strips", [](TiffSpec& s) {
@@ -854,11 +645,16 @@ TEST_F(TiffTest, MapsFloatSlicesOntoGreyValues) {
     s.rows_per_strip = 5;
   });
   add("float64", [](TiffSpec& s) { s.bits = 64; });
-  add("float64_deflate_predictor_big_endian", [](TiffSpec& s) {
+  // Big endian only without the predictor: libtiff 4.5 writes that combination wrongly.
+  add("float64_deflate_predictor", [](TiffSpec& s) {
     s.bits = 64;
-    s.compression = 8;
-    s.predictor = 3;
+    s.compression = COMPRESSION_ADOBE_DEFLATE;
+    s.predictor = PREDICTOR_FLOATINGPOINT;
+  });
+  add("float64_big_endian_tiles", [](TiffSpec& s) {
+    s.bits = 64;
     s.big_endian = true;
+    s.tile = 16;
   });
   const double low = floatValue(0, 0, 0);
   const double high = floatValue(kDims[0] - 1, kDims[1] - 1, kDims[2] - 1);
@@ -886,12 +682,11 @@ TEST_F(TiffTest, CountsClippedFloatValuesOnce) {
   spec.bits = 32;
   spec.width = static_cast<std::uint32_t>(kDims[0]);
   spec.height = static_cast<std::uint32_t>(kDims[1]);
-  spec.sample_format = 3;
+  spec.sample_format = SAMPLEFORMAT_IEEEFP;
   spec.tile = 16;  // padding beyond the image must not count
   for (std::int64_t z = 0; z < kDims[2]; ++z) {
     writeFile(dir_ / "clip" / ("f" + std::to_string(z) + ".tif"),
-              writeTiff(spec, std::vector<std::vector<std::uint64_t>>{
-                                  floatPixels(z, 32, /*with_nan=*/z == 1)}));
+              writeFloatTiff(spec, {floatPixels(z, /*with_nan=*/z == 1)}));
   }
   TiffStackOptions options;
   const double limit = 0.05;
@@ -921,8 +716,8 @@ TEST_F(TiffTest, CountsClippedFloatValuesOnce) {
 TEST_F(TiffTest, DatasetKeepsTheValueMapping) {
   TiffSpec spec;
   spec.bits = 32;
-  spec.compression = 8;
-  spec.predictor = 3;
+  spec.compression = COMPRESSION_ADOBE_DEFLATE;
+  spec.predictor = PREDICTOR_FLOATINGPOINT;
   const auto folder = writeFloatStack(dir_ / "float", spec);
   const TiffStackSource source(folder);
   DatasetOptions options;

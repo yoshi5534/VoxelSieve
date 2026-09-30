@@ -1,131 +1,128 @@
 #include "detail/tiff.hpp"
 
+#include <tiffio.h>
+
 #include <algorithm>
 #include <array>
-#include <bit>
-#include <boost/iostreams/device/array.hpp>
-#include <boost/iostreams/filter/zlib.hpp>
-#include <boost/iostreams/filtering_stream.hpp>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <fstream>
-#include <map>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 
 namespace voxelsieve::detail {
 namespace {
 
-enum Tag : std::uint16_t {
-  kWidth = 256,
-  kHeight = 257,
-  kBitsPerSample = 258,
-  kCompression = 259,
-  kPhotometric = 262,
-  kDescription = 270,
-  kStripOffsets = 273,
-  kSamplesPerPixel = 277,
-  kRowsPerStrip = 278,
-  kStripByteCounts = 279,
-  kXResolution = 282,
-  kYResolution = 283,
-  kResolutionUnit = 296,
-  kPredictor = 317,
-  kTileWidth = 322,
-  kTileLength = 323,
-  kTileOffsets = 324,
-  kTileByteCounts = 325,
-  kSampleFormat = 339,
+/// A ByteSource as libtiff sees a file: a read position and the callbacks of TIFFClientOpen.
+struct Stream {
+  const ByteSource* bytes = nullptr;
+  std::uint64_t position = 0;
+  std::string error;  // first message of libtiff's error handler
 };
 
-std::size_t typeSize(std::uint16_t type) {
-  switch (type) {
-    case 1:
-    case 2:
-    case 6:
-    case 7:
-      return 1;
-    case 3:
-    case 8:
-      return 2;
-    case 4:
-    case 9:
-    case 11:
-    case 13:
-      return 4;
-    case 5:
-    case 10:
-    case 12:
-    case 16:
-    case 17:
-    case 18:
-      return 8;
-    default:
-      return 0;
+tmsize_t readProc(thandle_t handle, void* buffer, tmsize_t size) {
+  auto& stream = *static_cast<Stream*>(handle);
+  const std::uint64_t total = stream.bytes->size();
+  const std::uint64_t n =
+      std::min<std::uint64_t>(static_cast<std::uint64_t>(std::max<tmsize_t>(size, 0)),
+                              total - std::min(stream.position, total));
+  try {
+    stream.bytes->read(stream.position, std::span(static_cast<std::uint8_t*>(buffer), n));
+  } catch (const std::exception& e) {
+    stream.error = e.what();
+    return -1;
   }
+  stream.position += n;
+  return static_cast<tmsize_t>(n);
 }
 
-class Reader {
- public:
-  Reader(const ByteSource& bytes, bool big_endian) : bytes_(bytes), big_endian_(big_endian) {}
+tmsize_t writeProc(thandle_t /*handle*/, void* /*buffer*/, tmsize_t /*size*/) { return -1; }
 
-  [[nodiscard]] std::uint64_t unsignedAt(std::uint64_t offset, std::size_t size) const {
-    std::array<std::uint8_t, 8> b{};
-    bytes_.read(offset, std::span(b.data(), size));
-    return decode(b.data(), size);
+toff_t seekProc(thandle_t handle, toff_t offset, int whence) {
+  auto& stream = *static_cast<Stream*>(handle);
+  switch (whence) {
+    case SEEK_SET:
+      stream.position = offset;
+      break;
+    case SEEK_CUR:
+      stream.position += offset;
+      break;
+    case SEEK_END:
+      stream.position = stream.bytes->size() + offset;
+      break;
+    default:
+      return static_cast<toff_t>(-1);
   }
-  [[nodiscard]] std::uint64_t decode(const std::uint8_t* p, std::size_t size) const {
-    std::uint64_t value = 0;
-    for (std::size_t i = 0; i < size; ++i) {
-      const std::size_t k = big_endian_ ? i : size - 1 - i;
-      value = (value << 8U) | p[k];
+  return stream.position;
+}
+
+int closeProc(thandle_t /*handle*/) { return 0; }
+
+toff_t sizeProc(thandle_t handle) { return static_cast<Stream*>(handle)->bytes->size(); }
+
+int errorHandler(TIFF* /*tiff*/, void* user_data, const char* module, const char* format,
+                 va_list args) {
+  auto& stream = *static_cast<Stream*>(user_data);
+  if (stream.error.empty()) {
+    std::array<char, 512> message{};
+    std::vsnprintf(message.data(), message.size(), format, args);
+    stream.error = std::string(module != nullptr ? module : "TIFF") + ": " + message.data();
+  }
+  return 1;  // handled, nothing on stderr
+}
+
+int warningHandler(TIFF* /*tiff*/, void* /*user_data*/, const char* /*module*/,
+                   const char* /*format*/, va_list /*args*/) {
+  return 1;  // unknown tags and the like are no reason to stop
+}
+
+/// An open TIFF image on a ByteSource; closed on destruction.
+class Tiff {
+ public:
+  /// Opens the file; `header_only` skips reading the first directory.
+  Tiff(const ByteSource& bytes, bool header_only) {
+    stream_.bytes = &bytes;
+    TIFFOpenOptions* options = TIFFOpenOptionsAlloc();
+    TIFFOpenOptionsSetErrorHandlerExtR(options, errorHandler, &stream_);
+    TIFFOpenOptionsSetWarningHandlerExtR(options, warningHandler, &stream_);
+    tiff_ = TIFFClientOpenExt("tiff", header_only ? "rhm" : "rm", &stream_, readProc, writeProc,
+                              seekProc, closeProc, sizeProc, nullptr, nullptr, options);
+    TIFFOpenOptionsFree(options);
+    if (tiff_ == nullptr) {
+      fail("Not a TIFF file");
     }
-    return value;
   }
-  [[nodiscard]] const ByteSource& bytes() const { return bytes_; }
+  Tiff(const Tiff&) = delete;
+  Tiff& operator=(const Tiff&) = delete;
+  Tiff(Tiff&&) = delete;
+  Tiff& operator=(Tiff&&) = delete;
+  ~Tiff() {
+    if (tiff_ != nullptr) {
+      TIFFClose(tiff_);
+    }
+  }
+
+  [[nodiscard]] TIFF* get() const { return tiff_; }
+
+  /// Throws with libtiff's message, if it gave one.
+  [[noreturn]] void fail(const std::string& what) const {
+    throw std::runtime_error(stream_.error.empty() ? what : what + " (" + stream_.error + ")");
+  }
 
  private:
-  const ByteSource& bytes_;
-  bool big_endian_;
+  Stream stream_;
+  TIFF* tiff_ = nullptr;
 };
 
-struct Field {
-  std::uint16_t type = 0;
-  std::uint64_t count = 0;
-  std::vector<std::uint8_t> data;  // count * type size bytes
-};
-
-std::vector<std::uint64_t> integers(const Reader& reader, const Field& field) {
-  const std::size_t size = typeSize(field.type);
-  std::vector<std::uint64_t> values;
-  if (field.type != 1 && field.type != 3 && field.type != 4 && field.type != 16 &&
-      field.type != 13 && field.type != 18) {
-    throw std::runtime_error("TIFF field of type " + std::to_string(field.type) +
-                             " where an integer is expected");
-  }
-  values.reserve(field.count);
-  for (std::uint64_t i = 0; i < field.count; ++i) {
-    values.push_back(reader.decode(&field.data[i * size], size));
-  }
-  return values;
-}
-
-std::uint64_t integer(const Reader& reader, const std::map<std::uint16_t, Field>& fields,
-                      std::uint16_t tag, std::uint64_t fallback) {
-  const auto found = fields.find(tag);
-  if (found == fields.end() || found->second.count == 0) {
+template <typename T>
+T field(TIFF* tiff, ttag_t tag, T fallback) {
+  T value = fallback;
+  if (TIFFGetField(tiff, tag, &value) == 0) {
     return fallback;
   }
-  return integers(reader, found->second).front();
-}
-
-double rational(const Reader& reader, const Field& field) {
-  if (field.type != 5 || field.count == 0) {
-    return 0.0;
-  }
-  const auto numerator = static_cast<double>(reader.decode(field.data.data(), 4));
-  const auto denominator = static_cast<double>(reader.decode(field.data.data() + 4, 4));
-  return denominator > 0.0 ? numerator / denominator : 0.0;
+  return value;
 }
 
 /// Number after `key` in an ImageJ description ("spacing=0.6"); 0 if missing.
@@ -166,13 +163,117 @@ double imageJUnitMm(const std::string& description) {
   return 0.0;
 }
 
-void inflate(std::span<const std::uint8_t> in, std::vector<std::uint8_t>& out) {
-  namespace io = boost::iostreams;
-  io::filtering_istream stream;
-  stream.push(io::zlib_decompressor());
-  stream.push(io::array_source(reinterpret_cast<const char*>(in.data()), in.size()));
-  stream.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
-  out.resize(static_cast<std::size_t>(stream.gcount()));
+TiffPage currentPage(TIFF* tiff) {
+  TiffPage page;
+  page.directory_offset = TIFFCurrentDirOffset(tiff);
+  page.width = field<std::uint32_t>(tiff, TIFFTAG_IMAGEWIDTH, 0);
+  page.height = field<std::uint32_t>(tiff, TIFFTAG_IMAGELENGTH, 0);
+  page.bits = field<std::uint16_t>(tiff, TIFFTAG_BITSPERSAMPLE, 1);
+  page.sample_format = field<std::uint16_t>(tiff, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+  page.samples_per_pixel = field<std::uint16_t>(tiff, TIFFTAG_SAMPLESPERPIXEL, 1);
+  page.compression = field<std::uint16_t>(tiff, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+  page.predictor = field<std::uint16_t>(tiff, TIFFTAG_PREDICTOR, PREDICTOR_NONE);
+  page.photometric = field<std::uint16_t>(tiff, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+  if (const char* description = field<const char*>(tiff, TIFFTAG_IMAGEDESCRIPTION, nullptr)) {
+    page.description = description;
+  }
+  if (page.width == 0 || page.height == 0) {
+    throw std::runtime_error("TIFF image of size 0");
+  }
+  if (TIFFIsTiled(tiff) != 0) {
+    page.chunk_width = field<std::uint32_t>(tiff, TIFFTAG_TILEWIDTH, 0);
+    page.chunk_height = field<std::uint32_t>(tiff, TIFFTAG_TILELENGTH, 0);
+    if (page.chunk_width == 0 || page.chunk_height == 0) {
+      throw std::runtime_error("TIFF tile of size 0");
+    }
+    page.chunks_across = (page.width + page.chunk_width - 1) / page.chunk_width;
+    page.chunk_count = TIFFNumberOfTiles(tiff);
+  } else {
+    page.chunk_width = page.width;
+    page.chunk_height =
+        std::min(field<std::uint32_t>(tiff, TIFFTAG_ROWSPERSTRIP, page.height), page.height);
+    page.chunk_count = TIFFNumberOfStrips(tiff);
+  }
+  const std::uint64_t chunks_down = (page.height + page.chunk_height - 1) / page.chunk_height;
+  if (page.chunk_height == 0 || page.chunk_count < chunks_down * page.chunks_across) {
+    throw std::runtime_error("TIFF image with missing strips or tiles");
+  }
+  // Pixel size: a centimetre resolution, or pixels per unit of an ImageJ description. Inch
+  // resolutions are left out: they are almost always a printing default such as 72 dpi.
+  // The slice spacing comes only from an ImageJ description ("spacing=").
+  const auto unit = field<std::uint16_t>(tiff, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
+  const double image_j_unit_mm = unit == RESUNIT_NONE ? imageJUnitMm(page.description) : 0.0;
+  const auto size_of = [&](ttag_t tag) {
+    const double resolution = field<float>(tiff, tag, 0.0F);
+    if (resolution > 0.0 && unit == RESUNIT_CENTIMETER) {
+      return 10.0 / resolution;
+    }
+    return resolution > 0.0 && image_j_unit_mm > 0.0 ? image_j_unit_mm / resolution : 0.0;
+  };
+  page.pixel_size_mm = size_of(TIFFTAG_XRESOLUTION);
+  page.pixel_height_mm = size_of(TIFFTAG_YRESOLUTION);
+  page.slice_spacing_mm = image_j_unit_mm * imageJNumber(page.description, "spacing=");
+  return page;
+}
+
+/// Throws unless libtiff can decode the page into single samples of a kind VoxelSieve reads.
+void checkDecodable(const TiffPage& page) {
+  if (page.samples_per_pixel != 1 || page.photometric > PHOTOMETRIC_MINISBLACK) {
+    throw std::runtime_error("Only grey-value TIFF images are supported, not colour");
+  }
+  const bool is_float = page.sample_format == SAMPLEFORMAT_IEEEFP;
+  if (is_float ? page.bits != 32 && page.bits != 64
+               : page.bits != 8 && page.bits != 16 && page.bits != 32) {
+    throw std::runtime_error("TIFF images with " + std::to_string(page.bits) +
+                             " bits per sample are not supported (" +
+                             (is_float ? "32 or 64" : "8, 16 or 32") + ")");
+  }
+  if (TIFFIsCODECConfigured(static_cast<std::uint16_t>(page.compression)) == 0) {
+    throw std::runtime_error("TIFF compression " + std::to_string(page.compression) +
+                             " is not supported");
+  }
+}
+
+/// The decoded bytes of one strip or tile, in native byte order and with the predictor undone,
+/// and the number of its rows inside the image.
+struct ChunkBytes {
+  std::vector<std::uint8_t> data;
+  std::size_t rows = 0;
+};
+
+ChunkBytes chunkBytes(const ByteSource& bytes, const TiffPage& page, std::size_t chunk) {
+  checkDecodable(page);
+  if (chunk >= page.chunk_count) {
+    throw std::out_of_range("TIFF chunk out of range");
+  }
+  const Tiff tiff(bytes, true);
+  if (TIFFSetSubDirectory(tiff.get(), page.directory_offset) == 0) {
+    tiff.fail("Broken TIFF directory");
+  }
+  const bool tiled = TIFFIsTiled(tiff.get()) != 0;
+  const std::size_t row_bytes =
+      std::size_t{page.chunk_width} * static_cast<std::size_t>(page.bits / 8);
+  ChunkBytes result;
+  // A strip at the bottom holds only the rows that are left; tiles are always complete.
+  result.rows = page.chunk_height;
+  if (!tiled) {
+    const std::size_t top = chunk * page.chunk_height;
+    result.rows = std::min<std::size_t>(page.chunk_height, page.height - top);
+  }
+  const std::size_t expected = result.rows * row_bytes;
+  result.data.resize(std::size_t{page.chunk_height} * row_bytes);
+  const auto index = static_cast<std::uint32_t>(chunk);
+  const auto size = static_cast<tmsize_t>(result.data.size());
+  const tmsize_t decoded = tiled
+                               ? TIFFReadEncodedTile(tiff.get(), index, result.data.data(), size)
+                               : TIFFReadEncodedStrip(tiff.get(), index, result.data.data(), size);
+  if (decoded < 0) {
+    tiff.fail("Cannot decode TIFF strip or tile " + std::to_string(chunk));
+  }
+  if (static_cast<std::size_t>(decoded) < expected) {
+    throw std::runtime_error("TIFF strip or tile is shorter than its image");
+  }
+  return result;
 }
 
 }  // namespace
@@ -201,324 +302,45 @@ void MemoryBytes::read(std::uint64_t offset, std::span<std::uint8_t> out) const 
 }
 
 std::vector<TiffPage> readTiffPages(const ByteSource& bytes, std::size_t max_pages) {
-  if (bytes.size() < 8) {
-    throw std::runtime_error("Not a TIFF file");
-  }
-  std::array<std::uint8_t, 4> magic{};
-  bytes.read(0, magic);
-  bool big_endian = false;
-  if (magic[0] == 'M' && magic[1] == 'M') {
-    big_endian = true;
-  } else if (magic[0] != 'I' || magic[1] != 'I') {
-    throw std::runtime_error("Not a TIFF file");
-  }
-  const Reader reader(bytes, big_endian);
-  const std::uint64_t version = reader.decode(magic.data() + 2, 2);
-  const bool big_tiff = version == 43;
-  if (version != 42 && !big_tiff) {
-    throw std::runtime_error("Not a TIFF file");
-  }
-  const std::size_t offset_size = big_tiff ? 8 : 4;
-  std::uint64_t ifd = reader.unsignedAt(big_tiff ? 8 : 4, offset_size);
+  const Tiff tiff(bytes, false);
   std::vector<TiffPage> pages;
-  std::vector<std::uint64_t> seen;
-  while (ifd != 0 && pages.size() < max_pages) {
-    if (std::find(seen.begin(), seen.end(), ifd) != seen.end() || ifd >= bytes.size()) {
-      throw std::runtime_error("Broken TIFF directory chain");
-    }
-    seen.push_back(ifd);
-    const std::size_t count_size = big_tiff ? 8 : 2;
-    const std::size_t entry_size = big_tiff ? 20 : 12;
-    const std::uint64_t count = reader.unsignedAt(ifd, count_size);
-    std::vector<std::uint8_t> entries(count * entry_size);
-    bytes.read(ifd + count_size, entries);
-    std::map<std::uint16_t, Field> fields;
-    for (std::uint64_t i = 0; i < count; ++i) {
-      const std::uint8_t* e = &entries[i * entry_size];
-      const auto tag = static_cast<std::uint16_t>(reader.decode(e, 2));
-      Field field;
-      field.type = static_cast<std::uint16_t>(reader.decode(e + 2, 2));
-      field.count = reader.decode(e + 4, offset_size);
-      const std::size_t size = typeSize(field.type);
-      if (size == 0) {
-        continue;
-      }
-      const std::uint64_t length = field.count * size;
-      if (length > (std::uint64_t{1} << 30)) {
-        throw std::runtime_error("TIFF field too large");
-      }
-      field.data.resize(length);
-      if (length <= offset_size) {
-        std::copy_n(e + 4 + offset_size, length, field.data.begin());
-      } else {
-        bytes.read(reader.decode(e + 4 + offset_size, offset_size), field.data);
-      }
-      fields[tag] = std::move(field);
-    }
-    ifd = reader.unsignedAt(ifd + count_size + count * entry_size, offset_size);
-
-    TiffPage page;
-    page.big_endian = big_endian;
-    page.width = static_cast<std::uint32_t>(integer(reader, fields, kWidth, 0));
-    page.height = static_cast<std::uint32_t>(integer(reader, fields, kHeight, 0));
-    page.bits = static_cast<int>(integer(reader, fields, kBitsPerSample, 1));
-    page.sample_format = static_cast<int>(integer(reader, fields, kSampleFormat, 1));
-    page.samples_per_pixel = static_cast<int>(integer(reader, fields, kSamplesPerPixel, 1));
-    page.compression = static_cast<int>(integer(reader, fields, kCompression, 1));
-    page.predictor = static_cast<int>(integer(reader, fields, kPredictor, 1));
-    page.photometric = static_cast<int>(integer(reader, fields, kPhotometric, 1));
-    if (const auto d = fields.find(kDescription); d != fields.end()) {
-      page.description.assign(d->second.data.begin(), d->second.data.end());
-      page.description = page.description.c_str();  // up to the terminating zero
-    }
-    if (fields.contains(kTileWidth)) {
-      page.chunk_width = static_cast<std::uint32_t>(integer(reader, fields, kTileWidth, 0));
-      page.chunk_height = static_cast<std::uint32_t>(integer(reader, fields, kTileLength, 0));
-      if (page.chunk_width == 0 || page.chunk_height == 0) {
-        throw std::runtime_error("TIFF tile of size 0");
-      }
-      page.chunks_across = (page.width + page.chunk_width - 1) / page.chunk_width;
-      page.offsets = integers(reader, fields.at(kTileOffsets));
-      page.byte_counts = integers(reader, fields.at(kTileByteCounts));
-    } else {
-      if (!fields.contains(kStripOffsets) || !fields.contains(kStripByteCounts)) {
-        throw std::runtime_error("TIFF image without strips or tiles");
-      }
-      page.chunk_width = page.width;
-      page.chunk_height = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-          integer(reader, fields, kRowsPerStrip, page.height), page.height));
-      page.offsets = integers(reader, fields.at(kStripOffsets));
-      page.byte_counts = integers(reader, fields.at(kStripByteCounts));
-    }
-    if (page.width == 0 || page.height == 0 || page.chunk_height == 0) {
-      throw std::runtime_error("TIFF image of size 0");
-    }
-    const std::uint64_t chunks_down = (page.height + page.chunk_height - 1) / page.chunk_height;
-    if (page.offsets.size() < chunks_down * page.chunks_across ||
-        page.byte_counts.size() < page.offsets.size()) {
-      throw std::runtime_error("TIFF image with missing strips or tiles");
-    }
-    // Pixel size: a centimetre resolution, or pixels per unit of an ImageJ description. Inch
-    // resolutions are left out: they are almost always a printing default such as 72 dpi.
-    // The slice spacing comes only from an ImageJ description ("spacing=").
-    const auto unit = integer(reader, fields, kResolutionUnit, 2);
-    const double image_j_unit_mm = unit == 1 ? imageJUnitMm(page.description) : 0.0;
-    const auto size_of = [&](std::uint16_t tag) {
-      const auto field = fields.find(tag);
-      const double resolution = field == fields.end() ? 0.0 : rational(reader, field->second);
-      if (resolution > 0.0 && unit == 3) {
-        return 10.0 / resolution;
-      }
-      return resolution > 0.0 && image_j_unit_mm > 0.0 ? image_j_unit_mm / resolution : 0.0;
-    };
-    page.pixel_size_mm = size_of(kXResolution);
-    page.pixel_height_mm = size_of(kYResolution);
-    page.slice_spacing_mm = image_j_unit_mm * imageJNumber(page.description, "spacing=");
-    pages.push_back(std::move(page));
-  }
-  if (pages.empty()) {
-    throw std::runtime_error("TIFF file without images");
-  }
+  do {
+    pages.push_back(currentPage(tiff.get()));
+  } while (pages.size() < max_pages && TIFFReadDirectory(tiff.get()) != 0);
   return pages;
 }
 
 void checkSupported(const TiffPage& page) {
-  if (page.samples_per_pixel != 1 || page.photometric > 1) {
-    throw std::runtime_error("Only grey-value TIFF images are supported, not colour");
-  }
-  if (page.sample_format == 3) {
-    if (page.bits != 32 && page.bits != 64) {
-      throw std::runtime_error("Float TIFF images with " + std::to_string(page.bits) +
-                               " bits per sample are not supported (32 or 64)");
-    }
-  } else if (page.sample_format != 1) {
+  if (page.sample_format != SAMPLEFORMAT_UINT && page.sample_format != SAMPLEFORMAT_IEEEFP) {
     throw std::runtime_error(
         "Signed TIFF images are not supported: grey values are kept as unsigned 16-bit");
-  } else if (page.bits != 8 && page.bits != 16 && page.bits != 32) {
-    throw std::runtime_error("TIFF images with " + std::to_string(page.bits) +
-                             " bits per sample are not supported (8, 16 or 32)");
   }
-  if (page.compression != 1 && page.compression != 5 && page.compression != 8 &&
-      page.compression != 32946 && page.compression != 32773) {
-    throw std::runtime_error("TIFF compression " + std::to_string(page.compression) +
-                             " is not supported (none, LZW, Deflate, PackBits)");
-  }
-  const bool is_float = page.sample_format == 3;
-  if (page.predictor != 1 && page.predictor != (is_float ? 3 : 2)) {
-    throw std::runtime_error("TIFF predictor " + std::to_string(page.predictor) +
-                             " is not supported for " + (is_float ? "float" : "integer") +
-                             " images");
-  }
+  checkDecodable(page);
 }
-
-std::vector<std::uint8_t> lzwDecode(std::span<const std::uint8_t> in, std::size_t expected) {
-  constexpr std::uint32_t kClear = 256;
-  constexpr std::uint32_t kEnd = 257;
-  std::array<std::uint16_t, 4096> prefix{};
-  std::array<std::uint8_t, 4096> suffix{};
-  std::array<std::uint8_t, 4096> first{};
-  std::array<std::uint16_t, 4096> length{};
-  for (std::uint32_t i = 0; i < 256; ++i) {
-    suffix[i] = static_cast<std::uint8_t>(i);
-    first[i] = static_cast<std::uint8_t>(i);
-    length[i] = 1;
-  }
-  std::vector<std::uint8_t> out;
-  out.reserve(expected);
-  std::uint64_t bit = 0;
-  const std::uint64_t bits = in.size() * 8;
-  std::uint32_t width = 9;
-  std::uint32_t next = 258;
-  std::uint32_t old = kClear;
-  const auto emit = [&](std::uint32_t code) {
-    const std::size_t start = out.size();
-    out.resize(start + length[code]);
-    for (std::size_t i = length[code]; i > 0; --i) {
-      out[start + i - 1] = suffix[code];
-      code = prefix[code];
-    }
-  };
-  while (bit + width <= bits && out.size() < expected) {
-    std::uint32_t code = 0;
-    for (std::uint32_t i = 0; i < width; ++i, ++bit) {
-      code = (code << 1U) | ((in[bit >> 3U] >> (7U - (bit & 7U))) & 1U);
-    }
-    if (code == kEnd) {
-      break;
-    }
-    if (code == kClear) {
-      width = 9;
-      next = 258;
-      old = kClear;
-      continue;
-    }
-    if (old == kClear) {
-      if (code > 255) {
-        throw std::runtime_error("Broken LZW data");
-      }
-      emit(code);
-      old = code;
-      continue;
-    }
-    if (code > next || next >= 4096) {
-      throw std::runtime_error("Broken LZW data");
-    }
-    const std::uint8_t head = code < next ? first[code] : first[old];
-    prefix[next] = static_cast<std::uint16_t>(old);
-    suffix[next] = head;
-    first[next] = first[old];
-    length[next] = static_cast<std::uint16_t>(length[old] + 1);
-    ++next;
-    emit(code);
-    old = code;
-    if (next + 1 >= (1U << width) && width < 12) {
-      ++width;  // early change, as in libtiff
-    }
-  }
-  if (out.size() > expected) {
-    out.resize(expected);
-  }
-  return out;
-}
-
-std::vector<std::uint8_t> packBitsDecode(std::span<const std::uint8_t> in, std::size_t expected) {
-  std::vector<std::uint8_t> out;
-  out.reserve(expected);
-  for (std::size_t i = 0; i < in.size() && out.size() < expected;) {
-    const auto n = static_cast<std::int8_t>(in[i++]);
-    if (n >= 0) {
-      const std::size_t count =
-          std::min<std::size_t>(static_cast<std::size_t>(n) + 1, in.size() - i);
-      out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(i),
-                 in.begin() + static_cast<std::ptrdiff_t>(i + count));
-      i += count;
-    } else if (n != -128 && i < in.size()) {
-      out.insert(out.end(), static_cast<std::size_t>(1 - n), in[i++]);
-    }
-  }
-  if (out.size() > expected) {
-    out.resize(expected);
-  }
-  return out;
-}
-
-namespace {
-
-/// Decompressed bytes of one strip or tile and the number of its rows inside the image.
-struct ChunkBytes {
-  std::vector<std::uint8_t> data;
-  std::size_t rows = 0;
-  std::size_t row_bytes = 0;
-};
-
-ChunkBytes chunkBytes(const ByteSource& bytes, const TiffPage& page, std::size_t chunk) {
-  checkSupported(page);
-  if (chunk >= page.offsets.size()) {
-    throw std::out_of_range("TIFF chunk out of range");
-  }
-  ChunkBytes result;
-  result.row_bytes =
-      static_cast<std::size_t>(page.chunk_width) * static_cast<std::size_t>(page.bits / 8);
-  // A strip at the bottom holds only the rows that are left; tiles are always complete.
-  result.rows = page.chunk_height;
-  if (page.chunks_across == 1 && page.chunk_width == page.width) {
-    const std::size_t top = chunk * page.chunk_height;
-    result.rows = std::min<std::size_t>(page.chunk_height, page.height - top);
-  }
-  const std::size_t expected = result.rows * result.row_bytes;
-  std::vector<std::uint8_t> raw(page.byte_counts[chunk]);
-  bytes.read(page.offsets[chunk], raw);
-  switch (page.compression) {
-    case 1:
-      result.data = std::move(raw);
-      break;
-    case 5:
-      result.data = lzwDecode(raw, expected);
-      break;
-    case 8:
-    case 32946:
-      result.data.resize(expected);
-      inflate(raw, result.data);
-      break;
-    case 32773:
-      result.data = packBitsDecode(raw, expected);
-      break;
-    default:
-      break;
-  }
-  if (result.data.size() < expected) {
-    throw std::runtime_error("TIFF strip or tile is shorter than its image");
-  }
-  return result;
-}
-
-}  // namespace
 
 std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPage& page,
                                            std::size_t chunk) {
-  if (page.sample_format == 3) {
+  if (page.sample_format == SAMPLEFORMAT_IEEEFP) {
     throw std::invalid_argument("Float TIFF chunks are decoded with decodeTiffFloatChunk");
   }
+  checkSupported(page);
   const ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
-  const std::size_t sample_bytes = static_cast<std::size_t>(page.bits) / 8;
-  const Reader reader(bytes, page.big_endian);
-  std::vector<std::uint16_t> out(static_cast<std::size_t>(page.chunk_width) * page.chunk_height, 0);
-  for (std::size_t y = 0; y < chunk_bytes.rows; ++y) {
-    const std::uint8_t* row = &chunk_bytes.data[y * chunk_bytes.row_bytes];
-    std::uint64_t previous = 0;
-    for (std::size_t x = 0; x < page.chunk_width; ++x) {
-      std::uint64_t value =
-          sample_bytes == 1 ? row[x] : reader.decode(&row[x * sample_bytes], sample_bytes);
-      if (page.predictor == 2) {
-        const std::uint64_t mask = page.bits == 64 ? ~0ULL : (1ULL << page.bits) - 1;
-        value = (value + previous) & mask;
-        previous = value;
-      }
+  const std::size_t count = std::size_t{page.chunk_width} * chunk_bytes.rows;
+  std::vector<std::uint16_t> out(std::size_t{page.chunk_width} * page.chunk_height, 0);
+  const std::uint8_t* data = chunk_bytes.data.data();
+  if (page.bits == 8) {
+    std::copy_n(data, count, out.begin());
+  } else if (page.bits == 16) {
+    std::memcpy(out.data(), data, count * sizeof(std::uint16_t));
+  } else {
+    for (std::size_t i = 0; i < count; ++i) {
+      std::uint32_t value = 0;
+      std::memcpy(&value, data + i * sizeof(value), sizeof(value));
       if (value > 0xFFFF) {
         throw std::runtime_error("32-bit TIFF value " + std::to_string(value) +
                                  " exceeds 65535 and cannot be kept exactly");
       }
-      out[y * page.chunk_width + x] = static_cast<std::uint16_t>(value);
+      out[i] = static_cast<std::uint16_t>(value);
     }
   }
   return out;
@@ -526,41 +348,21 @@ std::vector<std::uint16_t> decodeTiffChunk(const ByteSource& bytes, const TiffPa
 
 std::vector<double> decodeTiffFloatChunk(const ByteSource& bytes, const TiffPage& page,
                                          std::size_t chunk) {
-  if (page.sample_format != 3) {
+  if (page.sample_format != SAMPLEFORMAT_IEEEFP) {
     throw std::invalid_argument("decodeTiffFloatChunk needs a float TIFF image");
   }
-  ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
-  const std::size_t sample_bytes = static_cast<std::size_t>(page.bits) / 8;
-  const std::size_t width = page.chunk_width;
-  std::vector<double> out(width * page.chunk_height, 0.0);
-  std::vector<std::uint8_t> sample(sample_bytes);
-  for (std::size_t y = 0; y < chunk_bytes.rows; ++y) {
-    std::uint8_t* row = &chunk_bytes.data[y * chunk_bytes.row_bytes];
-    if (page.predictor == 3) {
-      // Floating-point predictor: bytes are differenced along the row, and the row holds the
-      // most significant byte of every sample first, then the next byte, and so on.
-      for (std::size_t i = 1; i < chunk_bytes.row_bytes; ++i) {
-        row[i] = static_cast<std::uint8_t>(row[i] + row[i - 1]);
-      }
+  const ChunkBytes chunk_bytes = chunkBytes(bytes, page, chunk);
+  const std::size_t count = std::size_t{page.chunk_width} * chunk_bytes.rows;
+  std::vector<double> out(std::size_t{page.chunk_width} * page.chunk_height, 0.0);
+  const std::uint8_t* data = chunk_bytes.data.data();
+  if (page.bits == 32) {
+    for (std::size_t i = 0; i < count; ++i) {
+      float value = 0.0F;
+      std::memcpy(&value, data + i * sizeof(value), sizeof(value));
+      out[i] = value;
     }
-    for (std::size_t x = 0; x < width; ++x) {
-      // Assemble the sample most significant byte first.
-      for (std::size_t b = 0; b < sample_bytes; ++b) {
-        if (page.predictor == 3) {
-          sample[b] = row[b * width + x];
-        } else {
-          sample[b] = row[x * sample_bytes + (page.big_endian ? b : sample_bytes - 1 - b)];
-        }
-      }
-      std::uint64_t word = 0;
-      for (const std::uint8_t byte : sample) {
-        word = (word << 8U) | byte;
-      }
-      out[y * width + x] =
-          sample_bytes == 4
-              ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(word)))
-              : std::bit_cast<double>(word);
-    }
+  } else {
+    std::memcpy(out.data(), data, count * sizeof(double));
   }
   return out;
 }

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "voxelsieve",
+  "version": "0.1.0",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-crc",
+    { "name": "boost-iostreams", "default-features": false, "features": ["zstd"] },
+    "gtest",
+    { "name": "libpng", "default-features": false },
+    { "name": "libzip", "default-features": false },
+    "nlohmann-json",
+    "openvdb",
+    "tinyply",
+    { "name": "tiff", "default-features": false, "features": ["zip"] }
+  ],
+  "builtin-baseline": "b3ae22aef2b857af6e80d756c13f15db12be4e8a"
+}
