@@ -87,7 +87,7 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --timeout 600
+        run: ctest --preset ${{ matrix.preset }} --timeout 600 --parallel "$(nproc)"
 
   lint:
     name: Format and clang-tidy
