@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **ZIP archives are read memory-mapped**: libzip now reads the archive from a memory mapping
+  instead of through stdio, where it read 4 KiB at a time with a seek before each read (about
+  11 million system calls for a 22 GB archive). The operating system now reads the file in large
+  blocks; staging a cold 2.9 GB float stack took 11 s instead of 15 s on 4 cores.
+
+- **A full disk is reported as such**: OpenVDB does not report failed writes, so a dataset written
+  to a full disk failed later with "not a VDB file". Writing a grid now stops with "No space left
+  on the device while writing ...".
+
 - **Faster TIFF import** (`VolumeSource::slowRandomAccess`, `DatasetOptions::stage_slow_sources`
   and `staging_dir`, `vs-sieve --staging-dir` and `--no-staging`, ADR 0011 amendment): a TIFF
   stack is first decoded once, slice by slice on all cores, into a temporary raw file (2 bytes per

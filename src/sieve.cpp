@@ -9,10 +9,13 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "detail/blocks.hpp"
@@ -172,6 +175,14 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
                                                                   : openvdb::io::COMPRESS_ZIP);
   file.write(grids);
   file.close();
+  // OpenVDB does not report failed writes. A full disk is the usual cause, and it would only
+  // show later as "not a VDB file", so check for it here.
+  std::error_code error;
+  const auto space =
+      std::filesystem::space(path.parent_path().empty() ? "." : path.parent_path(), error);
+  if (!error && space.available < (std::uintmax_t{1} << 20)) {
+    throw std::runtime_error("No space left on the device while writing " + path.string());
+  }
 }
 
 AirAxes parseAirAxes(std::string_view text) {

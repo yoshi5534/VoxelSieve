@@ -9,22 +9,33 @@ namespace voxelsieve::detail {
 void ZipArchive::Close::operator()(zip* archive) const { zip_discard(archive); }
 
 ZipArchive::Handle ZipArchive::open() const {
-  int error = 0;
-  zip_t* archive = zip_open(path_.c_str(), ZIP_RDONLY | ZIP_CHECKCONS, &error);
+  zip_error_t error;
+  zip_error_init(&error);
+  zip_source_t* source = zip_source_buffer_create(file_.data(), file_.size(), 0, &error);
+  zip_t* archive = source == nullptr
+                       ? nullptr
+                       : zip_open_from_source(source, ZIP_RDONLY | ZIP_CHECKCONS, &error);
   if (archive == nullptr) {
-    zip_error_t details;
-    zip_error_init_with_code(&details, error);
-    const std::string message = zip_error_strerror(&details);
-    zip_error_fini(&details);
+    zip_source_free(source);  // the archive owns it once open
+    const std::string message = zip_error_strerror(&error);
+    zip_error_fini(&error);
     throw std::runtime_error("Not a readable ZIP archive: " + path_.string() + " (" + message +
                              ")");
   }
+  zip_error_fini(&error);
   return Handle(archive);
 }
 
 ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
   if (!std::filesystem::is_regular_file(file)) {
     throw std::runtime_error("Cannot open " + file.string());
+  }
+  if (std::filesystem::file_size(file) == 0) {
+    throw std::runtime_error("Not a readable ZIP archive: " + file.string() + " (empty file)");
+  }
+  file_.open(file.string());
+  if (!file_.is_open()) {
+    throw std::runtime_error("Cannot map " + file.string());
   }
   Handle archive = open();
   const zip_int64_t count = zip_get_num_entries(archive.get(), 0);
