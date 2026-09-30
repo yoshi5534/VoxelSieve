@@ -2,6 +2,7 @@
 
 // Read access to ZIP archives through libzip (ADR 0016), without extracting them.
 
+#include <boost/iostreams/device/mapped_file.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -44,6 +45,9 @@ class ZipArchive {
   [[nodiscard]] Handle open() const;
 
   std::filesystem::path path_;
+  /// The archive, memory-mapped: libzip reads it from memory, so the operating system reads the
+  /// file in large blocks instead of libzip's 4 KiB reads, each after a seek.
+  boost::iostreams::mapped_file_source file_;
   std::vector<Entry> entries_;
   mutable std::mutex mutex_;
   mutable std::vector<Handle> idle_;  // open handles not in use
