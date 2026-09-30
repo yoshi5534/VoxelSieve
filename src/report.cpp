@@ -487,12 +487,11 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
     const std::string guideline = order.contains("acceptance")
                                       ? order["acceptance"].value("guideline", "BDG P 202")
                                       : "BDG P 202";
-    data["evaluation"] = {
-        {"guideline", guideline},
-        {"zones", evaluated},
-        {"passed", evaluation.passed()},
-        {"verdict", evaluation.passed() ? "The requirements are met."
-                                        : "The requirements are not met."}};
+    data["evaluation"] = {{"guideline", guideline},
+                          {"zones", evaluated},
+                          {"passed", evaluation.passed()},
+                          {"verdict", evaluation.passed() ? "The requirements are met."
+                                                          : "The requirements are not met."}};
   }
 
   data["images"] = {{"x", dataUri(image_dir / "projection_x.png")},
