@@ -518,11 +518,11 @@ SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int>
 }
 
 VolumePreview Studio::volumePreview(std::optional<int> dataset_step,
-                                    std::optional<int> porosity_step, std::int64_t max_size,
+                                    std::optional<int> porosity_step, const VolumeRequest& request,
                                     std::optional<int> materials_step) const {
   const auto [dataset, porosity] = openView(dataset_step, porosity_step);
   const auto materials = openMaterials(materials_step);
-  return readVolumePreview(*dataset, max_size, porosity.get(), materials.get());
+  return readVolumePreview(*dataset, request, porosity.get(), materials.get());
 }
 
 std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surface_step,

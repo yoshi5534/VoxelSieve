@@ -267,8 +267,11 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/volume?max=256[&step=1][&porosity=2][&materials=3]
+  ///                [&x0=..&y0=..&z0=..&x1=..&y1=..&z1=..][&low=..&high=..]
   /// Body: the volume preview (readVolumePreview) as one grey byte per voxel, then one overlay
-  /// byte per voxel, x fastest. Headers give dims, level, voxel size and window.
+  /// byte per voxel, x fastest. Headers give dims, level, voxel size and window. With a region
+  /// (level-0 voxels, max exclusive) only that part is read, finer, and X-Origin gives its first
+  /// voxel in level voxels; low and high set the window.
   http::message_generator volume(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const auto optional = [&values](const std::string& name) -> std::optional<int> {
@@ -279,8 +282,26 @@ struct HttpServer::Impl {
     if (max < 16 || max > 512) {
       throw std::invalid_argument("max must be between 16 and 512");
     }
-    const VolumePreview preview =
-        studio.volumePreview(optional("step"), optional("porosity"), max, optional("materials"));
+    VolumeRequest volume_request;
+    volume_request.max_size = max;
+    if (values.contains("x0")) {
+      Box region;
+      for (std::size_t a = 0; a < 3; ++a) {
+        const std::string axis(1, static_cast<char>('x' + a));
+        if (!values.contains(axis + "0") || !values.contains(axis + "1")) {
+          throw std::invalid_argument("A region needs x0, y0, z0, x1, y1 and z1");
+        }
+        region.min[a] = values.at(axis + "0");
+        region.max[a] = values.at(axis + "1");
+      }
+      volume_request.region = region;
+    }
+    if (values.contains("low") && values.contains("high")) {
+      volume_request.window = std::array<float, 2>{static_cast<float>(values.at("low")),
+                                                   static_cast<float>(values.at("high"))};
+    }
+    const VolumePreview preview = studio.volumePreview(optional("step"), optional("porosity"),
+                                                       volume_request, optional("materials"));
     std::string body(preview.grey.begin(), preview.grey.end());
     body.append(preview.overlay.begin(), preview.overlay.end());
     return binary(
@@ -288,6 +309,8 @@ struct HttpServer::Impl {
         {{"X-Dims", std::to_string(preview.dims[0]) + "," + std::to_string(preview.dims[1]) + "," +
                         std::to_string(preview.dims[2])},
          {"X-Level", std::to_string(preview.level)},
+         {"X-Origin", std::to_string(preview.origin[0]) + "," + std::to_string(preview.origin[1]) +
+                          "," + std::to_string(preview.origin[2])},
          {"X-Voxel-Size", std::to_string(preview.voxel_size[0]) + "," +
                               std::to_string(preview.voxel_size[1]) + "," +
                               std::to_string(preview.voxel_size[2])},

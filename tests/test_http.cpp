@@ -192,6 +192,12 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   const Reply volume = request(server_->port(), http::verb::get, "/api/volume?max=16");
   ASSERT_EQ(volume.status, 200U) << volume.body;
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume?max=5").status, 400U);
+  // A region near the camera, at level 0 with the given window.
+  const Reply part = request(server_->port(), http::verb::get,
+                             "/api/volume?max=16&x0=2&y0=3&z0=4&x1=12&y1=11&z1=10&low=0&high=100");
+  ASSERT_EQ(part.status, 200U) << part.body;
+  EXPECT_EQ(part.body.size(), 2U * 10U * 8U * 6U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume?x0=2&y0=3").status, 400U);
 
   // The extracted surface as a mesh: float32 points, then uint32 triangles, 12 bytes each.
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/surface").status, 400U);  // none yet

@@ -1270,11 +1270,26 @@ function renderVolumeView(panel, dataset) {
     volume.setTransfer(lookupTable(editor.points));
     editor.onSelect();
     renderSuggestions();
-    if (volume.mode >= 3 && volume.surface) return;  // the mesh status stays
-    status.textContent = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' +
-      formatVoxelSize(v.voxelSize.every((s) => s === v.voxelSize[0]) ? v.voxelSize[0] : v.voxelSize) +
-      ' mm · Ziehen dreht, Mausrad zoomt';
+    showVolumeStatus();
   };
+  /// Says which level is shown, and which finer one near the camera.
+  const showVolumeStatus = () => {
+    const v = volume.volume;
+    if (!v || (volume.mode >= 3 && volume.surface)) return;  // the mesh status stays
+    const size = (level) => {
+      const pitch = v.voxelSize.map((s) => s * 2 ** (level - v.level));
+      return formatVoxelSize(pitch.every((s) => s === pitch[0]) ? pitch[0] : pitch);
+    };
+    let text = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' + size(v.level) + ' mm';
+    const detail = volume.detail;
+    if (detail) {
+      text += ' · nahe der Kamera Stufe ' + detail.level + ' (' + detail.dims.join(' × ') +
+        ' Voxel à ' + size(detail.level) + ' mm)';
+    }
+    status.textContent = text + ' · Ziehen dreht, Rechts- oder Umschalt-Ziehen verschiebt, ' +
+      'Mausrad zoomt';
+  };
+  volume.onDetail = showVolumeStatus;
   panel.append(el('div', { className: 'viewer-tools' }, mode,
     el('label', { className: 'group' }, shading, 'Beleuchtung'),
     el('label', { className: 'group' }, 'Schnitt x', cut),

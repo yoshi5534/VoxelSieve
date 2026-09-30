@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Finer 3D view close up** (`VolumeRequest`, `readVolumePreview` with a region, `/api/volume`
+  with `x0..z1`, `low`, `high`): when the camera comes close, the 3D view loads the part nearest
+  it at the level a pixel there needs, up to 256 voxels per axis, and blends it into the coarse
+  volume. The camera can now come much closer and be moved (right or shift drag).
+
 - **Outside air only from some sides** (`outside_air_axes`, `vs-sieve --air-from xy`, parameter
   of `import_raw` and `import_tiff`, ADR 0003 amendment): for parts that the first and last slice
   cut through, such as pipes, the flood fill no longer enters through the end slices and removes

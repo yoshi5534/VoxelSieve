@@ -327,7 +327,10 @@ along each ray. The transfer function is edited on the histogram: click adds a c
 drag moves it, double click removes it; each point has its own colour, colour maps (Stahl,
 Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical settings. Pores
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
-part. The background can be a studio light, a gradient or a plain colour.
+part. The background can be a studio light, a gradient or a plain colour. Drag turns the part,
+right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
+camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
+the coarse volume, so the resolution grows where you look.
 
 "Extrahierte Oberfläche" shows only the surface from a run of the operation "Oberfläche", as a
 triangle mesh at full resolution rather than the coarse level. Flat regions get larger triangles,

@@ -143,6 +143,54 @@ TEST_F(SliceTest, VolumePreviewFitsAndShowsTheDefects) {
   EXPECT_EQ(readVolumePreview(*dataset_, 4096).level, 0);
 }
 
+TEST_F(SliceTest, VolumeRegionIsReadFinerWithTheWindowOfTheWhole) {
+  const PorosityResult porosity = analyzePorosity(*dataset_);
+  const VolumePreview whole = readVolumePreview(*dataset_, 32, &porosity);
+  ASSERT_GT(whole.level, 0);
+  // A part around a lunker, reaching past the volume on one side.
+  const Defect& lunker =
+      *std::find_if(scan_->defects().begin(), scan_->defects().end(),
+                    [](const Defect& d) { return d.type == DefectType::kLunker; });
+  const auto center = voxelOf(lunker.center_mm);
+  VolumeRequest request;
+  request.max_size = 32;
+  request.region = Box{{center[0] - 12, center[1] - 12, -5}, {center[0] + 12, center[1] + 12, 20}};
+  request.window = std::array<float, 2>{whole.low, whole.high};
+  const VolumePreview part = readVolumePreview(*dataset_, request, &porosity);
+  EXPECT_EQ(part.level, 0);
+  EXPECT_EQ(part.origin, (std::array<std::int64_t, 3>{center[0] - 12, center[1] - 12, 0}));
+  EXPECT_EQ(part.dims, (std::array<std::int64_t, 3>{24, 24, 20}));
+  EXPECT_EQ(part.low, whole.low);
+  EXPECT_EQ(part.high, whole.high);
+  const float scale = 255.0F / (part.high - part.low);
+  for (std::int64_t z = 0; z < part.dims[2]; z += 3) {
+    for (std::int64_t y = 0; y < part.dims[1]; y += 5) {
+      for (std::int64_t x = 0; x < part.dims[0]; x += 7) {
+        const std::array<std::int64_t, 3> voxel{part.origin[0] + x, part.origin[1] + y, z};
+        const float value = dataset_->sample(0, voxel).value_or(dataset_->info().air_level);
+        const auto expected = std::lround(std::clamp((value - part.low) * scale, 0.0F, 255.0F));
+        EXPECT_EQ(part.grey[static_cast<std::size_t>(x + 24 * (y + 24 * z))], expected);
+      }
+    }
+  }
+  // The lunker is marked at the finer level too, if it lies in the region.
+  if (center[2] < 20) {
+    const auto index = static_cast<std::size_t>(12 + 24 * (12 + 24 * center[2]));
+    EXPECT_EQ(part.overlay[index], static_cast<std::uint8_t>(SliceOverlay::kPore));
+  }
+  // A coarser level where the region does not fit, with the voxels covering it.
+  request.max_size = 8;
+  const VolumePreview coarse = readVolumePreview(*dataset_, request);
+  ASSERT_GT(coarse.level, 0);
+  const auto shift = static_cast<unsigned>(coarse.level);
+  EXPECT_LE(*std::max_element(coarse.dims.begin(), coarse.dims.end()), 8);
+  EXPECT_EQ(coarse.origin[0], (center[0] - 12) >> shift);
+  EXPECT_EQ(coarse.dims[2], ((20 - 1) >> shift) + 1);
+  // A region outside the volume holds nothing.
+  request.region = Box{{-10, -10, -10}, {-1, 5, 5}};
+  EXPECT_THROW((void)readVolumePreview(*dataset_, request), std::invalid_argument);
+}
+
 TEST_F(SliceTest, RejectsInvalidRequests) {
   SliceRequest request;
   request.axis = 3;
