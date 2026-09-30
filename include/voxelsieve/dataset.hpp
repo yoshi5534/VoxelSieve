@@ -29,7 +29,8 @@ namespace voxelsieve {
 /// voxel covers 2^L level-0 voxels per axis; its value is the mean of its active children.
 
 struct DatasetOptions {
-  /// Air/material grey value; Otsu estimate from the full histogram when unset.
+  /// Air/material grey value; estimated from the full histogram when unset (the valley after
+  /// the air peak, else Otsu's split).
   std::optional<float> threshold;
   /// Voxels of air kept around the part.
   int margin_voxels = 3;

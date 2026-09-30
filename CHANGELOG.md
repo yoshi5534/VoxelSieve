@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Threshold for scans of several materials**: the estimated air threshold is now the valley
+  between the air peak and the next material, not Otsu's split between the two largest classes
+  (ADR 0004 amendment). In the LoDoInd pipe Otsu's split lay between mortar and stones, so the
+  pipe wall at the weakly lit scan ends counted as air, outside air flooded the inside of the pipe
+  and the organic fillings were cut out in 8³ blocks. With air and a single material the
+  threshold stays Otsu's.
+
+- **Slice view without seams**: tiles are drawn at whole device pixels, so no faint line shows
+  between neighbouring tiles, and nothing is drawn past the edge of the volume.
+
 - **Staging lets go of the input** (`VolumeSource::releaseMemory`): once a TIFF stack is copied,
   its decoded-strip cache is emptied and the pages of the memory-mapped ZIP are dropped (and
   marked sequential while reading), so they no longer push the copy that pass 2 reads out of

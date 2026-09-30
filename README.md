@@ -130,8 +130,9 @@ Dimensions and voxel size are read from `phantom.json`, or given with `--dims X 
 `--voxel-size MM`. Voxels need not be cubes (ADR 0012): `--voxel-size 0.33,0.33,0.6` gives the
 edge along x, y and z, and `--slice-thickness 0.4` records slices thinner than their spacing
 (a gap between slices). All measurements, VDB transforms, images and viewers use the pitch per
-axis. The air/material threshold is estimated with Otsu's method unless `--threshold`
-is set; `--margin` controls how many voxels of air stay around the part. `--dense` writes every
+axis. The air/material threshold is estimated from the histogram unless `--threshold` is set:
+the valley between the air peak and the next material, so light materials in a scan of several
+count as material (Otsu's split when there is only one); `--margin` controls how many voxels of air stay around the part. `--dense` writes every
 voxel without sieving, as a baseline. The resulting `.vdb` opens directly in Blender or Houdini.
 
 Phantom benchmark (hollow box with pores filling about a quarter of the volume, noise σ = 500,
