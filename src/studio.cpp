@@ -297,6 +297,13 @@ std::vector<StudioMethod> Studio::methods() const {
       {"undo", "Undoes the latest active step. Instant; outputs stay until a new step runs.",
        objectSchema(Json::object())},
       {"redo", "Redoes the next undone step.", objectSchema(Json::object())},
+      {"step_telemetry",
+       "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
+       "and mapped file pages), bytes read and written and page faults, per phase, with hints "
+       "and a timeline sampled every second. Recorded locally for every operation.",
+       objectSchema(
+           {{"step",
+             {{"type", "integer"}, {"description", "Step id; default: the latest step"}}}})},
       {"list_operations",
        "All operations with inputs, outputs and parameter schema, including plugins.",
        objectSchema(Json::object())},
@@ -892,6 +899,25 @@ Json Studio::call(const std::string& method, const Json& arguments,
                               {"parameters", info.parameters}});
       }
       return {{"operations", operations}, {"plugin_messages", plugin_messages_}};
+    }
+    if (method == "step_telemetry") {
+      const auto& steps = project().steps();
+      if (steps.empty()) {
+        throw std::invalid_argument("The project has no steps");
+      }
+      const int id = checked.value("step", steps.back().id);
+      const auto step =
+          std::find_if(steps.begin(), steps.end(), [id](const Step& s) { return s.id == id; });
+      if (step == steps.end()) {
+        throw std::invalid_argument("No step " + std::to_string(id));
+      }
+      std::ifstream file(project().stepDir(*step) / "telemetry.json");
+      Json record = file ? Json::parse(file, nullptr, false) : Json();
+      if (record.is_discarded() || !record.is_object()) {
+        record = step->telemetry;  // failed steps keep only the summary
+      }
+      record["step"] = id;
+      return record;
     }
     if (method == "dataset_info") {
       const ArtifactRef ref = artifactRef(checked, artifact::kDataset);
