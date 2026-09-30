@@ -5,9 +5,12 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
+#include "detail/blocks.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/sieve.hpp"
 
@@ -31,6 +34,74 @@ TEST(Sieve, OtsuThresholdSeparatesAirAndMaterial) {
   const auto midpoint = 0.5F * static_cast<float>(spec.air_value + spec.material_value);
   const auto contrast = static_cast<float>(spec.material_value - spec.air_value);
   EXPECT_NEAR(threshold, midpoint, 0.2F * contrast);
+}
+
+// Gaussian peak of `count` entries at `mean` with spread `sigma`, added to a grey histogram.
+void addPeak(detail::Histogram& histogram, double mean, double sigma, double count) {
+  for (std::size_t value = 0; value < histogram.size(); ++value) {
+    const double z = (static_cast<double>(value) - mean) / sigma;
+    histogram[value] += static_cast<std::uint64_t>(count * std::exp(-0.5 * z * z));
+  }
+}
+
+TEST(Sieve, AirThresholdIsOtsuForAirAndOneMaterial) {
+  detail::Histogram histogram(detail::kHistogramBins, 0);
+  addPeak(histogram, 5000.0, 600.0, 1000.0);
+  addPeak(histogram, 30000.0, 900.0, 500.0);
+  EXPECT_EQ(detail::airThreshold(histogram).threshold, detail::otsuThreshold(histogram).threshold);
+}
+
+// A scan of several materials: little air, a light material (a plastic, organic fillings) and a
+// lot of dense material. Otsu splits light from dense; the air threshold lies between air and
+// the light material, so that is kept.
+TEST(Sieve, AirThresholdSeparatesAirFromTheLightestMaterial) {
+  detail::Histogram histogram(detail::kHistogramBins, 0);
+  addPeak(histogram, 3000.0, 400.0, 3000.0);
+  addPeak(histogram, 9000.0, 1500.0, 1500.0);
+  addPeak(histogram, 30000.0, 3000.0, 4000.0);
+  // Clipped or masked voxels at grey 0 are no material peak.
+  histogram.front() += 10'000'000;
+  EXPECT_GT(detail::otsuThreshold(histogram).threshold, 12000.0F);
+  const detail::ThresholdResult air = detail::airThreshold(histogram);
+  EXPECT_GT(air.threshold, 4200.0F);
+  EXPECT_LT(air.threshold, 6500.0F);
+  EXPECT_LT(air.air_level, 3000.0F);  // the clipped voxels count as air
+}
+
+TEST(Sieve, KeepsALightMaterialNextToDenseOne) {
+  // Noisy air around a slab of light material that touches the volume boundary, and a larger
+  // dense block. With Otsu's split between light and dense, the light slab would be removed as
+  // air connected to the boundary.
+  constexpr std::int64_t kSize = 64;
+  Volume16 volume({kSize, kSize, kSize}, VoxelSize(1.0));
+  std::mt19937 random(7);
+  std::normal_distribution<double> noise(0.0, 300.0);
+  for (std::int64_t z = 0; z < kSize; ++z) {
+    for (std::int64_t y = 0; y < kSize; ++y) {
+      for (std::int64_t x = 0; x < kSize; ++x) {
+        double value = 3000.0;
+        if (x >= 40) {
+          value = 30000.0;
+        } else if (x >= 16 && y < 16) {
+          value = 9000.0;
+        }
+        volume.data[volume.index(x, y, z)] = static_cast<std::uint16_t>(value + noise(random));
+      }
+    }
+  }
+  const SieveResult result = sieve(volume);
+  EXPECT_LT(result.stats.threshold, 9000.0F);
+  EXPECT_GT(result.stats.threshold, 3000.0F);
+  const auto accessor = result.grid->getConstAccessor();
+  for (std::int64_t z = 0; z < kSize; ++z) {
+    for (std::int64_t y = 0; y < 16; ++y) {
+      for (std::int64_t x = 16; x < 40; ++x) {
+        ASSERT_TRUE(accessor.isValueOn(coord(x, y, z))) << x << " " << y << " " << z;
+      }
+    }
+  }
+  // Air away from the part is still removed.
+  EXPECT_FALSE(accessor.isValueOn(coord(0, kSize - 1, kSize / 2)));
 }
 
 TEST(Sieve, KeepsAllMaterialAndInternalAir) {

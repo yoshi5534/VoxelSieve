@@ -68,7 +68,7 @@ Options:
                           are clipped and counted
   --join <x|y|z>          Axis along which several inputs are joined (default z)
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
-  --threshold <value>     Air/material grey value (default: Otsu estimate)
+  --threshold <value>     Air/material grey value (default: estimated, valley after the air peak)
   --margin <voxels>       Air margin kept around the part (default 3)
   --brick-size <voxels>   Brick edge length for datasets, multiple of 8 (default 256)
   --air-from <axes>       Axes whose boundary faces let outside air in (default xyz). Use xy

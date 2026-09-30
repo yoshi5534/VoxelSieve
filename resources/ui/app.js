@@ -835,7 +835,7 @@ function renderDatasetStage(panel) {
           'oder ZIP gelesen. Liegen mehrere Ordner vor, werden die Grauwerte statt Label- oder ' +
           'Maskenordnern gewählt. Ohne Voxelgröße in den Dateien wird 1 mm angenommen.'
         : 'Abmessungen und Voxelgröße kommen aus der JSON-Datei neben den Rohdaten, ' +
-          'wenn sie nicht angegeben sind. Ohne Schwellwert wird er automatisch bestimmt (Otsu).'),
+          'wenn sie nicht angegeben sind. Ohne Schwellwert wird er automatisch bestimmt (Tal nach dem Luftpeak).'),
       form.element,
       el('div', { className: 'row' },
         runButton('Importieren', importOperation, () => form.values(), () => {
