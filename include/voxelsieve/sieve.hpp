@@ -2,9 +2,12 @@
 
 #include <openvdb/openvdb.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "voxelsieve/volume.hpp"
 
@@ -13,6 +16,15 @@ namespace voxelsieve {
 /// Edge length of a sieve block in voxels. Matches the OpenVDB leaf size so that every kept
 /// block becomes exactly one leaf node.
 inline constexpr std::int64_t kBlockSize = 8;
+
+/// Axes (x, y, z) through whose two boundary faces outside air enters the volume.
+using AirAxes = std::array<bool, 3>;
+inline constexpr AirAxes kAllAxes{true, true, true};
+
+/// "xy" -> {true, true, false}; letters x, y, z in any order, at least one.
+[[nodiscard]] AirAxes parseAirAxes(std::string_view text);
+/// {true, true, false} -> "xy".
+[[nodiscard]] std::string airAxesName(const AirAxes& axes);
 
 struct SieveOptions {
   /// Grey value separating air from material. Estimated with Otsu's method when unset.
@@ -24,6 +36,10 @@ struct SieveOptions {
   /// A block counts as material once it holds at least this many voxels above the threshold.
   /// Values above 1 make the sieve robust against isolated noise spikes in the air.
   int min_material_voxels = 1;
+  /// Where outside air enters. Leave z out for a part that the first and last slice cut through
+  /// (a pipe, a long part scanned in sections): its inside is then kept even where it opens
+  /// towards those slices.
+  AirAxes outside_air_axes = kAllAxes;
 };
 
 struct SieveStats {

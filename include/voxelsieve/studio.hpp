@@ -63,9 +63,10 @@ class Studio {
                                      std::optional<int> porosity_step, const SliceRequest& request,
                                      std::optional<int> materials_step = std::nullopt) const;
 
-  /// The volume of a dataset step for the 3D view (see readVolumePreview).
+  /// The volume of a dataset step, or a region of it, for the 3D view (see readVolumePreview).
   [[nodiscard]] VolumePreview volumePreview(std::optional<int> dataset_step,
-                                            std::optional<int> porosity_step, std::int64_t max_size,
+                                            std::optional<int> porosity_step,
+                                            const VolumeRequest& request,
                                             std::optional<int> materials_step = std::nullopt) const;
 
   /// Display mesh of the surface output of `surface_step` (default: the latest surface) in

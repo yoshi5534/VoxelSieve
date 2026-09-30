@@ -95,6 +95,8 @@ dataset.forEachBrick(1, [](const auto& brick, const openvdb::FloatGrid& grid) { 
 ./build/release/apps/vs-sieve/vs-sieve slices/ --out scan.vsieve --voxel-size 0.05
 ./build/release/apps/vs-sieve/vs-sieve scan.zip --out scan.vsieve        # read without extracting
 ./build/release/apps/vs-sieve/vs-sieve scan.zip --folder target --threshold 0.5 --out labels.vsieve
+./build/release/apps/vs-sieve/vs-sieve recon.zip --value-range -0.05,0.3 --out scan.vsieve  # float
+./build/release/apps/vs-sieve/vs-sieve pipe.zip --air-from xy --out pipe.vsieve  # cut at both ends
 ```
 
 A directory of slices, a multi-page TIFF or a ZIP archive of either is read directly
@@ -102,8 +104,13 @@ A directory of slices, a multi-page TIFF or a ZIP archive of either is read dire
 (`slice2` before `slice10`). Supported are classic TIFF and BigTIFF, strips and tiles,
 uncompressed, LZW, Deflate and PackBits, with or without horizontal predictor, and unsigned 8 or 16
 bit samples; 32-bit samples are accepted as long as they fit into 16 bits (label volumes). Float
-and colour images are refused rather than quantised. When the input holds several folders of
-slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
+slices (32 or 64 bit, also with the floating-point predictor) are mapped linearly onto grey values
+0 to 65535 over a value range, given with `--value-range` or estimated from 33 slices; the
+mapping is printed and recorded in the dataset's `index.json` (`value = offset + scale * grey`),
+and values outside the range are clipped and counted (ADR 0015). Colour and signed images are
+refused. When the first and last slice cut through the part (a pipe, a drill core), `--air-from
+xy` lets outside air in only from the sides, so the inside of the part is kept (ADR 0003). When
+the input holds several folders of slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
 comes from a centimetre resolution or an ImageJ description (including its slice `spacing`),
 otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
@@ -323,7 +330,10 @@ along each ray. The transfer function is edited on the histogram: click adds a c
 drag moves it, double click removes it; each point has its own colour, colour maps (Stahl,
 Viridis, Glut, Kupfer, Grau) recolour all points, and presets start from typical settings. Pores
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
-part. The background can be a studio light, a gradient or a plain colour.
+part. The background can be a studio light, a gradient or a plain colour. Drag turns the part,
+right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
+camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
+the coarse volume, so the resolution grows where you look.
 
 "Extrahierte Oberfläche" shows only the surface from a run of the operation "Oberfläche", as a
 triangle mesh at full resolution rather than the coarse level. Flat regions get larger triangles,

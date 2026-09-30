@@ -10,6 +10,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -299,11 +301,77 @@ TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
   EXPECT_FALSE(accessor.isValueOn(at_world_mm(6.0, 6.0, 6.0)));
 }
 
+TEST_F(DatasetTest, ReportsProgressPerStage) {
+  DatasetOptions options;
+  options.brick_size = 32;
+  std::vector<std::pair<std::string, double>> calls;
+  options.progress = [&calls](std::string_view stage, double fraction) {
+    calls.emplace_back(stage, fraction);
+  };
+  writeDataset(PhantomSource(spec()), dir_, options);
+  // Each stage in order, from 0 to 1, rising, at most once per percent.
+  const std::vector<std::string> stages{"histogram", "bricks", "levels"};
+  std::size_t stage = 0;
+  double previous = -1.0;
+  std::map<std::string, std::pair<double, double>> range;
+  for (const auto& [name, fraction] : calls) {
+    if (name != stages[stage]) {
+      ++stage;
+      ASSERT_LT(stage, stages.size());
+      ASSERT_EQ(name, stages[stage]);
+      previous = -1.0;
+    }
+    EXPECT_GT(fraction, previous);
+    previous = fraction;
+    range.try_emplace(name, fraction, fraction).first->second.second = fraction;
+  }
+  EXPECT_EQ(stage, 2U);
+  for (const auto& name : stages) {
+    EXPECT_DOUBLE_EQ(range.at(name).first, 0.0) << name;
+    EXPECT_DOUBLE_EQ(range.at(name).second, 1.0) << name;
+  }
+  EXPECT_LE(calls.size(), 3U * 101U);
+}
+
+TEST_F(DatasetTest, OutsideAirAxesMatchTheInMemorySieveAndAreRecorded) {
+  // A pipe along z that the first and last slice cut through.
+  Volume16 volume({48, 48, 40}, 0.1);
+  for (std::int64_t z = 0; z < 40; ++z) {
+    for (std::int64_t y = 0; y < 48; ++y) {
+      for (std::int64_t x = 0; x < 48; ++x) {
+        const bool wall =
+            x >= 8 && x < 40 && y >= 8 && y < 40 && !(x >= 12 && x < 36 && y >= 12 && y < 36);
+        volume.at(x, y, z) = wall ? 20000 : 1000;
+      }
+    }
+  }
+  DatasetOptions options;
+  options.brick_size = 16;
+  options.outside_air_axes = parseAirAxes("xy");
+  const DatasetInfo info = writeDataset(MemorySource(volume), dir_, options);
+  SieveOptions sieve_options;
+  sieve_options.outside_air_axes = options.outside_air_axes;
+  EXPECT_EQ(info.active_voxel_count,
+            static_cast<std::int64_t>(sieve(volume, sieve_options).grid->activeVoxelCount()));
+  const Dataset dataset = Dataset::open(dir_);
+  EXPECT_EQ(dataset.info().outside_air_axes, (AirAxes{true, true, false}));
+  EXPECT_TRUE(dataset.sample(0, {24, 24, 20}).has_value());  // the inside of the pipe
+  EXPECT_FALSE(dataset.sample(0, {2, 2, 20}).has_value());   // outside
+}
+
 TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
   PhantomSpec phantom = spec();
   phantom.dims = {64, 64, 64};
   phantom.voxel_size = 0.2;
-  const DatasetInfo info = writeDataset(PhantomSource(phantom), dir_);  // brick size 256
+  DatasetOptions options;  // brick size 256
+  double levels_done = 0.0;
+  options.progress = [&levels_done](std::string_view stage, double fraction) {
+    if (stage == "levels") {
+      levels_done = fraction;
+    }
+  };
+  const DatasetInfo info = writeDataset(PhantomSource(phantom), dir_, options);
+  EXPECT_DOUBLE_EQ(levels_done, 1.0);  // no coarser level: done at once
   ASSERT_EQ(info.levels.size(), 1U);
   EXPECT_EQ(readBrick(dir_ / "overview.vdb", false)->activeVoxelCount(),
             static_cast<openvdb::Index64>(info.active_voxel_count));

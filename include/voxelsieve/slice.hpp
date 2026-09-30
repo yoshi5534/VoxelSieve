@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -46,9 +47,12 @@ struct SliceImage {
                                    const PorosityResult* porosity = nullptr,
                                    const MaterialVolume* materials = nullptr);
 
-/// The whole volume at one level, as 8-bit values for 3D display in the browser.
+/// The whole volume, or a region of it, at one level, as 8-bit values for 3D display in the
+/// browser.
 struct VolumePreview {
   int level = 0;
+  /// First voxel of the region in level voxels; 0 for the whole volume.
+  std::array<std::int64_t, 3> origin{};
   std::array<std::int64_t, 3> dims{};
   VoxelSize voxel_size;
   /// Grey values mapped to 0..255 between `low` (0) and `high` (255).
@@ -58,8 +62,22 @@ struct VolumePreview {
   std::vector<std::uint8_t> overlay;  // SliceOverlay per voxel
 };
 
-/// Reads the finest level whose largest dimension is at most `max_size` (the coarsest level if
-/// none is that small). The window spans the 0.5 to 99.5 percentiles of the grey values.
+struct VolumeRequest {
+  /// Largest number of voxels per axis.
+  std::int64_t max_size = 256;
+  /// Level-0 voxels to read; the whole volume when unset. The 3D view reads the part near the
+  /// camera this way at a finer level than the whole volume.
+  std::optional<Box> region;
+  /// Grey values mapped to 0 and 255; the 0.5 and 99.5 percentiles when unset. A region takes
+  /// the window of the whole volume so both show the same values alike.
+  std::optional<std::array<float, 2>> window;
+};
+
+/// Reads the finest level at which the region (by default the volume) is at most
+/// `request.max_size` voxels along every axis (the coarsest level if none is that small).
+[[nodiscard]] VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& request,
+                                              const PorosityResult* porosity = nullptr,
+                                              const MaterialVolume* materials = nullptr);
 [[nodiscard]] VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
                                               const PorosityResult* porosity = nullptr,
                                               const MaterialVolume* materials = nullptr);

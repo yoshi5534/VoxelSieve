@@ -171,47 +171,75 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
   return image;
 }
 
-VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
+VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& request,
                                 const PorosityResult* porosity, const MaterialVolume* materials) {
   const DatasetInfo& info = dataset.info();
+  const Box whole{{0, 0, 0}, info.dims};
+  Box region = request.region.value_or(whole);
+  for (std::size_t a = 0; a < 3; ++a) {
+    region.min[a] = std::clamp<std::int64_t>(region.min[a], 0, info.dims[a]);
+    region.max[a] = std::clamp<std::int64_t>(region.max[a], region.min[a], info.dims[a]);
+  }
+  if (region.voxelCount() == 0) {
+    throw std::invalid_argument("The region holds no voxel of the volume");
+  }
+  // The region at a level: the level voxels that cover it.
+  const auto at_level = [&region](int level) {
+    Box box;
+    for (std::size_t a = 0; a < 3; ++a) {
+      box.min[a] = region.min[a] >> static_cast<unsigned>(level);
+      box.max[a] = ((region.max[a] - 1) >> static_cast<unsigned>(level)) + 1;
+    }
+    return box;
+  };
   VolumePreview preview;
   preview.level = static_cast<int>(info.levels.size()) - 1;
   for (const LevelInfo& level : info.levels) {
-    if (*std::max_element(level.dims.begin(), level.dims.end()) <= max_size) {
+    const Box box = at_level(level.level);
+    if (std::max({box.size(0), box.size(1), box.size(2)}) <= request.max_size) {
       preview.level = level.level;
       break;
     }
   }
   const LevelInfo& level = dataset.level(preview.level);
-  preview.dims = level.dims;
+  const Box box = at_level(preview.level);
+  preview.origin = box.min;
+  preview.dims = {box.size(0), box.size(1), box.size(2)};
   preview.voxel_size = level.voxel_size;
-  const auto plane = static_cast<std::size_t>(level.dims[0] * level.dims[1]);
-  const auto depth = static_cast<std::size_t>(level.dims[2]);
+  const auto plane = static_cast<std::size_t>(box.size(0) * box.size(1));
+  const auto depth = static_cast<std::size_t>(box.size(2));
   std::vector<float> grey(plane * depth);
   preview.overlay.resize(plane * depth);
   tbb::parallel_for(std::size_t{0}, depth, [&](std::size_t z) {
-    SliceRequest request;
-    request.axis = 2;
-    request.level = preview.level;
-    request.index = static_cast<std::int64_t>(z) << static_cast<unsigned>(preview.level);
-    request.size = {level.dims[0], level.dims[1]};
-    const SliceImage slice = readSlice(dataset, request, porosity, materials);
+    SliceRequest slice_request;
+    slice_request.axis = 2;
+    slice_request.level = preview.level;
+    slice_request.index = (box.min[2] + static_cast<std::int64_t>(z))
+                          << static_cast<unsigned>(preview.level);
+    slice_request.origin = {box.min[0], box.min[1]};
+    slice_request.size = {box.size(0), box.size(1)};
+    const SliceImage slice = readSlice(dataset, slice_request, porosity, materials);
     std::copy(slice.grey.begin(), slice.grey.end(),
               grey.begin() + static_cast<std::ptrdiff_t>(z * plane));
     std::copy(slice.overlay.begin(), slice.overlay.end(),
               preview.overlay.begin() + static_cast<std::ptrdiff_t>(z * plane));
   });
 
-  std::vector<float> sample;
-  for (std::size_t i = 0; i < grey.size(); i += 7) {
-    sample.push_back(grey[i]);
+  if (request.window) {
+    preview.low = (*request.window)[0];
+    preview.high = std::max((*request.window)[1], preview.low + 1.0F);
+  } else {
+    std::vector<float> sample;
+    for (std::size_t i = 0; i < grey.size(); i += 7) {
+      sample.push_back(grey[i]);
+    }
+    std::sort(sample.begin(), sample.end());
+    const auto at = [&sample](double fraction) {
+      return sample[static_cast<std::size_t>(fraction * static_cast<double>(sample.size() - 1))];
+    };
+    preview.low = at(0.005);
+    preview.high = std::max(at(0.995), preview.low + 1.0F);
   }
-  std::sort(sample.begin(), sample.end());
-  const auto at = [&sample](double fraction) {
-    return sample[static_cast<std::size_t>(fraction * static_cast<double>(sample.size() - 1))];
-  };
-  preview.low = at(0.005);
-  preview.high = std::max(at(0.995), preview.low + 1.0F);
   preview.grey.resize(grey.size());
   const float scale = 255.0F / (preview.high - preview.low);
   for (std::size_t i = 0; i < grey.size(); ++i) {
@@ -219,6 +247,13 @@ VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
         std::lround(std::clamp((grey[i] - preview.low) * scale, 0.0F, 255.0F)));
   }
   return preview;
+}
+
+VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
+                                const PorosityResult* porosity, const MaterialVolume* materials) {
+  VolumeRequest request;
+  request.max_size = max_size;
+  return readVolumePreview(dataset, request, porosity, materials);
 }
 
 }  // namespace voxelsieve

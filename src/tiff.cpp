@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <list>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -118,6 +121,9 @@ struct TiffStackSource::Impl {
   std::array<std::int64_t, 3> dims{};
   std::optional<VoxelSize> voxel_size;
   std::size_t cache_bytes = 0;
+  bool is_float = false;
+  std::array<double, 2> value_range{0.0, 65535.0};
+  ValueMapping mapping;
 
   using Chunk = std::shared_ptr<const std::vector<std::uint16_t>>;
   using Key = std::pair<std::size_t, std::size_t>;  // slice, chunk
@@ -126,6 +132,8 @@ struct TiffStackSource::Impl {
   mutable std::list<std::pair<Key, Chunk>> lru;                        // most recent first
   mutable std::map<Key, std::list<std::pair<Key, Chunk>>::iterator> cached;
   mutable std::size_t cached_bytes = 0;
+  mutable std::set<Key> clip_counted;  // chunks whose clipped values are counted
+  mutable std::uint64_t clipped = 0;
 
   void check(const detail::TiffPage& page, std::size_t z) const {
     detail::checkSupported(page);
@@ -150,6 +158,72 @@ struct TiffStackSource::Impl {
       cached.erase(lru.back().first);
       lru.pop_back();
     }
+  }
+
+  /// Strip or tile `index` of slice `z` as 16-bit grey values; float values are mapped.
+  std::vector<std::uint16_t> decode(const detail::ByteSource& bytes, const detail::TiffPage& page,
+                                    std::size_t z, std::size_t index) const {
+    if (!is_float) {
+      return detail::decodeTiffChunk(bytes, page, index);
+    }
+    const std::vector<double> values = detail::decodeTiffFloatChunk(bytes, page, index);
+    std::vector<std::uint16_t> grey(values.size());
+    // Rows and columns of the chunk that lie in the image; tile padding is not counted.
+    const std::size_t x0 = (index % page.chunks_across) * page.chunk_width;
+    const std::size_t y0 = (index / page.chunks_across) * page.chunk_height;
+    std::uint64_t outside = 0;
+    for (std::size_t y = 0; y < page.chunk_height; ++y) {
+      for (std::size_t x = 0; x < page.chunk_width; ++x) {
+        const std::size_t i = y * page.chunk_width + x;
+        const double g = std::round(mapping.toGrey(values[i]));
+        if (!(g >= 0.0 && g <= 65535.0) && x0 + x < page.width && y0 + y < page.height) {
+          ++outside;  // also not a number
+        }
+        grey[i] = std::isnan(g) ? 0 : static_cast<std::uint16_t>(std::clamp(g, 0.0, 65535.0));
+      }
+    }
+    const std::lock_guard lock(mutex);
+    if (clip_counted.insert({z, index}).second) {
+      clipped += outside;
+    }
+    return grey;
+  }
+
+  /// Smallest and largest finite float value of slice `z`, read without the cache.
+  std::array<double, 2> floatRange(std::size_t z) const {
+    const Slice& slice = slices[z];
+    std::unique_ptr<detail::ByteSource> owned;
+    const detail::ByteSource* bytes = multi_page.get();
+    detail::TiffPage page;
+    if (multi_page) {
+      page = multi_pages[slice.page];
+    } else {
+      if (slice.entry != nullptr) {
+        owned = std::make_unique<detail::MemoryBytes>(zip->read(*slice.entry));
+      } else {
+        owned = std::make_unique<detail::FileBytes>(slice.file);
+      }
+      bytes = owned.get();
+      page = detail::readTiffPages(*bytes, 1).front();
+    }
+    check(page, z);
+    std::array<double, 2> range{std::numeric_limits<double>::infinity(),
+                                -std::numeric_limits<double>::infinity()};
+    for (std::size_t index = 0; index < page.chunk_count; ++index) {
+      const std::vector<double> values = detail::decodeTiffFloatChunk(*bytes, page, index);
+      const std::size_t x0 = (index % page.chunks_across) * page.chunk_width;
+      const std::size_t y0 = (index / page.chunks_across) * page.chunk_height;
+      for (std::size_t y = 0; y < page.chunk_height && y0 + y < page.height; ++y) {
+        for (std::size_t x = 0; x < page.chunk_width && x0 + x < page.width; ++x) {
+          const double v = values[y * page.chunk_width + x];
+          if (std::isfinite(v)) {
+            range[0] = std::min(range[0], v);
+            range[1] = std::max(range[1], v);
+          }
+        }
+      }
+    }
+    return range;
   }
 
   /// Image description of slice `z`, read on first use.
@@ -190,8 +264,8 @@ struct TiffStackSource::Impl {
     if (multi_page) {
       const detail::TiffPage& page = multi_pages[slice.page];
       check(page, z);
-      auto decoded = std::make_shared<const std::vector<std::uint16_t>>(
-          detail::decodeTiffChunk(*multi_page, page, index));
+      auto decoded =
+          std::make_shared<const std::vector<std::uint16_t>>(decode(*multi_page, page, z, index));
       const std::lock_guard lock(mutex);
       pages[z] = std::make_shared<const detail::TiffPage>(page);
       insert({z, index}, decoded);
@@ -216,8 +290,8 @@ struct TiffStackSource::Impl {
     Chunk result;
     std::vector<std::pair<std::size_t, Chunk>> decoded;
     for (const std::size_t i : wanted) {
-      decoded.emplace_back(i, std::make_shared<const std::vector<std::uint16_t>>(
-                                  detail::decodeTiffChunk(*bytes, page, i)));
+      decoded.emplace_back(
+          i, std::make_shared<const std::vector<std::uint16_t>>(decode(*bytes, page, z, i)));
       if (i == index) {
         result = decoded.back().second;
       }
@@ -359,6 +433,36 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
   detail::checkSupported(impl.first);
   impl.pages.resize(impl.slices.size());
   impl.dims = {impl.first.width, impl.first.height, static_cast<std::int64_t>(impl.slices.size())};
+
+  impl.is_float = impl.first.sample_format == 3;
+  if (impl.is_float) {
+    if (options.value_range) {
+      impl.value_range = *options.value_range;
+    } else {
+      // A few slices spread over the stack, first and last included.
+      constexpr std::size_t kSampleSlices = 33;
+      const std::size_t count = std::min(kSampleSlices, impl.slices.size());
+      std::array<double, 2> found{std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()};
+      for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t z = count == 1 ? 0 : i * (impl.slices.size() - 1) / (count - 1);
+        const auto range = impl.floatRange(z);
+        found = {std::min(found[0], range[0]), std::max(found[1], range[1])};
+      }
+      if (!(found[0] <= found[1])) {
+        throw std::runtime_error("The float slices hold no finite values");
+      }
+      const double margin = found[1] > found[0] ? 0.1 * (found[1] - found[0]) : 0.5;
+      impl.value_range = {found[0] - margin, found[1] + margin};
+    }
+    if (!(std::isfinite(impl.value_range[0]) && std::isfinite(impl.value_range[1]) &&
+          impl.value_range[0] < impl.value_range[1])) {
+      throw std::invalid_argument("The value range must be two finite numbers, low before high");
+    }
+    impl.mapping = {impl.value_range[0], (impl.value_range[1] - impl.value_range[0]) / 65535.0};
+  } else if (options.value_range) {
+    throw std::invalid_argument("A value range applies only to float slices");
+  }
 }
 
 TiffStackSource::~TiffStackSource() = default;
@@ -380,6 +484,17 @@ std::optional<VoxelSize> TiffStackSource::fileVoxelSize() const {
 }
 
 int TiffStackSource::bitsPerSample() const { return impl_->first.bits; }
+
+bool TiffStackSource::isFloat() const { return impl_->is_float; }
+
+ValueMapping TiffStackSource::valueMapping() const { return impl_->mapping; }
+
+std::array<double, 2> TiffStackSource::valueRange() const { return impl_->value_range; }
+
+std::uint64_t TiffStackSource::clippedValues() const {
+  const std::lock_guard lock(impl_->mutex);
+  return impl_->clipped;
+}
 
 const std::string& TiffStackSource::folder() const { return impl_->folder; }
 
