@@ -368,9 +368,13 @@ They are aligned by steps that apply in order: "Move" by hand, "Align by point p
 clicked on both objects, and "Best fit of the surfaces" (from where they lie, or from the
 principal axes for objects far apart). "Nominal-actual comparison" then measures a scan against a
 CAD model or another scan where both lie; its result shows in the 3D view and the report like that
-of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture.
+of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture. The slice view shows
+the other objects in the slice of the shown volume: other scans blended in their colour or as a
+checkerboard, CAD models as their cut lines.
 
 ![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
+
+![A second scan, turned by 4°, blended over the slice, and the CAD model as its cut line](docs/images/slice-objects.png)
 
 ```sh
 vs-studio --project /data/casting.vsproj --plugins build/release/plugins

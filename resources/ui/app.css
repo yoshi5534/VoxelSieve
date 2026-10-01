@@ -178,6 +178,9 @@ table.objects { border-collapse: collapse; width: 100%; font-size: 12px; margin:
 table.objects th { text-align: left; color: var(--muted); font-weight: normal; }
 table.objects td, table.objects th { padding: 3px 6px; font-variant-numeric: tabular-nums; }
 table.objects tr.active td { color: var(--accent); }
+.slice-object { margin: 4px 0 8px; }
+.slice-object > div { display: flex; gap: 6px; align-items: center; margin: 3px 0 0 22px; }
+.slice-object input[type=range] { width: 90px; }
 .viewer.scene { grid-template-columns: 1fr 360px; }
 .scene-tools .card { margin-top: 10px; }
 .scene-tools .card label { display: block; margin: 4px 0; }

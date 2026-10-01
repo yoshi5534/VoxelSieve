@@ -92,6 +92,8 @@ constexpr std::size_t kOpenDatasets = 2;
 // Open datasets share one brick cache, so keeping more of them open costs only their index.
 constexpr std::size_t kOpenVolumes = 8;
 constexpr std::size_t kViewCacheBytes = std::size_t{1} << 30U;
+// Triangle budget of a volume's surface for its cut lines in slices.
+constexpr std::size_t kCutTriangles = 500000;
 // Colours of the objects in the order they were created, as OBJECT_COLORS in resources/ui/scene.js.
 constexpr std::array<std::array<std::uint8_t, 3>, 6> kObjectColors = {{{196, 200, 207},
                                                                        {230, 150, 60},
@@ -398,6 +400,13 @@ std::vector<StudioMethod> Studio::methods() const {
              {"type", "integer"},
              {"description",
               "Material segmentation for the overlay; default: the latest of this dataset"}};
+         properties["objects"] = {
+             {"type", "array"},
+             {"items", {{"type", "string"}}},
+             {"description",
+              "Other objects to show where they lie (ADR 0018), each in its colour as in "
+              "view_objects: volumes blended over the slice, and the outline where meshes, "
+              "surfaces and volume boxes cut it"}};
          properties.erase("output");
          return objectSchema(properties);
        }()},
@@ -523,6 +532,11 @@ Json Studio::status() const {
 ArtifactRef Studio::artifactRef(const Json& params, const std::string& type) const {
   if (!params.contains("step")) {
     if (!type.empty()) {
+      // The data of the active object first, as new steps take it.
+      const std::string active = project().activeObject();
+      if (const auto ref = active.empty() ? std::nullopt : project().latest(type, active)) {
+        return *ref;
+      }
       if (const auto ref = project().latest(type)) {
         return *ref;
       }
@@ -617,6 +631,11 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surfac
     const Json params = surface_step ? Json{{"step", *surface_step}} : Json::object();
     file = project().resolve(artifactRef(params, artifact::kSurface)) / "surface.vss";
   }
+  return surfaceMeshOf(file, max_triangles);
+}
+
+std::shared_ptr<const IndexedMesh> Studio::surfaceMeshOf(const std::filesystem::path& file,
+                                                         std::size_t max_triangles) const {
   // The file time is part of the key: an undone step and its successor share the directory.
   const std::filesystem::path key =
       file.string() + "#" + std::to_string(max_triangles) + "#" +
@@ -704,32 +723,51 @@ std::shared_ptr<const IndexedMesh> Studio::stlMesh(const std::filesystem::path& 
   return mesh;
 }
 
-Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_triangles) const {
-  ProjectObject object;
-  std::filesystem::path source;
-  std::optional<int> surface_step;
-  {
-    const std::scoped_lock lock(mutex_);
-    object = project().object(id);
-    source = project().resolve(object.source);
+Studio::ObjectSource Studio::objectSource(const std::string& id) const {
+  ObjectSource source;
+  source.object = project().object(id);
+  source.source = project().resolve(source.object.source);
+  if (source.object.kind == kVolumeObject) {
     if (const auto surface = project().latest(artifact::kSurface, id)) {
-      surface_step = surface->step;
+      source.surface_file = project().resolve(*surface) / "surface.vss";
     }
   }
+  return source;
+}
+
+RigidTransform Studio::datasetPose(const ArtifactRef& dataset) const {
+  for (const Step& step : project().steps()) {
+    if (step.id == dataset.step) {
+      return step.object.empty() ? RigidTransform() : project().object(step.object).pose;
+    }
+  }
+  return {};
+}
+
+Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_triangles) const {
+  ObjectSource source;
+  {
+    const std::scoped_lock lock(mutex_);
+    source = objectSource(id);
+  }
+  return shapeOf(source, max_triangles);
+}
+
+Studio::ObjectShape Studio::shapeOf(const ObjectSource& source, std::size_t max_triangles) const {
   ObjectShape shape;
-  shape.pose = object.pose;
-  if (object.kind == kMeshObject) {
+  shape.pose = source.object.pose;
+  if (source.object.kind == kMeshObject) {
     shape.shape = "mesh";
-    shape.mesh = stlMesh(source);
+    shape.mesh = stlMesh(source.source);
     return shape;
   }
-  const DatasetInfo& info = openDataset(source)->info();
+  const DatasetInfo& info = openDataset(source.source)->info();
   for (std::size_t k = 0; k < 3; ++k) {
     shape.scale[k] = info.voxel_size[k];
   }
-  if (surface_step) {
+  if (!source.surface_file.empty()) {
     shape.shape = "surface";
-    shape.mesh = surfaceMesh(surface_step, max_triangles);
+    shape.mesh = surfaceMeshOf(source.surface_file, max_triangles);
     return shape;
   }
   // The box the voxels fill: voxel centres lie on whole indices.
@@ -742,6 +780,94 @@ Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_t
   shape.shape = "box";
   shape.mesh = std::make_shared<const IndexedMesh>(indexedMesh(boxMesh(size, center)));
   return shape;
+}
+
+PlaneImage Studio::objectSliceTile(std::optional<int> dataset_step, const SliceRequest& request,
+                                   const std::string& object) const {
+  std::filesystem::path base_dir;
+  RigidTransform base_pose;
+  ObjectSource source;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = dataset_step ? Json{{"step", *dataset_step}} : Json::object();
+    const ArtifactRef ref = artifactRef(params, artifact::kDataset);
+    base_dir = project().resolve(ref);
+    base_pose = datasetPose(ref);
+    source = objectSource(object);
+  }
+  return objectPlane(*openDataset(base_dir), base_pose, request, source);
+}
+
+std::vector<float> Studio::objectCutLines(std::optional<int> dataset_step, int axis,
+                                          std::int64_t index, const std::string& object) const {
+  std::filesystem::path base_dir;
+  RigidTransform base_pose;
+  ObjectSource source;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = dataset_step ? Json{{"step", *dataset_step}} : Json::object();
+    const ArtifactRef ref = artifactRef(params, artifact::kDataset);
+    base_dir = project().resolve(ref);
+    base_pose = datasetPose(ref);
+    source = objectSource(object);
+  }
+  return objectCuts(*openDataset(base_dir), base_pose, axis, index, source);
+}
+
+PlaneImage Studio::objectPlane(const Dataset& base, const RigidTransform& base_pose,
+                               const SliceRequest& request, const ObjectSource& object) const {
+  if (object.object.kind != kVolumeObject) {
+    throw std::invalid_argument("Object '" + object.object.name +
+                                "' is not a volume; meshes show as cut lines");
+  }
+  const DatasetInfo& info = base.info();
+  const auto [u, v] = sliceAxes(request.axis);
+  const auto n = static_cast<std::size_t>(request.axis);
+  const auto ua = static_cast<std::size_t>(u);
+  const auto va = static_cast<std::size_t>(v);
+  if (request.level < 0 || static_cast<std::size_t>(request.level) >= info.levels.size()) {
+    throw std::invalid_argument("Level " + std::to_string(request.level) + " does not exist");
+  }
+  const auto other = openDataset(object.source);
+  // Base object coordinates (level-0 index times pitch) to those of the other object.
+  const RigidTransform to_other = object.object.pose.inverse().after(base_pose);
+  const double scale = std::ldexp(1.0, request.level);
+  const VoxelSize& pitch = info.voxel_size;
+  // Level voxel i covers level-0 indices [i * 2^level, (i + 1) * 2^level): its centre lies at
+  // (i + 0.5) * 2^level - 0.5.
+  std::array<double, 3> first{};
+  first[n] = static_cast<double>(request.index) * pitch[n];
+  first[ua] = ((static_cast<double>(request.origin[0]) + 0.5) * scale - 0.5) * pitch[ua];
+  first[va] = ((static_cast<double>(request.origin[1]) + 0.5) * scale - 0.5) * pitch[va];
+  std::array<double, 3> step_u{};
+  std::array<double, 3> step_v{};
+  step_u[ua] = scale * pitch[ua];
+  step_v[va] = scale * pitch[va];
+  PlaneRequest plane;
+  plane.origin_mm = to_other.apply(first);
+  plane.du_mm = to_other.rotate(step_u);
+  plane.dv_mm = to_other.rotate(step_v);
+  plane.width = request.size[0];
+  plane.height = request.size[1];
+  plane.level = levelForPixel(other->info(), scale * std::min(pitch[ua], pitch[va]));
+  return samplePlane(*other, plane);
+}
+
+std::vector<float> Studio::objectCuts(const Dataset& base, const RigidTransform& base_pose,
+                                      int axis, std::int64_t index,
+                                      const ObjectSource& object) const {
+  const auto shape = shapeOf(object, kCutTriangles);
+  const RigidTransform to_base = base_pose.inverse().after(shape.pose);
+  const VoxelSize& pitch = base.info().voxel_size;
+  std::vector<std::array<float, 3>> points;
+  points.reserve(shape.mesh->points.size());
+  for (const auto& p : shape.mesh->points) {
+    const auto q =
+        to_base.apply({p[0] * shape.scale[0], p[1] * shape.scale[1], p[2] * shape.scale[2]});
+    points.push_back({static_cast<float>(q[0] / pitch[0]), static_cast<float>(q[1] / pitch[1]),
+                      static_cast<float>(q[2] / pitch[2])});
+  }
+  return cutMesh(points, shape.mesh->triangles, axis, static_cast<double>(index));
 }
 
 Json Studio::viewObjects(const Json& params) const {
@@ -821,6 +947,84 @@ std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>>
     }
   }
   return {openDataset(dataset_dir), porosity_dir.empty() ? nullptr : openPorosity(porosity_dir)};
+}
+
+Json Studio::drawObjects(const Dataset& base, const ArtifactRef& base_ref,
+                         const SliceRequest& request, const Json& ids,
+                         std::vector<std::uint8_t>& rgb) const {
+  const auto width = request.size[0];
+  const auto height = request.size[1];
+  const RigidTransform base_pose = datasetPose(base_ref);
+  std::vector<std::string> all;
+  for (const ProjectObject& object : project().objects()) {
+    all.push_back(object.id);
+  }
+  const double scale = std::ldexp(1.0, request.level);
+  Json shown = Json::array();
+  for (const std::string& id : ids.get<std::vector<std::string>>()) {
+    const ObjectSource source = objectSource(id);
+    const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
+    const auto& color = kObjectColors[index % kObjectColors.size()];
+    const auto blend = [&rgb, &color](std::size_t pixel, float weight, float shade) {
+      for (std::size_t c = 0; c < 3; ++c) {
+        auto& channel = rgb[pixel * 3 + c];
+        channel =
+            static_cast<std::uint8_t>(std::lround((1.0F - weight) * static_cast<float>(channel) +
+                                                  weight * shade * static_cast<float>(color[c])));
+      }
+    };
+    bool blended = false;
+    if (source.object.kind == kVolumeObject) {
+      // The material of the volume in the colour of its object, brighter where it is denser.
+      const PlaneImage plane = objectPlane(base, base_pose, request, source);
+      std::vector<float> values;
+      for (std::size_t i = 0; i < plane.grey.size(); ++i) {
+        if (plane.inside[i] == kPlaneMaterial) {
+          values.push_back(plane.grey[i]);
+        }
+      }
+      if (!values.empty()) {
+        std::ranges::sort(values);
+        const float low = values[values.size() / 200];
+        const float high = std::max(values[values.size() - 1 - values.size() / 200], low + 1.0F);
+        for (std::size_t i = 0; i < plane.grey.size(); ++i) {
+          if (plane.inside[i] == kPlaneMaterial) {
+            const float t = std::clamp((plane.grey[i] - low) / (high - low), 0.0F, 1.0F);
+            blend(i, 0.5F, 0.3F + 0.7F * t);
+          }
+        }
+        blended = true;
+      }
+    }
+    const std::vector<float> cuts =
+        objectCuts(base, base_pose, request.axis, request.index, source);
+    // Level-0 index c lies at pixel (c + 0.5) / 2^level - 0.5 - origin.
+    const auto pixel = [&](float c, std::int64_t origin) {
+      return (static_cast<double>(c) + 0.5) / scale - 0.5 - static_cast<double>(origin);
+    };
+    for (std::size_t s = 0; s + 3 < cuts.size(); s += 4) {
+      const double x0 = pixel(cuts[s], request.origin[0]);
+      const double y0 = pixel(cuts[s + 1], request.origin[1]);
+      const double x1 = pixel(cuts[s + 2], request.origin[0]);
+      const double y1 = pixel(cuts[s + 3], request.origin[1]);
+      const auto steps =
+          static_cast<int>(std::ceil(std::max(std::abs(x1 - x0), std::abs(y1 - y0))));
+      for (int k = 0; k <= steps; ++k) {
+        const double t = steps == 0 ? 0.0 : static_cast<double>(k) / steps;
+        const auto x = static_cast<std::int64_t>(std::lround(x0 + t * (x1 - x0)));
+        const auto y = static_cast<std::int64_t>(std::lround(y0 + t * (y1 - y0)));
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+          blend(static_cast<std::size_t>(y * width + x), 1.0F, 1.0F);
+        }
+      }
+    }
+    shown.push_back({{"id", id},
+                     {"name", source.object.name},
+                     {"color", color},
+                     {"volume_blended", blended},
+                     {"cut_segments", cuts.size() / 4}});
+  }
+  return shown;
 }
 
 Json Studio::viewSlice(const Json& params) const {
@@ -927,6 +1131,10 @@ Json Studio::viewSlice(const Json& params) const {
     }
     std::copy(color.begin(), color.end(), rgb.begin() + static_cast<std::ptrdiff_t>(i * 3));
   }
+  Json shown = Json::array();
+  if (params.contains("objects")) {
+    shown = drawObjects(*dataset, dataset_ref, request, params.at("objects"), rgb);
+  }
   const auto png = detail::encodePng(static_cast<std::uint32_t>(image.width),
                                      static_cast<std::uint32_t>(image.height), 3, rgb);
   constexpr std::array<const char*, 3> kNames = {"x", "y", "z"};
@@ -944,6 +1152,7 @@ Json Studio::viewSlice(const Json& params) const {
         levels[static_cast<std::size_t>(request.level)].voxel_size[static_cast<std::size_t>(v)]}},
       {"window", {low, high}},
       {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  result["objects"] = shown;
   result["porosity_step"] = porosity_step ? Json(*porosity_step) : Json();
   result["materials_step"] = materials_step ? Json(*materials_step) : Json();
   if (materials) {

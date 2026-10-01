@@ -447,6 +447,19 @@ function latestOutput(type) {
   return null;
 }
 
+/// The dataset the slice and 3D views show: the latest of the active object when that is a
+/// volume, otherwise the latest of the project. {step, output} or null.
+function shownDataset() {
+  const active = state.status.active_object;
+  const steps = activeSteps().filter((step) => active && step.object === active);
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    for (const [name, output] of Object.entries(steps[i].outputs)) {
+      if (output.type === 'dataset') return { step: steps[i], output: name };
+    }
+  }
+  return latestOutput('dataset');
+}
+
 function latestStepOf(operation) {
   const steps = activeSteps().filter((step) => step.operation === operation);
   return steps.length ? steps[steps.length - 1] : null;
@@ -974,7 +987,7 @@ async function loadPores(step) {
 }
 
 function renderViewStage(panel) {
-  const dataset = latestOutput('dataset');
+  const dataset = shownDataset();
   const objects = state.status.objects ?? [];
   if (!dataset && !objects.length) {
     panel.append(el('h1', {}, 'View'),
@@ -1080,6 +1093,8 @@ function renderViewStage(panel) {
         ? 'After a porosity analysis the pores appear here; a click jumps to the pore.'
         : 'No pores found.'));
 
+  side.prepend(...sliceObjectsCard(viewer, dataset));
+
   if (materials !== null) {
     // Legend: the classes with the grey value they start at and their volume.
     const rows = (materials.summary?.materials ?? []).map((material) => el('tr', {},
@@ -1107,6 +1122,53 @@ function renderViewStage(panel) {
 }
 
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
+
+/// The other objects of the project for the slice view: volumes blended over the slice or as a
+/// checkerboard, meshes as the lines where they cut it. Sets the viewer's layers and returns the
+/// controls, or nothing when the shown volume is the only object.
+function sliceObjectsCard(viewer, dataset) {
+  const objects = state.status.objects ?? [];
+  const base = objects.find((object) => object.id === dataset.step.object);
+  const others = objects.map((object, index) => ({ object, index }))
+    .filter(({ object }) => object !== base);
+  // A view being restored brings its settings of the objects along.
+  const restore = state.restore?.slice;
+  if (restore?.layers && restore.step === dataset.step.id) {
+    viewer.layerSettings = structuredClone(restore.layers);
+  }
+  // Tiles and lines are fetched again when either object moves or the other's data changes.
+  viewer.setLayers(others.map(({ object, index }) => ({
+    id: object.id, kind: object.kind, color: objectColor(index), source: object.source.step,
+    version: [objectKey(object), object.pose.join(','), base?.pose.join(',') ?? ''].join('|'),
+  })));
+  if (!others.length) return [];
+  const rows = others.map(({ object, index }) => {
+    const layer = viewer.layers.find((candidate) => candidate.id === object.id);
+    const show = el('input', { type: 'checkbox', checked: layer.show,
+      title: object.kind === 'volume' ? 'Show this volume in the slice'
+        : 'Show where this mesh cuts the slice' });
+    const item = el('div', { className: 'slice-object' },
+      el('label', { title: object.id }, show, objectSwatch(index), ' ', object.name,
+        object.kind === 'mesh' ? el('span', { className: 'hint' }, ' cut lines') : null));
+    if (object.kind === 'volume') {
+      const mode = el('select', { title: 'Blended in its colour, or every other square' },
+        el('option', { value: 'blend', selected: layer.mode === 'blend' }, 'Blend'),
+        el('option', { value: 'checker', selected: layer.mode === 'checker' }, 'Checkerboard'));
+      const opacity = el('input', { type: 'range', min: 0, max: 1, step: 0.05,
+        value: layer.opacity, disabled: layer.mode !== 'blend', title: 'Opacity' });
+      mode.addEventListener('change', () => {
+        opacity.disabled = mode.value !== 'blend';
+        viewer.setLayer(object.id, { mode: mode.value });
+      });
+      opacity.addEventListener('input', () =>
+        viewer.setLayer(object.id, { opacity: Number(opacity.value) }));
+      item.append(el('div', {}, mode, opacity));
+    }
+    show.addEventListener('change', () => viewer.setLayer(object.id, { show: show.checked }));
+    return item;
+  });
+  return [el('h3', {}, 'Other objects'), ...rows];
+}
 
 const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
   'Extracted surface', 'Nominal-actual deviation'];

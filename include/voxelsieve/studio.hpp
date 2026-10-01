@@ -30,6 +30,9 @@ struct StudioMethod {
 /// The studio engine (ADR 0008): one open project and the registered operations, driven through
 /// a JSON API. Thread-safe: one operation runs at a time on the calling thread, while other
 /// threads can still query the project; changes to the project wait until the operation is done.
+///
+/// Methods that read a step output take the latest output of that type by default: of the active
+/// object when it has one, else of the whole project.
 class Studio {
  public:
   /// Registers the built-in operations and loads plugins from `plugin_dirs`; the load messages are
@@ -100,6 +103,19 @@ class Studio {
   };
   [[nodiscard]] ObjectShape objectShape(const std::string& id, std::size_t max_triangles) const;
 
+  /// The volume `object` in a tile of the slice of the dataset of `dataset_step` (default: the
+  /// latest), wherever the two objects lie: sampled at the pixel centres of `request`, from the
+  /// level of `object` that matches the pixel size (ADR 0018).
+  [[nodiscard]] PlaneImage objectSliceTile(std::optional<int> dataset_step,
+                                           const SliceRequest& request,
+                                           const std::string& object) const;
+
+  /// Where the shape of `object` (objectShape) cuts slice `index` normal to `axis` of the dataset
+  /// of `dataset_step`: segments (cutMesh) in level-0 voxel indices of that dataset.
+  [[nodiscard]] std::vector<float> objectCutLines(std::optional<int> dataset_step, int axis,
+                                                  std::int64_t index,
+                                                  const std::string& object) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -114,7 +130,30 @@ class Studio {
                                         const std::string& type) const;
   nlohmann::json viewSlice(const nlohmann::json& params) const;
   nlohmann::json viewObjects(const nlohmann::json& params) const;
+  /// Draws objects into the RGB image of a slice for view_slice; needs mutex_.
+  nlohmann::json drawObjects(const Dataset& base, const ArtifactRef& base_ref,
+                             const SliceRequest& request, const nlohmann::json& ids,
+                             std::vector<std::uint8_t>& rgb) const;
   [[nodiscard]] std::shared_ptr<const IndexedMesh> stlMesh(const std::filesystem::path& file) const;
+  [[nodiscard]] std::shared_ptr<const IndexedMesh> surfaceMeshOf(const std::filesystem::path& file,
+                                                                 std::size_t max_triangles) const;
+  /// An object with the files its shape comes from.
+  struct ObjectSource {
+    ProjectObject object;
+    std::filesystem::path source;        // dataset directory or STL file
+    std::filesystem::path surface_file;  // surface.vss of its latest surface step, or empty
+  };
+  /// Need mutex_ held.
+  [[nodiscard]] ObjectSource objectSource(const std::string& id) const;
+  [[nodiscard]] RigidTransform datasetPose(const ArtifactRef& dataset) const;
+  // Without mutex_.
+  [[nodiscard]] ObjectShape shapeOf(const ObjectSource& source, std::size_t max_triangles) const;
+  [[nodiscard]] PlaneImage objectPlane(const Dataset& base, const RigidTransform& base_pose,
+                                       const SliceRequest& request,
+                                       const ObjectSource& object) const;
+  [[nodiscard]] std::vector<float> objectCuts(const Dataset& base, const RigidTransform& base_pose,
+                                              int axis, std::int64_t index,
+                                              const ObjectSource& object) const;
   [[nodiscard]] std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>>
   openView(std::optional<int> dataset_step, std::optional<int> porosity_step) const;
   [[nodiscard]] std::shared_ptr<const Dataset> openDataset(const std::filesystem::path& dir) const;

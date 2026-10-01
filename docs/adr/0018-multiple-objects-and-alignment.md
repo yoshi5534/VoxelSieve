@@ -1,6 +1,6 @@
 # 0018: Several volumes and CAD models in one project, and their alignment
 
-Status: accepted (2026-10-01); phases 1 and 2 implemented
+Status: accepted (2026-10-01); phases 1 and 2 implemented, phase 3 except the joint ray casting
 
 ## Context
 
@@ -243,3 +243,27 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   ray casting on the CPU for `align_points`. `view_objects` renders the scene as a PNG with the
   CPU renderer for MCP clients. The volume ray casting of several volumes and the slice view with
   several objects remain for phase 3.
+
+## Implementation of phase 3, slice view (2026-10-01)
+
+- The slice plane follows the axes of the shown volume (the base), not the global axes: the base
+  keeps its tiles, levels and cache exactly as before, and a slice of a scan stays a slice of the
+  scan however it was aligned. Planes along the global axes or of another object are not built.
+- `samplePlane` (`slice.hpp`) samples a dataset on any plane given in its object coordinates
+  (millimetres): one row per task, the nearest voxel at the level whose voxel matches the pixel,
+  the current brick and its accessor kept between neighbouring pixels. Each pixel says whether it
+  hit material (at or above the dataset's threshold), a kept voxel below it (air near the part,
+  pores) or nothing. For another volume the studio maps the pixel centres of the base tile through
+  `other pose⁻¹ ∘ base pose` (`Studio::objectSliceTile`, `GET /api/object_tile`), so the layer
+  lines up with the base tile pixel for pixel.
+- `cutMesh` intersects triangles with an axis plane and returns segments. The studio brings a
+  mesh, or the display mesh of a volume's latest surface (the box it fills before one), into
+  base voxel coordinates and cuts it at the slice (`Studio::objectCutLines`,
+  `GET /api/cut_lines`); a surface's display mesh is cut at up to 500 000 triangles, a mesh
+  object in full.
+- The slice view lists the other objects. Volumes are blended in their object's colour with an
+  opacity (only their material, shaded by their own grey window) or shown as a checkerboard of
+  32-pixel squares; meshes are drawn as their cut lines. Which objects show and how is saved with
+  the view. Without a step, the views show the data of the active object.
+- `view_slice` takes `objects` and draws the same into its PNG for MCP clients.
+- Still open from phase 3: ray casting several volumes jointly in the 3D view.

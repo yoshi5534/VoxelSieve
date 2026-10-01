@@ -394,6 +394,60 @@ struct HttpServer::Impl {
                    {"X-Shape", shape.shape}});
   }
 
+  /// GET /api/object_tile?object=2&axis=2&index=100&level=1&u=0&v=0&size=256[&step=1]
+  /// Body: object o2 sampled at the pixels of that tile of the dataset of step 1
+  /// (Studio::objectSliceTile): width * height float32 grey values, then one byte per pixel
+  /// for what it hit: 2 the object's material, 1 a kept voxel below its threshold (air near the
+  /// part, a pore), 0 removed air or nothing. Headers X-Width and X-Height give the size.
+  http::message_generator objectTile(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const auto value = [&values](const std::string& name, std::int64_t fallback) {
+      const auto it = values.find(name);
+      return it == values.end() ? fallback : it->second;
+    };
+    if (!values.contains("object")) {
+      throw std::invalid_argument("Missing parameter 'object'");
+    }
+    SliceRequest slice;
+    slice.axis = static_cast<int>(value("axis", 2));
+    slice.index = value("index", 0);
+    slice.level = static_cast<int>(value("level", 0));
+    slice.origin = {value("u", 0), value("v", 0)};
+    const std::int64_t size = value("size", 256);
+    slice.size = {size, size};
+    const std::optional<int> step = values.contains("step")
+                                        ? std::optional<int>(static_cast<int>(values.at("step")))
+                                        : std::nullopt;
+    const PlaneImage image =
+        studio.objectSliceTile(step, slice, "o" + std::to_string(values.at("object")));
+    std::string body(image.grey.size() * sizeof(float) + image.inside.size(), '\0');
+    std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
+    std::memcpy(body.data() + image.grey.size() * sizeof(float), image.inside.data(),
+                image.inside.size());
+    return binary(
+        request, std::move(body),
+        {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
+  }
+
+  /// GET /api/cut_lines?object=2&axis=2&index=100[&step=1]
+  /// Body: where object o2 cuts that slice of the dataset of step 1 (Studio::objectCutLines):
+  /// four float32 per segment, u0 v0 u1 v1 in level-0 voxel indices. X-Segments gives the count.
+  http::message_generator cutLines(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    if (!values.contains("object") || !values.contains("index")) {
+      throw std::invalid_argument("Missing parameter 'object' or 'index'");
+    }
+    const std::optional<int> step = values.contains("step")
+                                        ? std::optional<int>(static_cast<int>(values.at("step")))
+                                        : std::nullopt;
+    const auto axis = values.contains("axis") ? static_cast<int>(values.at("axis")) : 2;
+    const std::vector<float> segments = studio.objectCutLines(
+        step, axis, values.at("index"), "o" + std::to_string(values.at("object")));
+    std::string body(segments.size() * sizeof(float), '\0');
+    std::memcpy(body.data(), segments.data(), body.size());
+    return binary(request, std::move(body), {{"X-Segments", std::to_string(segments.size() / 4)}});
+  }
+
   http::message_generator get(const Request& request, std::string_view path) {
     if (path == "/") {
       path = "/index.html";
@@ -415,6 +469,12 @@ struct HttpServer::Impl {
     }
     if (path == "/api/object_mesh") {
       return objectMesh(request, target(request));
+    }
+    if (path == "/api/object_tile") {
+      return objectTile(request, target(request));
+    }
+    if (path == "/api/cut_lines") {
+      return cutLines(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();
