@@ -219,6 +219,25 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   EXPECT_GT(deviation.body.size(), 1000U);
   EXPECT_EQ(deviation.body.size() % 4U, 0U);
 
+  // Another object in the slice view: the CAD model as cut lines, a volume sampled in the plane.
+  ASSERT_EQ(call("object_add", {{"path", (dir_ / "cad.stl").string()}}).status, 200U);
+  const Reply cuts =
+      request(server_->port(), http::verb::get, "/api/cut_lines?object=2&axis=2&index=0");
+  ASSERT_EQ(cuts.status, 200U) << cuts.body;
+  EXPECT_GT(cuts.body.size(), 0U);
+  EXPECT_EQ(cuts.body.size() % 16U, 0U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/cut_lines?object=2").status, 400U);
+  EXPECT_EQ(
+      request(server_->port(), http::verb::get, "/api/object_tile?object=2&axis=2&index=10&size=16")
+          .status,
+      400U);  // a mesh has no grey values
+  const Reply own = request(server_->port(), http::verb::get,
+                            "/api/object_tile?object=1&axis=2&index=10&level=0&u=0&v=0&size=16");
+  ASSERT_EQ(own.status, 200U) << own.body;
+  EXPECT_EQ(own.body.size(), 16U * 16U * 5U);
+  constexpr std::size_t kGreyBytes = std::size_t{16} * 16 * 4;
+  EXPECT_EQ(own.body.substr(0, kGreyBytes), tile.body.substr(0, kGreyBytes));
+
   const Reply browsed = call("browse", {{"path", dir_.string()}});
   ASSERT_EQ(browsed.status, 200U) << browsed.body;
   const Json listing = browsed.json();

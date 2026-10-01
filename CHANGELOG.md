@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Other objects in the slice view** (ADR 0018, phase 3): the slice view shows the other objects
+  of the project where they lie in the slice of the shown volume. Other volumes are blended over
+  it in their object's colour with an adjustable opacity, or shown as a checkerboard; CAD models
+  and other meshes appear as their cut lines in the object's colour. Which objects show and how is
+  saved with the view. `view_slice` takes `objects` to draw the same for MCP clients. The slice
+  and 3D views now show the data of the active object when no step is given.
+
 - **Aligning and comparing objects** (ADR 0018, phase 2): `align_points` moves objects so that
   three or more picked points meet their partners on a target (closed-form best fit, distance
   left per pair in the result); `align_surfaces` fits the surface of one object to another's

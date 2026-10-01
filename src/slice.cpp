@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -169,6 +170,119 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     }
   }
   return image;
+}
+
+PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
+  const DatasetInfo& info = dataset.info();
+  if (request.level < 0 || static_cast<std::size_t>(request.level) >= info.levels.size()) {
+    throw std::invalid_argument("Level " + std::to_string(request.level) + " does not exist");
+  }
+  constexpr std::int64_t kMaxPixels = std::int64_t{4096} * 4096;
+  if (request.width <= 0 || request.height <= 0 || request.width * request.height > kMaxPixels) {
+    throw std::invalid_argument("Plane size must be positive and at most 4096 x 4096");
+  }
+  PlaneImage image;
+  image.width = request.width;
+  image.height = request.height;
+  const auto pixels = static_cast<std::size_t>(image.width * image.height);
+  image.grey.assign(pixels, info.air_level);
+  image.inside.assign(pixels, kPlaneOutside);
+  const float threshold = info.threshold;
+  const LevelInfo& level = dataset.level(request.level);
+  const double scale = std::ldexp(1.0, request.level);
+  const std::int64_t brick_size = info.brick_size;
+  tbb::parallel_for(std::int64_t{0}, image.height, [&](std::int64_t y) {
+    // Neighbouring pixels mostly share a brick: keep it and its accessor between them.
+    std::array<std::int64_t, 3> current{-1, -1, -1};
+    Dataset::BrickPtr brick;
+    std::optional<openvdb::FloatGrid::ConstAccessor> accessor;
+    for (std::int64_t x = 0; x < image.width; ++x) {
+      // mm to the level voxel: the level-0 voxel of continuous index c is floor(c + 0.5).
+      std::array<std::int64_t, 3> voxel{};
+      bool outside = false;
+      for (std::size_t a = 0; a < 3; ++a) {
+        const double mm = request.origin_mm[a] + static_cast<double>(x) * request.du_mm[a] +
+                          static_cast<double>(y) * request.dv_mm[a];
+        voxel[a] = static_cast<std::int64_t>(std::floor((mm / info.voxel_size[a] + 0.5) / scale));
+        outside = outside || voxel[a] < 0 || voxel[a] >= level.dims[a];
+      }
+      if (outside) {
+        continue;
+      }
+      const std::array<std::int64_t, 3> index{voxel[0] / brick_size, voxel[1] / brick_size,
+                                              voxel[2] / brick_size};
+      if (index != current) {
+        current = index;
+        brick = dataset.brick(request.level, index);
+        accessor.reset();
+        if (brick) {
+          accessor.emplace(brick->getConstAccessor());
+        }
+      }
+      if (!accessor) {
+        continue;
+      }
+      float value = 0.0F;
+      if (accessor->probeValue(
+              openvdb::Coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
+                             static_cast<int>(voxel[2])),
+              value)) {
+        const auto i = static_cast<std::size_t>(y * image.width + x);
+        image.grey[i] = value;
+        image.inside[i] = value >= threshold ? kPlaneMaterial : kPlaneVoid;
+      }
+    }
+  });
+  return image;
+}
+
+int levelForPixel(const DatasetInfo& info, double pixel_mm) {
+  int chosen = 0;
+  for (const LevelInfo& level : info.levels) {
+    if (level.voxel_size.minMm() <= pixel_mm * (1.0 + 1e-9)) {
+      chosen = level.level;
+    }
+  }
+  return chosen;
+}
+
+std::vector<float> cutMesh(const IndexedMesh& mesh, int axis, double position) {
+  return cutMesh(mesh.points, mesh.triangles, axis, position);
+}
+
+std::vector<float> cutMesh(std::span<const std::array<float, 3>> points,
+                           std::span<const std::array<std::uint32_t, 3>> triangles, int axis,
+                           double position) {
+  const auto [u, v] = sliceAxes(axis);
+  const auto n = static_cast<std::size_t>(axis);
+  const auto ua = static_cast<std::size_t>(u);
+  const auto va = static_cast<std::size_t>(v);
+  std::vector<float> segments;
+  for (const auto& triangle : triangles) {
+    std::array<std::array<double, 2>, 2> ends{};
+    int found = 0;
+    for (std::size_t k = 0; k < 3 && found < 2; ++k) {
+      const auto& a = points[triangle[k]];
+      const auto& b = points[triangle[(k + 1) % 3]];
+      const double da = a[n] - position;
+      const double db = b[n] - position;
+      // Half-open, so a vertex on the plane counts for one of its two edges only.
+      if ((da < 0.0) == (db < 0.0)) {
+        continue;
+      }
+      const double t = da / (da - db);
+      ends[static_cast<std::size_t>(found)] = {a[ua] + t * (b[ua] - a[ua]),
+                                               a[va] + t * (b[va] - a[va])};
+      ++found;
+    }
+    if (found == 2) {
+      for (const auto& end : ends) {
+        segments.push_back(static_cast<float>(end[0]));
+        segments.push_back(static_cast<float>(end[1]));
+      }
+    }
+  }
+  return segments;
 }
 
 VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& request,

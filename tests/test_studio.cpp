@@ -9,10 +9,12 @@
 #include <string>
 #include <vector>
 
+#include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mcp.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
+#include "voxelsieve/slice.hpp"
 #include "voxelsieve/studio.hpp"
 #include "voxelsieve/synthetic.hpp"
 
@@ -126,6 +128,79 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
         "run_align_points", "run_align_surfaces", "run_compare_objects"}) {
     EXPECT_NE(std::ranges::find(names, method), names.end()) << method;
   }
+}
+
+TEST_F(StudioTest, SliceViewShowsOtherObjectsInThePlane) {
+  Studio studio;
+  studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  writeStl(dir_ / "nominal.stl", boxMesh({6.0, 5.0, 4.0}));
+  const Json imported =
+      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const int step = imported.at("id").get<int>();
+  studio.call("object_add",
+              {{"path", (dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve").string()}});
+  studio.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
+  // The copy three voxels further along x.
+  constexpr std::int64_t kShift = 3;
+  const Dataset dataset = Dataset::open(dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve");
+  const double pitch = dataset.info().voxel_size[0];
+  studio.call("run_move", {{"objects", {"o2"}},
+                           {"translation_mm", {static_cast<double>(kShift) * pitch, 0.0, 0.0}}});
+
+  SliceRequest request;
+  request.axis = 2;
+  request.index = dataset.info().dims[2] / 2;
+  request.size = {dataset.info().dims[0], dataset.info().dims[1]};
+  const SliceImage base = readSlice(dataset, request);
+  const PlaneImage copy = studio.objectSliceTile(step, request, "o2");
+  ASSERT_EQ(copy.width, base.width);
+  ASSERT_EQ(copy.height, base.height);
+  int compared = 0;
+  for (std::int64_t y = 0; y < base.height; ++y) {
+    for (std::int64_t x = 0; x < base.width; ++x) {
+      const auto i = static_cast<std::size_t>(y * base.width + x);
+      if (x < kShift) {
+        EXPECT_EQ(copy.inside[i], 0);
+        continue;
+      }
+      const auto j = i - static_cast<std::size_t>(kShift);
+      ASSERT_EQ(copy.grey[i], base.grey[j]) << x << ", " << y;
+      compared += copy.inside[i] == kPlaneMaterial ? 1 : 0;
+    }
+  }
+  EXPECT_GT(compared, 0);
+  EXPECT_THROW((void)studio.objectSliceTile(step, request, "o3"), std::invalid_argument);
+
+  // The CAD box is centred on the origin of the project, where the scan starts: in voxels of the
+  // scan its outline runs from -30 to 30 along x and -25 to 25 along y.
+  const std::vector<float> cuts = studio.objectCutLines(step, 2, 0, "o3");
+  ASSERT_FALSE(cuts.empty());
+  double length = 0.0;
+  for (std::size_t s = 0; s + 3 < cuts.size(); s += 4) {
+    length += std::hypot(cuts[s + 2] - cuts[s], cuts[s + 3] - cuts[s + 1]);
+    for (std::size_t k = 0; k < 4; k += 2) {
+      EXPECT_LE(std::abs(cuts[s + k]), 30.0F + 1e-3F);
+      EXPECT_LE(std::abs(cuts[s + k + 1]), 25.0F + 1e-3F);
+    }
+  }
+  EXPECT_NEAR(length, 2.0 * (60.0 + 50.0), 1e-2);
+  EXPECT_TRUE(studio.objectCutLines(step, 2, 100, "o3").empty());  // 10 mm above the box
+  EXPECT_THROW((void)studio.objectCutLines(step, 2, 0, "o9"), std::invalid_argument);
+
+  // At z = 1 mm both show: the copy blended in its colour and the box as lines.
+  const Json slice = studio.call(
+      "view_slice", {{"step", step}, {"axis", "z"}, {"index", 10}, {"objects", {"o2", "o3"}}});
+  ASSERT_EQ(slice.at("objects").size(), 2U);
+  EXPECT_EQ(slice.at("objects")[0].at("id"), "o2");
+  EXPECT_TRUE(slice.at("objects")[0].at("volume_blended").get<bool>());
+  EXPECT_FALSE(slice.at("objects")[1].at("volume_blended").get<bool>());
+  EXPECT_GT(slice.at("objects")[1].at("cut_segments").get<int>(), 0);
+  EXPECT_NE(slice.at("objects")[0].at("color"), slice.at("objects")[1].at("color"));
+
+  // Without a step, the views show the data of the active object, else the latest.
+  EXPECT_NE(studio.call("view_slice", {{"axis", "z"}}).at("step"), step);
+  studio.call("object_select", {{"id", "o1"}});
+  EXPECT_EQ(studio.call("view_slice", {{"axis", "z"}}).at("step"), step);
 }
 
 TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
