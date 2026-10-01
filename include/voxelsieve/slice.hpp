@@ -3,11 +3,13 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -46,6 +48,47 @@ struct SliceImage {
 [[nodiscard]] SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
                                    const PorosityResult* porosity = nullptr,
                                    const MaterialVolume* materials = nullptr);
+
+/// A plane sampled through a dataset in any orientation (ADR 0018): pixel (x, y) lies at
+/// `origin_mm + x * du_mm + y * dv_mm` in the dataset's own coordinates, level-0 voxel index times
+/// the pitch per axis. Each pixel takes the nearest voxel of `level`. Other objects are shown in
+/// the slice of a volume this way, wherever they lie.
+struct PlaneRequest {
+  std::array<double, 3> origin_mm{};
+  std::array<double, 3> du_mm{};
+  std::array<double, 3> dv_mm{};
+  std::int64_t width = 256;
+  std::int64_t height = 256;
+  int level = 0;
+};
+
+inline constexpr std::uint8_t kPlaneOutside = 0;
+inline constexpr std::uint8_t kPlaneVoid = 1;
+inline constexpr std::uint8_t kPlaneMaterial = 2;
+
+struct PlaneImage {
+  std::int64_t width = 0;
+  std::int64_t height = 0;
+  /// Grey values, x fastest; the air level where `inside` is 0.
+  std::vector<float> grey;
+  /// What the pixel hit: kPlaneMaterial for an active voxel at or above the threshold of the
+  /// dataset, kPlaneVoid for one below it (air kept around the part, pores), kPlaneOutside for
+  /// removed air and places outside the volume.
+  std::vector<std::uint8_t> inside;
+};
+
+[[nodiscard]] PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request);
+
+/// The coarsest level whose voxels are at most `pixel_mm` along their finest axis, so a plane
+/// sampled with pixels of that size neither skips voxels nor reads more than it shows.
+[[nodiscard]] int levelForPixel(const DatasetInfo& info, double pixel_mm);
+
+/// Where the plane `coordinate[axis] == position` cuts the triangles: one segment per cut
+/// triangle as four floats (u0, v0, u1, v1) along the in-plane axes (`sliceAxes`).
+[[nodiscard]] std::vector<float> cutMesh(const IndexedMesh& mesh, int axis, double position);
+[[nodiscard]] std::vector<float> cutMesh(std::span<const std::array<float, 3>> points,
+                                         std::span<const std::array<std::uint32_t, 3>> triangles,
+                                         int axis, double position);
 
 /// The whole volume, or a region of it, at one level, as 8-bit values for 3D display in the
 /// browser.

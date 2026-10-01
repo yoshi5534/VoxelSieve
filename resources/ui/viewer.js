@@ -2,6 +2,11 @@
 // tiles of 256 x 256 pixels from the resolution level whose voxels match the zoom, so a view of a
 // scan of hundreds of GB reads only a few bricks. Grey values arrive as float32 and are windowed
 // here, so contrast changes need no new requests.
+//
+// Other objects of the project show in the same plane (ADR 0018): other volumes as layers
+// sampled by the server at the pixels of the tiles of the shown volume (api/object_tile), blended
+// in the object's colour or as a checkerboard, and meshes as the lines where they cut the slice
+// (api/cut_lines).
 'use strict';
 
 const TILE = 256;
@@ -9,6 +14,7 @@ const MAX_TILES = 160;          // cached tiles, about 0.5 MB each
 const MAX_REQUESTS = 4;         // concurrent tile requests
 const AXIS_NAMES = ['x', 'y', 'z'];
 const IN_PLANE = [[1, 2], [0, 2], [0, 1]];
+const CHECKER = 32;             // edge of the checkerboard squares in tile pixels
 
 /// Voxel edge lengths [x, y, z] in mm; datasets store a number for cubic voxels (ADR 0012).
 function voxelPitch(size) {
@@ -20,6 +26,64 @@ function voxelPitch(size) {
 const MATERIAL_OVERLAY = 16;
 const MATERIAL_COLORS = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
   [142, 99, 190], [214, 190, 40], [23, 170, 170], [140, 110, 80]];
+
+// What a pixel of another volume hit (kPlaneVoid, kPlaneMaterial in slice.hpp): a kept voxel
+// below the threshold of that volume (air near the part, a pore) or its material.
+const PLANE_VOID = 1;
+const PLANE_MATERIAL = 2;
+
+/// Pixels of a tile of another volume, RGBA: in 'blend' mode its material in the object's colour,
+/// brighter where it is denser, covering the slice by `opacity`; in 'checker' mode all its kept
+/// voxels in grey in every other square of a checkerboard, the slice in the squares between.
+function layerPixels(data, inside, size, color, window, mode, opacity, out) {
+  const [low, high] = window ?? [0, 1];
+  const scale = 1 / (high - low);
+  for (let i = 0; i < data.length; i += 1) {
+    const p = i * 4;
+    const t = Math.min(Math.max((data[i] - low) * scale, 0), 1);
+    if (mode === 'checker') {
+      const x = i % size;
+      const y = Math.floor(i / size);
+      const shown = inside[i] >= PLANE_VOID && (Math.floor(x / CHECKER) + Math.floor(y / CHECKER)) % 2 === 1;
+      out[p] = out[p + 1] = out[p + 2] = t * 255;
+      out[p + 3] = shown ? 255 : 0;
+    } else {
+      const shade = 0.3 + 0.7 * t;
+      out[p] = shade * color[0];
+      out[p + 1] = shade * color[1];
+      out[p + 2] = shade * color[2];
+      out[p + 3] = inside[i] === PLANE_MATERIAL ? opacity * 255 : 0;
+    }
+  }
+  return out;
+}
+
+/// Screen positions of cut segments (u0 v0 u1 v1 in level-0 voxel indices, whose centres lie on
+/// whole numbers): voxel u covers the screen from u to u + 1 as the tiles draw it.
+function cutsToScreen(segments, view) {
+  const { center, zoom, stretch, width, height } = view;
+  const out = new Float32Array(segments.length);
+  for (let i = 0; i < segments.length; i += 2) {
+    out[i] = (segments[i] + 0.5 - center[0]) * zoom * stretch[0] + width / 2;
+    out[i + 1] = (segments[i + 1] + 0.5 - center[1]) * zoom * stretch[1] + height / 2;
+  }
+  return out;
+}
+
+/// Window from the 0.5 and 99.5 percentiles of the material of tiles of another volume, or null.
+function insideWindow(tiles) {
+  const values = [];
+  for (const tile of tiles) {
+    for (let i = 0; i < tile.data.length; i += 7) {
+      if (tile.inside[i] === PLANE_MATERIAL) values.push(tile.data[i]);
+    }
+  }
+  if (values.length < 16) return null;
+  values.sort((a, b) => a - b);
+  const low = values[Math.floor(values.length * 0.005)];
+  const high = values[Math.floor(values.length * 0.995)];
+  return [low, Math.max(high, low + 1)];
+}
 
 class SliceViewer {
   constructor() {
@@ -38,6 +102,12 @@ class SliceViewer {
     this.center = [0, 0];       // level-0 voxel coordinates of the view centre (u, v)
     this.window = null;         // [low, high]
     this.showOverlay = true;
+    // Other objects: {id, number, kind, color, version, show, mode, opacity, window}; `version`
+    // changes with anything that moves the object relative to the slice.
+    this.layers = [];
+    this.layerSettings = {};    // object id -> {show, mode, opacity}, saved with the view
+    this.cuts = new Map();      // object id -> {key, segments} of the cut lines shown
+    this.cutLoading = new Map();  // object id -> {key, controller}
     this.canvas = null;
     this.drawPending = false;
     this.onChange = () => {};
@@ -64,7 +134,7 @@ class SliceViewer {
   /// Slice, zoom and window, for saving them with the project or as a named view.
   getState() {
     const saved = { step: this.step, axis: this.axis, index: [...this.index], window: this.window,
-      showOverlay: this.showOverlay };
+      showOverlay: this.showOverlay, layers: structuredClone(this.layerSettings) };
     // Before the first picture the zoom is not fitted yet; leave it to the next fit then.
     if (!this.fitPending) Object.assign(saved, { zoom: this.zoom, center: [...this.center] });
     return saved;
@@ -77,6 +147,10 @@ class SliceViewer {
     this.index = saved.index.map((i, a) => Math.min(Math.max(i, 0), this.info.dims[a] - 1));
     this.window = saved.window;
     this.showOverlay = saved.showOverlay;
+    if (saved.layers) {
+      this.layerSettings = structuredClone(saved.layers);
+      for (const layer of this.layers) Object.assign(layer, this.layerSettings[layer.id] ?? {});
+    }
     if (saved.zoom && saved.center) {
       this.zoom = saved.zoom;
       this.center = [...saved.center];
@@ -98,6 +172,41 @@ class SliceViewer {
     this.failed.clear();
     this.queue = [];
     this.frame = null;
+    for (const { controller } of this.cutLoading.values()) controller.abort();
+    this.cutLoading.clear();
+    this.cuts.clear();
+  }
+
+  /// The other objects to show in the slice: [{id, kind, color, version}], kind 'volume' or
+  /// 'mesh'. Volumes start blended at half opacity, meshes as lines; both start hidden.
+  setLayers(objects) {
+    this.layers = objects.map((object) => {
+      const before = this.layers.find((layer) => layer.id === object.id);
+      const layer = { show: false, mode: 'blend', opacity: 0.5, ...object,
+        ...this.layerSettings[object.id] };
+      layer.number = Number(object.id.replace(/^o/, ''));
+      // The window of a volume stays as long as the volume does.
+      layer.window = before && before.source === object.source ? before.window : null;
+      return layer;
+    });
+    for (const id of this.cuts.keys()) {
+      if (!this.layers.some((layer) => layer.id === id)) this.cuts.delete(id);
+    }
+    this.requestDraw();
+  }
+
+  /// Changes how an object shows: {show, mode, opacity}.
+  setLayer(id, change) {
+    const layer = this.layers.find((candidate) => candidate.id === id);
+    if (!layer) return;
+    Object.assign(layer, change);
+    this.layerSettings[id] = { show: layer.show, mode: layer.mode, opacity: layer.opacity };
+    this.requestDraw();
+    this.onChange();
+  }
+
+  shownLayers(kind) {
+    return this.layers.filter((layer) => layer.show && layer.kind === kind);
   }
 
   attach(canvas) {
@@ -243,19 +352,20 @@ class SliceViewer {
     return undefined;
   }
 
-  key(level, tu, tv, index = this.index[this.axis]) {
-    return this.slot(level, tu, tv) + '@' + (index >> level);
+  key(level, tu, tv, index = this.index[this.axis], layer = null) {
+    return this.slot(level, tu, tv, layer) + '@' + (index >> level);
   }
 
-  /// A tile position independent of the slice.
-  slot(level, tu, tv) {
-    return [this.step, this.porosity ?? '-', this.materials ?? '-', this.axis, level, tu,
-      tv].join('/');
+  /// A tile position independent of the slice, of the volume or of the layer of another object.
+  slot(level, tu, tv, layer = null) {
+    const content = layer ? ['object', layer.id, layer.version]
+      : [this.porosity ?? '-', this.materials ?? '-'];
+    return [this.step, ...content, this.axis, level, tu, tv].join('/');
   }
 
   /// Cached tile of the same position from the slice nearest to the current one, or undefined.
-  nearestTile(level, tu, tv) {
-    const slot = this.slot(level, tu, tv);
+  nearestTile(level, tu, tv, layer = null) {
+    const slot = this.slot(level, tu, tv, layer);
     const slice = this.index[this.axis] >> level;
     let best;
     for (const tile of this.tiles.values()) {
@@ -368,7 +478,20 @@ class SliceViewer {
         context.drawImage(this.renderTile(tile), x, y, w, h);
       }
     }
+    // Other volumes over it, at the slice the volume shows.
+    const layers = this.shownLayers('volume');
+    for (const layer of layers) {
+      for (const [tu, tv, x, y, w, h] of visible) {
+        const slice = shown ?? this.index[this.axis] >> level;
+        const tile = this.tiles.get(this.slot(level, tu, tv, layer) + '@' + slice) ??
+          this.nearestTile(level, tu, tv, layer);
+        if (!tile) continue;
+        tile.used = performance.now();
+        context.drawImage(this.renderLayerTile(tile, layer), x, y, w, h);
+      }
+    }
     context.restore();
+    this.drawCuts(context, width, height);
     // Outline of the volume.
     context.strokeStyle = 'rgba(255,255,255,0.25)';
     context.strokeRect(...outline);
@@ -385,12 +508,71 @@ class SliceViewer {
       this.frame = { context: frameContext, index: this.index[this.axis] };
     }
     const index = this.frame.index;
-    this.queue = missing(index)
-      .filter(([tu, tv]) => !this.loading.has(this.key(level, tu, tv, index)))
-      .map(([tu, tv, x, y, w, h]) => ({ level, tu, tv, index,
+    const order = (a, b) => a.distance - b.distance;
+    const wanted = (layer) => visible
+      .filter(([tu, tv]) => {
+        const key = this.key(level, tu, tv, index, layer);
+        return !this.tiles.has(key) && !this.failed.has(key) && !this.loading.has(key);
+      })
+      .map(([tu, tv, x, y, w, h]) => ({ level, tu, tv, index, layer,
         distance: Math.hypot(x + w / 2 - width / 2, y + h / 2 - height / 2) }))
-      .sort((a, b) => a.distance - b.distance);
-    this.pump(new Set(visible.map(([tu, tv]) => this.key(level, tu, tv, index))));
+      .sort(order);
+    // The volume first, then the other objects.
+    this.queue = [wanted(null), ...layers.map(wanted)].flat();
+    this.pump(new Set([null, ...layers].flatMap((layer) =>
+      visible.map(([tu, tv]) => this.key(level, tu, tv, index, layer)))));
+    this.loadCuts();
+  }
+
+  /// Requests the cut lines of the shown meshes at the current slice; the previous lines stay
+  /// until the new ones arrive.
+  loadCuts() {
+    const index = this.index[this.axis];
+    for (const layer of this.shownLayers('mesh')) {
+      const key = [this.step, layer.version, this.axis, index].join('/');
+      if (this.cuts.get(layer.id)?.key === key) continue;
+      const loading = this.cutLoading.get(layer.id);
+      if (loading?.key === key) continue;
+      loading?.controller.abort();
+      const controller = new AbortController();
+      this.cutLoading.set(layer.id, { key, controller });
+      const params = new URLSearchParams({ step: this.step, object: layer.number,
+        axis: this.axis, index });
+      fetch('api/cut_lines?' + params, { signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error((await response.json()).error);
+          this.cuts.set(layer.id, { key, segments: new Float32Array(await response.arrayBuffer()) });
+        })
+        .catch((error) => {
+          if (error.name !== 'AbortError') console.warn('Cut lines', layer.id, error);
+        })
+        .finally(() => {
+          if (this.cutLoading.get(layer.id)?.controller === controller) {
+            this.cutLoading.delete(layer.id);
+          }
+          this.requestDraw();
+        });
+    }
+  }
+
+  drawCuts(context, width, height) {
+    const view = { center: this.center, zoom: this.zoom, stretch: this.stretch(), width, height };
+    context.save();
+    context.lineWidth = 1.5;
+    context.lineCap = 'round';
+    for (const layer of this.shownLayers('mesh')) {
+      const cuts = this.cuts.get(layer.id);
+      if (!cuts) continue;
+      const screen = cutsToScreen(cuts.segments, view);
+      context.strokeStyle = 'rgb(' + layer.color.join(',') + ')';
+      context.beginPath();
+      for (let i = 0; i + 3 < screen.length; i += 4) {
+        context.moveTo(screen[i], screen[i + 1]);
+        context.lineTo(screen[i + 2], screen[i + 3]);
+      }
+      context.stroke();
+    }
+    context.restore();
   }
 
   /// Starts queued requests; those not in `wanted` (after a zoom or pan) give their places up.
@@ -399,14 +581,14 @@ class SliceViewer {
       if (!wanted.has(key)) controller.abort();
     }
     while (this.active < MAX_REQUESTS && this.queue.length) {
-      const { level, tu, tv, index } = this.queue.shift();
-      this.fetchTile(level, tu, tv, index);
+      const { level, tu, tv, index, layer } = this.queue.shift();
+      this.fetchTile(level, tu, tv, index, layer);
     }
   }
 
-  async fetchTile(level, tu, tv, index) {
-    const key = this.key(level, tu, tv, index);
-    const slot = this.slot(level, tu, tv);
+  async fetchTile(level, tu, tv, index, layer = null) {
+    const key = this.key(level, tu, tv, index, layer);
+    const slot = this.slot(level, tu, tv, layer);
     const slice = index >> level;
     const controller = new AbortController();
     this.loading.set(key, controller);
@@ -415,18 +597,25 @@ class SliceViewer {
       step: this.step, axis: this.axis, index, level,
       u: tu * TILE, v: tv * TILE, size: TILE,
     });
-    if (this.porosity !== null) params.set('porosity', this.porosity);
-    if (this.materials !== null) params.set('materials', this.materials);
+    if (layer) params.set('object', layer.number);
+    if (!layer && this.porosity !== null) params.set('porosity', this.porosity);
+    if (!layer && this.materials !== null) params.set('materials', this.materials);
     try {
-      const response = await fetch('api/tile?' + params, { signal: controller.signal });
+      const response = await fetch((layer ? 'api/object_tile?' : 'api/tile?') + params,
+        { signal: controller.signal });
       if (!response.ok) throw new Error((await response.json()).error);
       const buffer = await response.arrayBuffer();
       const count = TILE * TILE;
-      this.tiles.set(key, {
-        data: new Float32Array(buffer, 0, count),
-        overlay: new Uint8Array(buffer, count * 4, count),
-        slot, slice, canvas: null, rendered: null, used: performance.now(),
-      });
+      const owner = layer ? layer.id + '#' + layer.version : null;
+      const tile = { data: new Float32Array(buffer, 0, count), slot, slice, owner, canvas: null,
+        rendered: null, used: performance.now() };
+      // The overlay of the volume, or what the tile hit of the other volume.
+      tile[layer ? 'inside' : 'overlay'] = new Uint8Array(buffer, count * 4, count);
+      this.tiles.set(key, tile);
+      if (layer && !layer.window) {
+        // Its own window, from its first tiles.
+        layer.window = insideWindow([...this.tiles.values()].filter((t) => t.owner === owner));
+      }
       this.evict();
     } catch (error) {
       if (error.name !== 'AbortError') {
@@ -476,6 +665,23 @@ class SliceViewer {
     this.requestDraw();
   }
 
+  renderLayerTile(tile, layer) {
+    const state = [layer.window?.[0], layer.window?.[1], layer.mode, layer.opacity].join('/');
+    if (tile.rendered === state) return tile.canvas;
+    if (!tile.canvas) {
+      tile.canvas = document.createElement('canvas');
+      tile.canvas.width = TILE;
+      tile.canvas.height = TILE;
+    }
+    const context = tile.canvas.getContext('2d');
+    const image = context.createImageData(TILE, TILE);
+    layerPixels(tile.data, tile.inside, TILE, layer.color, layer.window, layer.mode, layer.opacity,
+      image.data);
+    context.putImageData(image, 0, 0);
+    tile.rendered = state;
+    return tile.canvas;
+  }
+
   renderTile(tile) {
     const state = [this.window?.[0], this.window?.[1], this.showOverlay].join('/');
     if (tile.rendered === state) return tile.canvas;
@@ -519,6 +725,9 @@ class SliceViewer {
   }
 }
 
-window.SliceViewer = SliceViewer;
-window.MATERIAL_COLORS = MATERIAL_COLORS;
-window.SLICE_AXIS_NAMES = AXIS_NAMES;
+if (typeof window !== 'undefined') {
+  Object.assign(window, { SliceViewer, MATERIAL_COLORS, SLICE_AXIS_NAMES: AXIS_NAMES });
+}
+if (typeof module !== 'undefined') {
+  module.exports = { cutsToScreen, insideWindow, layerPixels };
+}

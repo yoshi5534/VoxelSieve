@@ -5,7 +5,10 @@
 #include <cmath>
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/porosity.hpp"
@@ -189,6 +192,83 @@ TEST_F(SliceTest, VolumeRegionIsReadFinerWithTheWindowOfTheWhole) {
   // A region outside the volume holds nothing.
   request.region = Box{{-10, -10, -10}, {-1, 5, 5}};
   EXPECT_THROW((void)readVolumePreview(*dataset_, request), std::invalid_argument);
+}
+
+TEST_F(SliceTest, PlanesMatchTheSlicesTheyLieIn) {
+  const DatasetInfo& info = dataset_->info();
+  const auto& pitch = info.voxel_size;
+  for (int level = 0; level < 2; ++level) {
+    const double scale = std::ldexp(1.0, level);
+    SliceRequest request;
+    request.index = info.dims[2] / 2;
+    request.level = level;
+    request.origin = {-3, 2};
+    request.size = {40, 30};
+    const SliceImage slice = readSlice(*dataset_, request);
+    // The centre of level voxel i lies at level-0 index (i + 0.5) * 2^level - 0.5.
+    const auto centre = [&](std::int64_t i, std::size_t axis) {
+      return ((static_cast<double>(i) + 0.5) * scale - 0.5) * pitch[axis];
+    };
+    PlaneRequest plane;
+    plane.level = level;
+    plane.origin_mm = {centre(request.origin[0], 0), centre(request.origin[1], 1),
+                       static_cast<double>(request.index) * pitch[2]};
+    plane.du_mm = {scale * pitch[0], 0.0, 0.0};
+    plane.dv_mm = {0.0, scale * pitch[1], 0.0};
+    plane.width = request.size[0];
+    plane.height = request.size[1];
+    const PlaneImage same = samplePlane(*dataset_, plane);
+    // The same pixels with x and y swapped.
+    std::swap(plane.du_mm, plane.dv_mm);
+    std::swap(plane.width, plane.height);
+    const PlaneImage swapped = samplePlane(*dataset_, plane);
+    int inside = 0;
+    for (std::int64_t y = 0; y < slice.height; ++y) {
+      for (std::int64_t x = 0; x < slice.width; ++x) {
+        const auto i = static_cast<std::size_t>(y * slice.width + x);
+        const auto j = static_cast<std::size_t>(x * swapped.width + y);
+        EXPECT_EQ(same.grey[i], slice.grey[i]) << "level " << level << " pixel " << x << ", " << y;
+        EXPECT_EQ(swapped.grey[j], slice.grey[i]);
+        EXPECT_EQ(same.inside[i], swapped.inside[j]);
+        // Material at or above the threshold, kept air and pores below it.
+        if (same.inside[i] != kPlaneOutside) {
+          EXPECT_EQ(same.inside[i] == kPlaneMaterial, slice.grey[i] >= info.threshold);
+          ++inside;
+        }
+      }
+    }
+    EXPECT_GT(inside, 0);
+    EXPECT_LT(inside, slice.width * slice.height);  // the window reaches past the volume
+  }
+  EXPECT_THROW((void)samplePlane(*dataset_, PlaneRequest{.level = 9}), std::invalid_argument);
+}
+
+TEST_F(SliceTest, PlaneLevelMatchesThePixelSize) {
+  const DatasetInfo& info = dataset_->info();
+  const double voxel = info.voxel_size.minMm();
+  EXPECT_EQ(levelForPixel(info, 0.5 * voxel), 0);
+  EXPECT_EQ(levelForPixel(info, voxel), 0);
+  EXPECT_EQ(levelForPixel(info, 2.5 * voxel), 1);
+  EXPECT_EQ(levelForPixel(info, 1e6), static_cast<int>(info.levels.size()) - 1);
+}
+
+TEST(CutMeshTest, PlanesCutABoxAlongItsOutline) {
+  const IndexedMesh box = indexedMesh(boxMesh({4.0, 2.0, 1.0}));
+  const auto length = [](const std::vector<float>& segments) {
+    double total = 0.0;
+    for (std::size_t s = 0; s + 3 < segments.size(); s += 4) {
+      total += std::hypot(segments[s + 2] - segments[s], segments[s + 3] - segments[s + 1]);
+    }
+    return total;
+  };
+  const std::vector<float> across_z = cutMesh(box, 2, 0.1);
+  EXPECT_NEAR(length(across_z), 2.0 * (4.0 + 2.0), 1e-5);
+  for (std::size_t i = 0; i < across_z.size(); i += 2) {
+    EXPECT_LE(std::abs(across_z[i]), 2.0F + 1e-5F);      // x
+    EXPECT_LE(std::abs(across_z[i + 1]), 1.0F + 1e-5F);  // y
+  }
+  EXPECT_NEAR(length(cutMesh(box, 0, 1.5)), 2.0 * (2.0 + 1.0), 1e-5);  // y and z
+  EXPECT_TRUE(cutMesh(box, 1, 3.0).empty());
 }
 
 TEST_F(SliceTest, RejectsInvalidRequests) {
