@@ -111,6 +111,55 @@ struct CompareResult {
   std::vector<float> deviation_mm;
 };
 
+/// The surface of a scan in mm, in the scan's own coordinates (voxel index times voxel size): the
+/// zero crossing of the mask, meshed without adaptivity so every vertex lies on the surface. With
+/// `outer_only`, only the largest connected surface, the outer skin, is kept.
+struct ScanSurface {
+  IndexedMesh mesh;
+  std::size_t components = 0;
+  std::size_t dropped_components = 0;
+  double dropped_area_mm2 = 0.0;
+};
+[[nodiscard]] ScanSurface scanSurface(const SurfaceMask& mask, std::size_t max_triangles,
+                                      bool outer_only);
+
+/// The triangles of `mesh` with equal corners merged into shared vertices.
+[[nodiscard]] IndexedMesh indexedMesh(const Mesh& mesh);
+[[nodiscard]] Mesh triangleSoup(const IndexedMesh& mesh);
+[[nodiscard]] IndexedMesh transformed(IndexedMesh mesh, const RigidTransform& transform);
+
+/// Least-squares rigid motion that maps `from[i]` onto `to[i]` (Horn's quaternion method), with
+/// the remaining distance of every pair. Throws for fewer than three pairs or points on a line.
+struct RigidFit {
+  RigidTransform transform;
+  std::vector<double> residuals_mm;
+  double rms_mm = 0.0;
+};
+[[nodiscard]] RigidFit fitRigid(std::span<const std::array<double, 3>> from,
+                                std::span<const std::array<double, 3>> to);
+
+/// Best fit of one surface onto another (ADR 0018), both in the same coordinates: robust
+/// point-to-plane ICP as in the nominal-actual comparison (ADR 0010), starting from where the
+/// surfaces lie or, with `coarse`, from the best match of their principal axes.
+struct SurfaceAlignOptions {
+  bool coarse = false;
+  std::size_t fit_points = 20000;
+  /// Distances below this count as noise (Huber threshold floor, convergence); 0: a ten-thousandth
+  /// of the target's size. Half a voxel for scans.
+  double resolution_mm = 0.0;
+};
+struct SurfaceAlignment {
+  /// Moves the moving surface onto the target.
+  RigidTransform motion;
+  /// RMS distance of the inlier points and their fraction.
+  double rms_mm = 0.0;
+  double inliers = 0.0;
+  int iterations = 0;
+  double resolution_mm = 0.0;
+};
+[[nodiscard]] SurfaceAlignment alignSurfaces(const IndexedMesh& moving, const IndexedMesh& target,
+                                             const SurfaceAlignOptions& options = {});
+
 /// Aligns `cad` to the surface of the scan and measures the deviation of the scanned surface.
 [[nodiscard]] CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
                                          const CompareOptions& options = {});

@@ -362,6 +362,16 @@ not steps and undo leaves them alone.
 
 ![Saved views above the 3D view](docs/images/saved-views.png)
 
+A project can hold several objects: scans and CAD models (STL) in one global coordinate system,
+each with its pose (ADR 0018). The view "Objects" shows them where they lie, each in its colour.
+They are aligned by steps that apply in order: "Move" by hand, "Align by point pairs" with points
+clicked on both objects, and "Best fit of the surfaces" (from where they lie, or from the
+principal axes for objects far apart). "Nominal-actual comparison" then measures a scan against a
+CAD model or another scan where both lie; its result shows in the 3D view and the report like that
+of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture.
+
+![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
+
 ```sh
 vs-studio --project /data/casting.vsproj --plugins build/release/plugins
 ```

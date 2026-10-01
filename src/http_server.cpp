@@ -365,6 +365,35 @@ struct HttpServer::Impl {
                    {"X-Range", std::to_string(view->range_mm)}});
   }
 
+  /// GET /api/object_mesh?object=2[&max_triangles=1500000]
+  /// Body: what the 3D view draws for object o2 (Studio::objectShape), as /api/surface: three
+  /// float32 per vertex, then three uint32 indices per triangle. Points times X-Scale per axis
+  /// are object coordinates in mm; X-Shape says whether they are a mesh, a surface or a box.
+  http::message_generator objectMesh(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    if (!values.contains("object")) {
+      throw std::invalid_argument("Missing parameter 'object'");
+    }
+    const auto max = values.contains("max_triangles") ? values.at("max_triangles") : 1500000;
+    if (max < 1000 || max > 20000000) {
+      throw std::invalid_argument("max_triangles must be between 1000 and 20000000");
+    }
+    const auto shape = studio.objectShape("o" + std::to_string(values.at("object")),
+                                          static_cast<std::size_t>(max));
+    const auto& mesh = *shape.mesh;
+    const std::string scale = Json(shape.scale).dump();
+    const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
+    const std::size_t triangle_bytes = mesh.triangles.size() * sizeof(mesh.triangles[0]);
+    std::string body(point_bytes + triangle_bytes, '\0');
+    std::memcpy(body.data(), mesh.points.data(), point_bytes);
+    std::memcpy(body.data() + point_bytes, mesh.triangles.data(), triangle_bytes);
+    return binary(request, std::move(body),
+                  {{"X-Vertices", std::to_string(mesh.points.size())},
+                   {"X-Triangles", std::to_string(mesh.triangles.size())},
+                   {"X-Scale", scale.substr(1, scale.size() - 2)},  // "x,y,z", exact
+                   {"X-Shape", shape.shape}});
+  }
+
   http::message_generator get(const Request& request, std::string_view path) {
     if (path == "/") {
       path = "/index.html";
@@ -383,6 +412,9 @@ struct HttpServer::Impl {
     }
     if (path == "/api/deviation") {
       return deviation(request, target(request));
+    }
+    if (path == "/api/object_mesh") {
+      return objectMesh(request, target(request));
     }
     if (path == "/api/methods") {
       Json methods = Json::array();

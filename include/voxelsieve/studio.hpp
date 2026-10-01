@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -14,6 +15,7 @@
 #include "voxelsieve/project.hpp"
 #include "voxelsieve/slice.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/transform.hpp"
 
 namespace voxelsieve {
 
@@ -86,6 +88,18 @@ class Studio {
   [[nodiscard]] std::shared_ptr<const DeviationView> deviationMesh(
       std::optional<int> comparison_step) const;
 
+  /// What the 3D view draws for an object (ADR 0018): the triangles of a mesh object, the display
+  /// mesh of a volume's latest surface step, or, before a surface step, the box the volume
+  /// fills. Points are in the object's own coordinates divided by `scale` per axis: mm for a
+  /// mesh, level-0 voxel indices for a volume. `pose` places the object in global coordinates.
+  struct ObjectShape {
+    std::shared_ptr<const IndexedMesh> mesh;
+    std::array<double, 3> scale{1.0, 1.0, 1.0};
+    std::string shape;  // "mesh", "surface" or "box"
+    RigidTransform pose;
+  };
+  [[nodiscard]] ObjectShape objectShape(const std::string& id, std::size_t max_triangles) const;
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
@@ -99,6 +113,8 @@ class Studio {
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
   nlohmann::json viewSlice(const nlohmann::json& params) const;
+  nlohmann::json viewObjects(const nlohmann::json& params) const;
+  [[nodiscard]] std::shared_ptr<const IndexedMesh> stlMesh(const std::filesystem::path& file) const;
   [[nodiscard]] std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>>
   openView(std::optional<int> dataset_step, std::optional<int> porosity_step) const;
   [[nodiscard]] std::shared_ptr<const Dataset> openDataset(const std::filesystem::path& dir) const;

@@ -86,6 +86,34 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   studio.call("undo", {});
   EXPECT_EQ(studio.call("objects", {}).at("objects")[2].at("pose")[3], 0.0);
 
+  // What the 3D view draws: the box a volume fills until it has a surface, a mesh as it is.
+  Studio::ObjectShape shape = studio.objectShape("o1", 100000);
+  EXPECT_EQ(shape.shape, "box");
+  EXPECT_EQ(shape.mesh->triangles.size(), 12U);
+  EXPECT_NEAR(shape.scale[2], 0.1, 1e-12);
+  EXPECT_EQ(studio.objectShape("o3", 100000).shape, "mesh");
+  studio.call("run_surface", {{"object", "o1"}});
+  shape = studio.objectShape("o1", 100000);
+  EXPECT_EQ(shape.shape, "surface");
+  EXPECT_EQ(studio.objectShape("o2", 100000).shape, "box");  // the surface is o1's
+  float low = 1e9F;
+  float high = -1e9F;
+  for (const auto& p : shape.mesh->points) {
+    low = std::min(low, p[0]);
+    high = std::max(high, p[0]);
+  }
+  EXPECT_NEAR((high - low) * shape.scale[0], 6.0, 0.2);  // the 6 mm of the part along x
+
+  const Json view = studio.call("view_objects", {{"width", 200}, {"height", 150}});
+  ASSERT_EQ(view.at("objects").size(), 3U);
+  EXPECT_EQ(view.at("objects")[0].at("shape"), "surface");
+  EXPECT_EQ(view.at("objects")[2].at("shape"), "mesh");
+  EXPECT_NE(view.at("objects")[0].at("color"), view.at("objects")[2].at("color"));
+  EXPECT_NEAR(view.at("bounds_min_mm")[0].get<double>(), -3.0, 1e-6);  // the mesh, centred
+  EXPECT_EQ(view.at("width"), 200);
+  EXPECT_EQ(view.at("image").at("mime_type"), "image/png");
+  EXPECT_THROW(studio.call("view_objects", {{"objects", {"o9"}}}), std::invalid_argument);
+
   const auto names = [&studio] {
     std::vector<std::string> list;
     for (const StudioMethod& method : studio.methods()) {
@@ -94,7 +122,8 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
     return list;
   }();
   for (const char* method :
-       {"objects", "object_add", "object_select", "run_move", "run_add_mesh"}) {
+       {"objects", "object_add", "object_select", "view_objects", "run_move", "run_add_mesh",
+        "run_align_points", "run_align_surfaces", "run_compare_objects"}) {
     EXPECT_NE(std::ranges::find(names, method), names.end()) << method;
   }
 }

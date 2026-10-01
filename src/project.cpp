@@ -431,12 +431,25 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
   }
   context.log = [&stored](const std::string& message) { stored.messages.push_back(message); };
   context.cancel = cancel;
-  for (const ProjectObject& object : known) {
-    context.objects.push_back({{"id", object.id},
-                               {"name", object.name},
-                               {"kind", object.kind},
-                               {"pose", object.pose.matrix()}});
+  // The objects with their latest output of every type, so operations can work on several.
+  std::map<std::string, Json> outputs;
+  for (std::size_t i = 0; i < cursor_; ++i) {
+    const Step& done = steps_[i];
+    if (done.status == "done" && !done.object.empty()) {
+      for (const auto& [name, type] : done.output_types) {
+        outputs[done.object][type] = resolve({done.id, name}).string();
+      }
+    }
   }
+  for (const ProjectObject& object : known) {
+    context.objects.push_back(
+        {{"id", object.id},
+         {"name", object.name},
+         {"kind", object.kind},
+         {"pose", object.pose.matrix()},
+         {"outputs", outputs.contains(object.id) ? outputs.at(object.id) : Json::object()}});
+  }
+  context.object = step.object;
   Telemetry telemetry(info.id);
   try {
     OperationResult result;
