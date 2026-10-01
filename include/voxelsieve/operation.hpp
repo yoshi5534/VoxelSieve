@@ -53,9 +53,12 @@ struct OperationContext {
   std::function<void(double fraction)> progress = [](double) {};
   std::function<void(const std::string& message)> log = [](const std::string&) {};
   const std::atomic<bool>* cancel = nullptr;
-  /// The objects of the project before this step (ADR 0018): an array of {id, name, kind,
-  /// pose}, the pose as a row-major 4x4 matrix from object to global coordinates in mm.
+  /// The objects of the project before this step (ADR 0018): an array of {id, name, kind, pose,
+  /// outputs}, the pose as a row-major 4x4 matrix from object to global coordinates in mm and
+  /// outputs as {type: absolute path} of the object's latest output of each type.
   nlohmann::json objects = nlohmann::json::array();
+  /// The object the step belongs to; empty for steps of no object.
+  std::string object;
 };
 
 /// Result of an operation: output paths (relative to the output directory) per output port, and a
@@ -107,7 +110,7 @@ void registerBuiltinOperations(OperationRegistry& registry);
                                                 const nlohmann::json& params);
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 2;
+inline constexpr int kPluginApiVersion = 3;
 
 }  // namespace voxelsieve
 

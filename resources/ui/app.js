@@ -21,6 +21,8 @@ const state = {
   savedState: {},       // view state last sent to the studio
   suggestions: null,    // renderings suggested for the loaded volume: {key, items, images}
   capture: null,        // returns the picture of the current view as a PNG data URL
+  scene: null,          // 3D view of all objects (scene.js)
+  align: null,          // alignment form of the scene: moving, target, picking, picked points
 };
 
 // Labels of known parameters; forms show them in this order.
@@ -98,7 +100,19 @@ const SUMMARY_LABELS = {
   below_tolerance_percent: 'Below tolerance (% of area)',
   tolerance_mm: 'Tolerance (± mm)',
   fit_rms_mm: 'Residual alignment error (mm)',
-  rotation_deg: 'Rotation CAD → scan (°)',
+  rotation_deg: 'Rotation (°)',
+  translation_mm: 'Translation (mm)',
+  moved_objects: 'Moved objects',
+  target: 'Aligned to',
+  start: 'Start',
+  pairs: 'Point pairs',
+  residuals_mm: 'Distance left per pair (mm)',
+  rms_mm: 'RMS of the distances left (mm)',
+  max_residual_mm: 'Largest distance left (mm)',
+  fit_inliers: 'Share of points in the fit',
+  fit_iterations: 'Iterations',
+  resolution_mm: 'Resolution of the fit (mm)',
+  nominal: 'Nominal object',
   dropped_components: 'Omitted internal surfaces',
 };
 
@@ -140,6 +154,9 @@ function formatValue(key, value) {
   if (Array.isArray(value) && value.some((item) => item !== null && typeof item === 'object')) {
     return value.map((item) => JSON.stringify(item)).join('; ');
   }
+  // Lists and positions, not sizes.
+  if (Array.isArray(value) && ['translation_mm', 'residuals_mm', 'moved_objects', 'bounds_min_mm',
+    'bounds_max_mm'].includes(key)) return value.map(formatNumber).join(', ');
   if (Array.isArray(value)) return value.map(formatNumber).join(' × ');
   if (value !== null && typeof value === 'object') return JSON.stringify(value);
   return formatNumber(value);
@@ -234,6 +251,8 @@ function projectOpened() {
   state.projectDir = state.status.dir;
   state.viewer = null;
   state.volume = null;
+  state.scene = null;
+  state.align = null;
   state.transfer = null;
   state.suggestions = null;
   state.pores = { step: null, list: [] };
@@ -245,9 +264,9 @@ function projectOpened() {
 function applyViewState(view) {
   const stages = ['dataset', 'analysis', 'report', 'view'];
   state.stage = stages.includes(view?.stage) ? view.stage : defaultStage();
-  if (view?.viewMode === 'slice' || view?.viewMode === '3d') state.viewMode = view.viewMode;
+  if (['slice', '3d', 'scene'].includes(view?.viewMode)) state.viewMode = view.viewMode;
   state.restore = { slice: view?.slice ?? null, volume: view?.volume ?? null,
-    transfer: view?.transfer ?? null };
+    transfer: view?.transfer ?? null, scene: view?.scene ?? null };
 }
 
 function collectViewState() {
@@ -263,6 +282,7 @@ function collectViewState() {
     slice: state.viewer?.info ? state.viewer.getState() : pending.slice ?? previous.slice ?? null,
     volume: state.volume?.volume ? state.volume.getState()
       : pending.volume ?? previous.volume ?? null,
+    scene: state.scene?.fit ? state.scene.getState() : pending.scene ?? previous.scene ?? null,
     transfer,
   };
 }
@@ -634,7 +654,8 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
 // Rendering
 
 function summaryTable(summary) {
-  const rows = Object.entries(summary ?? {}).map(([key, value]) => el('tr', {},
+  // The motion matrix of an alignment is shown as its rotation and translation.
+  const rows = Object.entries(summary ?? {}).filter(([key]) => key !== 'motion').map(([key, value]) => el('tr', {},
     el('td', {}, SUMMARY_LABELS[key] ?? key),
     el('td', { className: key === 'passed' ? (value ? 'passed' : 'not-passed') : null },
       formatValue(key, value))));
@@ -792,6 +813,7 @@ function nextButton(label, stage) {
 
 function renderDatasetStage(panel) {
   panel.append(el('h1', {}, 'Dataset'));
+  renderObjectsCard(panel);
   const dataset = latestOutput('dataset');
   if (dataset) {
     panel.append(el('div', { className: 'card' },
@@ -953,18 +975,29 @@ async function loadPores(step) {
 
 function renderViewStage(panel) {
   const dataset = latestOutput('dataset');
-  if (!dataset) {
+  const objects = state.status.objects ?? [];
+  if (!dataset && !objects.length) {
     panel.append(el('h1', {}, 'View'),
       el('p', { className: 'hint' }, 'Choose a dataset first.'),
       nextButton('To the dataset', 'dataset'));
     return;
   }
+  // Without a dataset (only meshes), the objects are all there is to see.
+  if (!dataset) state.viewMode = 'scene';
+  if (!objects.length && state.viewMode === 'scene') state.viewMode = 'slice';
+  const available = [['slice', 'Slice'], ['3d', '3D'], ['scene', 'Objects']].filter(([mode]) =>
+    (mode === 'scene' ? objects.length > 0 : Boolean(dataset)));
   const modes = el('div', { className: 'group view-modes' },
-    [['slice', 'Slice'], ['3d', '3D']].map(([mode, label]) => el('button', {
+    available.map(([mode, label]) => el('button', {
       className: state.viewMode === mode ? 'on' : null,
+      title: mode === 'scene' ? 'All objects where they lie, for aligning and comparing them' : null,
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
   renderViewBar(panel, modes);
+  if (state.viewMode === 'scene') {
+    renderSceneView(panel);
+    return;
+  }
   if (state.viewMode === '3d') {
     renderVolumeView(panel, dataset);
     return;
@@ -1089,7 +1122,8 @@ function surfaceOf(datasetStep) {
 function comparisonOf(datasetStep) {
   const surfaces = activeSteps().filter((step) => step.operation === 'surface' &&
     step.inputs.dataset?.step === datasetStep).map((step) => step.id);
-  const steps = activeSteps().filter((step) => step.operation === 'compare_cad' &&
+  const steps = activeSteps().filter((step) =>
+    ['compare_cad', 'compare_objects'].includes(step.operation) &&
     surfaces.includes(step.inputs.surface?.step));
   return steps.length ? steps[steps.length - 1].id : null;
 }
@@ -1411,6 +1445,330 @@ function renderVolumeView(panel, dataset) {
     status.textContent = error.message;
   });
   volume.onChange();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Objects: volumes and meshes in one global coordinate system (ADR 0018)
+
+/// Rotation angle of a row-major 4x4 pose in degrees.
+function poseAngle(pose) {
+  const trace = pose[0] + pose[5] + pose[10];
+  return Math.acos(Math.min(Math.max((trace - 1) / 2, -1), 1)) * 180 / Math.PI;
+}
+
+function objectName(id) {
+  return (state.status.objects ?? []).find((object) => object.id === id)?.name ?? id;
+}
+
+/// Latest active surface step of an object, or null.
+function surfaceStepOf(id) {
+  const steps = activeSteps().filter((step) => step.object === id &&
+    Object.values(step.outputs).some((output) => output.type === 'surface'));
+  return steps.length ? steps[steps.length - 1].id : null;
+}
+
+/// What the scene shows of an object changes when a surface step is added or undone.
+function objectKey(object) {
+  return object.id + ':' + object.source.step + ':' +
+    (object.kind === 'volume' ? surfaceStepOf(object.id) ?? 'box' : 'mesh');
+}
+
+function objectSwatch(index) {
+  return el('span', { className: 'swatch', style: 'background: rgb(' +
+    objectColor(index).join(',') + ')' });
+}
+
+/// The objects with their place in the global coordinate system; a click chooses the active
+/// object, whose data new steps work on.
+function objectTable(objects) {
+  const active = state.status.active_object;
+  return el('table', { className: 'objects' },
+    el('thead', {}, el('tr', {}, el('th', {}, ''), el('th', {}, 'Object'), el('th', {}, 'Kind'),
+      el('th', {}, 'Position (mm)'), el('th', {}, 'Rotation'), el('th', {}, 'Active'))),
+    el('tbody', {}, objects.map((object, index) => el('tr', {
+      className: object.id === active ? 'active' : null,
+    },
+    el('td', {}, objectSwatch(index)),
+    el('td', { title: object.id }, object.name),
+    el('td', {}, object.kind === 'volume' ? 'Volume' : 'Mesh'),
+    el('td', {}, [3, 7, 11].map((i) => formatNumber(Math.round(object.pose[i] * 1000) / 1000))
+      .join(', ')),
+    el('td', {}, formatNumber(Math.round(poseAngle(object.pose) * 100) / 100) + '°'),
+    el('td', {}, el('input', {
+      type: 'radio', name: 'active-object', checked: object.id === active,
+      disabled: state.busy,
+      title: 'New steps work on the data of this object',
+      onchange: () => action(() => api('object_select', { id: object.id })),
+    }))))));
+}
+
+function renderObjectsCard(panel) {
+  const objects = state.status.objects ?? [];
+  const add = el('button', {
+    disabled: state.busy,
+    onclick: async () => {
+      const chosen = await browse({ title: 'Choose a CAD model (STL)', kinds: ['file'] });
+      if (chosen) await runStep('add_mesh', { path: chosen.path });
+    },
+  }, 'Add CAD model (STL) …');
+  const card = el('div', { className: 'card' }, el('h3', {}, 'Objects'));
+  if (objects.length) {
+    card.append(el('p', {}, 'Every scan and CAD model is an object in one global coordinate ' +
+      'system. Choosing another dataset adds an object; the view "Objects" aligns and compares ' +
+      'them.'), objectTable(objects));
+  } else {
+    card.append(el('p', {}, 'Scans and CAD models become objects in one global coordinate ' +
+      'system, which can be aligned to each other and compared.'));
+  }
+  const row = el('div', { className: 'row' }, add);
+  if (objects.length > 1) {
+    row.append(el('button', {
+      onclick: () => { state.stage = 'view'; state.viewMode = 'scene'; render(); },
+    }, 'Align and compare →'));
+  }
+  card.append(row);
+  panel.append(card);
+}
+
+/// A select of objects; `filter` limits the choice.
+function objectSelect(value, onchange, filter = () => true) {
+  const objects = state.status.objects ?? [];
+  return el('select', { onchange: (event) => onchange(event.target.value) },
+    objects.filter(filter).map((object) => el('option', {
+      value: object.id, selected: object.id === value,
+    }, object.name + ' (' + object.id + ')')));
+}
+
+/// Default choice of the alignment forms: the active object is the target, the next one moves.
+function alignState() {
+  const objects = state.status.objects ?? [];
+  const ids = objects.map((object) => object.id);
+  const align = state.align ?? (state.align = { picking: false, points: { moving: [], target: [] },
+    tolerance: 0.1, start: 'current', translation: [0, 0, 0], axis: 'z', degrees: 0 });
+  if (!ids.includes(align.target)) {
+    align.target = ids.includes(state.status.active_object) ? state.status.active_object : ids[0];
+  }
+  if (!ids.includes(align.moving) || align.moving === align.target) {
+    align.moving = ids.find((id) => id !== align.target) ?? ids[0];
+  }
+  const volumes = objects.filter((object) => object.kind === 'volume').map((object) => object.id);
+  if (!volumes.includes(align.actual)) align.actual = volumes[0];
+  if (!ids.includes(align.nominal) || align.nominal === align.actual) {
+    align.nominal = ids.find((id) => id !== align.actual);
+  }
+  return align;
+}
+
+/// Runs surface steps on the volumes among `ids` that have none, so they can be fitted.
+async function ensureSurfaces(ids) {
+  for (const id of ids) {
+    const object = (state.status.objects ?? []).find((o) => o.id === id);
+    if (object?.kind === 'volume' && surfaceStepOf(id) === null) {
+      const step = await runStep('surface', { object: id });
+      if (!step) return false;
+    }
+  }
+  return true;
+}
+
+function lastStepCard(operation, title) {
+  const last = latestStepOf(operation);
+  if (!last) return null;
+  return el('details', {}, el('summary', {}, title + ' (step ' + last.id + ')'),
+    summaryTable(last.summary));
+}
+
+function renderSceneView(panel) {
+  const scene = state.scene ?? (state.scene = new SceneViewer());
+  const objects = state.status.objects ?? [];
+  const align = alignState();
+  const canvas = el('canvas', { tabindex: 0 });
+  const status = el('div', { className: 'viewer-status' });
+  if (state.restore?.scene) {
+    scene.setState(state.restore.scene);
+    state.restore.scene = null;
+  }
+  scene.onInteract = scheduleViewSave;
+  state.capture = () => scene.capture();
+
+  const picked = () => align.points.moving.length + align.points.target.length;
+  const showPicks = () => {
+    scene.picks = [
+      ...align.points.moving.map((point) => ({ point, color: [255, 220, 0] })),
+      ...align.points.target.map((point) => ({ point, color: [0, 220, 255] }))];
+    scene.requestDraw();
+  };
+  const describe = () => {
+    const shown = objects.length - objects.filter((o) => scene.hidden.has(o.id)).length;
+    let text = shown + ' of ' + objects.length + ' objects shown · drag turns, right drag moves, ' +
+      'wheel zooms · axes x red, y green, z blue';
+    if (align.picking) {
+      text = 'Picking: click points on ' + objectName(align.moving) + ' (yellow) and the same ' +
+        'points on ' + objectName(align.target) + ' (cyan), in the same order';
+    }
+    status.textContent = text;
+  };
+  showPicks();
+
+  const visibility = objects.map((object, index) => {
+    const box = el('input', { type: 'checkbox', checked: !scene.hidden.has(object.id) });
+    box.addEventListener('change', () => {
+      if (box.checked) scene.hidden.delete(object.id);
+      else scene.hidden.add(object.id);
+      scene.requestDraw();
+      describe();
+      scheduleViewSave();
+    });
+    return el('label', { className: 'group', title: object.id }, box, objectSwatch(index),
+      object.name);
+  });
+  const tools = el('div', { className: 'viewer-tools' }, visibility,
+    el('button', { onclick: () => scene.reset() }, 'Reset view'));
+
+  // Point pairs
+  const pairCount = () => Math.min(align.points.moving.length, align.points.target.length);
+  const pickedHint = el('p', { className: 'hint' });
+  const clear = el('button', {
+    onclick: () => {
+      align.points = { moving: [], target: [] };
+      showPicks();
+      updatePairs();
+    },
+  }, 'Clear');
+  const alignPairs = runButton('Align', 'align_points', () => {
+    if (pairCount() < 3) throw new Error('Pick at least three point pairs');
+    return {
+      objects: [align.moving], target: align.target,
+      pairs: align.points.moving.slice(0, pairCount()).map((moving, i) =>
+        ({ moving, target: align.points.target[i] })),
+    };
+  }, () => {
+    align.points = { moving: [], target: [] };
+    align.picking = false;
+    render();
+  });
+  // Picking changes only these, so the scene is not built again for every point.
+  const updatePairs = () => {
+    pickedHint.textContent = align.points.moving.length + ' points on ' +
+      objectName(align.moving) + ', ' + align.points.target.length + ' on ' +
+      objectName(align.target);
+    alignPairs.textContent = 'Align (' + pairCount() + ' pairs)';
+    alignPairs.disabled = state.busy || pairCount() < 3;
+    clear.disabled = picked() === 0;
+  };
+  scene.onPick = align.picking ? (id, point) => {
+    if (id === align.moving) align.points.moving.push(point);
+    else if (id === align.target) align.points.target.push(point);
+    else return;
+    showPicks();
+    updatePairs();
+  } : null;
+  const pairs = el('div', { className: 'card' }, el('h3', {}, 'Align by point pairs'),
+    el('p', {}, 'Moves one object so that points picked on it meet the same points on the ' +
+      'target. At least three pairs, not on one line.'),
+    el('label', {}, 'Move ', objectSelect(align.moving, (id) => {
+      align.moving = id;
+      align.points.moving = [];
+      render();
+    }, (o) => o.id !== align.target)),
+    el('label', {}, ' onto ', objectSelect(align.target, (id) => {
+      align.target = id;
+      align.points.target = [];
+      render();
+    })),
+    el('div', { className: 'row' },
+      el('button', {
+        className: align.picking ? 'on' : null,
+        onclick: () => { align.picking = !align.picking; render(); },
+      }, align.picking ? 'Stop picking' : 'Pick points'),
+      clear, alignPairs),
+    pickedHint,
+    lastStepCard('align_points', 'Last point alignment'));
+  updatePairs();
+
+  // Best fit
+  const startSelect = el('select', { onchange: (event) => { align.start = event.target.value; } },
+    [['current', 'from where they lie'], ['principal_axes', 'find the orientation first']]
+      .map(([value, label]) => el('option', { value, selected: align.start === value }, label)));
+  const fit = el('div', { className: 'card' }, el('h3', {}, 'Best fit of the surfaces'),
+    el('p', {}, 'Moves ' + objectName(align.moving) + ' so that its surface fits the surface of ' +
+      objectName(align.target) + ' best. Volumes get a surface step first if they have none.'),
+    el('label', {}, 'Start ', startSelect),
+    el('div', { className: 'row' }, el('button', {
+      className: 'primary',
+      disabled: state.busy || align.moving === align.target,
+      onclick: async () => {
+        if (!(await ensureSurfaces([align.moving, align.target]))) return;
+        await runStep('align_surfaces', {
+          objects: [align.moving], target: align.target, start: align.start,
+        });
+      },
+    }, 'Fit')),
+    lastStepCard('align_surfaces', 'Last best fit'));
+
+  // Move by hand
+  const translation = [0, 1, 2].map((k) => el('input', {
+    type: 'number', step: 'any', value: align.translation[k], title: 'xyz'[k] + ' in mm',
+    onchange: (event) => { align.translation[k] = Number(event.target.value); },
+  }));
+  const axisSelect = el('select', { onchange: (event) => { align.axis = event.target.value; } },
+    ['x', 'y', 'z'].map((axis) => el('option', { value: axis, selected: align.axis === axis },
+      axis)));
+  const degrees = el('input', { type: 'number', step: 'any', value: align.degrees,
+    onchange: (event) => { align.degrees = Number(event.target.value); } });
+  const move = el('div', { className: 'card' }, el('h3', {}, 'Move'),
+    el('p', {}, 'Turns ' + objectName(align.moving) + ' about its centre, then shifts it.'),
+    el('label', {}, 'Rotation about ', axisSelect, ' by ', degrees, '°'),
+    el('label', {}, 'Translation (mm) ', translation),
+    el('div', { className: 'row' }, runButton('Move', 'move', () => {
+      const object = objects.find((o) => o.id === align.moving);
+      const mesh = object && scene.meshes.get(objectKey(object));
+      const params = { objects: [align.moving], translation_mm: align.translation,
+        rotation_axis: { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }[align.axis],
+        rotation_deg: align.degrees };
+      if (mesh) {
+        const centre = mesh.bounds.min.map((m, k) => (m + mesh.bounds.max[k]) / 2 * mesh.scale[k]);
+        params.center_mm = applyPose(object.pose, centre);
+      }
+      return params;
+    })));
+
+  // Comparison
+  const volumes = objects.filter((o) => o.kind === 'volume');
+  const tolerance = el('input', { type: 'number', step: 'any', min: 0.001, value: align.tolerance,
+    onchange: (event) => { align.tolerance = Number(event.target.value); } });
+  const compare = el('div', { className: 'card' }, el('h3', {}, 'Nominal-actual comparison'),
+    volumes.length && align.nominal ? [
+      el('p', {}, 'Deviation of the scanned surface from the nominal object where both lie now.'),
+      el('label', {}, 'Scan ', objectSelect(align.actual, (id) => { align.actual = id; render(); },
+        (o) => o.kind === 'volume')),
+      el('label', {}, ' against ', objectSelect(align.nominal, (id) => {
+        align.nominal = id;
+        render();
+      }, (o) => o.id !== align.actual)),
+      el('label', {}, 'Tolerance (± mm) ', tolerance),
+      el('div', { className: 'row' }, el('button', {
+        className: 'primary',
+        disabled: state.busy,
+        onclick: async () => {
+          if (!(await ensureSurfaces([align.actual]))) return;
+          await runStep('compare_objects', { object: align.actual, nominal: align.nominal,
+            tolerance_mm: align.tolerance });
+        },
+      }, 'Compare')),
+      lastStepCard('compare_objects', 'Last comparison')]
+      : el('p', { className: 'hint' }, 'Needs a scanned volume and a second object.'));
+
+  const side = el('div', { className: 'pores scene-tools' },
+    el('h3', {}, 'Objects'), objectTable(objects),
+    objects.length > 1 ? [pairs, fit, move, compare] : el('p', { className: 'hint' },
+      'Add a second object to align and compare.'));
+  panel.append(el('div', { className: 'viewer scene' }, el('div', {}, tools, canvas, status),
+    side));
+  describe();
+  scene.attach(canvas);
+  scene.setObjects(objects.map((object, index) => ({ ...object, index,
+    key: objectKey(object) }))).catch((error) => { status.textContent = error.message; });
 }
 
 function render() {

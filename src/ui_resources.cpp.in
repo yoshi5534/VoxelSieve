@@ -11,6 +11,7 @@ std::string_view uiResource(std::string_view name) {
   static constexpr std::string_view kViewer = R"vs_ui(@VOXELSIEVE_UI_VIEWER@)vs_ui";
   static constexpr std::string_view kVolume = R"vs_ui(@VOXELSIEVE_UI_VOLUME@)vs_ui";
   static constexpr std::string_view kTransfer = R"vs_ui(@VOXELSIEVE_UI_TRANSFER@)vs_ui";
+  static constexpr std::string_view kScene = R"vs_ui(@VOXELSIEVE_UI_SCENE@)vs_ui";
   if (name == "index.html") {
     return kIndex;
   }
@@ -28,6 +29,9 @@ std::string_view uiResource(std::string_view name) {
   }
   if (name == "transfer.js") {
     return kTransfer;
+  }
+  if (name == "scene.js") {
+    return kScene;
   }
   return {};
 }

@@ -6,12 +6,15 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
 #include "detail/png.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/mesh.hpp"
+#include "voxelsieve/render.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -89,6 +92,13 @@ constexpr std::size_t kOpenDatasets = 2;
 // Open datasets share one brick cache, so keeping more of them open costs only their index.
 constexpr std::size_t kOpenVolumes = 8;
 constexpr std::size_t kViewCacheBytes = std::size_t{1} << 30U;
+// Colours of the objects in the order they were created, as OBJECT_COLORS in resources/ui/scene.js.
+constexpr std::array<std::array<std::uint8_t, 3>, 6> kObjectColors = {{{196, 200, 207},
+                                                                       {230, 150, 60},
+                                                                       {90, 160, 230},
+                                                                       {120, 190, 110},
+                                                                       {200, 110, 170},
+                                                                       {220, 200, 80}}};
 
 std::string base64(std::span<const std::uint8_t> bytes) {
   static constexpr std::string_view kAlphabet =
@@ -319,6 +329,30 @@ std::vector<StudioMethod> Studio::methods() const {
        "Chooses the active object: steps run without explicit inputs take them from its outputs "
        "first. An empty id clears the choice. Not a step.",
        objectSchema({{"id", {{"type", "string"}}}}, {"id"})},
+      {"view_objects",
+       "Renders objects where they lie in global coordinates as a PNG image, each in its own "
+       "colour (listed in the result): meshes as their triangles, volumes as their extracted "
+       "surface or, before a surface step, as the box they fill. Shows whether an alignment "
+       "worked; z is up in the image.",
+       objectSchema(
+           {{"objects",
+             {{"type", "array"},
+              {"items", {{"type", "string"}}},
+              {"description", "Object ids; default: all objects"}}},
+            {"azimuth_deg",
+             {{"type", "number"},
+              {"default", -60.0},
+              {"description", "Direction towards the camera, about z from +x"}}},
+            {"elevation_deg",
+             {{"type", "number"}, {"minimum", -90}, {"maximum", 90}, {"default", 25.0}}},
+            {"width", {{"type", "integer"}, {"minimum", 64}, {"maximum", 2048}, {"default", 900}}},
+            {"height", {{"type", "integer"}, {"minimum", 64}, {"maximum", 2048}, {"default", 700}}},
+            {"max_triangles",
+             {{"type", "integer"},
+              {"minimum", 1000},
+              {"maximum", 5000000},
+              {"default", 300000},
+              {"description", "Triangle budget of each volume's surface"}}}})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -600,7 +634,8 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surfac
       surfaceDisplayMesh(SurfaceMask::open(file), max_triangles));
   const std::scoped_lock lock(surface_mutex_);
   surface_meshes_.emplace_back(key, mesh);
-  if (surface_meshes_.size() > kOpenDatasets) {
+  // One per object of a scene: the 3D view shows all of them.
+  if (surface_meshes_.size() > kOpenVolumes) {
     surface_meshes_.erase(surface_meshes_.begin());
   }
   return mesh;
@@ -646,6 +681,130 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
     deviation_meshes_.erase(deviation_meshes_.begin());
   }
   return view;
+}
+
+std::shared_ptr<const IndexedMesh> Studio::stlMesh(const std::filesystem::path& file) const {
+  const std::filesystem::path key =
+      file.string() + "#stl#" +
+      std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());
+  {
+    const std::scoped_lock lock(surface_mutex_);
+    for (const auto& [path, mesh] : surface_meshes_) {
+      if (path == key) {
+        return mesh;
+      }
+    }
+  }
+  auto mesh = std::make_shared<const IndexedMesh>(indexedMesh(readStl(file)));
+  const std::scoped_lock lock(surface_mutex_);
+  surface_meshes_.emplace_back(key, mesh);
+  if (surface_meshes_.size() > kOpenVolumes) {
+    surface_meshes_.erase(surface_meshes_.begin());
+  }
+  return mesh;
+}
+
+Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_triangles) const {
+  ProjectObject object;
+  std::filesystem::path source;
+  std::optional<int> surface_step;
+  {
+    const std::scoped_lock lock(mutex_);
+    object = project().object(id);
+    source = project().resolve(object.source);
+    if (const auto surface = project().latest(artifact::kSurface, id)) {
+      surface_step = surface->step;
+    }
+  }
+  ObjectShape shape;
+  shape.pose = object.pose;
+  if (object.kind == kMeshObject) {
+    shape.shape = "mesh";
+    shape.mesh = stlMesh(source);
+    return shape;
+  }
+  const DatasetInfo& info = openDataset(source)->info();
+  for (std::size_t k = 0; k < 3; ++k) {
+    shape.scale[k] = info.voxel_size[k];
+  }
+  if (surface_step) {
+    shape.shape = "surface";
+    shape.mesh = surfaceMesh(surface_step, max_triangles);
+    return shape;
+  }
+  // The box the voxels fill: voxel centres lie on whole indices.
+  std::array<double, 3> size{};
+  std::array<double, 3> center{};
+  for (std::size_t k = 0; k < 3; ++k) {
+    size[k] = static_cast<double>(info.dims[k]);
+    center[k] = 0.5 * (size[k] - 1.0);
+  }
+  shape.shape = "box";
+  shape.mesh = std::make_shared<const IndexedMesh>(indexedMesh(boxMesh(size, center)));
+  return shape;
+}
+
+Json Studio::viewObjects(const Json& params) const {
+  std::vector<std::string> all;
+  {
+    const std::scoped_lock lock(mutex_);
+    for (const ProjectObject& object : project().objects()) {
+      all.push_back(object.id);
+    }
+  }
+  const auto ids =
+      params.contains("objects") ? params.at("objects").get<std::vector<std::string>>() : all;
+  if (ids.empty()) {
+    throw std::invalid_argument("The project has no objects");
+  }
+  const auto budget = params.at("max_triangles").get<std::size_t>();
+  IndexedMesh scene;
+  std::vector<std::array<std::uint8_t, 3>> colors;
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  std::array<double, 3> low{kInf, kInf, kInf};
+  std::array<double, 3> high{-kInf, -kInf, -kInf};
+  Json listed = Json::array();
+  for (const std::string& id : ids) {
+    const ObjectShape shape = objectShape(id, budget);
+    const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
+    const auto& color = kObjectColors[index % kObjectColors.size()];
+    const auto offset = static_cast<std::uint32_t>(scene.points.size());
+    for (const auto& p : shape.mesh->points) {
+      const auto q =
+          shape.pose.apply({p[0] * shape.scale[0], p[1] * shape.scale[1], p[2] * shape.scale[2]});
+      scene.points.push_back(
+          {static_cast<float>(q[0]), static_cast<float>(q[1]), static_cast<float>(q[2])});
+      for (std::size_t k = 0; k < 3; ++k) {
+        low[k] = std::min(low[k], q[k]);
+        high[k] = std::max(high[k], q[k]);
+      }
+    }
+    colors.insert(colors.end(), shape.mesh->points.size(), color);
+    for (const auto& t : shape.mesh->triangles) {
+      scene.triangles.push_back({t[0] + offset, t[1] + offset, t[2] + offset});
+    }
+    listed.push_back({{"id", id},
+                      {"shape", shape.shape},
+                      {"color", color},
+                      {"triangles", shape.mesh->triangles.size()}});
+  }
+  RenderScene render_scene;
+  render_scene.mesh = &scene;
+  render_scene.vertex_colors = std::move(colors);
+  RenderView view;
+  view.azimuth_degrees = params.at("azimuth_deg").get<double>();
+  view.elevation_degrees = params.at("elevation_deg").get<double>();
+  view.width = params.at("width").get<int>();
+  view.height = params.at("height").get<int>();
+  view.supersampling = 2;
+  const RenderImage image = render(render_scene, view);
+  const auto png =
+      detail::encodePng(static_cast<std::uint32_t>(image.width),
+                        static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
+  return {
+      {"objects", listed},      {"bounds_min_mm", low},
+      {"bounds_max_mm", high},  {"width", image.width},
+      {"height", image.height}, {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
 
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Studio::openView(
@@ -913,6 +1072,14 @@ Json Studio::call(const std::string& method, const Json& arguments,
     throw std::invalid_argument("Not a dataset or an STL file: " + path.string() +
                                 "; import raw volumes and TIFF stacks with run_import_raw and "
                                 "run_import_tiff");
+  }
+  if (method == "view_objects") {
+    // Not under the lock: building the meshes of the objects takes it only to find them.
+    for (const StudioMethod& known : methods()) {
+      if (known.name == method) {
+        return viewObjects(validateParameters(known.parameters, params));
+      }
+    }
   }
   const std::scoped_lock lock(mutex_);
   for (const StudioMethod& known : methods()) {

@@ -7,6 +7,7 @@ add_executable(voxelsieve_tests
   test_model.cpp
   test_phantom.cpp
   test_porosity.cpp
+  test_alignment.cpp
   test_objects.cpp
   test_project.cpp
   test_studio.cpp
@@ -136,4 +137,5 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_viewer_syntax COMMAND ${NODE_EXECUTABLE} --check ${PROJECT_SOURCE_DIR}/resources/ui/viewer.js)
   add_test(NAME ui_volume_syntax COMMAND ${NODE_EXECUTABLE} --check ${PROJECT_SOURCE_DIR}/resources/ui/volume.js)
   add_test(NAME ui_transfer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/transfer_test.cjs)
+  add_test(NAME ui_scene COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/scene_test.cjs)
 endif()

@@ -174,3 +174,14 @@ input[type=color] { width: 28px; height: 24px; padding: 0 2px; border: 1px solid
 .suggestion { display: flex; gap: 8px; align-items: center; text-align: left; padding: 4px 10px 4px 4px;
   flex: 1 1 0; min-width: 220px; max-width: 340px; font-size: 12px; line-height: 1.35; }
 .suggestion img { width: 96px; height: 60px; object-fit: cover; border-radius: 4px; background: #111; }
+table.objects { border-collapse: collapse; width: 100%; font-size: 12px; margin: 6px 0; }
+table.objects th { text-align: left; color: var(--muted); font-weight: normal; }
+table.objects td, table.objects th { padding: 3px 6px; font-variant-numeric: tabular-nums; }
+table.objects tr.active td { color: var(--accent); }
+.viewer.scene { grid-template-columns: 1fr 360px; }
+.scene-tools .card { margin-top: 10px; }
+.scene-tools .card label { display: block; margin: 4px 0; }
+.scene-tools .card input[type=number] { width: 70px; }
+.scene-tools .card select { max-width: 200px; }
+.scene-tools button.on { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 1000px) { .viewer.scene { grid-template-columns: 1fr; } }

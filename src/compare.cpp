@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <numeric>
 #include <optional>
@@ -425,6 +426,117 @@ RigidTransform coarseAlignment(const MeshDistance& cad, std::span<const Vec> poi
   const auto stage2 = ranked(stage1, 300, 8, 8);
   const auto stage3 = ranked(stage2, 2000, 15, 8);
   return ranked(stage3, points.size(), 0, 1).front();
+}
+
+Vec toVec(const std::array<float, 3>& p) { return {p[0], p[1], p[2]}; }
+
+std::vector<double> triangleAreas(const IndexedMesh& mesh) {
+  std::vector<double> areas(mesh.triangles.size());
+  for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+    const auto& t = mesh.triangles[i];
+    const Vec a = toVec(mesh.points[t[0]]);
+    areas[i] = 0.5 * norm(cross(toVec(mesh.points[t[1]]) - a, toVec(mesh.points[t[2]]) - a));
+  }
+  return areas;
+}
+
+/// Points sampled uniformly by area, in random order (a fixed seed, so fits repeat exactly).
+std::vector<Vec> sampleByArea(const IndexedMesh& mesh, const std::vector<double>& areas,
+                              std::size_t count) {
+  std::vector<double> cumulative(areas.size());
+  std::partial_sum(areas.begin(), areas.end(), cumulative.begin());
+  if (cumulative.empty() || !(cumulative.back() > 0.0)) {
+    throw std::invalid_argument("The surface has no area");
+  }
+  std::mt19937_64 random(20260928);
+  std::uniform_real_distribution<double> uniform(0.0, 1.0);
+  std::vector<Vec> samples(count);
+  for (Vec& sample : samples) {
+    const double pick = uniform(random) * cumulative.back();
+    const auto index = static_cast<std::size_t>(std::min<std::ptrdiff_t>(
+        std::upper_bound(cumulative.begin(), cumulative.end(), pick) - cumulative.begin(),
+        static_cast<std::ptrdiff_t>(cumulative.size()) - 1));
+    const auto& t = mesh.triangles[index];
+    const double r1 = std::sqrt(uniform(random));
+    const double r2 = uniform(random);
+    sample = (1.0 - r1) * toVec(mesh.points[t[0]]) + (r1 * (1.0 - r2)) * toVec(mesh.points[t[1]]) +
+             (r1 * r2) * toVec(mesh.points[t[2]]);
+  }
+  return samples;
+}
+
+Moments meshMoments(const IndexedMesh& mesh) {
+  return surfaceMoments([&](const auto& visit) {
+    for (const auto& t : mesh.triangles) {
+      visit(toVec(mesh.points[t[0]]), toVec(mesh.points[t[1]]), toVec(mesh.points[t[2]]));
+    }
+  });
+}
+
+Moments meshMoments(const Mesh& mesh) {
+  return surfaceMoments([&](const auto& visit) {
+    for (const auto& t : mesh.triangles) {
+      visit(Vec{t[0][0], t[0][1], t[0][2]}, Vec{t[1][0], t[1][1], t[1][2]},
+            Vec{t[2][0], t[2][1], t[2][2]});
+    }
+  });
+}
+
+/// Eigenvector of the largest eigenvalue of a symmetric 4x4 matrix, by Jacobi rotations.
+std::array<double, 4> largestEigenvector4(std::array<double, 16> a) {
+  std::array<double, 16> v{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  for (int sweep = 0; sweep < 100; ++sweep) {
+    double off = 0.0;
+    double diagonal = 0.0;
+    for (std::size_t r = 0; r < 4; ++r) {
+      diagonal += a[5 * r] * a[5 * r];
+      for (std::size_t c = r + 1; c < 4; ++c) {
+        off += a[4 * r + c] * a[4 * r + c];
+      }
+    }
+    if (off < 1e-30 * diagonal + 1e-300) {
+      break;
+    }
+    for (std::size_t p = 0; p < 4; ++p) {
+      for (std::size_t q = p + 1; q < 4; ++q) {
+        const double apq = a[4 * p + q];
+        if (std::abs(apq) < 1e-300) {
+          continue;
+        }
+        const double theta = (a[4 * q + q] - a[4 * p + p]) / (2.0 * apq);
+        const double t =
+            (theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+        const double c = 1.0 / std::sqrt(t * t + 1.0);
+        const double s = t * c;
+        // a <- J^T a J, v <- v J with the rotation in the (p, q) plane.
+        for (std::size_t k = 0; k < 4; ++k) {
+          const double akp = a[4 * k + p];
+          const double akq = a[4 * k + q];
+          a[4 * k + p] = c * akp - s * akq;
+          a[4 * k + q] = s * akp + c * akq;
+        }
+        for (std::size_t k = 0; k < 4; ++k) {
+          const double apk = a[4 * p + k];
+          const double aqk = a[4 * q + k];
+          a[4 * p + k] = c * apk - s * aqk;
+          a[4 * q + k] = s * apk + c * aqk;
+        }
+        for (std::size_t k = 0; k < 4; ++k) {
+          const double vkp = v[4 * k + p];
+          const double vkq = v[4 * k + q];
+          v[4 * k + p] = c * vkp - s * vkq;
+          v[4 * k + q] = s * vkp + c * vkq;
+        }
+      }
+    }
+  }
+  std::size_t best = 0;
+  for (std::size_t i = 1; i < 4; ++i) {
+    if (a[5 * i] > a[5 * best]) {
+      best = i;
+    }
+  }
+  return {v[best], v[4 + best], v[8 + best], v[12 + best]};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -903,25 +1015,9 @@ std::array<std::uint8_t, 3> deviationColor(double deviation_mm, double tolerance
   return {mix(40, 40), mix(205, 60), mix(240, 215)};  // cyan to blue
 }
 
-CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
-                           const CompareOptions& options) {
-  if (!(options.tolerance_mm > 0.0)) {
-    throw std::invalid_argument("The tolerance must be positive");
-  }
-  if (options.fit_points < 100) {
-    throw std::invalid_argument("At least 100 fit points are needed");
-  }
-  CompareResult result;
-  result.alignment = options.alignment;
-  result.tolerance_mm = options.tolerance_mm;
-  result.voxel_size = mask.info().voxel_size;
-  result.cad_triangles = cad.triangles.size();
-  const VoxelSize& v = result.voxel_size;
-  std::optional<TelemetryPhase> phase(std::in_place, "surface mesh");
-  const MeshDistance nominal(cad);
-
-  // The scanned surface in mm, split into connected surfaces.
-  IndexedMesh surface = surfaceDisplayMesh(mask, options.max_triangles, 0.0);
+ScanSurface scanSurface(const SurfaceMask& mask, std::size_t max_triangles, bool outer_only) {
+  const VoxelSize& v = mask.info().voxel_size;
+  IndexedMesh surface = surfaceDisplayMesh(mask, max_triangles, 0.0);
   if (surface.triangles.empty()) {
     throw std::invalid_argument("The scan has no surface");
   }
@@ -930,6 +1026,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
       p[k] = static_cast<float>(p[k] * v[k]);
     }
   }
+  // Connected surfaces by union-find over the triangles.
   std::vector<std::uint32_t> parent(surface.points.size());
   std::iota(parent.begin(), parent.end(), 0U);
   const auto find = [&parent](std::uint32_t i) {
@@ -948,17 +1045,12 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
       }
     }
   }
-  const auto point = [&surface](std::uint32_t i) {
-    const auto& p = surface.points[i];
-    return Vec{p[0], p[1], p[2]};
-  };
-  std::vector<double> triangle_area(surface.triangles.size());
+  const std::vector<double> triangle_area = triangleAreas(surface);
   std::unordered_map<std::uint32_t, double> component_area;
   for (std::size_t i = 0; i < surface.triangles.size(); ++i) {
-    const auto& t = surface.triangles[i];
-    triangle_area[i] = 0.5 * norm(cross(point(t[1]) - point(t[0]), point(t[2]) - point(t[0])));
-    component_area[find(t[0])] += triangle_area[i];
+    component_area[find(surface.triangles[i][0])] += triangle_area[i];
   }
+  ScanSurface result;
   result.components = component_area.size();
   std::uint32_t outer = 0;
   double outer_area = -1.0;
@@ -970,10 +1062,9 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   }
   std::vector<std::uint32_t> remap(surface.points.size(),
                                    std::numeric_limits<std::uint32_t>::max());
-  std::vector<double> kept_area;
   for (std::size_t i = 0; i < surface.triangles.size(); ++i) {
     const auto& t = surface.triangles[i];
-    if (options.outer_surface_only && find(t[0]) != outer) {
+    if (outer_only && find(t[0]) != outer) {
       result.dropped_area_mm2 += triangle_area[i];
       continue;
     }
@@ -986,32 +1077,190 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
       mapped[k] = remap[t[k]];
     }
     result.mesh.triangles.push_back(mapped);
-    kept_area.push_back(triangle_area[i]);
   }
-  result.dropped_components = options.outer_surface_only ? result.components - 1 : 0;
-  surface = {};
+  result.dropped_components = outer_only ? result.components - 1 : 0;
+  return result;
+}
 
-  // Points sampled uniformly by area for the alignment, in random order.
-  std::vector<double> cumulative(kept_area.size());
-  std::partial_sum(kept_area.begin(), kept_area.end(), cumulative.begin());
-  std::mt19937_64 random(20260928);
-  std::uniform_real_distribution<double> uniform(0.0, 1.0);
-  std::vector<Vec> samples(options.fit_points);
-  for (Vec& sample : samples) {
-    const double pick = uniform(random) * cumulative.back();
-    const auto index = static_cast<std::size_t>(std::min<std::ptrdiff_t>(
-        std::upper_bound(cumulative.begin(), cumulative.end(), pick) - cumulative.begin(),
-        static_cast<std::ptrdiff_t>(cumulative.size()) - 1));
-    const auto& t = result.mesh.triangles[index];
-    const double r1 = std::sqrt(uniform(random));
-    const double r2 = uniform(random);
-    const auto corner = [&result](std::uint32_t i) {
-      const auto& p = result.mesh.points[i];
-      return Vec{p[0], p[1], p[2]};
-    };
-    sample =
-        (1.0 - r1) * corner(t[0]) + (r1 * (1.0 - r2)) * corner(t[1]) + (r1 * r2) * corner(t[2]);
+IndexedMesh indexedMesh(const Mesh& mesh) {
+  IndexedMesh indexed;
+  std::map<std::array<float, 3>, std::uint32_t> known;
+  indexed.triangles.reserve(mesh.triangles.size());
+  for (const auto& triangle : mesh.triangles) {
+    std::array<std::uint32_t, 3> corners{};
+    for (std::size_t k = 0; k < 3; ++k) {
+      const auto [it, added] =
+          known.try_emplace(triangle[k], static_cast<std::uint32_t>(indexed.points.size()));
+      if (added) {
+        indexed.points.push_back(triangle[k]);
+      }
+      corners[k] = it->second;
+    }
+    indexed.triangles.push_back(corners);
   }
+  return indexed;
+}
+
+Mesh triangleSoup(const IndexedMesh& mesh) {
+  Mesh soup;
+  soup.triangles.reserve(mesh.triangles.size());
+  for (const auto& t : mesh.triangles) {
+    soup.triangles.push_back({mesh.points[t[0]], mesh.points[t[1]], mesh.points[t[2]]});
+  }
+  return soup;
+}
+
+IndexedMesh transformed(IndexedMesh mesh, const RigidTransform& transform) {
+  for (auto& p : mesh.points) {
+    const Vec q = transform.apply(toVec(p));
+    p = {static_cast<float>(q[0]), static_cast<float>(q[1]), static_cast<float>(q[2])};
+  }
+  return mesh;
+}
+
+RigidFit fitRigid(std::span<const std::array<double, 3>> from,
+                  std::span<const std::array<double, 3>> to) {
+  if (from.size() != to.size()) {
+    throw std::invalid_argument("Every point needs a partner");
+  }
+  if (from.size() < 3) {
+    throw std::invalid_argument("A rigid fit needs at least three point pairs");
+  }
+  const auto n = static_cast<double>(from.size());
+  Vec a_mean{};
+  Vec b_mean{};
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    a_mean = a_mean + (1.0 / n) * from[i];
+    b_mean = b_mean + (1.0 / n) * to[i];
+  }
+  // The points must span a plane on both sides, else a rotation about their line is free.
+  Mat spread_a{};
+  Mat spread_b{};
+  Mat s{};  // sum of (a - a_mean)(b - b_mean)^T
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    const Vec a = from[i] - a_mean;
+    const Vec b = to[i] - b_mean;
+    for (std::size_t r = 0; r < 3; ++r) {
+      for (std::size_t c = 0; c < 3; ++c) {
+        s[3 * r + c] += a[r] * b[c];
+        spread_a[3 * r + c] += a[r] * a[c];
+        spread_b[3 * r + c] += b[r] * b[c];
+      }
+    }
+  }
+  for (const Mat& spread : {spread_a, spread_b}) {
+    const Vec values = symmetricEigen(spread).second;
+    if (!(values[1] > 1e-10 * std::max(values[0], 1e-300))) {
+      throw std::invalid_argument("The points of a rigid fit must not lie on a line");
+    }
+  }
+  // Horn (1987): the rotation is the unit quaternion of the largest eigenvalue of N.
+  const auto at = [&s](std::size_t r, std::size_t c) { return s[3 * r + c]; };
+  const std::array<double, 16> nmat{at(0, 0) + at(1, 1) + at(2, 2),
+                                    at(1, 2) - at(2, 1),
+                                    at(2, 0) - at(0, 2),
+                                    at(0, 1) - at(1, 0),
+                                    at(1, 2) - at(2, 1),
+                                    at(0, 0) - at(1, 1) - at(2, 2),
+                                    at(0, 1) + at(1, 0),
+                                    at(2, 0) + at(0, 2),
+                                    at(2, 0) - at(0, 2),
+                                    at(0, 1) + at(1, 0),
+                                    -at(0, 0) + at(1, 1) - at(2, 2),
+                                    at(1, 2) + at(2, 1),
+                                    at(0, 1) - at(1, 0),
+                                    at(2, 0) + at(0, 2),
+                                    at(1, 2) + at(2, 1),
+                                    -at(0, 0) - at(1, 1) + at(2, 2)};
+  const auto q = largestEigenvector4(nmat);
+  const double w = q[0];
+  const double x = q[1];
+  const double y = q[2];
+  const double z = q[3];
+  const double length2 = w * w + x * x + y * y + z * z;
+  RigidFit fit;
+  fit.transform.rotation = {
+      (w * w + x * x - y * y - z * z) / length2, 2.0 * (x * y - w * z) / length2,
+      2.0 * (x * z + w * y) / length2,           2.0 * (x * y + w * z) / length2,
+      (w * w - x * x + y * y - z * z) / length2, 2.0 * (y * z - w * x) / length2,
+      2.0 * (x * z - w * y) / length2,           2.0 * (y * z + w * x) / length2,
+      (w * w - x * x - y * y + z * z) / length2};
+  fit.transform.translation = b_mean - fit.transform.rotate(a_mean);
+  double sum = 0.0;
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    const double residual = norm(fit.transform.apply(from[i]) - to[i]);
+    fit.residuals_mm.push_back(residual);
+    sum += residual * residual;
+  }
+  fit.rms_mm = std::sqrt(sum / n);
+  return fit;
+}
+
+SurfaceAlignment alignSurfaces(const IndexedMesh& moving, const IndexedMesh& target,
+                               const SurfaceAlignOptions& options) {
+  if (moving.triangles.empty() || target.triangles.empty()) {
+    throw std::invalid_argument("Both sides of a surface fit need a surface");
+  }
+  if (options.fit_points < 100) {
+    throw std::invalid_argument("At least 100 fit points are needed");
+  }
+  const MeshDistance distance(triangleSoup(target));
+  const std::vector<Vec> samples = sampleByArea(moving, triangleAreas(moving), options.fit_points);
+  double floor_mm = options.resolution_mm;
+  if (!(floor_mm > 0.0)) {
+    // Without a voxel size (two meshes): a ten-thousandth of the target's size.
+    Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+           std::numeric_limits<double>::max()};
+    Vec hi = -1.0 * lo;
+    for (const auto& p : target.points) {
+      for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] = std::min(lo[k], static_cast<double>(p[k]));
+        hi[k] = std::max(hi[k], static_cast<double>(p[k]));
+      }
+    }
+    floor_mm = 1e-4 * std::max(norm(hi - lo), 1e-9);
+  }
+  RigidTransform start;
+  if (options.coarse) {
+    const TelemetryPhase phase("coarse alignment");
+    start = coarseAlignment(distance, samples, meshMoments(moving), meshMoments(target), floor_mm);
+  }
+  const TelemetryPhase phase("fine alignment");
+  const Fit fit = icp(distance, samples, start, 100, floor_mm);
+  SurfaceAlignment result;
+  result.motion = fit.transform;
+  result.rms_mm = fit.rms;
+  result.inliers = fit.inliers;
+  result.iterations = fit.iterations;
+  result.resolution_mm = floor_mm;
+  return result;
+}
+
+CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
+                           const CompareOptions& options) {
+  if (!(options.tolerance_mm > 0.0)) {
+    throw std::invalid_argument("The tolerance must be positive");
+  }
+  if (options.fit_points < 100) {
+    throw std::invalid_argument("At least 100 fit points are needed");
+  }
+  CompareResult result;
+  result.alignment = options.alignment;
+  result.tolerance_mm = options.tolerance_mm;
+  result.voxel_size = mask.info().voxel_size;
+  result.cad_triangles = cad.triangles.size();
+  const VoxelSize& v = result.voxel_size;
+  std::optional<TelemetryPhase> phase(std::in_place, "surface mesh");
+  const MeshDistance nominal(cad);
+
+  // The scanned surface in mm, without the surfaces of internal voids when asked.
+  ScanSurface scanned = scanSurface(mask, options.max_triangles, options.outer_surface_only);
+  result.mesh = std::move(scanned.mesh);
+  result.components = scanned.components;
+  result.dropped_components = scanned.dropped_components;
+  result.dropped_area_mm2 = scanned.dropped_area_mm2;
+  const std::vector<Vec> samples =
+      sampleByArea(result.mesh, triangleAreas(result.mesh), options.fit_points);
 
   // Alignment, as scan to CAD.
   phase.reset();
@@ -1019,21 +1268,8 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   const double floor_mm = 0.5 * v.minMm();
   RigidTransform scan_to_cad = options.initial.inverse();
   if (options.alignment == CompareOptions::Alignment::kAuto) {
-    const Moments scan_moments = surfaceMoments([&](const auto& visit) {
-      for (const auto& t : result.mesh.triangles) {
-        const auto& a = result.mesh.points[t[0]];
-        const auto& b = result.mesh.points[t[1]];
-        const auto& c = result.mesh.points[t[2]];
-        visit(Vec{a[0], a[1], a[2]}, Vec{b[0], b[1], b[2]}, Vec{c[0], c[1], c[2]});
-      }
-    });
-    const Moments cad_moments = surfaceMoments([&](const auto& visit) {
-      for (const auto& t : cad.triangles) {
-        visit(Vec{t[0][0], t[0][1], t[0][2]}, Vec{t[1][0], t[1][1], t[1][2]},
-              Vec{t[2][0], t[2][1], t[2][2]});
-      }
-    });
-    scan_to_cad = coarseAlignment(nominal, samples, scan_moments, cad_moments, floor_mm);
+    scan_to_cad =
+        coarseAlignment(nominal, samples, meshMoments(result.mesh), meshMoments(cad), floor_mm);
   }
   if (options.alignment != CompareOptions::Alignment::kNone) {
     const Fit fit = icp(nominal, samples, scan_to_cad, 100, floor_mm);
