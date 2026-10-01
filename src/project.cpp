@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 
 #include "voxelsieve/telemetry.hpp"
@@ -14,7 +15,8 @@ namespace {
 
 using Json = nlohmann::json;
 
-constexpr int kProjectFormat = 1;
+// Format 2 records the object of every step (ADR 0018); format 1 projects are migrated on open.
+constexpr int kProjectFormat = 2;
 constexpr const char* kTelemetryFile = "telemetry.json";
 constexpr std::size_t kMaxViewNameBytes = 200;
 constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
@@ -48,7 +50,9 @@ Json stepToJson(const Step& step) {
           {"finished", step.finished},
           {"messages", step.messages},
           {"summary", step.summary},
-          {"telemetry", step.telemetry}};
+          {"telemetry", step.telemetry},
+          {"object", step.object},
+          {"object_name", step.object_name}};
 }
 
 Step stepFromJson(const Json& json) {
@@ -73,7 +77,31 @@ Step stepFromJson(const Json& json) {
   step.messages = json.value("messages", std::vector<std::string>{});
   step.summary = json.value("summary", Json::object());
   step.telemetry = json.value("telemetry", Json::object());
+  step.object = json.value("object", "");
+  step.object_name = json.value("object_name", "");
   return step;
+}
+
+/// The object kind a step output makes, or nullptr.
+const char* objectKind(const std::string& output_type) {
+  if (output_type == artifact::kDataset) {
+    return kVolumeObject;
+  }
+  return output_type == artifact::kMesh ? kMeshObject : nullptr;
+}
+
+/// The name of a new object: the file or directory the step read, else "Object <n>".
+std::string defaultObjectName(const Json& params, int number) {
+  if (const auto path = params.find("path"); path != params.end() && path->is_string()) {
+    std::filesystem::path file = std::filesystem::path(path->get<std::string>()).lexically_normal();
+    if (file.filename().empty()) {
+      file = file.parent_path();  // "dir/" names the directory
+    }
+    if (!file.stem().empty()) {
+      return file.stem().string();
+    }
+  }
+  return "Object " + std::to_string(number);
 }
 
 std::string directoryName(const Step& step) {
@@ -101,7 +129,8 @@ Project Project::open(const std::filesystem::path& dir) {
     throw std::invalid_argument("Not a VoxelSieve project: " + dir.string());
   }
   const Json json = Json::parse(in);
-  if (json.value("format", 0) > kProjectFormat) {
+  const int format = json.value("format", 0);
+  if (format > kProjectFormat) {
     throw std::invalid_argument("Project was written by a newer VoxelSieve: " + dir.string());
   }
   Project project;
@@ -120,6 +149,32 @@ Project Project::open(const std::filesystem::path& dir) {
     project.steps_.push_back(std::move(step));
   }
   project.cursor_ = std::min(json.value("cursor", project.steps_.size()), project.steps_.size());
+  project.active_object_ = json.value("active_object", "");
+  project.next_object_id_ = json.value("next_object_id", 1);
+  if (format < 2) {
+    // Before objects: every step that made a dataset from no object's data becomes an object, and
+    // the steps working on it belong to it.
+    std::map<int, std::string> object_of;
+    for (Step& step : project.steps_) {
+      for (const auto& [name, ref] : step.inputs) {
+        if (const auto it = object_of.find(ref.step);
+            it != object_of.end() && !it->second.empty()) {
+          step.object = it->second;
+          break;
+        }
+      }
+      const bool creates = std::ranges::any_of(step.output_types, [](const auto& output) {
+        return objectKind(output.second) != nullptr;
+      });
+      if (step.object.empty() && creates) {
+        const int number = project.next_object_id_++;
+        step.object = "o" + std::to_string(number);
+        step.object_name = defaultObjectName(step.params, number);
+      }
+      object_of[step.id] = step.object;
+    }
+    changed = true;
+  }
   project.view_ = json.value("view", Json::object());
   for (const Json& item : json.value("saved_views", Json::array())) {
     SavedView view;
@@ -169,10 +224,11 @@ bool Project::isActive(const Step& step) const {
   return false;
 }
 
-std::optional<ArtifactRef> Project::latest(const std::string& type) const {
+std::optional<ArtifactRef> Project::latest(const std::string& type,
+                                           const std::string& object) const {
   for (std::size_t i = cursor_; i > 0; --i) {
     const Step& step = steps_[i - 1];
-    if (step.status != "done") {
+    if (step.status != "done" || (!object.empty() && step.object != object)) {
       continue;
     }
     for (const auto& [name, output_type] : step.output_types) {
@@ -184,10 +240,96 @@ std::optional<ArtifactRef> Project::latest(const std::string& type) const {
   return std::nullopt;
 }
 
+std::vector<ProjectObject> Project::objects() const {
+  std::vector<ProjectObject> objects;
+  const auto find = [&objects](const std::string& id) -> ProjectObject* {
+    const auto it = std::ranges::find(objects, id, &ProjectObject::id);
+    return it == objects.end() ? nullptr : &*it;
+  };
+  for (std::size_t i = 0; i < cursor_; ++i) {
+    const Step& step = steps_[i];
+    if (step.status != "done") {
+      continue;
+    }
+    if (!step.object.empty()) {
+      ProjectObject* object = find(step.object);
+      for (const auto& [name, type] : step.output_types) {
+        const char* kind = objectKind(type);
+        if (kind == nullptr) {
+          continue;
+        }
+        if (object == nullptr) {
+          objects.push_back({.id = step.object,
+                             .name = step.object_name.empty() ? step.object : step.object_name,
+                             .kind = kind,
+                             .source = {},
+                             .created_by = step.id,
+                             .pose = {},
+                             .moved_by = {}});
+          object = &objects.back();
+        }
+        if (object->kind == kind) {
+          object->source = {step.id, name};
+        }
+        break;
+      }
+    }
+    const auto moved = step.summary.find(kMovedObjectsKey);
+    const auto motion = step.summary.find(kMotionKey);
+    if (moved != step.summary.end() && motion != step.summary.end()) {
+      const auto values = motion->get<std::vector<double>>();
+      const RigidTransform transform = RigidTransform::fromMatrix(values);
+      for (const Json& id : *moved) {
+        if (ProjectObject* object = find(id.get<std::string>())) {
+          object->pose = transform.after(object->pose);
+          object->moved_by.push_back(step.id);
+        }
+      }
+    }
+  }
+  return objects;
+}
+
+ProjectObject Project::object(const std::string& id) const {
+  for (ProjectObject& object : objects()) {
+    if (object.id == id) {
+      return std::move(object);
+    }
+  }
+  throw std::invalid_argument("No object '" + id + "'");
+}
+
+std::string Project::activeObject() const {
+  if (active_object_.empty()) {
+    return {};
+  }
+  const auto all = objects();
+  return std::ranges::find(all, active_object_, &ProjectObject::id) == all.end() ? std::string()
+                                                                                 : active_object_;
+}
+
+void Project::selectObject(const std::string& id) {
+  if (!id.empty()) {
+    (void)object(id);  // throws for unknown ids
+  }
+  active_object_ = id;
+  save();
+}
+
+Json toJson(const ProjectObject& object) {
+  return {{"id", object.id},
+          {"name", object.name},
+          {"kind", object.kind},
+          {"source", {{"step", object.source.step}, {"output", object.source.output}}},
+          {"created_by", object.created_by},
+          {"pose", object.pose.matrix()},
+          {"moved_by", object.moved_by}};
+}
+
 const Step& Project::run(const OperationRegistry& registry, const std::string& operation_id,
                          const Json& params, const std::map<std::string, ArtifactRef>& inputs,
                          const std::function<void(double)>& progress,
-                         const std::atomic<bool>* cancel) {
+                         const std::atomic<bool>* cancel, const StepTarget& target) {
   const auto operation = registry.find(operation_id);
   if (!operation) {
     throw std::invalid_argument("Unknown operation '" + operation_id + "'");
@@ -197,6 +339,21 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
   step.operation = info.id;
   step.title = info.title;
   step.params = validateParameters(info.parameters, params);
+  const std::vector<ProjectObject> known = objects();
+  if (!target.object.empty() &&
+      std::ranges::find(known, target.object, &ProjectObject::id) == known.end()) {
+    throw std::invalid_argument("No object '" + target.object + "'");
+  }
+  // Inputs not given come from the target object only, or from the active object when it has them.
+  const std::string preferred = target.object.empty() ? activeObject() : target.object;
+  const auto default_input = [&](const std::string& type) -> std::optional<ArtifactRef> {
+    if (!preferred.empty()) {
+      if (auto found = latest(type, preferred)) {
+        return found;
+      }
+    }
+    return target.object.empty() ? latest(type) : std::nullopt;
+  };
 
   // Wire inputs before anything changes, so a missing input leaves the project untouched.
   for (const PortInfo& port : info.inputs) {
@@ -211,17 +368,39 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
         throw std::invalid_argument("Input '" + port.name + "' needs a " + port.type);
       }
       step.inputs[port.name] = given->second;
-    } else if (const auto found = latest(port.type)) {
+    } else if (const auto found = default_input(port.type)) {
       step.inputs[port.name] = *found;
     } else if (!port.optional) {
-      throw std::invalid_argument("No " + port.type + " available for input '" + port.name +
-                                  "' of " + info.id);
+      throw std::invalid_argument(
+          "No " + port.type + " available for input '" + port.name + "' of " + info.id +
+          (target.object.empty() ? std::string() : " in object '" + target.object + "'"));
     }
   }
   for (const auto& [name, ref] : inputs) {
     if (!step.inputs.contains(name)) {
       throw std::invalid_argument(info.id + " has no input '" + name + "'");
     }
+  }
+
+  // The step belongs to the target object, else to the object of its first input; one that makes
+  // a dataset or a mesh from no object's data creates a new object.
+  step.object = target.object;
+  for (const PortInfo& port : info.inputs) {
+    if (!step.object.empty()) {
+      break;
+    }
+    if (const auto it = step.inputs.find(port.name); it != step.inputs.end()) {
+      step.object = stepById(it->second.step).object;
+    }
+  }
+  const bool creates = std::ranges::any_of(
+      info.outputs, [](const PortInfo& port) { return objectKind(port.type) != nullptr; });
+  if (step.object.empty() && creates) {
+    const int number = next_object_id_++;
+    step.object = "o" + std::to_string(number);
+    step.object_name = target.name.empty() ? defaultObjectName(step.params, number) : target.name;
+  } else if (!target.name.empty()) {
+    throw std::invalid_argument(info.id + " creates no object, so it takes no object name");
   }
 
   // Discard undone steps: a new step starts a new history.
@@ -252,6 +431,12 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
   }
   context.log = [&stored](const std::string& message) { stored.messages.push_back(message); };
   context.cancel = cancel;
+  for (const ProjectObject& object : known) {
+    context.objects.push_back({{"id", object.id},
+                               {"name", object.name},
+                               {"kind", object.kind},
+                               {"pose", object.pose.matrix()}});
+  }
   Telemetry telemetry(info.id);
   try {
     OperationResult result;
@@ -424,8 +609,15 @@ Json Project::toJson() const {
                      {"state", view.state},
                      {"has_image", view.has_image}});
   }
-  return {{"format", kProjectFormat}, {"name", name_}, {"created", created_}, {"cursor", cursor_},
-          {"steps", steps},           {"view", view_}, {"saved_views", views}};
+  return {{"format", kProjectFormat},
+          {"name", name_},
+          {"created", created_},
+          {"cursor", cursor_},
+          {"steps", steps},
+          {"view", view_},
+          {"saved_views", views},
+          {"active_object", active_object_},
+          {"next_object_id", next_object_id_}};
 }
 
 void Project::save() const {

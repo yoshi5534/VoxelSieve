@@ -1,6 +1,6 @@
 # 0018: Several volumes and CAD models in one project, and their alignment
 
-Status: proposed (2026-09-30)
+Status: accepted (2026-10-01); phase 1 implemented
 
 ## Context
 
@@ -197,3 +197,24 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
 - Mesh objects are held in memory; a CAD model of a few million triangles is some hundred MB with
   its BVH. That is acceptable for a few models; very large assemblies would need their own level
   of detail.
+
+## Implementation of phase 1 (2026-10-01)
+
+- `Step` has `object` and, on the step that created it, `object_name`; `project.json` is format 2.
+  A format 1 project is migrated on open: every step that made a dataset from no object's data
+  becomes an object, and steps whose inputs come from it belong to it.
+- `Project::objects()` derives the objects and their poses from the active steps; the active
+  object is stored in `project.json` (`active_object`) and is not a step. Object ids (`o1`, …) are
+  never reused, also after undone steps were discarded.
+- A step that moves objects records `moved_objects` and `motion` (row-major 4×4) in its summary
+  and writes the same with the new poses to `pose.json`. `move` is the first such operation:
+  rotation about an axis through a centre, then a translation, or `pose` for one object.
+- `add_mesh` references an STL file as a mesh object (artifact `mesh`).
+- `RigidTransform` moved to `transform.hpp`. Operations see the objects and their poses in
+  `OperationContext::objects`; this changes the plugin ABI, so the plugin API version is 2.
+- `BrickCache` holds one budget for the bricks of several datasets; the studio opens up to eight
+  datasets on one 1 GB cache instead of two datasets with 512 MB each.
+- Studio methods `objects`, `object_add`, `object_select`; every `run_<operation>` takes `object`
+  and, for steps that create one, `object_name`. MCP lists them like every method.
+- Every new object starts at the origin. Reading its position from a sidecar or a file name comes
+  with the importers that know such conventions.

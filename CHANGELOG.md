@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Several objects in one project** (ADR 0018, phase 1): a project now holds volumes and meshes
+  (CAD models as STL, `add_mesh`) as objects with a pose in one global coordinate system of the
+  project. `move` moves one or several objects together; moves apply in order and undo takes them
+  back. Steps belong to an object and take their inputs from the chosen (active) object first.
+  Studio methods `objects`, `object_add` and `object_select`, also over MCP. Open datasets share
+  one brick cache budget, so a second volume does not double the memory. Older projects open
+  with one object per imported dataset. Plugins need to be rebuilt (plugin API 2).
+
 - **English throughout**: the studio (labels, operation names, hints, 3D view presets), the
   built-in report template, the report's field names and verdicts, and the example inspection
   order are now in English; numbers in the report use a decimal point. Projects saved with German
