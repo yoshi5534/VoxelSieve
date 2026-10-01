@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: porosity results could vary from run to run.** In about 3 % of runs `analyzePorosity`
+  gave slightly different pore and part volumes for the same dataset (relative about 1e-5): a
+  thread could start on another brick while it was still merging the previous one into its
+  per-thread result. The merge now runs isolated, so the results are reproducible.
+
 - **Smooth other volumes in the slice view**: another volume shown in the slice is interpolated
   between its voxels and its material edge fades in around its threshold, so a turned scan no
   longer looks like a staircase of voxels.
