@@ -120,6 +120,8 @@ class Studio {
   mutable std::mutex mutex_;
   // Open datasets and porosity results for viewing, most recently used last.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;
+  // One memory budget for the bricks of all open datasets (ADR 0018).
+  std::shared_ptr<BrickCache> view_cache_;
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
       porosity_results_;
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const MaterialVolume>>>

@@ -28,7 +28,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
     the phases of new long-running code with `TelemetryPhase`
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
-    `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008). The
+    `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), and their
+    objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
+    `transform.hpp`); poses change only through steps. The
     studio (UI, MCP) drives everything through operations; new processing becomes an operation
   - `studio.hpp` the studio engine and its JSON API; `mcp.hpp` serves it as MCP tools and
     `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in); `slice.hpp`

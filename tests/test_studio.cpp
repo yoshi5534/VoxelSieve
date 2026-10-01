@@ -41,6 +41,64 @@ class StudioTest : public ::testing::Test {
   std::filesystem::path dir_;
 };
 
+TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
+  Studio studio;
+  studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  writeStl(dir_ / "nominal.stl", boxMesh({6.0, 5.0, 4.0}));
+
+  const Json imported = studio.call(
+      "run_import_raw",
+      {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}, {"object_name", "Scan"}});
+  EXPECT_EQ(imported.at("object"), "o1");
+  const Json dataset = studio.call(
+      "object_add", {{"path", (dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve").string()},
+                     {"name", "Again"}});
+  EXPECT_EQ(dataset.at("operation"), "open_dataset");
+  const Json mesh = studio.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
+  EXPECT_EQ(mesh.at("operation"), "add_mesh");
+  EXPECT_THROW(studio.call("object_add", {{"path", (dir_ / "scan.json").string()}}),
+               std::invalid_argument);
+
+  Json objects = studio.call("objects", {});
+  ASSERT_EQ(objects.at("objects").size(), 3U);
+  EXPECT_EQ(objects.at("objects")[0].at("name"), "Scan");
+  EXPECT_EQ(objects.at("objects")[1].at("name"), "Again");
+  EXPECT_EQ(objects.at("objects")[2].at("name"), "nominal");
+  EXPECT_EQ(objects.at("objects")[2].at("kind"), "mesh");
+  EXPECT_EQ(objects.at("active_object"), "");
+
+  // Steps take their inputs from the chosen object; a mesh has no dataset.
+  EXPECT_EQ(studio.call("object_select", {{"id", "o1"}}).at("active_object"), "o1");
+  const Json porosity = studio.call("run_porosity", {});
+  EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), imported.at("id"));
+  EXPECT_EQ(porosity.at("object"), "o1");
+  EXPECT_THROW(studio.call("run_porosity", {{"object", "o3"}}), std::invalid_argument);
+  EXPECT_THROW(studio.call("object_select", {{"id", "o9"}}), std::invalid_argument);
+
+  const Json moved =
+      studio.call("run_move", {{"objects", {"o2", "o3"}}, {"translation_mm", {10.0, 0.0, -2.5}}});
+  EXPECT_EQ(moved.at("summary").at("moved_objects"), Json({"o2", "o3"}));
+  objects = studio.call("project_status", {}).at("objects");
+  EXPECT_EQ(objects[0].at("pose")[3], 0.0);
+  EXPECT_EQ(objects[2].at("pose")[3], 10.0);
+  EXPECT_EQ(objects[2].at("pose")[11], -2.5);
+  EXPECT_EQ(objects[2].at("moved_by"), Json({moved.at("id")}));
+  studio.call("undo", {});
+  EXPECT_EQ(studio.call("objects", {}).at("objects")[2].at("pose")[3], 0.0);
+
+  const auto names = [&studio] {
+    std::vector<std::string> list;
+    for (const StudioMethod& method : studio.methods()) {
+      list.push_back(method.name);
+    }
+    return list;
+  }();
+  for (const char* method :
+       {"objects", "object_add", "object_select", "run_move", "run_add_mesh"}) {
+    EXPECT_NE(std::ranges::find(names, method), names.end()) << method;
+  }
+}
+
 TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
   EXPECT_FALSE(studio.call("project_status", {}).at("open"));

@@ -20,6 +20,8 @@ inline constexpr const char* kReport = "report";      // directory with report.h
 inline constexpr const char* kSurface = "surface";    // directory with surface.vss (ADR 0009)
 inline constexpr const char* kComparison = "comparison";  // nominal-actual comparison with CAD
 inline constexpr const char* kMaterials = "materials";    // material volume (ADR 0013)
+inline constexpr const char* kMesh = "mesh";              // triangle mesh as STL in mm (ADR 0018)
+inline constexpr const char* kPose = "pose";  // directory with pose.json: objects moved (ADR 0018)
 }  // namespace artifact
 
 struct PortInfo {
@@ -51,6 +53,9 @@ struct OperationContext {
   std::function<void(double fraction)> progress = [](double) {};
   std::function<void(const std::string& message)> log = [](const std::string&) {};
   const std::atomic<bool>* cancel = nullptr;
+  /// The objects of the project before this step (ADR 0018): an array of {id, name, kind,
+  /// pose}, the pose as a row-major 4x4 matrix from object to global coordinates in mm.
+  nlohmann::json objects = nlohmann::json::array();
 };
 
 /// Result of an operation: output paths (relative to the output directory) per output port, and a
@@ -102,7 +107,7 @@ void registerBuiltinOperations(OperationRegistry& registry);
                                                 const nlohmann::json& params);
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 1;
+inline constexpr int kPluginApiVersion = 2;
 
 }  // namespace voxelsieve
 
