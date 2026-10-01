@@ -250,8 +250,10 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   keeps its tiles, levels and cache exactly as before, and a slice of a scan stays a slice of the
   scan however it was aligned. Planes along the global axes or of another object are not built.
 - `samplePlane` (`slice.hpp`) samples a dataset on any plane given in its object coordinates
-  (millimetres): one row per task, the nearest voxel at the level whose voxel matches the pixel,
-  the current brick and its accessor kept between neighbouring pixels. Each pixel says whether it
+  (millimetres): one row per task, at the level whose voxel matches the pixel, the current brick
+  and its accessor kept between neighbouring pixels. It takes the nearest voxel, or interpolates
+  trilinearly between the eight nearest (removed air counting as the air level); other volumes are
+  interpolated, since a turned volume sampled at its nearest voxels shows a staircase. Each pixel says whether it
   hit material (at or above the dataset's threshold), a kept voxel below it (air near the part,
   pores) or nothing. For another volume the studio maps the pixel centres of the base tile through
   `other pose⁻¹ ∘ base pose` (`Studio::objectSliceTile`, `GET /api/object_tile`), so the layer
@@ -263,7 +265,9 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   object in full.
 - The slice view lists the other objects. Volumes are blended in their object's colour with an
   opacity (only their material, shaded by their own grey window) or shown as a checkerboard of
-  32-pixel squares; meshes are drawn as their cut lines. Which objects show and how is saved with
+  32-pixel squares; meshes are drawn as their cut lines. The blended material fades in over a
+  tenth of its grey window around its threshold, and its tiles are scaled smoothly, so its edge
+  follows the interpolated surface. Which objects show and how is saved with
   the view. Without a step, the views show the data of the active object.
 - `view_slice` takes `objects` and draws the same into its PNG for MCP clients.
 - Still open from phase 3: ray casting several volumes jointly in the 3D view.

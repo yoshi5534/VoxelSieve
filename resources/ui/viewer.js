@@ -35,9 +35,12 @@ const PLANE_MATERIAL = 2;
 /// Pixels of a tile of another volume, RGBA: in 'blend' mode its material in the object's colour,
 /// brighter where it is denser, covering the slice by `opacity`; in 'checker' mode all its kept
 /// voxels in grey in every other square of a checkerboard, the slice in the squares between.
-function layerPixels(data, inside, size, color, window, mode, opacity, out) {
+/// The material edge fades in over a tenth of the window around `threshold`, so the
+/// interpolated values show the surface instead of a staircase of voxels.
+function layerPixels(data, inside, size, color, window, threshold, mode, opacity, out) {
   const [low, high] = window ?? [0, 1];
   const scale = 1 / (high - low);
+  const ramp = 0.1 * (high - low);
   for (let i = 0; i < data.length; i += 1) {
     const p = i * 4;
     const t = Math.min(Math.max((data[i] - low) * scale, 0), 1);
@@ -52,7 +55,8 @@ function layerPixels(data, inside, size, color, window, mode, opacity, out) {
       out[p] = shade * color[0];
       out[p + 1] = shade * color[1];
       out[p + 2] = shade * color[2];
-      out[p + 3] = inside[i] === PLANE_MATERIAL ? opacity * 255 : 0;
+      const cover = Math.min(Math.max((data[i] - threshold + ramp) / (2 * ramp), 0), 1);
+      out[p + 3] = inside[i] >= PLANE_VOID ? cover * opacity * 255 : 0;
     }
   }
   return out;
@@ -478,8 +482,10 @@ class SliceViewer {
         context.drawImage(this.renderTile(tile), x, y, w, h);
       }
     }
-    // Other volumes over it, at the slice the volume shows.
+    // Other volumes over it, at the slice the volume shows. Their values are interpolated, so
+    // they are drawn smoothly too: they rarely run along the voxels of the shown volume.
     const layers = this.shownLayers('volume');
+    context.imageSmoothingEnabled = true;
     for (const layer of layers) {
       for (const [tu, tv, x, y, w, h] of visible) {
         const slice = shown ?? this.index[this.axis] >> level;
@@ -490,6 +496,7 @@ class SliceViewer {
         context.drawImage(this.renderLayerTile(tile, layer), x, y, w, h);
       }
     }
+    context.imageSmoothingEnabled = false;
     context.restore();
     this.drawCuts(context, width, height);
     // Outline of the volume.
@@ -611,6 +618,7 @@ class SliceViewer {
         rendered: null, used: performance.now() };
       // The overlay of the volume, or what the tile hit of the other volume.
       tile[layer ? 'inside' : 'overlay'] = new Uint8Array(buffer, count * 4, count);
+      if (layer) tile.threshold = Number(response.headers.get('X-Threshold'));
       this.tiles.set(key, tile);
       if (layer && !layer.window) {
         // Its own window, from its first tiles.
@@ -675,8 +683,8 @@ class SliceViewer {
     }
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
-    layerPixels(tile.data, tile.inside, TILE, layer.color, layer.window, layer.mode, layer.opacity,
-      image.data);
+    layerPixels(tile.data, tile.inside, TILE, layer.color, layer.window, tile.threshold, layer.mode,
+      layer.opacity, image.data);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;

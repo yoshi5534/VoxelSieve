@@ -398,7 +398,8 @@ struct HttpServer::Impl {
   /// Body: object o2 sampled at the pixels of that tile of the dataset of step 1
   /// (Studio::objectSliceTile): width * height float32 grey values, then one byte per pixel
   /// for what it hit: 2 the object's material, 1 a kept voxel below its threshold (air near the
-  /// part, a pore), 0 removed air or nothing. Headers X-Width and X-Height give the size.
+  /// part, a pore), 0 removed air or nothing. Headers X-Width and X-Height give the size,
+  /// X-Threshold the object's material threshold. Grey values are interpolated trilinearly.
   http::message_generator objectTile(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
@@ -424,9 +425,10 @@ struct HttpServer::Impl {
     std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
     std::memcpy(body.data() + image.grey.size() * sizeof(float), image.inside.data(),
                 image.inside.size());
-    return binary(
-        request, std::move(body),
-        {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
+    return binary(request, std::move(body),
+                  {{"X-Width", std::to_string(image.width)},
+                   {"X-Height", std::to_string(image.height)},
+                   {"X-Threshold", std::to_string(image.threshold)}});
   }
 
   /// GET /api/cut_lines?object=2&axis=2&index=100[&step=1]

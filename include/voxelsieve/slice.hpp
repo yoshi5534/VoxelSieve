@@ -60,6 +60,9 @@ struct PlaneRequest {
   std::int64_t width = 256;
   std::int64_t height = 256;
   int level = 0;
+  /// Trilinear interpolation between the eight nearest voxels instead of the nearest one, for
+  /// planes that do not run along the voxels. Removed air counts as the dataset's air level.
+  bool linear = false;
 };
 
 inline constexpr std::uint8_t kPlaneOutside = 0;
@@ -69,6 +72,8 @@ inline constexpr std::uint8_t kPlaneMaterial = 2;
 struct PlaneImage {
   std::int64_t width = 0;
   std::int64_t height = 0;
+  /// The material threshold of the dataset.
+  float threshold = 0.0F;
   /// Grey values, x fastest; the air level where `inside` is 0.
   std::vector<float> grey;
   /// What the pixel hit: kPlaneMaterial for an active voxel at or above the threshold of the

@@ -30,11 +30,19 @@ const { cutsToScreen, insideWindow, layerPixels } = require(
   const inside = new Uint8Array(size * size).fill(2);
   inside[1] = 1;  // air kept near the part
   inside[size * 40 + 1] = 1;
+  inside[5] = 0;  // removed air
   const out = new Uint8ClampedArray(size * size * 4);
-  layerPixels(data, inside, size, [200, 100, 50], [0, 10], 'blend', 0.5, out);
+  layerPixels(data, inside, size, [200, 100, 50], [0, 10], 5, 'blend', 0.5, out);
   assert.deepEqual([...out.slice(0, 4)], [200, 100, 50, 128]);
-  assert.equal(out[7], 0);
-  layerPixels(data, inside, size, [200, 100, 50], [0, 20], 'checker', 0.5, out);
+  assert.equal(out[5 * 4 + 3], 0);
+  // The edge: half covered at the threshold, nothing a tenth of the window below it.
+  data[2] = 5;
+  data[3] = 4;
+  layerPixels(data, inside, size, [200, 100, 50], [0, 10], 5, 'blend', 0.5, out);
+  assert.equal(out[2 * 4 + 3], 64);
+  assert.equal(out[3 * 4 + 3], 0);
+  data[2] = data[3] = 10;
+  layerPixels(data, inside, size, [200, 100, 50], [0, 20], 5, 'checker', 0.5, out);
   const pixel = (x, y) => [...out.slice((y * size + x) * 4, (y * size + x) * 4 + 4)];
   assert.equal(pixel(0, 0)[3], 0);              // the slice shows through
   assert.deepEqual(pixel(32, 0), [128, 128, 128, 255]);

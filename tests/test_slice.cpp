@@ -243,6 +243,31 @@ TEST_F(SliceTest, PlanesMatchTheSlicesTheyLieIn) {
   EXPECT_THROW((void)samplePlane(*dataset_, PlaneRequest{.level = 9}), std::invalid_argument);
 }
 
+TEST_F(SliceTest, LinearPlanesInterpolateBetweenVoxels) {
+  const DatasetInfo& info = dataset_->info();
+  const auto& pitch = info.voxel_size;
+  const std::array<std::int64_t, 3> voxel{info.dims[0] / 2, info.dims[1] / 2, info.dims[2] / 2};
+  const auto value = [&](std::int64_t dx, std::int64_t dy) {
+    return *dataset_->sample(0, {voxel[0] + dx, voxel[1] + dy, voxel[2]});
+  };
+  // Pixels on voxel centres, between two voxels along x and in the middle of four.
+  PlaneRequest plane;
+  plane.linear = true;
+  plane.origin_mm = {static_cast<double>(voxel[0]) * pitch[0],
+                     static_cast<double>(voxel[1]) * pitch[1],
+                     static_cast<double>(voxel[2]) * pitch[2]};
+  plane.du_mm = {0.5 * pitch[0], 0.0, 0.0};
+  plane.dv_mm = {0.0, 0.5 * pitch[1], 0.0};
+  plane.width = 2;
+  plane.height = 2;
+  const PlaneImage image = samplePlane(*dataset_, plane);
+  EXPECT_FLOAT_EQ(image.grey[0], value(0, 0));
+  EXPECT_FLOAT_EQ(image.grey[1], 0.5F * (value(0, 0) + value(1, 0)));
+  EXPECT_FLOAT_EQ(image.grey[3], 0.25F * (value(0, 0) + value(1, 0) + value(0, 1) + value(1, 1)));
+  EXPECT_EQ(image.threshold, info.threshold);
+  EXPECT_EQ(image.inside[3], image.grey[3] >= info.threshold ? kPlaneMaterial : kPlaneVoid);
+}
+
 TEST_F(SliceTest, PlaneLevelMatchesThePixelSize) {
   const DatasetInfo& info = dataset_->info();
   const double voxel = info.voxel_size.minMm();

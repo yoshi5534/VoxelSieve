@@ -850,6 +850,7 @@ PlaneImage Studio::objectPlane(const Dataset& base, const RigidTransform& base_p
   plane.width = request.size[0];
   plane.height = request.size[1];
   plane.level = levelForPixel(other->info(), scale * std::min(pitch[ua], pitch[va]));
+  plane.linear = true;
   return samplePlane(*other, plane);
 }
 
@@ -987,10 +988,17 @@ Json Studio::drawObjects(const Dataset& base, const ArtifactRef& base_ref,
         std::ranges::sort(values);
         const float low = values[values.size() / 200];
         const float high = std::max(values[values.size() - 1 - values.size() / 200], low + 1.0F);
+        // The edge fades over a tenth of the window around the threshold, so a turned volume
+        // shows its interpolated surface instead of a staircase of whole voxels.
+        const float ramp = 0.1F * (high - low);
         for (std::size_t i = 0; i < plane.grey.size(); ++i) {
-          if (plane.inside[i] == kPlaneMaterial) {
+          if (plane.inside[i] != kPlaneOutside) {
+            const float cover =
+                std::clamp((plane.grey[i] - plane.threshold + ramp) / (2.0F * ramp), 0.0F, 1.0F);
             const float t = std::clamp((plane.grey[i] - low) / (high - low), 0.0F, 1.0F);
-            blend(i, 0.5F, 0.3F + 0.7F * t);
+            if (cover > 0.0F) {
+              blend(i, 0.5F * cover, 0.3F + 0.7F * t);
+            }
           }
         }
         blended = true;

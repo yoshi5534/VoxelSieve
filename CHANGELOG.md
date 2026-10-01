@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Smooth other volumes in the slice view**: another volume shown in the slice is interpolated
+  between its voxels and its material edge fades in around its threshold, so a turned scan no
+  longer looks like a staircase of voxels.
+
 - **Other objects in the slice view** (ADR 0018, phase 3): the slice view shows the other objects
   of the project where they lie in the slice of the shown volume. Other volumes are blended over
   it in their object's colour with an adjustable opacity, or shown as a checkerboard; CAD models
