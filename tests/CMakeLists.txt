@@ -7,6 +7,7 @@ add_executable(voxelsieve_tests
   test_model.cpp
   test_phantom.cpp
   test_porosity.cpp
+  test_objects.cpp
   test_project.cpp
   test_studio.cpp
   test_http.cpp

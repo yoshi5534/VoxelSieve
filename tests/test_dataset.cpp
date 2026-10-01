@@ -586,6 +586,38 @@ TEST_F(DatasetReaderTest, CacheStaysWithinBudget) {
   EXPECT_GT(held->activeVoxelCount(), 0U);
 }
 
+TEST_F(DatasetReaderTest, DatasetsShareOneCacheBudget) {
+  (void)writeReference();
+  const auto one_brick = static_cast<std::size_t>(
+      readBrick(brickPath(dir_, 0, readDatasetInfo(dir_).levels[0].bricks.front()), false)
+          ->memUsage());
+  const auto cache = std::make_shared<BrickCache>(4 * one_brick);
+  const Dataset first = Dataset::open(dir_, cache);
+  auto second = std::make_optional(Dataset::open(dir_, cache));
+  EXPECT_EQ(first.cache(), cache);
+
+  const auto& bricks = first.level(0).bricks;
+  ASSERT_GT(bricks.size(), 10U);
+  for (const Index3& brick : bricks) {
+    ASSERT_NE(first.brick(0, brick), nullptr);
+    ASSERT_NE(second->brick(0, brick), nullptr);
+    const CacheStats stats = cache->stats();
+    EXPECT_TRUE(stats.bytes <= cache->budget() || stats.bricks == 1) << stats.bytes;
+  }
+  // Each dataset counts its own misses; the same brick of two datasets is cached twice.
+  EXPECT_EQ(first.cacheStats().misses, bricks.size());
+  EXPECT_EQ(second->cacheStats().misses, bricks.size());
+  const std::size_t both = cache->stats().bricks;
+  EXPECT_GE(both, 2U);
+
+  // A closed dataset takes its bricks out of the cache.
+  second.reset();
+  EXPECT_LT(cache->stats().bricks, both);
+  EXPECT_EQ(first.cacheStats().bricks, cache->stats().bricks);
+  (void)first.brick(0, bricks.back());
+  EXPECT_EQ(first.cacheStats().hits, 1U);
+}
+
 TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
   (void)writeReference();
   // A tiny budget forces eviction while several threads load bricks.

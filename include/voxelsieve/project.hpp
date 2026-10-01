@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "voxelsieve/operation.hpp"
+#include "voxelsieve/transform.hpp"
 
 namespace voxelsieve {
 
@@ -37,7 +38,48 @@ struct Step {
   /// Time and resources the step used, per phase, without the timeline (telemetry.hpp); the whole
   /// record with the timeline is telemetry.json in the step directory.
   nlohmann::json telemetry = nlohmann::json::object();
+  /// The object whose data the step worked on or created (ADR 0018); empty for steps that belong
+  /// to none, such as moving objects.
+  std::string object;
+  /// Set when the step created its object: the object's name.
+  std::string object_name;
 };
+
+/// Kinds of objects.
+inline constexpr const char* kVolumeObject = "volume";
+inline constexpr const char* kMeshObject = "mesh";
+
+/// A volume or a mesh of a project, placed in the project's global coordinate system (ADR 0018).
+/// Objects are derived from the active steps: a step that makes a dataset or a mesh from no
+/// object's data creates one, and steps that write a pose move them.
+struct ProjectObject {
+  std::string id;
+  std::string name;
+  std::string kind;  // kVolumeObject or kMeshObject
+  /// The latest active dataset or mesh output of the object.
+  ArtifactRef source;
+  int created_by = 0;  // step
+  /// Object to global coordinates, mm.
+  RigidTransform pose;
+  /// The steps that moved the object, in order.
+  std::vector<int> moved_by;
+};
+
+/// The object a new step belongs to (ADR 0018).
+struct StepTarget {
+  /// An existing object: inputs not given are taken from its outputs, and the step belongs to it.
+  /// Empty: inputs not given come from the active object when it has them, and the step belongs
+  /// to the object of its first input.
+  std::string object;
+  /// Name of the object the step creates, for steps that make a dataset or a mesh from no
+  /// object's data; default: the name of the file it reads.
+  std::string name;
+};
+
+/// Summary keys of a step that moves objects: the moved object ids and the motion applied to their
+/// poses in global coordinates, a row-major 4x4 matrix (pose <- motion * pose).
+inline constexpr const char* kMovedObjectsKey = "moved_objects";
+inline constexpr const char* kMotionKey = "motion";
 
 /// A view saved under a name: the view state of the UI and a picture of it (views/<id>.png).
 struct SavedView {
@@ -68,14 +110,15 @@ class Project {
   [[nodiscard]] bool canRedo() const { return cursor_ < steps_.size(); }
 
   /// Runs an operation as a new step. Inputs not given are taken from the latest active step
-  /// with an output of the required type. Undone steps are discarded first, with their outputs.
+  /// with an output of the required type, of the target or active object first (see StepTarget).
+  /// Undone steps are discarded first, with their outputs.
   /// A failing operation is recorded as a failed step and its exception rethrown. The returned
   /// reference is valid until the next change of the project.
   const Step& run(const OperationRegistry& registry, const std::string& operation,
                   const nlohmann::json& params = nlohmann::json::object(),
                   const std::map<std::string, ArtifactRef>& inputs = {},
                   const std::function<void(double)>& progress = {},
-                  const std::atomic<bool>* cancel = nullptr);
+                  const std::atomic<bool>* cancel = nullptr, const StepTarget& target = {});
 
   bool undo();
   bool redo();
@@ -102,8 +145,18 @@ class Project {
 
   /// Absolute path of a step output.
   [[nodiscard]] std::filesystem::path resolve(const ArtifactRef& ref) const;
-  /// Latest active output of the given type.
-  [[nodiscard]] std::optional<ArtifactRef> latest(const std::string& type) const;
+  /// Latest active output of the given type, of one object when `object` is not empty.
+  [[nodiscard]] std::optional<ArtifactRef> latest(const std::string& type,
+                                                  const std::string& object = {}) const;
+
+  /// The objects of the active steps in the order they were created, with their current poses.
+  [[nodiscard]] std::vector<ProjectObject> objects() const;
+  /// An active object; throws for unknown ids.
+  [[nodiscard]] ProjectObject object(const std::string& id) const;
+  /// The object the user works on: its outputs are the default inputs of new steps. Empty when
+  /// none is chosen or the chosen one was undone. Choosing is not a step.
+  [[nodiscard]] std::string activeObject() const;
+  void selectObject(const std::string& id);
   [[nodiscard]] std::filesystem::path stepDir(const Step& step) const;
 
   [[nodiscard]] nlohmann::json toJson() const;
@@ -123,6 +176,12 @@ class Project {
   nlohmann::json view_ = nlohmann::json::object();
   std::vector<SavedView> saved_views_;
   int next_view_id_ = 1;
+  std::string active_object_;
+  int next_object_id_ = 1;
 };
+
+/// An object as JSON: id, name, kind, source {step, output}, created_by, pose (row-major 4x4) and
+/// moved_by.
+[[nodiscard]] nlohmann::json toJson(const ProjectObject& object);
 
 }  // namespace voxelsieve

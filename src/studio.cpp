@@ -86,7 +86,9 @@ std::filesystem::path insideOf(const std::filesystem::path& root, const std::str
 
 constexpr std::size_t kMaxBrowsedEntries = 5000;
 constexpr std::size_t kOpenDatasets = 2;
-constexpr std::size_t kViewCacheBytes = std::size_t{512} << 20U;
+// Open datasets share one brick cache, so keeping more of them open costs only their index.
+constexpr std::size_t kOpenVolumes = 8;
+constexpr std::size_t kViewCacheBytes = std::size_t{1} << 30U;
 
 std::string base64(std::span<const std::uint8_t> bytes) {
   static constexpr std::string_view kAlphabet =
@@ -271,7 +273,8 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
   return dirs;
 }
 
-Studio::Studio(const std::vector<std::filesystem::path>& plugin_dirs) {
+Studio::Studio(const std::vector<std::filesystem::path>& plugin_dirs)
+    : view_cache_(std::make_shared<BrickCache>(kViewCacheBytes)) {
   registerBuiltinOperations(registry_);
   for (const auto& dir : plugin_dirs) {
     for (std::string& message : registry_.loadPlugins(dir)) {
@@ -297,6 +300,25 @@ std::vector<StudioMethod> Studio::methods() const {
       {"undo", "Undoes the latest active step. Instant; outputs stay until a new step runs.",
        objectSchema(Json::object())},
       {"redo", "Redoes the next undone step.", objectSchema(Json::object())},
+      {"objects",
+       "The objects of the project, volumes and meshes, in the order they were created: id, "
+       "name, kind, the output holding their data (source), the step that created them and "
+       "the steps that moved them, and their pose in the global coordinate system (a row-major "
+       "4x4 matrix from object to global coordinates in mm). Also the active object, whose "
+       "outputs are the default inputs of new steps.",
+       objectSchema(Json::object())},
+      {"object_add",
+       "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
+       "object, as a step. Raw volumes and TIFF stacks become objects through run_import_raw "
+       "and run_import_tiff. Objects are placed with run_move.",
+       objectSchema(
+           {{"path", {{"type", "string"}, {"description", "Dataset directory or STL file"}}},
+            {"name", {{"type", "string"}, {"description", "Default: the file name"}}}},
+           {"path"})},
+      {"object_select",
+       "Chooses the active object: steps run without explicit inputs take them from its outputs "
+       "first. An empty id clears the choice. Not a step.",
+       objectSchema({{"id", {{"type", "string"}}}}, {"id"})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -397,7 +419,19 @@ std::vector<StudioMethod> Studio::methods() const {
           {"type", "object"},
           {"description",
            "Optional: {input: {step, output}}. Default: the latest active output "
-           "of the required type"}};
+           "of the required type, of the active object first"}};
+    }
+    schema["properties"]["object"] = {
+        {"type", "string"},
+        {"description",
+         "Optional: id of the object to work on; inputs not given are taken from its outputs"}};
+    if (std::ranges::any_of(info.outputs, [](const PortInfo& port) {
+          return port.type == artifact::kDataset || port.type == artifact::kMesh;
+        })) {
+      schema["properties"]["object_name"] = {
+          {"type", "string"},
+          {"description",
+           "Optional: name of the object this step creates; default: the file name"}};
     }
     std::string description = info.title + ". " + info.description;
     if (!inputs.empty()) {
@@ -439,6 +473,11 @@ Json Studio::status() const {
       json["steps"][i]["title"] = operation->info().title;
     }
   }
+  json["objects"] = Json::array();
+  for (const ProjectObject& object : project_->objects()) {
+    json["objects"].push_back(toJson(object));
+  }
+  json["active_object"] = project_->activeObject();
   json["open"] = true;
   json["dir"] = project_->dir().string();
   json["can_undo"] = project_->canUndo();
@@ -488,9 +527,9 @@ std::filesystem::path Studio::artifactPath(const Json& params) const {
 
 std::shared_ptr<const Dataset> Studio::openDataset(const std::filesystem::path& dir) const {
   const std::scoped_lock lock(view_mutex_);
-  return cached(datasets_, dir, kOpenDatasets, [&dir] {
+  return cached(datasets_, dir, kOpenVolumes, [this, &dir] {
     return std::make_shared<const Dataset>(
-        Dataset::open(dir, kViewCacheBytes, BrickLoading::kOnAccess));
+        Dataset::open(dir, view_cache_, BrickLoading::kOnAccess));
   });
 }
 
@@ -783,6 +822,7 @@ Json Studio::runOperation(const std::string& operation, Json params,
   // view requests are answered while it runs. Changes to the project wait until it is done.
   std::optional<Project> working;
   std::map<std::string, ArtifactRef> inputs;
+  StepTarget target;
   {
     const std::scoped_lock lock(mutex_);
     if (running_) {
@@ -799,6 +839,16 @@ Json Studio::runOperation(const std::string& operation, Json params,
         inputs[name] = artifactRef(ref, "");
       }
       params.erase("inputs");
+    }
+    for (const auto& [key, field] :
+         {std::pair{"object", &StepTarget::object}, std::pair{"object_name", &StepTarget::name}}) {
+      if (params.contains(key)) {
+        if (!params.at(key).is_string()) {
+          throw std::invalid_argument(std::string("'") + key + "' must be a string");
+        }
+        target.*field = params.at(key).get<std::string>();
+        params.erase(key);
+      }
     }
     working = project();
     running_ = true;
@@ -821,7 +871,7 @@ Json Studio::runOperation(const std::string& operation, Json params,
     running_operation_.clear();
   };
   try {
-    const Step& step = working->run(registry_, operation, params, inputs, report, &cancel_);
+    const Step& step = working->run(registry_, operation, params, inputs, report, &cancel_, target);
     Json json = working->toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working->stepDir(step));
@@ -845,6 +895,25 @@ Json Studio::call(const std::string& method, const Json& arguments,
       return runOperation(operation, params, progress);
     }
   }
+  if (method == "object_add") {
+    if (!params.contains("path") || !params.at("path").is_string()) {
+      throw std::invalid_argument("Missing parameter 'path'");
+    }
+    const std::filesystem::path path = params.at("path").get<std::string>();
+    Json run = {{"path", path.string()}};
+    if (params.contains("name")) {
+      run["object_name"] = params.at("name");
+    }
+    if (std::filesystem::is_directory(path) && std::filesystem::exists(path / "index.json")) {
+      return runOperation("open_dataset", run, progress);
+    }
+    if (lowerExtension(path) == ".stl") {
+      return runOperation("add_mesh", run, progress);
+    }
+    throw std::invalid_argument("Not a dataset or an STL file: " + path.string() +
+                                "; import raw volumes and TIFF stacks with run_import_raw and "
+                                "run_import_tiff");
+  }
   const std::scoped_lock lock(mutex_);
   for (const StudioMethod& known : methods()) {
     if (known.name != method) {
@@ -853,7 +922,7 @@ Json Studio::call(const std::string& method, const Json& arguments,
     const Json checked = validateParameters(known.parameters, params);
     const bool changes_project = method == "project_create" || method == "project_open" ||
                                  method == "project_save_as" || method == "undo" ||
-                                 method == "redo";
+                                 method == "redo" || method == "object_select";
     if (running_ && changes_project) {
       throw std::invalid_argument("Operation '" + running_operation_ + "' is still running");
     }
@@ -878,6 +947,17 @@ Json Studio::call(const std::string& method, const Json& arguments,
       Json json = status();
       json["changed"] = changed;
       return json;
+    }
+    if (method == "objects") {
+      Json objects = Json::array();
+      for (const ProjectObject& object : project().objects()) {
+        objects.push_back(toJson(object));
+      }
+      return {{"objects", objects}, {"active_object", project().activeObject()}};
+    }
+    if (method == "object_select") {
+      project().selectObject(checked.at("id").get<std::string>());
+      return {{"active_object", project().activeObject()}};
     }
     if (method == "list_operations") {
       Json operations = Json::array();

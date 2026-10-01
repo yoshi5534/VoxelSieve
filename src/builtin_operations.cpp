@@ -3,6 +3,7 @@
 
 #include <openvdb/io/File.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -17,6 +18,7 @@
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/project.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
@@ -771,6 +773,147 @@ class SegmentWithModel final : public Operation {
   OperationInfo info_;
 };
 
+class AddMesh final : public Operation {
+ public:
+  AddMesh() {
+    info_.id = "add_mesh";
+    info_.title = "Add mesh";
+    info_.description =
+        "Adds a triangle mesh in mm, such as a CAD model, as an object of the project. It starts "
+        "in the coordinates of the file; move or align it afterwards. The file is not copied.";
+    info_.outputs = {{"mesh", artifact::kMesh, "The mesh (STL)"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties", {{"path", {{"type", "string"}, {"description", "STL file in mm"}}}}},
+        {"required", {"path"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const std::filesystem::path path =
+        std::filesystem::absolute(context.params.at("path").get<std::string>());
+    const Mesh mesh = readStl(path);
+    if (mesh.triangles.empty()) {
+      throw std::invalid_argument("The mesh has no triangles: " + path.string());
+    }
+    const Bounds bounds = meshBounds(mesh);
+    OperationResult result;
+    result.outputs["mesh"] = path;
+    result.summary = {{"triangles", mesh.triangles.size()},
+                      {"bounds_min_mm", bounds.min},
+                      {"bounds_max_mm", bounds.max},
+                      {"volume_mm3", meshVolumeMm3(mesh)}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+/// Pose of an object from OperationContext::objects.
+std::optional<RigidTransform> objectPose(const Json& objects, const std::string& id) {
+  for (const Json& object : objects) {
+    if (object.at("id") == id) {
+      return RigidTransform::fromMatrix(object.at("pose").get<std::vector<double>>());
+    }
+  }
+  return std::nullopt;
+}
+
+class MoveObjects final : public Operation {
+ public:
+  MoveObjects() {
+    const auto vector3 = [](const Json& extra) {
+      Json schema = {
+          {"type", "array"}, {"items", {{"type", "number"}}}, {"minItems", 3}, {"maxItems", 3}};
+      schema.update(extra);
+      return schema;
+    };
+    info_.id = "move";
+    info_.title = "Move objects";
+    info_.description =
+        "Moves objects together in the global coordinate system of the project by a rigid "
+        "motion: a rotation about an axis through a centre, then a translation. Alternatively "
+        "`pose` places one object at a given pose. Moves apply on top of the earlier ones, in "
+        "order; undo takes them back. The data is not touched.";
+    info_.outputs = {{"pose", artifact::kPose, "The motion and the new poses (pose.json)"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"objects",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"minItems", 1},
+            {"description", "Ids of the objects to move"}}},
+          {"translation_mm", vector3({{"default", {0.0, 0.0, 0.0}}})},
+          {"rotation_axis", vector3({{"default", {0.0, 0.0, 1.0}}})},
+          {"rotation_deg", {{"type", "number"}, {"default", 0.0}}},
+          {"center_mm", vector3({{"default", {0.0, 0.0, 0.0}},
+                                 {"description", "Point the rotation axis passes through"}})},
+          {"pose",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 12},
+            {"maxItems", 16},
+            {"description",
+             "New pose of a single object, object to global coordinates, as a row-major 3x4 or "
+             "4x4 matrix in mm; replaces the rotation and translation"}}}}},
+        {"required", {"objects"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const auto ids = p.at("objects").get<std::vector<std::string>>();
+    std::vector<RigidTransform> poses;
+    for (const std::string& id : ids) {
+      if (std::ranges::count(ids, id) > 1) {
+        throw std::invalid_argument("Object '" + id + "' is named twice");
+      }
+      const auto pose = objectPose(context.objects, id);
+      if (!pose) {
+        throw std::invalid_argument("No object '" + id + "'");
+      }
+      poses.push_back(*pose);
+    }
+    RigidTransform motion;
+    if (p.contains("pose")) {
+      if (ids.size() != 1) {
+        throw std::invalid_argument("'pose' places exactly one object");
+      }
+      motion = RigidTransform::fromMatrix(p.at("pose").get<std::vector<double>>())
+                   .after(poses.front().inverse());
+    } else {
+      const auto center = p.at("center_mm").get<std::array<double, 3>>();
+      const auto translation = p.at("translation_mm").get<std::array<double, 3>>();
+      const RigidTransform rotation = RigidTransform::fromAxisAngle(
+          p.at("rotation_axis").get<std::array<double, 3>>(), p.at("rotation_deg").get<double>());
+      // x' = R (x - c) + c + t
+      const auto rotated = rotation.rotate(center);
+      motion = rotation;
+      for (std::size_t i = 0; i < 3; ++i) {
+        motion.translation[i] = center[i] - rotated[i] + translation[i];
+      }
+    }
+    Json moved = Json::object();
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      moved[ids[i]] = motion.after(poses[i]).matrix();
+    }
+    const Json record = {{kMovedObjectsKey, ids}, {kMotionKey, motion.matrix()}, {"poses", moved}};
+    std::ofstream(context.output_dir / "pose.json") << record.dump(2) << '\n';
+    OperationResult result;
+    result.outputs["pose"] = "pose.json";
+    result.summary = {{kMovedObjectsKey, ids},
+                      {kMotionKey, motion.matrix()},
+                      {"rotation_deg", motion.angleDegrees()},
+                      {"translation_mm", motion.translation}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 }  // namespace
 
 void registerBuiltinOperations(OperationRegistry& registry) {
@@ -783,6 +926,8 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());
+  registry.add(std::make_shared<AddMesh>());
+  registry.add(std::make_shared<MoveObjects>());
 }
 
 }  // namespace voxelsieve

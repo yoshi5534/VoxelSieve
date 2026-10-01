@@ -110,6 +110,28 @@ enum class BrickLoading : std::uint8_t {
   kOnAccess,
 };
 
+/// A brick cache with one memory budget (LRU), which several datasets can share: opening another
+/// volume of a project then does not add another budget (ADR 0018). Each dataset takes its
+/// bricks out again when it is destroyed.
+class BrickCache {
+ public:
+  explicit BrickCache(std::size_t budget_bytes);
+  BrickCache(const BrickCache&) = delete;
+  BrickCache& operator=(const BrickCache&) = delete;
+  BrickCache(BrickCache&&) = delete;
+  BrickCache& operator=(BrickCache&&) = delete;
+  ~BrickCache();
+
+  [[nodiscard]] std::size_t budget() const;
+  /// Bricks and bytes cached for all datasets; hits and misses are counted per dataset.
+  [[nodiscard]] CacheStats stats() const;
+
+ private:
+  friend class Dataset;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 /// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.
 ///
 /// Opening reads only index.json. Bricks are loaded on demand into an LRU cache whose memory is
@@ -128,6 +150,10 @@ class Dataset {
 
   [[nodiscard]] static Dataset open(const std::filesystem::path& dir,
                                     std::size_t cache_bytes = kDefaultCacheBytes,
+                                    BrickLoading loading = BrickLoading::kFull);
+  /// Opens a dataset whose bricks go into a cache shared with other datasets.
+  [[nodiscard]] static Dataset open(const std::filesystem::path& dir,
+                                    std::shared_ptr<BrickCache> cache,
                                     BrickLoading loading = BrickLoading::kFull);
 
   Dataset(Dataset&&) noexcept;
@@ -160,7 +186,9 @@ class Dataset {
   /// Calls `function` for every stored brick of `level`, in parallel.
   void forEachBrick(int level, const BrickFunction& function) const;
 
+  /// Hits and misses of this dataset; bricks and bytes of its cache, which may be shared.
   [[nodiscard]] CacheStats cacheStats() const;
+  [[nodiscard]] const std::shared_ptr<BrickCache>& cache() const;
 
  private:
   struct Impl;

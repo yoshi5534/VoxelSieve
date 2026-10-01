@@ -1,6 +1,7 @@
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <list>
 #include <map>
@@ -36,23 +37,74 @@ bool insideLevel(const LevelInfo& level, const Index3& voxel) {
 
 }  // namespace
 
-struct Dataset::Impl {
+struct BrickCache::Impl {
+  /// Dataset, level, brick index.
+  using Key = std::array<std::uint64_t, 5>;
   struct Entry {
-    BrickKey key;
-    BrickPtr grid;
+    Key key;
+    Dataset::BrickPtr grid;
     std::size_t bytes = 0;
   };
+
+  std::size_t budget = 0;
+  std::mutex mutex;
+  std::list<Entry> lru;  // most recently used first
+  std::map<Key, std::list<Entry>::iterator> entries;
+  CacheStats stats;  // bricks and bytes; hits and misses are counted per dataset
+  std::atomic<std::uint64_t> next_dataset{1};
+};
+
+BrickCache::BrickCache(std::size_t budget_bytes) : impl_(std::make_unique<Impl>()) {
+  impl_->budget = budget_bytes;
+}
+
+BrickCache::~BrickCache() = default;
+
+std::size_t BrickCache::budget() const { return impl_->budget; }
+
+CacheStats BrickCache::stats() const {
+  const std::scoped_lock lock(impl_->mutex);
+  return impl_->stats;
+}
+
+struct Dataset::Impl {
+  using Key = BrickCache::Impl::Key;
+  using Entry = BrickCache::Impl::Entry;
 
   std::filesystem::path dir;
   DatasetInfo info;
   std::vector<std::set<Index3>> stored;  // per level
-  std::size_t cache_bytes = 0;
   BrickLoading loading = BrickLoading::kFull;
+  std::shared_ptr<BrickCache> shared_cache;
+  BrickCache::Impl* cache = nullptr;
+  std::uint64_t id = 0;  // this dataset's part of the cache keys
+  mutable std::atomic<std::uint64_t> hits{0};
+  mutable std::atomic<std::uint64_t> misses{0};
 
-  mutable std::mutex mutex;
-  mutable std::list<Entry> lru;  // most recently used first
-  mutable std::map<BrickKey, std::list<Entry>::iterator> entries;
-  mutable CacheStats stats;
+  Impl() = default;
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  Impl(Impl&&) = delete;
+  Impl& operator=(Impl&&) = delete;
+
+  /// Takes this dataset's bricks out of a shared cache; they are freed after the lock is released.
+  ~Impl() {
+    if (cache == nullptr) {
+      return;
+    }
+    std::list<Entry> removed;
+    const std::scoped_lock lock(cache->mutex);
+    for (auto it = cache->lru.begin(); it != cache->lru.end();) {
+      const auto next = std::next(it);
+      if (it->key[0] == id) {
+        cache->stats.bytes -= it->bytes;
+        cache->entries.erase(it->key);
+        removed.splice(removed.end(), cache->lru, it);
+      }
+      it = next;
+    }
+    cache->stats.bricks = cache->lru.size();
+  }
 
   const LevelInfo& level(int level) const {
     if (level < 0 || static_cast<std::size_t>(level) >= info.levels.size()) {
@@ -70,15 +122,16 @@ struct Dataset::Impl {
     if (!hasBrick(level_index, brick)) {
       return nullptr;
     }
-    const BrickKey key{level_index, brick[0], brick[1], brick[2]};
+    const Key key{id, static_cast<std::uint64_t>(level_index), static_cast<std::uint64_t>(brick[0]),
+                  static_cast<std::uint64_t>(brick[1]), static_cast<std::uint64_t>(brick[2])};
     {
-      const std::scoped_lock lock(mutex);
-      if (const auto it = entries.find(key); it != entries.end()) {
-        lru.splice(lru.begin(), lru, it->second);
-        ++stats.hits;
+      const std::scoped_lock lock(cache->mutex);
+      if (const auto it = cache->entries.find(key); it != cache->entries.end()) {
+        cache->lru.splice(cache->lru.begin(), cache->lru, it->second);
+        ++hits;
         return it->second->grid;
       }
-      ++stats.misses;
+      ++misses;
     }
 
     // Load outside the lock so other threads keep using the cache.
@@ -87,12 +140,12 @@ struct Dataset::Impl {
     const auto bytes = static_cast<std::size_t>(grid->memUsage());
     // Bricks loaded on access grow as their leaves are read: measure them again. memUsage runs
     // TBB tasks, so it must not run under the lock.
-    std::vector<std::pair<BrickKey, std::size_t>> measured;
+    std::vector<std::pair<Key, std::size_t>> measured;
     if (on_access) {
-      std::vector<std::pair<BrickKey, BrickPtr>> cached;
+      std::vector<std::pair<Key, BrickPtr>> cached;
       {
-        const std::scoped_lock lock(mutex);
-        for (const Entry& entry : lru) {
+        const std::scoped_lock lock(cache->mutex);
+        for (const Entry& entry : cache->lru) {
           cached.emplace_back(entry.key, entry.grid);
         }
       }
@@ -104,25 +157,26 @@ struct Dataset::Impl {
     // Evicted bricks are destroyed after the lock is released: OpenVDB frees a tree with TBB
     // tasks, and a thread waiting for them may pick up another brick() call on this cache.
     std::list<Entry> evicted;
-    const std::scoped_lock lock(mutex);
+    const std::scoped_lock lock(cache->mutex);
+    CacheStats& stats = cache->stats;
     for (const auto& [measured_key, measured_bytes] : measured) {
-      if (const auto it = entries.find(measured_key); it != entries.end()) {
+      if (const auto it = cache->entries.find(measured_key); it != cache->entries.end()) {
         stats.bytes = stats.bytes - it->second->bytes + measured_bytes;
         it->second->bytes = measured_bytes;
       }
     }
-    if (const auto it = entries.find(key); it != entries.end()) {
+    if (const auto it = cache->entries.find(key); it != cache->entries.end()) {
       return it->second->grid;  // another thread loaded it meanwhile
     }
-    lru.push_front({key, grid, bytes});
-    entries.emplace(key, lru.begin());
+    cache->lru.push_front({key, grid, bytes});
+    cache->entries.emplace(key, cache->lru.begin());
     stats.bytes += bytes;
-    while (stats.bytes > cache_bytes && lru.size() > 1) {
-      stats.bytes -= lru.back().bytes;
-      entries.erase(lru.back().key);
-      evicted.splice(evicted.end(), lru, std::prev(lru.end()));
+    while (stats.bytes > cache->budget && cache->lru.size() > 1) {
+      stats.bytes -= cache->lru.back().bytes;
+      cache->entries.erase(cache->lru.back().key);
+      evicted.splice(evicted.end(), cache->lru, std::prev(cache->lru.end()));
     }
-    stats.bricks = lru.size();
+    stats.bricks = cache->lru.size();
     return grid;
   }
 
@@ -144,15 +198,25 @@ Dataset::~Dataset() = default;
 
 Dataset Dataset::open(const std::filesystem::path& dir, std::size_t cache_bytes,
                       BrickLoading loading) {
+  return open(dir, std::make_shared<BrickCache>(cache_bytes), loading);
+}
+
+Dataset Dataset::open(const std::filesystem::path& dir, std::shared_ptr<BrickCache> cache,
+                      BrickLoading loading) {
+  if (!cache) {
+    throw std::invalid_argument("Dataset::open needs a brick cache");
+  }
   openvdb::initialize();
   auto impl = std::make_unique<Impl>();
   impl->dir = dir;
   impl->info = readDatasetInfo(dir);
-  impl->cache_bytes = cache_bytes;
   impl->loading = loading;
   for (const LevelInfo& level : impl->info.levels) {
     impl->stored.emplace_back(level.bricks.begin(), level.bricks.end());
   }
+  impl->cache = cache->impl_.get();
+  impl->id = impl->cache->next_dataset++;
+  impl->shared_cache = std::move(cache);
   return Dataset(std::move(impl));
 }
 
@@ -253,8 +317,12 @@ void Dataset::forEachBrick(int level, const BrickFunction& function) const {
 }
 
 CacheStats Dataset::cacheStats() const {
-  const std::scoped_lock lock(impl_->mutex);
-  return impl_->stats;
+  CacheStats stats = impl_->shared_cache->stats();
+  stats.hits = impl_->hits;
+  stats.misses = impl_->misses;
+  return stats;
 }
+
+const std::shared_ptr<BrickCache>& Dataset::cache() const { return impl_->shared_cache; }
 
 }  // namespace voxelsieve
