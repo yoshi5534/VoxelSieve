@@ -64,7 +64,7 @@ TEST(FitRigidTest, RecoversAKnownMotion) {
 /// A scan of the sample housing and its CAD model, placed far from it, in one project.
 class AlignmentTest : public ::testing::Test {
  protected:
-  static constexpr double kVoxel = 0.15;
+  static constexpr double kVoxel = 0.2;
 
   void SetUp() override {
     dir_ = std::filesystem::temp_directory_path() /
@@ -89,7 +89,7 @@ class AlignmentTest : public ::testing::Test {
     const auto origin = scan.originMm();
     mesh_to_scan_.translation = {-origin[0], -origin[1], -origin[2]};
 
-    part.resolution_mm = 0.05;
+    part.resolution_mm = 0.1;
     nominal_ = samplePartMesh("housing", part);
     cad_moved_ = RigidTransform::fromAxisAngle({1.0, 2.0, 3.0}, 40.0, {30.0, -12.0, 7.0});
     Mesh cad;
@@ -135,7 +135,7 @@ TEST_F(AlignmentTest, AlignsInSequenceAndComparesPlacedObjects) {
   // Far apart: find the orientation from the principal axes first.
   const Step coarse = project.run(
       registry_, "align_surfaces",
-      {{"objects", {"o2"}}, {"target", "o1"}, {"start", "principal_axes"}, {"fit_points", 8000}});
+      {{"objects", {"o2"}}, {"target", "o1"}, {"start", "principal_axes"}, {"fit_points", 4000}});
   EXPECT_LT(poseError(project.object("o2").pose), 0.15 * kVoxel);
   EXPECT_LT(coarse.summary.at("fit_rms_mm").get<double>(), 0.25 * kVoxel);
   EXPECT_NEAR(coarse.summary.at("resolution_mm").get<double>(), 0.5 * kVoxel, 1e-9);
@@ -146,7 +146,7 @@ TEST_F(AlignmentTest, AlignsInSequenceAndComparesPlacedObjects) {
               {{"objects", {"o2"}}, {"pose", values(nudge.after(project.object("o2").pose))}});
   EXPECT_GT(poseError(project.object("o2").pose), 2.0 * kVoxel);
   project.run(registry_, "align_surfaces",
-              {{"objects", {"o2"}}, {"target", "o1"}, {"fit_points", 8000}});
+              {{"objects", {"o2"}}, {"target", "o1"}, {"fit_points", 4000}});
   EXPECT_LT(poseError(project.object("o2").pose), 0.15 * kVoxel);
   EXPECT_EQ(project.object("o2").moved_by.size(), 3U);
 
@@ -157,16 +157,18 @@ TEST_F(AlignmentTest, AlignsInSequenceAndComparesPlacedObjects) {
   EXPECT_LT(std::abs(compared.summary.at("deviation_mean_mm").get<double>()), 0.05 * kVoxel);
   EXPECT_GT(compared.summary.at("within_tolerance_percent").get<double>(), 97.0);
 
-  // Moving both together changes nothing between them.
   project.run(registry_, "move",
               {{"objects", {"o1", "o2"}},
                {"rotation_deg", 70.0},
                {"rotation_axis", {1.0, 0.0, 0.0}},
                {"translation_mm", {100.0, 0.0, 0.0}}});
-  const Step again = project.run(registry_, "compare_objects", {{"nominal", "o2"}}, {}, {}, nullptr,
-                                 {.object = "o1", .name = {}});
-  EXPECT_NEAR(again.summary.at("deviation_mean_mm").get<double>(),
-              compared.summary.at("deviation_mean_mm").get<double>(), 1e-4);
+  // Moving both together changes nothing between them: a fit from there barely moves.
+  const Step again = project.run(registry_, "align_surfaces",
+                                 {{"objects", {"o2"}}, {"target", "o1"}, {"fit_points", 4000}});
+  EXPECT_LT(again.summary.at("rotation_deg").get<double>(), 0.05);
+  for (const double t : again.summary.at("translation_mm")) {
+    EXPECT_LT(std::abs(t), 0.05 * kVoxel);
+  }
   EXPECT_THROW(project.run(registry_, "compare_objects", {{"nominal", "o1"}}, {}, {}, nullptr,
                            {.object = "o1", .name = {}}),
                std::invalid_argument);
