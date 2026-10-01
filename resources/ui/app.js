@@ -25,81 +25,81 @@ const state = {
 
 // Labels of known parameters; forms show them in this order.
 const LABELS = {
-  path: 'Datei',
-  dims: 'Abmessungen (Voxel)',
-  voxel_size_mm: 'Voxelgröße (mm)',
-  slice_thickness_mm: 'Schichtdicke (mm)',
-  folder: 'Ordner',
-  sample_type: 'Datentyp',
+  path: 'File',
+  dims: 'Dimensions (voxels)',
+  voxel_size_mm: 'Voxel size (mm)',
+  slice_thickness_mm: 'Slice thickness (mm)',
+  folder: 'Folder',
+  sample_type: 'Data type',
   big_endian: 'Big Endian',
-  header_bytes: 'Header (Bytes)',
-  threshold: 'Schwellwert',
-  air_threshold: 'Luft-Schwellwert',
-  materials: 'Materialien',
-  margin_voxels: 'Luftrand (Voxel)',
-  brick_size: 'Brick-Größe (Voxel)',
-  min_pore_voxels: 'Kleinste Pore (Voxel)',
-  zone_sigma: 'Zonenschwelle (σ)',
-  min_zone_void_fraction: 'Min. Hohlraumanteil je Zone',
-  order_path: 'Prüfauftrag (Datei)',
-  order: 'Prüfauftrag (JSON)',
-  template_path: 'Berichtsvorlage (Datei)',
-  bins: 'Klassen',
-  level: 'Auflösungsstufe',
-  bits: 'Bits je Voxel',
-  band_voxels: 'Bandbreite (± Voxel)',
-  iso_value: 'Oberflächen-Grauwert',
-  stl: 'STL-Netz schreiben',
-  vdb: 'VDB-Levelset schreiben',
-  cad_path: 'CAD-Modell (STL)',
-  model_path: 'Gelerntes Modell (.vsm)',
-  tile: 'Kachelkante (Voxel)',
-  alignment: 'Ausrichtung',
-  tolerance_mm: 'Toleranz (± mm)',
-  outer_surface_only: 'Nur die Außenhaut vergleichen',
-  aligned_stl: 'Ausgerichtetes CAD-Modell als STL schreiben',
+  header_bytes: 'Header (bytes)',
+  threshold: 'Threshold',
+  air_threshold: 'Air threshold',
+  materials: 'Materials',
+  margin_voxels: 'Air margin (voxels)',
+  brick_size: 'Brick size (voxels)',
+  min_pore_voxels: 'Smallest pore (voxels)',
+  zone_sigma: 'Zone threshold (σ)',
+  min_zone_void_fraction: 'Min. void fraction per zone',
+  order_path: 'Inspection order (file)',
+  order: 'Inspection order (JSON)',
+  template_path: 'Report template (file)',
+  bins: 'Bins',
+  level: 'Resolution level',
+  bits: 'Bits per voxel',
+  band_voxels: 'Band width (± voxels)',
+  iso_value: 'Surface grey value',
+  stl: 'Write STL mesh',
+  vdb: 'Write VDB level set',
+  cad_path: 'CAD model (STL)',
+  model_path: 'Learned model (.vsm)',
+  tile: 'Tile edge (voxels)',
+  alignment: 'Alignment',
+  tolerance_mm: 'Tolerance (± mm)',
+  outer_surface_only: 'Compare the outer skin only',
+  aligned_stl: 'Write the aligned CAD model as STL',
 };
 
 const SUMMARY_LABELS = {
-  dims: 'Abmessungen',
-  voxel_size_mm: 'Voxelgröße (mm)',
-  slice_thickness_mm: 'Schichtdicke (mm)',
-  levels: 'Auflösungsstufen',
+  dims: 'Dimensions',
+  voxel_size_mm: 'Voxel size (mm)',
+  slice_thickness_mm: 'Slice thickness (mm)',
+  levels: 'Resolution levels',
   bricks: 'Bricks',
-  active_voxels: 'Aktive Voxel',
-  threshold: 'Schwellwert',
-  air_threshold: 'Luft-Schwellwert',
-  model: 'Modell',
-  materials: 'Materialien',
-  header_bytes: 'Header (Bytes)',
-  pores: 'Poren',
-  pore_volume_mm3: 'Porenvolumen (mm³)',
-  zones: 'Auflockerungszonen',
-  zone_void_volume_mm3: 'Hohlraum in Zonen (mm³)',
-  part_volume_mm3: 'Bauteilvolumen (mm³)',
-  porosity: 'Porosität',
-  evaluated_zones: 'Bewertete Prüfzonen',
-  missing_fields: 'Fehlende Angaben',
-  passed: 'Ergebnis',
-  surface_blocks: 'Oberflächenblöcke (8³)',
-  band_voxels: 'Voxel im Abstandsband',
-  file_bytes: 'Dateigröße (Bytes)',
-  bits_per_voxel: 'Bit je Voxel',
-  compression_vs_raw: 'Kompression ggü. 16-bit-Rohdaten',
-  step_voxels: 'Abstandsstufe (Voxel)',
-  iso_value: 'Oberflächen-Grauwert',
-  surface_volume_mm3: 'Volumen aus der Oberfläche (mm³)',
-  deviation_mean_mm: 'Mittlere Abweichung (mm)',
-  deviation_rms_mm: 'RMS der Abweichung (mm)',
-  deviation_min_mm: 'Kleinste Abweichung (mm)',
-  deviation_max_mm: 'Größte Abweichung (mm)',
-  within_tolerance_percent: 'In Toleranz (% der Fläche)',
-  above_tolerance_percent: 'Über Toleranz (% der Fläche)',
-  below_tolerance_percent: 'Unter Toleranz (% der Fläche)',
-  tolerance_mm: 'Toleranz (± mm)',
-  fit_rms_mm: 'Restfehler der Ausrichtung (mm)',
-  rotation_deg: 'Drehung CAD → Scan (°)',
-  dropped_components: 'Ausgelassene innere Flächen',
+  active_voxels: 'Active voxels',
+  threshold: 'Threshold',
+  air_threshold: 'Air threshold',
+  model: 'Model',
+  materials: 'Materials',
+  header_bytes: 'Header (bytes)',
+  pores: 'Pores',
+  pore_volume_mm3: 'Pore volume (mm³)',
+  zones: 'Loosened zones',
+  zone_void_volume_mm3: 'Void volume in zones (mm³)',
+  part_volume_mm3: 'Part volume (mm³)',
+  porosity: 'Porosity',
+  evaluated_zones: 'Evaluated inspection zones',
+  missing_fields: 'Missing fields',
+  passed: 'Result',
+  surface_blocks: 'Surface blocks (8³)',
+  band_voxels: 'Voxels in the distance band',
+  file_bytes: 'File size (bytes)',
+  bits_per_voxel: 'Bits per voxel',
+  compression_vs_raw: 'Compression vs. 16-bit raw data',
+  step_voxels: 'Distance step (voxels)',
+  iso_value: 'Surface grey value',
+  surface_volume_mm3: 'Volume from the surface (mm³)',
+  deviation_mean_mm: 'Mean deviation (mm)',
+  deviation_rms_mm: 'RMS of the deviation (mm)',
+  deviation_min_mm: 'Smallest deviation (mm)',
+  deviation_max_mm: 'Largest deviation (mm)',
+  within_tolerance_percent: 'Within tolerance (% of area)',
+  above_tolerance_percent: 'Above tolerance (% of area)',
+  below_tolerance_percent: 'Below tolerance (% of area)',
+  tolerance_mm: 'Tolerance (± mm)',
+  fit_rms_mm: 'Residual alignment error (mm)',
+  rotation_deg: 'Rotation CAD → scan (°)',
+  dropped_components: 'Omitted internal surfaces',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -122,8 +122,8 @@ function el(tag, attributes = {}, ...children) {
 
 function formatNumber(value) {
   if (typeof value !== 'number') return String(value);
-  if (Number.isInteger(value)) return value.toLocaleString('de-DE');
-  return value.toLocaleString('de-DE', { maximumSignificantDigits: 4 });
+  if (Number.isInteger(value)) return value.toLocaleString('en-US');
+  return value.toLocaleString('en-US', { maximumSignificantDigits: 4 });
 }
 
 /// A voxel size: a number for cubes, [x, y, z] otherwise (ADR 0012).
@@ -133,9 +133,9 @@ function formatVoxelSize(value) {
 
 function formatValue(key, value) {
   if (key === 'porosity' && typeof value === 'number') return formatNumber(value * 100) + ' %';
-  if (key === 'passed') return value ? 'bestanden' : 'nicht bestanden';
+  if (key === 'passed') return value ? 'passed' : 'failed';
   if (key.endsWith('_percent') && typeof value === 'number') {
-    return value.toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' %';
+    return value.toLocaleString('en-US', { maximumFractionDigits: 1 }) + ' %';
   }
   if (Array.isArray(value) && value.some((item) => item !== null && typeof item === 'object')) {
     return value.map((item) => JSON.stringify(item)).join('; ');
@@ -159,7 +159,7 @@ function formatBytes(bytes) {
 function formatTime(iso) {
   if (!iso) return '';
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('de-DE');
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('en-US');
 }
 
 function storageGet(key) {
@@ -196,7 +196,7 @@ async function api(method, params = {}) {
   try {
     body = await response.json();
   } catch {
-    throw new Error(response.statusText || 'Keine Antwort vom Server');
+    throw new Error(response.statusText || 'No answer from the server');
   }
   if (!response.ok) throw new Error(body.error || response.statusText);
   return body;
@@ -293,7 +293,7 @@ function downloadDataUrl(url, name) {
 }
 
 function fileName(name) {
-  return (name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'ansicht') + '.png';
+  return (name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'view') + '.png';
 }
 
 async function saveNamedView(name) {
@@ -313,13 +313,13 @@ function showSavedView(view) {
 }
 
 async function renameSavedView(view) {
-  const name = window.prompt('Neuer Name der Ansicht', view.name);
+  const name = window.prompt('New name of the view', view.name);
   if (!name || name === view.name) return;
   await action(() => api('view_rename', { id: view.id, name }));
 }
 
 async function deleteSavedView(view) {
-  if (!window.confirm('Ansicht „' + view.name + '“ löschen?')) return;
+  if (!window.confirm('Delete the view "' + view.name + '"?')) return;
   await action(() => api('view_delete', { id: view.id }));
 }
 
@@ -327,35 +327,35 @@ async function deleteSavedView(view) {
 /// the saved views as pictures to click.
 function renderViewBar(panel, modes) {
   const views = state.status.saved_views ?? [];
-  const name = el('input', { type: 'text', placeholder: 'Ansicht ' + (views.length + 1),
-    title: 'Name der Ansicht', className: 'view-name' });
+  const name = el('input', { type: 'text', placeholder: 'View ' + (views.length + 1),
+    title: 'Name of the view', className: 'view-name' });
   const save = () => saveNamedView(name.value.trim() || name.placeholder);
   name.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') save();
   });
   panel.append(el('div', { className: 'viewer-tools view-bar' }, modes,
     el('span', { className: 'sep' }), name,
-    el('button', { onclick: save, title: 'Aktuelle Ansicht mit Bild im Projekt speichern' },
-      'Ansicht speichern'),
+    el('button', { onclick: save, title: 'Save the current view with a picture in the project' },
+      'Save view'),
     el('button', {
       onclick: () => state.capture &&
-        downloadDataUrl(state.capture(), fileName(name.value.trim() || 'ansicht')),
-      title: 'Aktuelle Ansicht als PNG herunterladen',
-    }, 'Bild exportieren')));
+        downloadDataUrl(state.capture(), fileName(name.value.trim() || 'view')),
+      title: 'Download the current view as PNG',
+    }, 'Export image')));
   if (!views.length) return;
   panel.append(el('div', { className: 'saved-views' }, views.map((view) => el('div', {
-    className: 'saved-view', title: 'Ansicht zeigen',
+    className: 'saved-view', title: 'Show view',
   },
   el('button', { className: 'thumb', onclick: () => showSavedView(view) },
     view.has_image ? el('img', { src: 'views/' + view.id + '.png', alt: view.name, loading: 'lazy' })
-      : el('span', { className: 'hint' }, 'ohne Bild')),
+      : el('span', { className: 'hint' }, 'no image')),
   el('div', { className: 'saved-view-row' },
     el('span', { className: 'saved-view-name' }, view.name),
     view.has_image ? el('a', { href: 'views/' + view.id + '.png', download: fileName(view.name),
-      title: 'Bild herunterladen' }, '⤓') : null,
-    el('button', { className: 'icon', title: 'Umbenennen', onclick: () => renameSavedView(view) },
+      title: 'Download image' }, '⤓') : null,
+    el('button', { className: 'icon', title: 'Rename', onclick: () => renameSavedView(view) },
       '✎'),
-    el('button', { className: 'icon', title: 'Löschen', onclick: () => deleteSavedView(view) },
+    el('button', { className: 'icon', title: 'Delete', onclick: () => deleteSavedView(view) },
       '×'))))));
 }
 
@@ -381,7 +381,7 @@ async function runStep(operation, params) {
   clearError();
   state.busy = true;
   const title = operationInfo(operation)?.title ?? operation;
-  $('busy-text').textContent = title + ' läuft …';
+  $('busy-text').textContent = title + ' running …';
   $('busy-progress').removeAttribute('value');
   $('busy').hidden = false;
   render();
@@ -472,15 +472,15 @@ async function browserLoad(path) {
       });
       list.append(item);
     }
-    if (!listing.entries.length) list.append(el('li', { className: 'disabled' }, 'leer'));
+    if (!listing.entries.length) list.append(el('li', { className: 'disabled' }, 'empty'));
   } catch (error) {
     showError(error);
   }
 }
 
 function kindLabel(kind) {
-  return { dir: 'Ordner', project: 'Projekt', dataset: 'Datensatz', raw: 'Rohdaten',
-    tiff: 'TIFF', file: 'Datei' }[kind] ?? kind;
+  return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
+    tiff: 'TIFF', file: 'File' }[kind] ?? kind;
 }
 
 function browserFinish(entry) {
@@ -548,7 +548,7 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
         property.type.includes('array')) {
       // One value for all axes, or x, y and z (voxel sizes, ADR 0012).
       const values = Array.isArray(value) ? value : [value, undefined, undefined];
-      const inputs = ['x (oder alle)', 'y', 'z'].map((placeholder, i) => el('input', {
+      const inputs = ['x (or all)', 'y', 'z'].map((placeholder, i) => el('input', {
         type: 'number', step: 'any', min: 0, value: values[i] ?? '', placeholder,
         name: name + i }));
       field.append(...inputs);
@@ -557,8 +557,7 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
         if (!given.some(Boolean)) return undefined;
         if (given[0] && !given[1] && !given[2]) return Number(inputs[0].value);
         if (given.every(Boolean)) return inputs.map((input) => Number(input.value));
-        throw new Error((LABELS[name] ?? name) + ': einen Wert für alle Achsen oder x, y und z ' +
-          'angeben');
+        throw new Error((LABELS[name] ?? name) + ': give one value for all axes or x, y and z');
       };
     } else if (property.type === 'integer' || property.type === 'number') {
       const input = el('input', {
@@ -597,7 +596,7 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
         try {
           return JSON.parse(text.value);
         } catch (error) {
-          throw new Error((LABELS[name] ?? name) + ': kein gültiges JSON (' + error.message + ')');
+          throw new Error((LABELS[name] ?? name) + ': not valid JSON (' + error.message + ')');
         }
       };
     } else {
@@ -642,9 +641,89 @@ function summaryTable(summary) {
   return rows.length ? el('table', { className: 'summary' }, rows) : null;
 }
 
+// Telemetry: time and resources of a step, per phase (step_telemetry for the timeline).
+
+const telemetryTimelines = new Map();
+
+function formatSeconds(seconds) {
+  if (seconds >= 90) return formatNumber(Math.round(seconds / 6) / 10) + ' min';
+  return formatNumber(Math.round(seconds * 10) / 10) + ' s';
+}
+
+function formatMb(mb) {
+  return formatBytes(Math.round(mb * 1024 * 1024));
+}
+
+function telemetryLine(telemetry) {
+  const total = telemetry?.total;
+  if (!total) return '';
+  const threads = telemetry.system?.threads;
+  return ' · ' + formatSeconds(total.wall_s) + ', ' + formatNumber(total.cores_used) +
+    (threads ? ' of ' + threads : '') + ' cores, ' + formatMb(total.peak_rss_mb) + ' peak';
+}
+
+function telemetryChart(timeline, system) {
+  const points = timeline.t_s ?? [];
+  if (points.length < 2) return el('p', { className: 'meta' }, 'Too short for a timeline');
+  const width = 320;
+  const height = 90;
+  const end = points[points.length - 1];
+  const memory = points.map((_, i) => timeline.rss_anon_mb[i] + timeline.rss_file_mb[i]);
+  const series = [
+    { name: 'Cores', values: timeline.cores_used, max: system?.threads || Math.max(...timeline.cores_used), color: 'var(--accent)' },
+    { name: 'Memory', values: memory, max: Math.max(...memory, 1), color: 'var(--good)' },
+    { name: 'Disk read', values: timeline.disk_read_mb_s, max: Math.max(...timeline.disk_read_mb_s, 1), color: 'var(--bad)' },
+  ];
+  const lines = series.map((line) => {
+    const coordinates = line.values.map((value, i) =>
+      (points[i] / end * width).toFixed(1) + ',' + (height - Math.min(value / line.max, 1) * (height - 2) - 1).toFixed(1));
+    return '<polyline fill="none" stroke-width="1.5" stroke="' + line.color + '" points="' + coordinates.join(' ') + '"/>';
+  });
+  const chart = el('div', { className: 'telemetry-chart' });
+  chart.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' + lines.join('') + '</svg>';
+  const legend = el('div', { className: 'meta' }, series.map((line) => el('span', {},
+    el('span', { className: 'swatch', style: 'background:' + line.color }),
+    line.name + ' (max ' + (line.name === 'Cores' ? formatNumber(line.max)
+      : line.name === 'Memory' ? formatMb(line.max) : formatMb(line.max) + '/s') + ') ')),
+    ' · ' + formatSeconds(end));
+  return el('div', {}, chart, legend);
+}
+
+function telemetryDetails(step) {
+  const telemetry = step.telemetry;
+  if (!telemetry?.total) return null;
+  const rows = [...(telemetry.phases ?? []), { ...telemetry.total, name: 'Total', depth: -1 }].map((phase) =>
+    el('tr', { className: phase.depth < 0 ? 'total' : null },
+      el('td', { style: 'padding-left:' + (Math.max(phase.depth, 0) * 12) + 'px' }, phase.name),
+      el('td', {}, formatSeconds(phase.wall_s)),
+      el('td', {}, formatNumber(phase.cores_used)),
+      el('td', {}, formatMb(phase.peak_rss_mb))));
+  const table = el('table', { className: 'summary telemetry' },
+    el('tr', {}, ['Phase', 'Time', 'Cores', 'Memory'].map((h) => el('th', {}, h))),
+    rows);
+  const total = telemetry.total;
+  const disk = el('div', { className: 'meta' }, 'Disk: ' + formatMb(total.disk_read_mb) + ' read, ' +
+    formatMb(total.disk_write_mb) + ' written, ' + formatNumber(total.major_faults) + ' page faults');
+  const chart = el('div', {});
+  const key = step.id + '/' + step.started;
+  const load = async () => {
+    if (!telemetryTimelines.has(key)) {
+      telemetryTimelines.set(key, api('step_telemetry', { step: step.id }).catch(() => null));
+    }
+    const record = await telemetryTimelines.get(key);
+    chart.replaceChildren(record?.timeline ? telemetryChart(record.timeline, record.system) : '');
+  };
+  return el('details', { ontoggle: (event) => { if (event.target.open) load(); } },
+    el('summary', {}, 'Run time and resources'),
+    table,
+    disk,
+    (telemetry.hints ?? []).map((hint) => el('div', { className: 'message' }, hint)),
+    chart);
+}
+
 function renderHeader() {
   const status = state.status;
-  $('project-name').textContent = status.open ? status.name + ' — ' + status.dir : 'Kein Projekt';
+  $('project-name').textContent = status.open ? status.name + ' — ' + status.dir : 'No project';
   $('btn-save-as').disabled = !status.open || state.busy;
   $('btn-undo').disabled = !status.can_undo || state.busy;
   $('btn-redo').disabled = !status.can_redo || state.busy;
@@ -664,11 +743,13 @@ function renderProtocol() {
       el('div', { className: 'title' }, statusText + ' ' + step.id + '. ' + step.title),
       el('div', { className: 'meta' }, formatTime(step.started),
         step.size_bytes ? ' · ' + formatBytes(step.size_bytes) : '',
-        step.active ? '' : ' · rückgängig gemacht'),
+        telemetryLine(step.telemetry),
+        step.active ? '' : ' · undone'),
       step.messages.slice(-2).map((message) => el('div', { className: 'message' }, message)),
       el('details', {}, el('summary', {}, 'Details'),
         summaryTable(step.summary),
-        el('pre', {}, JSON.stringify({ params: step.params, inputs: step.inputs }, null, 1))));
+        el('pre', {}, JSON.stringify({ params: step.params, inputs: step.inputs }, null, 1))),
+      telemetryDetails(step));
     list.append(item);
   }
   list.lastElementChild?.scrollIntoView({ block: 'nearest' });
@@ -710,25 +791,24 @@ function nextButton(label, stage) {
 }
 
 function renderDatasetStage(panel) {
-  panel.append(el('h1', {}, 'Datensatz'));
+  panel.append(el('h1', {}, 'Dataset'));
   const dataset = latestOutput('dataset');
   if (dataset) {
     panel.append(el('div', { className: 'card' },
-      el('h3', {}, 'Aktueller Datensatz (Schritt ' + dataset.step.id + ')'),
+      el('h3', {}, 'Current dataset (step ' + dataset.step.id + ')'),
       el('p', {}, dataset.step.outputs[dataset.output].path),
       summaryTable(dataset.step.summary),
-      el('div', { className: 'row' }, nextButton('Weiter zur Analyse', 'analysis'))));
+      el('div', { className: 'row' }, nextButton('On to the analysis', 'analysis'))));
   } else {
     panel.append(el('p', { className: 'hint' },
-      'Wähle einen gesiebten Datensatz (.vsieve), eine Rohdatei oder einen TIFF-Stapel (Ordner, ' +
-      'mehrseitiges TIFF oder ZIP). Rohdaten werden beim Import ' +
-      'von der Luft um das Bauteil befreit und als Datensatz mit Auflösungsstufen gespeichert; ' +
-      'das Original bleibt unverändert.'));
+      'Choose a sieved dataset (.vsieve), a raw file or a TIFF stack (folder, multi-page TIFF ' +
+      'or ZIP). On import, raw data is freed from the air around the part and stored as a ' +
+      'dataset with resolution levels; the original stays unchanged.'));
   }
   panel.append(el('div', { className: 'row' }, el('button', {
     disabled: state.busy,
     onclick: async () => {
-      const chosen = await browse({ title: 'Datensatz oder Rohdaten wählen',
+      const chosen = await browse({ title: 'Choose a dataset or raw data',
         kinds: ['dataset', 'raw', 'tiff', 'file'] });
       if (!chosen) return;
       if (chosen.kind === 'dataset') {
@@ -740,7 +820,7 @@ function renderDatasetStage(panel) {
         render();
       }
     },
-  }, dataset ? 'Anderen Datensatz wählen …' : 'Datensatz wählen …')));
+  }, dataset ? 'Choose another dataset …' : 'Choose a dataset …')));
 
   const importOperation = state.rawOperation ?? 'import_raw';
   const importInfo = operationInfo(importOperation);
@@ -749,18 +829,18 @@ function renderDatasetStage(panel) {
     panel.append(el('div', { className: 'card' },
       el('h3', {}, importInfo.title),
       el('p', {}, importOperation === 'import_tiff'
-        ? 'Die Schichten werden nach Namen sortiert (Zahlen nach Wert) und direkt aus dem Ordner ' +
-          'oder ZIP gelesen. Liegen mehrere Ordner vor, werden die Grauwerte statt Label- oder ' +
-          'Maskenordnern gewählt. Ohne Voxelgröße in den Dateien wird 1 mm angenommen.'
-        : 'Abmessungen und Voxelgröße kommen aus der JSON-Datei neben den Rohdaten, ' +
-          'wenn sie nicht angegeben sind. Ohne Schwellwert wird er automatisch bestimmt (Tal nach dem Luftpeak).'),
+        ? 'The slices are sorted by name (numbers by value) and read directly from the folder or ' +
+          'ZIP. With several folders, the grey values are chosen over label or mask folders. ' +
+          'Without a voxel size in the files, 1 mm is assumed.'
+        : 'Dimensions and voxel size come from the JSON file next to the raw data when they are ' +
+          'not given. Without a threshold, it is found automatically (valley after the air peak).'),
       form.element,
       el('div', { className: 'row' },
-        runButton('Importieren', importOperation, () => form.values(), () => {
+        runButton('Import', importOperation, () => form.values(), () => {
           state.rawPath = null;
           render();
         }),
-        el('button', { onclick: () => { state.rawPath = null; render(); } }, 'Abbrechen'))));
+        el('button', { onclick: () => { state.rawPath = null; render(); } }, 'Cancel'))));
   }
 }
 
@@ -777,16 +857,16 @@ function appendImages(container, step) {
 }
 
 function renderAnalysisStage(panel) {
-  panel.append(el('h1', {}, 'Analyse'));
+  panel.append(el('h1', {}, 'Analysis'));
   const dataset = latestOutput('dataset');
   if (!dataset) {
-    panel.append(el('p', { className: 'hint' }, 'Zuerst einen Datensatz wählen.'),
-      nextButton('Zum Datensatz', 'dataset'));
+    panel.append(el('p', { className: 'hint' }, 'Choose a dataset first.'),
+      nextButton('To the dataset', 'dataset'));
     return;
   }
   panel.append(el('p', { className: 'hint' },
-    'Operationen arbeiten auf dem Datensatz aus Schritt ' + dataset.step.id +
-    ' und schreiben ihr Ergebnis als neuen Schritt. Plugins erscheinen hier ebenfalls.'));
+    'Operations work on the dataset of step ' + dataset.step.id +
+    ' and write their result as a new step. Plugins appear here as well.'));
   const operations = state.operations.filter((operation) =>
     operation.inputs.some((input) => input.type === 'dataset'));
   for (const operation of operations) {
@@ -795,10 +875,10 @@ function renderAnalysisStage(panel) {
     const card = el('div', { className: 'card' },
       el('h3', {}, operation.title),
       el('p', {}, operation.description),
-      el('details', {}, el('summary', {}, 'Parameter'), form.element),
-      el('div', { className: 'row' }, runButton('Ausführen', operation.id, () => form.values())));
+      el('details', {}, el('summary', {}, 'Parameters'), form.element),
+      el('div', { className: 'row' }, runButton('Run', operation.id, () => form.values())));
     if (last) {
-      const result = el('div', {}, el('h3', {}, 'Ergebnis (Schritt ' + last.id + ')'),
+      const result = el('div', {}, el('h3', {}, 'Result (step ' + last.id + ')'),
         summaryTable(last.summary));
       appendImages(result, last);
       card.append(result);
@@ -806,37 +886,37 @@ function renderAnalysisStage(panel) {
     panel.append(card);
   }
   if (latestOutput('porosity')) {
-    panel.append(el('div', { className: 'row' }, nextButton('In der Ansicht prüfen', 'view'),
-      nextButton('Weiter zum Bericht', 'report')));
+    panel.append(el('div', { className: 'row' }, nextButton('Check in the view', 'view'),
+      nextButton('On to the report', 'report')));
   }
 }
 
 function renderReportStage(panel) {
-  panel.append(el('h1', {}, 'Prüfbericht'));
+  panel.append(el('h1', {}, 'Test report'));
   const porosity = latestOutput('porosity');
   const info = operationInfo('report');
   if (!porosity || !info) {
-    panel.append(el('p', { className: 'hint' }, 'Zuerst eine Porositätsanalyse ausführen.'),
-      nextButton('Zur Analyse', 'analysis'));
+    panel.append(el('p', { className: 'hint' }, 'Run a porosity analysis first.'),
+      nextButton('To the analysis', 'analysis'));
     return;
   }
   const last = latestStepOf('report');
   const form = buildForm(info.parameters, last ? last.params : {});
   panel.append(el('div', { className: 'card' },
-    el('p', {}, 'Der Prüfauftrag enthält Labor, Kunde, Bauteil, Scanparameter und die ' +
-      'Grenzwerte je Prüfzone (BDG P 202). Angaben im JSON-Feld ergänzen oder überschreiben die ' +
-      'Datei. Ein Beispiel liegt in examples/inspection_order.json.'),
+    el('p', {}, 'The inspection order holds laboratory, customer, part, scan parameters and the ' +
+      'acceptance limits per inspection zone (BDG P 202). Entries in the JSON field add to or ' +
+      'override the file. An example is in examples/inspection_order.json.'),
     form.element,
-    el('div', { className: 'row' }, runButton('Bericht erstellen', 'report', () => form.values()))));
+    el('div', { className: 'row' }, runButton('Create report', 'report', () => form.values()))));
   if (last) {
     const url = fileUrl(last.id, 'report', 'report.html');
     panel.append(el('div', { className: 'card' },
-      el('h3', {}, 'Bericht (Schritt ' + last.id + ')'),
+      el('h3', {}, 'Report (step ' + last.id + ')'),
       summaryTable(last.summary),
-      last.messages.length ? el('p', {}, last.messages.length + ' Hinweise im Protokoll') : null,
+      last.messages.length ? el('p', {}, last.messages.length + ' notes in the protocol') : null,
       el('div', { className: 'row' },
-        el('a', { href: url, target: '_blank' }, 'In neuem Fenster öffnen (zum Drucken als PDF)')),
-      el('iframe', { className: 'report', src: url, title: 'Prüfbericht' })));
+        el('a', { href: url, target: '_blank' }, 'Open in a new window (to print as PDF)')),
+      el('iframe', { className: 'report', src: url, title: 'Test report' })));
   }
 }
 
@@ -874,13 +954,13 @@ async function loadPores(step) {
 function renderViewStage(panel) {
   const dataset = latestOutput('dataset');
   if (!dataset) {
-    panel.append(el('h1', {}, 'Ansicht'),
-      el('p', { className: 'hint' }, 'Zuerst einen Datensatz wählen.'),
-      nextButton('Zum Datensatz', 'dataset'));
+    panel.append(el('h1', {}, 'View'),
+      el('p', { className: 'hint' }, 'Choose a dataset first.'),
+      nextButton('To the dataset', 'dataset'));
     return;
   }
   const modes = el('div', { className: 'group view-modes' },
-    [['slice', 'Schnitt'], ['3d', '3D']].map(([mode, label]) => el('button', {
+    [['slice', 'Slice'], ['3d', '3D']].map(([mode, label]) => el('button', {
       className: state.viewMode === mode ? 'on' : null,
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
@@ -897,11 +977,11 @@ function renderViewStage(panel) {
   const status = el('div', { className: 'viewer-status' });
   const slider = el('input', { type: 'range', min: 0, step: 1 });
   const sliceNumber = el('input', { type: 'number', min: 0, step: 1 });
-  const low = el('input', { type: 'number', step: 'any', title: 'Grauwert schwarz' });
-  const high = el('input', { type: 'number', step: 'any', title: 'Grauwert weiß' });
+  const low = el('input', { type: 'number', step: 'any', title: 'Grey value for black' });
+  const high = el('input', { type: 'number', step: 'any', title: 'Grey value for white' });
   const axisButtons = [0, 1, 2].map((axis) => el('button', {
     onclick: () => viewer.setAxis(axis),
-    title: 'Schnitt senkrecht zur ' + SLICE_AXIS_NAMES[axis] + '-Achse',
+    title: 'Slice normal to the ' + SLICE_AXIS_NAMES[axis] + ' axis',
   }, SLICE_AXIS_NAMES[axis].toUpperCase()));
   const overlay = el('input', { type: 'checkbox', checked: viewer.showOverlay,
     disabled: porosity === null && materials === null });
@@ -929,13 +1009,13 @@ function renderViewStage(panel) {
     }
     const [u, v] = IN_PLANE_NAMES[axis];
     const level = viewer.level();
-    let text = SLICE_AXIS_NAMES[axis] + ' = ' + viewer.index[axis] + ' · ' + u + ' nach rechts, ' +
-      v + ' nach unten · Stufe ' + level + ' (' +
+    let text = SLICE_AXIS_NAMES[axis] + ' = ' + viewer.index[axis] + ' · ' + u + ' to the right, ' +
+      v + ' down · level ' + level + ' (' +
       formatVoxelSize(viewer.info.levels[level].voxel_size_mm) + ' mm)';
     if (viewer.hover) {
       const value = viewer.hover.value;
-      text += ' · Voxel ' + viewer.hover.voxel.join(', ') +
-        (value === undefined ? '' : ' · Grauwert ' + formatNumber(Math.round(value)));
+      text += ' · voxel ' + viewer.hover.voxel.join(', ') +
+        (value === undefined ? '' : ' · grey value ' + formatNumber(Math.round(value)));
     }
     status.textContent = text;
     scheduleViewSave();
@@ -944,28 +1024,28 @@ function renderViewStage(panel) {
   const tools = el('div', { className: 'viewer-tools' },
     el('div', { className: 'group' }, axisButtons),
     slider, sliceNumber,
-    el('div', { className: 'group' }, 'Fenster', low, high,
+    el('div', { className: 'group' }, 'Window', low, high,
       el('button', { onclick: () => viewer.autoWindow() }, 'Auto')),
     el('label', { className: 'group' }, overlay,
-      materials === null ? 'Poren und Zonen' : 'Poren, Zonen, Materialien'),
+      materials === null ? 'Pores and zones' : 'Pores, zones, materials'),
     el('button', { onclick: () => { viewer.fit(); viewer.requestDraw(); viewer.onChange(); } },
-      'Einpassen'));
+      'Fit'));
 
   const poreRows = state.pores.list.slice(0, 500).map((pore) => el('tr', {
     onclick: () => viewer.showVoxel(pore.center_voxels, Math.max(8,
       ...pore.bounds_max.map((max, a) => max - pore.bounds_min[a] + 1))),
-    title: 'Zur Pore springen',
+    title: 'Jump to the pore',
   }, el('td', {}, pore.id), el('td', {}, formatNumber(pore.equivalent_diameter_mm)),
   el('td', {}, formatNumber(pore.volume_mm3))));
   const side = el('div', { className: 'pores' },
-    el('h3', {}, porosity === null ? 'Keine Porositätsanalyse'
-      : 'Poren (Schritt ' + porosity + ')'),
+    el('h3', {}, porosity === null ? 'No porosity analysis'
+      : 'Pores (step ' + porosity + ')'),
     poreRows.length ? el('table', {},
-      el('thead', {}, el('tr', {}, el('th', {}, 'Nr.'), el('th', {}, 'Ø mm'), el('th', {}, 'mm³'))),
+      el('thead', {}, el('tr', {}, el('th', {}, 'No.'), el('th', {}, 'Ø mm'), el('th', {}, 'mm³'))),
       el('tbody', {}, poreRows))
       : el('p', { className: 'hint' }, porosity === null
-        ? 'Nach der Porositätsanalyse erscheinen hier die Poren; ein Klick springt zur Pore.'
-        : 'Keine Poren gefunden.'));
+        ? 'After a porosity analysis the pores appear here; a click jumps to the pore.'
+        : 'No pores found.'));
 
   if (materials !== null) {
     // Legend: the classes with the grey value they start at and their volume.
@@ -974,8 +1054,8 @@ function renderViewStage(panel) {
         MATERIAL_COLORS[(material.id - 1) % 8].join(',') + ')' }), ' ' + material.id),
       el('td', {}, formatNumber(Math.round(material.from_grey_value))),
       el('td', {}, formatNumber(material.volume_mm3))));
-    side.append(el('h3', {}, 'Materialien (Schritt ' + materials.id + ')'),
-      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Nr.'), el('th', {}, 'ab Grauwert'),
+    side.append(el('h3', {}, 'Materials (step ' + materials.id + ')'),
+      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'No.'), el('th', {}, 'from grey value'),
         el('th', {}, 'mm³'))), el('tbody', {}, rows)));
   }
   panel.append(el('div', { className: 'viewer' },
@@ -995,8 +1075,8 @@ function renderViewStage(panel) {
 
 const IN_PLANE_NAMES = [['y', 'z'], ['x', 'z'], ['x', 'y']];
 
-const VOLUME_MODES = ['Oberfläche', 'Transferfunktion', 'Maximumprojektion',
-  'Extrahierte Oberfläche', 'Soll-Ist-Abweichung'];
+const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
+  'Extracted surface', 'Nominal-actual deviation'];
 
 /// Latest surface step computed from the dataset of `datasetStep`.
 function surfaceOf(datasetStep) {
@@ -1034,7 +1114,7 @@ function deviationLegend(tolerance, range) {
       label('≤ ' + mm(-range), 0, 0), label(mm(-tolerance), edge, -50), label('0', 50, -50),
       label(mm(tolerance), inner, -50), label('≥ ' + mm(range), 100, -100)),
     el('div', { className: 'legend-note' },
-      'Blau: Material fehlt · Grün: in Toleranz · Rot: Material zu viel'));
+      'Blue: material missing · green: within tolerance · red: excess material'));
 }
 
 function renderVolumeView(panel, dataset) {
@@ -1050,9 +1130,9 @@ function renderVolumeView(panel, dataset) {
       (volume.mode === 4 && comparisonStep === null)) volume.mode = 0;
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
-    title: 'Klicken setzt einen Punkt, Ziehen verschiebt ihn, Doppelklick oder Entf löscht ihn' });
+    title: 'Click sets a point, drag moves it, double click or Delete removes it' });
   const editor = new TransferEditor(histogram);
-  const status = el('div', { className: 'viewer-status' }, 'Lade Übersicht …');
+  const status = el('div', { className: 'viewer-status' }, 'Loading overview …');
   const hint = el('div', { className: 'viewer-status' });
   const legend = el('div', { hidden: true });
   const suggestionRow = el('div', { className: 'suggestions' });
@@ -1069,42 +1149,42 @@ function renderVolumeView(panel, dataset) {
     input.addEventListener('input', () => set(parseHexColor(input.value)));
     return input;
   };
-  const mode = el('select', { title: 'Darstellung' },
+  const mode = el('select', { title: 'Rendering' },
     VOLUME_MODES.map((name, i) => {
       const missing = (i === 3 && surfaceStep === null) || (i === 4 && comparisonStep === null);
       return el('option', { value: i, selected: volume.mode === i, disabled: missing,
-        title: missing ? 'Zuerst die Operation „' + (i === 3 ? 'Oberfläche' : 'Soll-Ist-Vergleich') +
-          '“ ausführen' : null }, name);
+        title: missing ? 'Run the operation "' + (i === 3 ? 'Surface' : 'Nominal-actual comparison') +
+          '" first' : null }, name);
     }));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
   shading.addEventListener('change', () => update({ shading: shading.checked }));
-  const surface = colorInput('Farbe der Oberfläche', () => volume.surfaceColor,
+  const surface = colorInput('Surface colour', () => volume.surfaceColor,
     (rgb) => update({ surfaceColor: rgb }));
   const cut = el('input', { type: 'range', min: 0, max: 1, step: 0.005, value: volume.cut,
-    title: 'Schnitt entlang x' });
+    title: 'Cut along x' });
   cut.addEventListener('input', () => update({ cut: Number(cut.value) }));
   const pores = el('input', { type: 'checkbox', checked: volume.pores,
     disabled: porosity === null });
   pores.addEventListener('change', () => update({ pores: pores.checked }));
-  const poreColor = colorInput('Farbe der Poren', () => volume.poreColor,
+  const poreColor = colorInput('Pore colour', () => volume.poreColor,
     (rgb) => update({ poreColor: rgb }));
-  const zoneColor = colorInput('Farbe der aufgelockerten Zonen', () => volume.zoneColor,
+  const zoneColor = colorInput('Colour of the loosened zones', () => volume.zoneColor,
     (rgb) => update({ zoneColor: rgb }));
 
   // Background: a style with two colours (top or centre, bottom or edge) that can be changed.
-  const backgroundStyle = el('select', { title: 'Hintergrund' },
+  const backgroundStyle = el('select', { title: 'Background' },
     Object.entries(BACKGROUNDS).map(([key, background]) => el('option', {
       value: key, selected: key === volume.background.preset }, background.name)),
     el('option', { value: 'eigen', selected: !(volume.background.preset in BACKGROUNDS) },
-      'Eigene Farben'));
+      'Own colours'));
   const backgroundColors = [0, 1].map((i) => colorInput(
-    i === 0 ? 'Hintergrund oben oder Mitte' : 'Hintergrund unten oder Rand',
+    i === 0 ? 'Background top or centre' : 'Background bottom or edge',
     () => volume.background.colors[i],
     (rgb) => {
       const colors = [...volume.background.colors];
       colors[i] = rgb;
       const style = volume.background.style === 0 ? 1 : volume.background.style;
-      update({ background: { preset: 'eigen', name: 'Eigene Farben', style, colors } });
+      update({ background: { preset: 'eigen', name: 'Own colours', style, colors } });
       backgroundStyle.value = 'eigen';
     }));
   backgroundStyle.addEventListener('change', () => {
@@ -1114,20 +1194,20 @@ function renderVolumeView(panel, dataset) {
     backgroundColors.forEach((input, i) => { input.value = hexColor(preset.colors[i]); });
   });
 
-  const preset = el('select', { title: 'Vorlage der Transferfunktion' },
-    el('option', { value: '' }, 'Vorlage …'),
+  const preset = el('select', { title: 'Transfer function preset' },
+    el('option', { value: '' }, 'Preset …'),
     Object.entries(TRANSFER_PRESETS).map(([key, name]) => el('option', { value: key }, name)));
-  const colorMap = el('select', { title: 'Farbskala über die Punkte legen' },
+  const colorMap = el('select', { title: 'Lay a colour map over the points' },
     Object.entries(COLOR_MAPS).map(([key, map]) => el('option', {
       value: key, selected: key === transfer.colorMap }, map.name)));
-  const pointColor = el('input', { type: 'color', title: 'Farbe des gewählten Punkts' });
+  const pointColor = el('input', { type: 'color', title: 'Colour of the selected point' });
   const pointOpacity = el('input', { type: 'number', min: 0, max: 100, step: 1,
-    title: 'Deckkraft des gewählten Punkts in Prozent' });
+    title: 'Opacity of the selected point in percent' });
   const removePoint = el('button', { onclick: () => editor.removeSelected(),
-    title: 'Gewählten Punkt löschen' }, 'Löschen');
+    title: 'Delete the selected point' }, 'Delete');
   const curveTools = el('div', { className: 'group' }, preset, colorMap,
-    el('span', { className: 'sep' }), 'Punkt', pointColor, pointOpacity, '%', removePoint);
-  const surfaceTools = el('label', { className: 'group' }, 'Farbe', surface);
+    el('span', { className: 'sep' }), 'Point', pointColor, pointOpacity, '%', removePoint);
+  const surfaceTools = el('label', { className: 'group' }, 'Colour', surface);
 
   preset.addEventListener('change', () => {
     if (preset.value) {
@@ -1179,13 +1259,13 @@ function renderVolumeView(panel, dataset) {
     }
     if (editor.hover !== null) {
       const bin = Math.min(Math.round(editor.hover * 255), 255);
-      hint.textContent = 'Grauwert ' + label(editor.hover) + ' · ' +
-        formatNumber(volume.histogram[bin]) + ' Voxel';
+      hint.textContent = 'Grey value ' + label(editor.hover) + ' · ' +
+        formatNumber(volume.histogram[bin]) + ' voxels';
     } else {
       hint.textContent = editor.mode === 'threshold'
-        ? 'Schwelle Luft/Material: ' + label(editor.threshold) + ' · im Histogramm ziehen'
-        : 'Kurve: Deckkraft je Grauwert · Klicken setzt einen Punkt, Ziehen verschiebt ihn, ' +
-          'Doppelklick löscht ihn';
+        ? 'Air/material threshold: ' + label(editor.threshold) + ' · drag in the histogram'
+        : 'Curve: opacity per grey value · click sets a point, drag moves it, ' +
+          'double click removes it';
     }
   };
   const applyMode = () => {
@@ -1202,23 +1282,23 @@ function renderVolumeView(panel, dataset) {
   };
   /// Loads the mesh of the latest surface step of this dataset and says what is shown.
   const showSurface = () => {
-    status.textContent = 'Lade Oberfläche aus Schritt ' + surfaceStep + ' …';
+    status.textContent = 'Loading surface of step ' + surfaceStep + ' …';
     volume.loadSurface(surfaceStep).then((mesh) => {
       if (volume.mode !== 3) return;
-      status.textContent = 'Extrahierte Oberfläche aus Schritt ' + surfaceStep + ' · ' +
-        formatNumber(mesh.triangles) + ' Dreiecke · Ziehen dreht, Mausrad zoomt';
+      status.textContent = 'Extracted surface of step ' + surfaceStep + ' · ' +
+        formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
     }).catch((error) => {
       status.textContent = error.message;
     });
   };
   /// Loads the compared surface of the latest nominal-actual comparison of this dataset.
   const showDeviation = () => {
-    status.textContent = 'Lade Soll-Ist-Vergleich aus Schritt ' + comparisonStep + ' …';
+    status.textContent = 'Loading nominal-actual comparison of step ' + comparisonStep + ' …';
     volume.loadDeviation(comparisonStep).then((mesh) => {
       if (volume.mode !== 4) return;
       legend.replaceChildren(deviationLegend(mesh.tolerance, mesh.range));
-      status.textContent = 'Soll-Ist-Abweichung aus Schritt ' + comparisonStep + ' · ' +
-        formatNumber(mesh.triangles) + ' Dreiecke · Ziehen dreht, Mausrad zoomt';
+      status.textContent = 'Nominal-actual deviation of step ' + comparisonStep + ' · ' +
+        formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
     }).catch((error) => {
       status.textContent = error.message;
     });
@@ -1240,10 +1320,10 @@ function renderVolumeView(panel, dataset) {
       return;
     }
     suggestionRow.hidden = false;
-    suggestionRow.replaceChildren(el('b', {}, 'Vorschläge'),
+    suggestionRow.replaceChildren(el('b', {}, 'Suggestions'),
       ...suggestions.items.map((suggestion, i) => el('button', {
         className: 'suggestion', onclick: () => useSuggestion(suggestion),
-        title: suggestion.description + ' (Grauwerte ' + label(suggestion.range[0]) + ' bis ' +
+        title: suggestion.description + ' (grey values ' + label(suggestion.range[0]) + ' to ' +
           label(suggestion.range[1]) + ')',
       }, suggestions.images[i] ? el('img', { src: suggestions.images[i], alt: '' }) : null,
       el('span', {}, el('b', {}, suggestion.name), el('br'), suggestion.description))));
@@ -1280,24 +1360,24 @@ function renderVolumeView(panel, dataset) {
       const pitch = v.voxelSize.map((s) => s * 2 ** (level - v.level));
       return formatVoxelSize(pitch.every((s) => s === pitch[0]) ? pitch[0] : pitch);
     };
-    let text = 'Stufe ' + v.level + ' · ' + v.dims.join(' × ') + ' Voxel à ' + size(v.level) + ' mm';
+    let text = 'Level ' + v.level + ' · ' + v.dims.join(' × ') + ' voxels of ' + size(v.level) + ' mm';
     const detail = volume.detail;
     if (detail) {
-      text += ' · nahe der Kamera Stufe ' + detail.level + ' (' + detail.dims.join(' × ') +
-        ' Voxel à ' + size(detail.level) + ' mm)';
+      text += ' · near the camera level ' + detail.level + ' (' + detail.dims.join(' × ') +
+        ' voxels of ' + size(detail.level) + ' mm)';
     }
-    status.textContent = text + ' · Ziehen dreht, Rechts- oder Umschalt-Ziehen verschiebt, ' +
-      'Mausrad zoomt';
+    status.textContent = text + ' · drag rotates, right or Shift drag pans, ' +
+      'mouse wheel zooms';
   };
   volume.onDetail = showVolumeStatus;
   panel.append(el('div', { className: 'viewer-tools' }, mode,
-    el('label', { className: 'group' }, shading, 'Beleuchtung'),
-    el('label', { className: 'group' }, 'Schnitt x', cut),
-    el('label', { className: 'group' }, pores, 'Poren', poreColor, zoneColor),
+    el('label', { className: 'group' }, shading, 'Lighting'),
+    el('label', { className: 'group' }, 'Cut x', cut),
+    el('label', { className: 'group' }, pores, 'Pores', poreColor, zoneColor),
     el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
   canvas, legend, status, suggestionRow,
   el('div', { className: 'transfer-editor' },
-    el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogramm'), curveTools, surfaceTools),
+    el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogram'), curveTools, surfaceTools),
     histogram, hint));
   applyMode();
   try {
@@ -1355,7 +1435,7 @@ function render() {
 // Commands
 
 async function newProject() {
-  const chosen = await browse({ title: 'Neues Projekt anlegen', name: 'projekt' });
+  const chosen = await browse({ title: 'Create a new project', name: 'project' });
   if (!chosen) return;
   await action(async () => {
     await api('project_create', { path: chosen.path });
@@ -1363,7 +1443,7 @@ async function newProject() {
 }
 
 async function openProject() {
-  const chosen = await browse({ title: 'Projekt öffnen', kinds: ['project'] });
+  const chosen = await browse({ title: 'Open project', kinds: ['project'] });
   if (!chosen) return;
   await action(async () => {
     await api('project_open', { path: chosen.path });
@@ -1371,7 +1451,7 @@ async function openProject() {
 }
 
 async function saveAs() {
-  const chosen = await browse({ title: 'Projekt speichern unter', name: state.status.name + '-kopie' });
+  const chosen = await browse({ title: 'Save project as', name: state.status.name + '-copy' });
   if (!chosen) return;
   await action(() => api('project_save_as', { path: chosen.path }));
 }

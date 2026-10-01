@@ -5,13 +5,13 @@
 
 /// Colour maps as stops [t, r, g, b] with t in 0..1 and colours in 0..255.
 const COLOR_MAPS = {
-  grau: { name: 'Grau', stops: [[0, 40, 40, 40], [1, 235, 235, 235]] },
-  stahl: { name: 'Stahl', stops: [[0, 70, 90, 120], [0.5, 150, 170, 195], [1, 225, 232, 240]] },
+  grau: { name: 'Grey', stops: [[0, 40, 40, 40], [1, 235, 235, 235]] },
+  stahl: { name: 'Steel', stops: [[0, 70, 90, 120], [0.5, 150, 170, 195], [1, 225, 232, 240]] },
   viridis: { name: 'Viridis', stops: [[0, 68, 1, 84], [0.25, 59, 82, 139], [0.5, 33, 145, 140],
     [0.75, 94, 201, 98], [1, 253, 231, 37]] },
-  heiss: { name: 'Glut', stops: [[0, 90, 0, 0], [0.4, 220, 40, 0], [0.75, 255, 190, 0],
+  heiss: { name: 'Ember', stops: [[0, 90, 0, 0], [0.4, 220, 40, 0], [0.75, 255, 190, 0],
     [1, 255, 255, 220]] },
-  kupfer: { name: 'Kupfer', stops: [[0, 60, 30, 15], [0.6, 200, 120, 70], [1, 255, 205, 150]] },
+  kupfer: { name: 'Copper', stops: [[0, 60, 30, 15], [0.6, 200, 120, 70], [1, 255, 205, 150]] },
 };
 
 /// Colour of a colour map at t in 0..1.
@@ -54,10 +54,10 @@ function applyColorMap(points, name) {
 }
 
 const TRANSFER_PRESETS = {
-  durchsicht: 'Bauteil durchscheinend',
-  dichte: 'Dichte farbig',
-  rand: 'Randschichten und Porenwände',
-  massiv: 'Bauteil massiv',
+  durchsicht: 'Part translucent',
+  dichte: 'Density in colour',
+  rand: 'Surface layers and pore walls',
+  massiv: 'Part solid',
 };
 
 /// Control points of a preset for a volume whose air/material threshold is at `threshold`.
@@ -171,8 +171,8 @@ function suggestTransfers(histogram) {
   const densityHigh = Math.min(material + 3 * spread, bins - 1);
   suggestions.push({
     id: 'dichte',
-    name: 'Dichteverteilung',
-    description: 'Das Material farbig nach Dichte',
+    name: 'Density distribution',
+    description: 'The material coloured by density',
     // The colour map spans only the material range, so its whole scale shows density.
     points: (() => {
       const range = applyColorMap(sorted([point(densityLow, 0.06), point(material, 0.1),
@@ -194,8 +194,8 @@ function suggestTransfers(histogram) {
     const faint = [150, 160, 172];
     suggestions.push({
       id: 'locker',
-      name: 'Geringere Dichte',
-      description: 'Bereiche unter der Materialdichte rot, das Material blass',
+      name: 'Lower density',
+      description: 'Regions below the material density in red, the material faint',
       points: sorted([point(0, 0), point(threshold, 0),
         { ...point(looseLow, 0.55), color: [230, 60, 30] },
         { ...point(looseHigh, 0.55), color: [255, 170, 40] },
@@ -224,8 +224,8 @@ function suggestTransfers(histogram) {
     const faint = sorted(points).map((p) => (p.a >= 0.9 ? p : { ...p, color: [150, 160, 172] }));
     suggestions.push({
       id: 'phasen',
-      name: phases.length > 1 ? 'Weitere Phasen' : 'Weitere Phase',
-      description: 'Eigene Maxima im Histogramm farbig, etwa Einschlüsse',
+      name: phases.length > 1 ? 'Further phases' : 'Further phase',
+      description: 'Own peaks in the histogram in colour, such as inclusions',
       points: faint,
       colorMap: 'grau',
       shading: true,
@@ -234,8 +234,8 @@ function suggestTransfers(histogram) {
   } else {
     suggestions.push({
       id: 'koerper',
-      name: 'Bauteil',
-      description: 'Das Bauteil als beleuchteter Körper',
+      name: 'Part',
+      description: 'The part as a lit solid',
       points: applyColorMap(sorted([point(0, 0), point(threshold - 2, 0), point(threshold + 2, 1),
         point(bins - 1, 1)]), 'stahl'),
       colorMap: 'stahl',

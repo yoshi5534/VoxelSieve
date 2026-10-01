@@ -16,6 +16,7 @@
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
 #include "voxelsieve/synthetic.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -53,6 +54,7 @@ Grey values and artefacts:
   --blur <mm>                 Unsharpness: sigma of a Gaussian point spread function (default 0)
   --rings <n>                 Number of ring artefacts around the z axis (default 0)
   --ring-strength <sigma>     Ring amplitude in grey values (default 300)
+  --telemetry <file>          Write time and resource use per phase as JSON
   -h, --help                  Show this help
 )";
 
@@ -64,6 +66,7 @@ struct Options {
   double scale = 1.0;
   std::filesystem::path stl;
   voxelsieve::SyntheticSpec spec;
+  std::filesystem::path telemetry;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -83,6 +86,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (arg == "--telemetry") {
+      options.telemetry = next();
     } else if (arg == "--box") {
       std::array<double, 3> size{};
       for (auto& edge : size) {
@@ -152,6 +157,8 @@ int main(int argc, char** argv) {
       std::cout << kUsage;
       return 0;
     }
+    voxelsieve::Telemetry telemetry("vs-synth");
+    const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
     voxelsieve::Mesh mesh;
     if (options->box) {
@@ -190,6 +197,7 @@ int main(int argc, char** argv) {
               << "time               " << std::chrono::duration<double>(done - start).count()
               << " s\n"
               << "wrote              " << raw_path.string() << ", " << json_path.string() << '\n';
+    voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-synth: " << error.what() << "\n\n" << kUsage;

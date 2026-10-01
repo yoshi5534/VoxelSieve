@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include "voxelsieve/compare.hpp"
@@ -19,6 +20,7 @@
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -103,7 +105,7 @@ class OpenDataset final : public Operation {
  public:
   OpenDataset() {
     info_.id = "open_dataset";
-    info_.title = "Datensatz öffnen";
+    info_.title = "Open dataset";
     info_.description =
         "References an existing dataset written by vs-sieve. The dataset is not copied.";
     info_.outputs = {{"dataset", artifact::kDataset, "The dataset"}};
@@ -133,7 +135,7 @@ class ImportRaw final : public Operation {
  public:
   ImportRaw() {
     info_.id = "import_raw";
-    info_.title = "Rohdaten importieren";
+    info_.title = "Import raw volume";
     info_.description =
         "Removes the outside air from a raw CT volume and writes a bricked dataset. Dimensions "
         "and voxel size come from the JSON sidecar unless given; a vendor header is skipped.";
@@ -240,7 +242,7 @@ class ImportTiff final : public Operation {
  public:
   ImportTiff() {
     info_.id = "import_tiff";
-    info_.title = "TIFF-Stapel importieren";
+    info_.title = "Import TIFF stack";
     info_.description =
         "Removes the outside air from a TIFF stack and writes a bricked dataset. Reads a "
         "directory of slices, a multi-page TIFF or a ZIP archive of either without extracting "
@@ -353,7 +355,7 @@ class Porosity final : public Operation {
  public:
   Porosity() {
     info_.id = "porosity";
-    info_.title = "Porositätsanalyse";
+    info_.title = "Porosity analysis";
     info_.description =
         "Finds pores and zones of loosened microstructure; writes the result, projection images "
         "and a VDB file with pores and zones.";
@@ -378,6 +380,7 @@ class Porosity final : public Operation {
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const PorosityResult porosity = analyzePorosity(dataset, options);
     context.progress(0.8);
+    const TelemetryPhase phase("write results");
     const auto dir = context.output_dir / "porosity";
     savePorosityResult(porosity, dir);
     writeJson(dir / "options.json", p);
@@ -402,7 +405,7 @@ class Surface final : public Operation {
  public:
   Surface() {
     info_.id = "surface";
-    info_.title = "Oberfläche";
+    info_.title = "Surface";
     info_.description =
         "Locates the surface of the part and stores it as a distance mask with a few bits per "
         "voxel (surface.vss): only blocks near the surface are stored, and there the codes give "
@@ -437,8 +440,11 @@ class Surface final : public Operation {
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const auto dir = context.output_dir / "surface";
     std::filesystem::create_directories(dir);
+    std::optional<TelemetryPhase> phase(std::in_place, "surface mask");
     const SurfaceInfo info = writeSurface(dataset, dir / "surface.vss", options);
     context.progress(0.7);
+    phase.reset();
+    phase.emplace("images and meshes");
     const SurfaceMask mask = SurfaceMask::open(dir / "surface.vss");
     writeJson(dir / "surface.json", toJson(info));
     writeSurfaceImages(mask, dir);
@@ -472,7 +478,7 @@ class CompareCad final : public Operation {
  public:
   CompareCad() {
     info_.id = "compare_cad";
-    info_.title = "Soll-Ist-Vergleich";
+    info_.title = "Nominal-actual comparison";
     info_.description =
         "Aligns the nominal geometry (CAD model as STL, mm) to the extracted surface and measures "
         "the signed deviation of every surface point from it: positive where the part has more "
@@ -515,6 +521,7 @@ class CompareCad final : public Operation {
     const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
     const CompareResult compared = compareToCad(mask, cad, options);
     context.progress(0.8);
+    const TelemetryPhase phase("write results");
     const auto dir = context.output_dir / "comparison";
     writeComparison(compared, dir);
     if (p.at("aligned_stl").get<bool>()) {
@@ -548,7 +555,7 @@ class Report final : public Operation {
  public:
   Report() {
     info_.id = "report";
-    info_.title = "Prüfbericht";
+    info_.title = "Test report";
     info_.description =
         "Evaluates the porosity result against the acceptance limits of the inspection order "
         "(BDG P 202 scheme) and writes report.html and report.json. With a surface, the report "
@@ -593,18 +600,23 @@ class Report final : public Operation {
       options.min_zone_void_fraction =
           used.value("min_zone_void_fraction", options.min_zone_void_fraction);
     }
+    std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
     const auto zones = inspectionZonesFromJson(order);
     const Evaluation evaluation = evaluate(porosity, zones);
     std::vector<std::string> warnings;
     Json data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
     if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
       context.log("Rendering the part and its pores");
+      phase.reset();
+      phase.emplace("images");
       addPartImages(data, SurfaceMask::open(surface->second / "surface.vss"), porosity);
     }
     if (const auto comparison = context.inputs.find("comparison");
         comparison != context.inputs.end()) {
       addComparison(data, comparison->second);
     }
+    phase.reset();
+    phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
     std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
@@ -639,7 +651,7 @@ class SegmentMaterials final : public Operation {
  public:
   SegmentMaterials() {
     info_.id = "segment_materials";
-    info_.title = "Materialsegmentierung";
+    info_.title = "Material segmentation";
     info_.description =
         "Splits the part into materials by grey value: a voxel is material when it and enough "
         "of its neighbours are above the air threshold (noise spikes go, walls one voxel thin "
@@ -712,7 +724,7 @@ class SegmentWithModel final : public Operation {
  public:
   SegmentWithModel() {
     info_.id = "segment_model";
-    info_.title = "Gelernte Segmentierung";
+    info_.title = "Learned segmentation";
     info_.description =
         "Splits the part into materials with a learned model (.vsm, a small 3D network trained "
         "for example with tools/models). VoxelSieve runs it on the CPU tile by tile, so it works "

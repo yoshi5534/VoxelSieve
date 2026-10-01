@@ -1,11 +1,11 @@
 // Simple 3D view of VoxelSieve Studio (ADR 0008): ray casting of a coarse level of the dataset
 // (at most 256 voxels per axis) in WebGL2. When the camera comes close, the part of the volume in
 // front of it is loaded again at a finer level and drawn from that detail texture wherever it
-// covers the ray, fading in at its border. "Oberfläche" shades the part surface at a threshold,
-// "Transferfunktion" composites colour and opacity per grey value (transfer.js) and
-// "Maximumprojektion" shows the densest value along each ray. Pores and zones of a porosity
-// analysis are drawn in their own colours. A cut along x opens the part. "Extrahierte Oberfläche"
-// draws the mesh of a surface step (ADR 0009) instead of the grey values, "Soll-Ist-Abweichung"
+// covers the ray, fading in at its border. "Surface" shades the part surface at a threshold,
+// "Transfer function" composites colour and opacity per grey value (transfer.js) and
+// "Maximum intensity projection" shows the densest value along each ray. Pores and zones of a porosity
+// analysis are drawn in their own colours. A cut along x opens the part. "Extracted surface"
+// draws the mesh of a surface step (ADR 0009) instead of the grey values, "Nominal-actual deviation"
 // the surface of a nominal-actual comparison coloured by its deviation from the CAD model.
 'use strict';
 
@@ -19,12 +19,12 @@ void main() {
 
 /// Background styles: colours are top/centre and bottom/edge.
 const BACKGROUNDS = {
-  studio: { name: 'Studio hell', style: 2, colors: [[232, 234, 237], [150, 157, 166]] },
-  studioDunkel: { name: 'Studio dunkel', style: 2, colors: [[70, 76, 86], [14, 16, 19]] },
-  verlauf: { name: 'Verlauf blau', style: 1, colors: [[58, 72, 96], [10, 12, 18]] },
-  verlaufGrau: { name: 'Verlauf grau', style: 1, colors: [[96, 100, 106], [26, 28, 31]] },
-  schwarz: { name: 'Schwarz', style: 0, colors: [[18, 18, 18], [18, 18, 18]] },
-  weiss: { name: 'Weiß', style: 0, colors: [[255, 255, 255], [255, 255, 255]] },
+  studio: { name: 'Studio light', style: 2, colors: [[232, 234, 237], [150, 157, 166]] },
+  studioDunkel: { name: 'Studio dark', style: 2, colors: [[70, 76, 86], [14, 16, 19]] },
+  verlauf: { name: 'Gradient blue', style: 1, colors: [[58, 72, 96], [10, 12, 18]] },
+  verlaufGrau: { name: 'Gradient grey', style: 1, colors: [[96, 100, 106], [26, 28, 31]] },
+  schwarz: { name: 'Black', style: 0, colors: [[18, 18, 18], [18, 18, 18]] },
+  weiss: { name: 'White', style: 0, colors: [[255, 255, 255], [255, 255, 255]] },
 };
 
 // The surface mesh in level-0 voxel coordinates, projected like the rays of VOLUME_FRAGMENT.
@@ -432,7 +432,7 @@ class VolumeViewer {
   attach(canvas) {
     this.canvas = canvas;
     this.gl = canvas.getContext('webgl2');
-    if (!this.gl) throw new Error('Der Browser unterstützt kein WebGL2');
+    if (!this.gl) throw new Error('The browser does not support WebGL2');
     // A new canvas has a new context; textures of the old one are gone with it.
     this.uploaded = false;
     this.textures = null;

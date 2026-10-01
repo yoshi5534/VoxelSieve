@@ -127,8 +127,8 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
                             "report.html");
   const std::string html{std::istreambuf_iterator<char>(report_file),
                          std::istreambuf_iterator<char>()};
-  EXPECT_NE(html.find("Soll-Ist-Vergleich"), std::string::npos);
-  EXPECT_NE(html.find("Poren (rot)"), std::string::npos);
+  EXPECT_NE(html.find("Nominal-actual comparison"), std::string::npos);
+  EXPECT_NE(html.find("Pores (red)"), std::string::npos);
 
   // Explicit inputs by step id.
   const Json histogram = studio.call(
@@ -149,6 +149,28 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);
   EXPECT_THROW(studio.call("project_open", {{"path", 3}}), std::invalid_argument);
+}
+
+TEST_F(StudioTest, ShowsCurrentTitlesForStepsOfOlderProjects) {
+  {
+    Studio studio;
+    (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+    (void)studio.call("run_import_raw",
+                      {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  }
+  // Projects saved before the UI was English stored German step titles.
+  const auto project_file = dir_ / "p" / "project.json";
+  Json project;
+  {
+    std::ifstream in(project_file);
+    project = Json::parse(in);
+  }
+  project.at("steps").at(0).at("title") = "Rohdaten importieren";
+  writeJson(project_file, project);
+
+  Studio studio;
+  const Json status = studio.call("project_open", {{"path", (dir_ / "p").string()}});
+  EXPECT_EQ(status.at("steps").at(0).at("title"), "Import raw volume");
 }
 
 TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
