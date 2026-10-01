@@ -188,6 +188,7 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
   image.grey.assign(pixels, info.air_level);
   image.inside.assign(pixels, kPlaneOutside);
   const float threshold = info.threshold;
+  image.threshold = threshold;
   const LevelInfo& level = dataset.level(request.level);
   const double scale = std::ldexp(1.0, request.level);
   const std::int64_t brick_size = info.brick_size;
@@ -196,18 +197,11 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
     std::array<std::int64_t, 3> current{-1, -1, -1};
     Dataset::BrickPtr brick;
     std::optional<openvdb::FloatGrid::ConstAccessor> accessor;
-    for (std::int64_t x = 0; x < image.width; ++x) {
-      // mm to the level voxel: the level-0 voxel of continuous index c is floor(c + 0.5).
-      std::array<std::int64_t, 3> voxel{};
-      bool outside = false;
+    const auto probe = [&](const std::array<std::int64_t, 3>& voxel) -> std::optional<float> {
       for (std::size_t a = 0; a < 3; ++a) {
-        const double mm = request.origin_mm[a] + static_cast<double>(x) * request.du_mm[a] +
-                          static_cast<double>(y) * request.dv_mm[a];
-        voxel[a] = static_cast<std::int64_t>(std::floor((mm / info.voxel_size[a] + 0.5) / scale));
-        outside = outside || voxel[a] < 0 || voxel[a] >= level.dims[a];
-      }
-      if (outside) {
-        continue;
+        if (voxel[a] < 0 || voxel[a] >= level.dims[a]) {
+          return std::nullopt;
+        }
       }
       const std::array<std::int64_t, 3> index{voxel[0] / brick_size, voxel[1] / brick_size,
                                               voxel[2] / brick_size};
@@ -219,15 +213,62 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
           accessor.emplace(brick->getConstAccessor());
         }
       }
-      if (!accessor) {
+      float value = 0.0F;
+      if (accessor && accessor->probeValue(
+                          openvdb::Coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
+                                         static_cast<int>(voxel[2])),
+                          value)) {
+        return value;
+      }
+      return std::nullopt;
+    };
+    for (std::int64_t x = 0; x < image.width; ++x) {
+      // mm to the continuous level index, whose whole numbers are voxel centres: level voxel j
+      // is centred on level-0 index (j + 0.5) * 2^level - 0.5.
+      std::array<double, 3> c{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        const double mm = request.origin_mm[a] + static_cast<double>(x) * request.du_mm[a] +
+                          static_cast<double>(y) * request.dv_mm[a];
+        c[a] = (mm / info.voxel_size[a] + 0.5) / scale - 0.5;
+      }
+      const auto i = static_cast<std::size_t>(y * image.width + x);
+      if (!request.linear) {
+        const std::optional<float> value =
+            probe({static_cast<std::int64_t>(std::floor(c[0] + 0.5)),
+                   static_cast<std::int64_t>(std::floor(c[1] + 0.5)),
+                   static_cast<std::int64_t>(std::floor(c[2] + 0.5))});
+        if (value) {
+          image.grey[i] = *value;
+          image.inside[i] = *value >= threshold ? kPlaneMaterial : kPlaneVoid;
+        }
         continue;
       }
-      float value = 0.0F;
-      if (accessor->probeValue(
-              openvdb::Coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
-                             static_cast<int>(voxel[2])),
-              value)) {
-        const auto i = static_cast<std::size_t>(y * image.width + x);
+      std::array<std::int64_t, 3> low{};
+      std::array<double, 3> t{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        const double floor = std::floor(c[a]);
+        low[a] = static_cast<std::int64_t>(floor);
+        t[a] = c[a] - floor;
+      }
+      double sum = 0.0;
+      double active = 0.0;
+      for (unsigned corner = 0; corner < 8; ++corner) {
+        double weight = 1.0;
+        std::array<std::int64_t, 3> voxel = low;
+        for (std::size_t a = 0; a < 3; ++a) {
+          const bool high = ((corner >> a) & 1U) != 0;
+          voxel[a] += high ? 1 : 0;
+          weight *= high ? t[a] : 1.0 - t[a];
+        }
+        if (weight == 0.0) {
+          continue;
+        }
+        const std::optional<float> value = probe(voxel);
+        sum += weight * (value ? *value : info.air_level);
+        active += value ? weight : 0.0;
+      }
+      if (active > 0.0) {
+        const auto value = static_cast<float>(sum);
         image.grey[i] = value;
         image.inside[i] = value >= threshold ? kPlaneMaterial : kPlaneVoid;
       }
