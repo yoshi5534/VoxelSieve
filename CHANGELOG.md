@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Aligning and comparing objects** (ADR 0018, phase 2): `align_points` moves objects so that
+  three or more picked points meet their partners on a target (closed-form best fit, distance
+  left per pair in the result); `align_surfaces` fits the surface of one object to another's
+  (robust point-to-plane ICP, optionally from the principal axes for objects far apart). Both
+  are steps that apply in order on top of earlier moves, for every pair of meshes and volumes.
+  `compare_objects` measures the deviation of a scanned volume from a nominal object (a CAD
+  model or another scan) where both lie, without aligning on its own. The studio's new view
+  "Objects" shows all objects where they lie, each in its colour, picks point pairs by clicking
+  and runs the alignments, moves and the comparison; `view_objects` renders the same scene as a
+  PNG for MCP clients. Plugins need to be rebuilt (plugin API 3: `OperationContext::object` and
+  the outputs of every object).
+
 - **Several objects in one project** (ADR 0018, phase 1): a project now holds volumes and meshes
   (CAD models as STL, `add_mesh`) as objects with a pose in one global coordinate system of the
   project. `move` moves one or several objects together; moves apply in order and undo takes them

@@ -1,6 +1,6 @@
 # 0018: Several volumes and CAD models in one project, and their alignment
 
-Status: accepted (2026-10-01); phase 1 implemented
+Status: accepted (2026-10-01); phases 1 and 2 implemented
 
 ## Context
 
@@ -218,3 +218,28 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   and, for steps that create one, `object_name`. MCP lists them like every method.
 - Every new object starts at the origin. Reading its position from a sidecar or a file name comes
   with the importers that know such conventions.
+
+## Implementation of phase 2 (2026-10-01)
+
+- `compareToCad` is split: `scanSurface` meshes the surface of a volume, `alignSurfaces` does
+  the coarse (principal axes) and fine (robust point-to-plane ICP) fit between two meshes, and
+  `fitRigid` the closed-form fit of point pairs (Horn's quaternion method; it rejects fewer than
+  three pairs and pairs on one line). The comparison and the alignment share the fit.
+- `align_points` and `align_surfaces` take the objects to move and a target, read the surfaces in
+  global coordinates (the poses applied) and record their motion like `move`. Points of
+  `align_points` are global coordinates where the objects lie when the step runs. A volume needs a
+  surface step first; only its outer skin is fitted.
+- `compare_objects` runs on the surface of a volume object (the step's object) against a nominal
+  object, a mesh or another volume's surface, starting from where both lie
+  (`actual pose⁻¹ ∘ nominal pose`); `refine` fits once more for the measurement only and moves
+  nothing. Its output is a comparison like `compare_cad`'s, so the 3D view and the report show it
+  the same way. `compare_cad` stays as it was.
+- Operations see the outputs of every object in `OperationContext::objects` and the step's
+  object in `OperationContext::object` (plugin API 3).
+- The studio serves what the 3D view draws of an object (`Studio::objectShape`,
+  `GET /api/object_mesh`): a mesh's triangles, the display mesh of a volume's latest surface, or
+  the outline of the box a volume fills before it has one. The view "Objects" (`scene.js`)
+  draws them with their poses, each in its colour, with the global axes, and picks points by
+  ray casting on the CPU for `align_points`. `view_objects` renders the scene as a PNG with the
+  CPU renderer for MCP clients. The volume ray casting of several volumes and the slice view with
+  several objects remain for phase 3.

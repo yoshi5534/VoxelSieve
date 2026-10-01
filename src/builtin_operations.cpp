@@ -810,14 +810,80 @@ class AddMesh final : public Operation {
   OperationInfo info_;
 };
 
-/// Pose of an object from OperationContext::objects.
-std::optional<RigidTransform> objectPose(const Json& objects, const std::string& id) {
-  for (const Json& object : objects) {
+/// An entry of OperationContext::objects.
+const Json& objectEntry(const OperationContext& context, const std::string& id) {
+  for (const Json& object : context.objects) {
     if (object.at("id") == id) {
-      return RigidTransform::fromMatrix(object.at("pose").get<std::vector<double>>());
+      return object;
     }
   }
-  return std::nullopt;
+  throw std::invalid_argument("No object '" + id + "'");
+}
+
+RigidTransform entryPose(const Json& object) {
+  return RigidTransform::fromMatrix(object.at("pose").get<std::vector<double>>());
+}
+
+/// The surface of an object in its own coordinates (mm): a mesh object's triangles, or the
+/// extracted surface of a volume (which needs a surface step). `resolution_mm` is set to half the
+/// smallest voxel pitch of a volume and left alone for a mesh.
+IndexedMesh objectSurface(const Json& object, std::size_t max_triangles, bool outer_only,
+                          double& resolution_mm) {
+  const Json& outputs = object.at("outputs");
+  const std::string name = object.at("name").get<std::string>();
+  if (object.at("kind") == kMeshObject) {
+    return indexedMesh(readStl(outputs.at(artifact::kMesh).get<std::string>()));
+  }
+  if (!outputs.contains(artifact::kSurface)) {
+    throw std::invalid_argument("Object '" + name +
+                                "' has no surface yet: run the surface extraction on it first");
+  }
+  const SurfaceMask mask = SurfaceMask::open(
+      std::filesystem::path(outputs.at(artifact::kSurface).get<std::string>()) / "surface.vss");
+  const double half_voxel = 0.5 * mask.info().voxel_size.minMm();
+  resolution_mm = resolution_mm > 0.0 ? std::min(resolution_mm, half_voxel) : half_voxel;
+  return scanSurface(mask, max_triangles, outer_only).mesh;
+}
+
+/// Writes pose.json and fills the summary of a step that moves objects.
+OperationResult movedResult(const OperationContext& context, const std::vector<std::string>& ids,
+                            const RigidTransform& motion, Json summary) {
+  Json poses = Json::object();
+  for (const std::string& id : ids) {
+    poses[id] = motion.after(entryPose(objectEntry(context, id))).matrix();
+  }
+  summary[kMovedObjectsKey] = ids;
+  summary[kMotionKey] = motion.matrix();
+  summary["rotation_deg"] = motion.angleDegrees();
+  summary["translation_mm"] = motion.translation;
+  Json record = summary;
+  record["poses"] = poses;
+  std::ofstream(context.output_dir / "pose.json") << record.dump(2) << '\n';
+  OperationResult result;
+  result.outputs["pose"] = "pose.json";
+  result.summary = std::move(summary);
+  return result;
+}
+
+/// The ids in the `objects` parameter, each known and named once.
+std::vector<std::string> movedObjects(const OperationContext& context) {
+  const auto ids = context.params.at("objects").get<std::vector<std::string>>();
+  for (const std::string& id : ids) {
+    if (std::ranges::count(ids, id) > 1) {
+      throw std::invalid_argument("Object '" + id + "' is named twice");
+    }
+    (void)objectEntry(context, id);
+  }
+  return ids;
+}
+
+const Json& movedObjectsSchema() {
+  static const Json schema = {
+      {"type", "array"},
+      {"items", {{"type", "string"}}},
+      {"minItems", 1},
+      {"description", "Ids of the objects to move together; the first one is fitted"}};
+  return schema;
 }
 
 class MoveObjects final : public Operation {
@@ -844,7 +910,7 @@ class MoveObjects final : public Operation {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"minItems", 1},
-            {"description", "Ids of the objects to move"}}},
+            {"description", "Ids of the objects to move together"}}},
           {"translation_mm", vector3({{"default", {0.0, 0.0, 0.0}}})},
           {"rotation_axis", vector3({{"default", {0.0, 0.0, 1.0}}})},
           {"rotation_deg", {{"type", "number"}, {"default", 0.0}}},
@@ -864,25 +930,14 @@ class MoveObjects final : public Operation {
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
-    const auto ids = p.at("objects").get<std::vector<std::string>>();
-    std::vector<RigidTransform> poses;
-    for (const std::string& id : ids) {
-      if (std::ranges::count(ids, id) > 1) {
-        throw std::invalid_argument("Object '" + id + "' is named twice");
-      }
-      const auto pose = objectPose(context.objects, id);
-      if (!pose) {
-        throw std::invalid_argument("No object '" + id + "'");
-      }
-      poses.push_back(*pose);
-    }
+    const auto ids = movedObjects(context);
     RigidTransform motion;
     if (p.contains("pose")) {
       if (ids.size() != 1) {
         throw std::invalid_argument("'pose' places exactly one object");
       }
       motion = RigidTransform::fromMatrix(p.at("pose").get<std::vector<double>>())
-                   .after(poses.front().inverse());
+                   .after(entryPose(objectEntry(context, ids.front())).inverse());
     } else {
       const auto center = p.at("center_mm").get<std::array<double, 3>>();
       const auto translation = p.at("translation_mm").get<std::array<double, 3>>();
@@ -895,18 +950,216 @@ class MoveObjects final : public Operation {
         motion.translation[i] = center[i] - rotated[i] + translation[i];
       }
     }
-    Json moved = Json::object();
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-      moved[ids[i]] = motion.after(poses[i]).matrix();
+    return movedResult(context, ids, motion, Json::object());
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class AlignPoints final : public Operation {
+ public:
+  AlignPoints() {
+    info_.id = "align_points";
+    info_.title = "Align by point pairs";
+    info_.description =
+        "Moves objects so that points picked on them meet their partners on the target: the "
+        "rigid motion with the least squared distances (at least three pairs, not on a line). "
+        "Points are in global coordinates (mm) where they lie now. Applies on top of the earlier "
+        "moves; the distance left per pair is in the result.";
+    info_.outputs = {{"pose", artifact::kPose, "The motion, the new poses and the residuals"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"objects", movedObjectsSchema()},
+          {"target", {{"type", "string"}, {"description", "Id of the object aligned to"}}},
+          {"pairs",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"minItems", 3},
+            {"description",
+             "Point pairs {moving: [x, y, z], target: [x, y, z]}, global coordinates in mm"}}}}},
+        {"required", {"objects", "pairs"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const auto ids = movedObjects(context);
+    if (p.contains("target")) {
+      const std::string target = p.at("target").get<std::string>();
+      (void)objectEntry(context, target);
+      if (std::ranges::count(ids, target) > 0) {
+        throw std::invalid_argument("The target must not move with the objects");
+      }
     }
-    const Json record = {{kMovedObjectsKey, ids}, {kMotionKey, motion.matrix()}, {"poses", moved}};
-    std::ofstream(context.output_dir / "pose.json") << record.dump(2) << '\n';
+    std::vector<std::array<double, 3>> moving;
+    std::vector<std::array<double, 3>> target;
+    for (const Json& pair : p.at("pairs")) {
+      if (!pair.contains("moving") || !pair.contains("target")) {
+        throw std::invalid_argument("A point pair needs 'moving' and 'target'");
+      }
+      moving.push_back(pair.at("moving").get<std::array<double, 3>>());
+      target.push_back(pair.at("target").get<std::array<double, 3>>());
+    }
+    const RigidFit fit = fitRigid(moving, target);
+    Json summary = {{"pairs", moving.size()},
+                    {"residuals_mm", fit.residuals_mm},
+                    {"rms_mm", fit.rms_mm},
+                    {"max_residual_mm", std::ranges::max(fit.residuals_mm)}};
+    if (p.contains("target")) {
+      summary["target"] = p.at("target");
+    }
+    return movedResult(context, ids, fit.transform, std::move(summary));
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class AlignSurfaces final : public Operation {
+ public:
+  AlignSurfaces() {
+    info_.id = "align_surfaces";
+    info_.title = "Align surfaces (best fit)";
+    info_.description =
+        "Moves objects so that the surface of the first one fits the surface of the target best: "
+        "robust point-to-plane ICP as in the nominal-actual comparison, from where the objects "
+        "lie now or, with start=principal_axes, from the best match of their principal axes. "
+        "Volumes need a surface step first; only their outer skin is fitted. Applies on top of "
+        "the earlier moves.";
+    info_.outputs = {{"pose", artifact::kPose, "The motion, the new poses and the fit"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"objects", movedObjectsSchema()},
+          {"target", {{"type", "string"}, {"description", "Id of the object aligned to"}}},
+          {"start",
+           {{"type", "string"},
+            {"enum", {"current", "principal_axes"}},
+            {"default", "current"},
+            {"description",
+             "current: refine where the objects lie (after a coarse step such as point pairs); "
+             "principal_axes: find the orientation first, for objects far apart"}}},
+          {"fit_points", {{"type", "integer"}, {"minimum", 100}, {"default", 20000}}},
+          {"max_triangles", {{"type", "integer"}, {"minimum", 1000}, {"default", 2000000}}}}},
+        {"required", {"objects", "target"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const auto ids = movedObjects(context);
+    const std::string target_id = p.at("target").get<std::string>();
+    if (std::ranges::count(ids, target_id) > 0) {
+      throw std::invalid_argument("The target must not move with the objects");
+    }
+    const Json& moving_object = objectEntry(context, ids.front());
+    const Json& target_object = objectEntry(context, target_id);
+    const auto max_triangles = p.at("max_triangles").get<std::size_t>();
+    SurfaceAlignOptions options;
+    options.coarse = p.at("start") == "principal_axes";
+    options.fit_points = p.at("fit_points").get<std::size_t>();
+    IndexedMesh moving;
+    IndexedMesh target;
+    {
+      const TelemetryPhase phase("surfaces");
+      moving = transformed(objectSurface(moving_object, max_triangles, true, options.resolution_mm),
+                           entryPose(moving_object));
+      context.progress(0.2);
+      target = transformed(objectSurface(target_object, max_triangles, true, options.resolution_mm),
+                           entryPose(target_object));
+      context.progress(0.4);
+    }
+    const SurfaceAlignment aligned = alignSurfaces(moving, target, options);
+    context.progress(0.95);
+    return movedResult(context, ids, aligned.motion,
+                       {{"target", target_id},
+                        {"start", p.at("start")},
+                        {"fit_rms_mm", aligned.rms_mm},
+                        {"fit_inliers", aligned.inliers},
+                        {"fit_iterations", aligned.iterations},
+                        {"resolution_mm", aligned.resolution_mm}});
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class CompareObjects final : public Operation {
+ public:
+  CompareObjects() {
+    info_.id = "compare_objects";
+    info_.title = "Compare with nominal object";
+    info_.description =
+        "Nominal-actual comparison of two placed objects: the signed deviation of every point of "
+        "the scanned surface from the nominal object (a mesh such as a CAD model, or another "
+        "volume's surface), where the objects lie now. Positive where the part has more material "
+        "than nominal. Place the objects first with move or the align operations; refine=true "
+        "fits once more for the measurement only, without moving them.";
+    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scanned object"}};
+    info_.outputs = {{"comparison", artifact::kComparison, "Deviations from the nominal object"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"nominal", {{"type", "string"}, {"description", "Id of the nominal object"}}},
+          {"tolerance_mm",
+           {{"type", "number"}, {"minimum", 0.001}, {"maximum", 100}, {"default", 0.1}}},
+          {"outer_surface_only",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Leave the surfaces of closed internal voids (pores) out"}}},
+          {"refine", {{"type", "boolean"}, {"default", false}}}}},
+        {"required", {"nominal"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    if (context.object.empty()) {
+      throw std::invalid_argument("The surface belongs to no object");
+    }
+    const std::string nominal_id = p.at("nominal").get<std::string>();
+    if (nominal_id == context.object) {
+      throw std::invalid_argument("An object cannot be compared with itself");
+    }
+    const Json& actual = objectEntry(context, context.object);
+    const Json& nominal_object = objectEntry(context, nominal_id);
+    CompareOptions options;
+    options.alignment = p.at("refine").get<bool>() ? CompareOptions::Alignment::kRefine
+                                                   : CompareOptions::Alignment::kNone;
+    options.tolerance_mm = p.at("tolerance_mm").get<double>();
+    options.outer_surface_only = p.at("outer_surface_only").get<bool>();
+    // Nominal object coordinates to those of the scanned object.
+    options.initial = entryPose(actual).inverse().after(entryPose(nominal_object));
+    double resolution_mm = 0.0;
+    const Mesh nominal =
+        triangleSoup(objectSurface(nominal_object, options.max_triangles, true, resolution_mm));
+    context.progress(0.1);
+    const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
+    const CompareResult compared = compareToCad(mask, nominal, options);
+    context.progress(0.8);
+    const TelemetryPhase phase("write results");
+    const auto dir = context.output_dir / "comparison";
+    writeComparison(compared, dir);
+    Json json = toJson(compared);
+    json["nominal_object"] = nominal_id;
+    json["nominal_name"] = nominal_object.at("name");
+    writeJson(dir / "compare.json", json);
+    const DeviationStats& s = compared.stats;
     OperationResult result;
-    result.outputs["pose"] = "pose.json";
-    result.summary = {{kMovedObjectsKey, ids},
-                      {kMotionKey, motion.matrix()},
-                      {"rotation_deg", motion.angleDegrees()},
-                      {"translation_mm", motion.translation}};
+    result.outputs["comparison"] = "comparison";
+    result.summary = {{"nominal", nominal_object.at("name")},
+                      {"deviation_mean_mm", s.mean_mm},
+                      {"deviation_rms_mm", s.rms_mm},
+                      {"deviation_min_mm", s.min_mm},
+                      {"deviation_max_mm", s.max_mm},
+                      {"within_tolerance_percent", 100.0 * s.within_tolerance},
+                      {"above_tolerance_percent", 100.0 * s.above_tolerance},
+                      {"below_tolerance_percent", 100.0 * s.below_tolerance},
+                      {"tolerance_mm", compared.tolerance_mm},
+                      {"fit_rms_mm", compared.fit_rms_mm},
+                      {"dropped_components", compared.dropped_components}};
     return result;
   }
 
@@ -928,6 +1181,9 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Report>());
   registry.add(std::make_shared<AddMesh>());
   registry.add(std::make_shared<MoveObjects>());
+  registry.add(std::make_shared<AlignPoints>());
+  registry.add(std::make_shared<AlignSurfaces>());
+  registry.add(std::make_shared<CompareObjects>());
 }
 
 }  // namespace voxelsieve
