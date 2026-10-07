@@ -44,6 +44,14 @@ class Studio {
   [[nodiscard]] OperationRegistry& registry() { return registry_; }
   [[nodiscard]] const std::vector<std::string>& pluginMessages() const { return plugin_messages_; }
 
+  /// Restricts every path the API takes (parameters with "format": "path" in their schema: data
+  /// to import, projects, browsing) to these directories and what lies below them. Empty, the
+  /// default, allows every path. Set before the first call.
+  void setAllowedRoots(const std::vector<std::filesystem::path>& roots);
+  [[nodiscard]] const std::vector<std::filesystem::path>& allowedRoots() const {
+    return allowed_roots_;
+  }
+
   /// All API methods: the fixed ones plus `run_<operation>` for every operation.
   [[nodiscard]] std::vector<StudioMethod> methods() const;
 
@@ -120,6 +128,8 @@ class Studio {
   void cancel() { cancel_ = true; }
 
  private:
+  /// Throws std::invalid_argument when allowed roots are set and `path` is outside all of them.
+  void checkAllowedPath(const std::filesystem::path& path) const;
   Project& project();
   [[nodiscard]] const Project& project() const;
   nlohmann::json status() const;
@@ -167,6 +177,7 @@ class Studio {
 
   OperationRegistry registry_;
   std::vector<std::string> plugin_messages_;
+  std::vector<std::filesystem::path> allowed_roots_;  // canonical
   std::optional<Project> project_;
   std::atomic<bool> cancel_ = false;
   std::atomic<double> progress_ = 0.0;

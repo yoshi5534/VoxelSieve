@@ -30,8 +30,8 @@
 
 namespace {
 
-constexpr std::string_view kUsage = R"(Usage: vs-studio [options]
-       vs-studio --mcp [options]
+constexpr std::string_view kUsage = R"(Usage: vs-studio [options] [<dir>...]
+       vs-studio --mcp [options] [<dir>...]
 
 Starts the VoxelSieve studio: open http://localhost:8410 in a browser for the wizard (choose a
 dataset, run operations, create the report) with the step protocol and undo/redo.
@@ -41,6 +41,10 @@ instead. Register it with an MCP client as a stdio server, for example:
   {"command": "vs-studio", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
 Every studio function is a tool: projects, undo/redo, operations (run_<id>), dataset info and
 reading result files.
+
+Directories given after the options are the only places the studio reads data from and keeps
+projects in (with everything below them); without any, every path is allowed. Give the
+directories with your scans when an AI client drives the studio.
 
 Options:
   --port <n>            Port of the browser UI (default 8410, 0 picks a free one)
@@ -60,6 +64,7 @@ struct Options {
   unsigned short port = 8410;
   std::optional<std::filesystem::path> project;
   std::vector<std::filesystem::path> plugins;
+  std::vector<std::filesystem::path> roots;
 };
 
 std::optional<Options> parse(int argc, char** argv) {
@@ -90,8 +95,10 @@ std::optional<Options> parse(int argc, char** argv) {
       options.project = next();
     } else if (arg == "--plugins") {
       options.plugins.emplace_back(next());
-    } else {
+    } else if (arg.starts_with("-")) {
       throw std::invalid_argument("Unknown argument " + std::string(arg));
+    } else {
+      options.roots.emplace_back(arg);
     }
   }
   return options;
@@ -140,6 +147,7 @@ int main(int argc, char** argv) {
     auto plugin_dirs = voxelsieve::pluginPathFromEnvironment();
     plugin_dirs.insert(plugin_dirs.end(), options->plugins.begin(), options->plugins.end());
     voxelsieve::Studio studio(plugin_dirs);
+    studio.setAllowedRoots(options->roots);
     // stdout carries the protocol; everything else goes to stderr.
     for (const std::string& message : studio.pluginMessages()) {
       std::cerr << "vs-studio: " << message << "\n";

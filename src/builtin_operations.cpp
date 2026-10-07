@@ -111,11 +111,13 @@ class OpenDataset final : public Operation {
     info_.description =
         "References an existing dataset written by vs-sieve. The dataset is not copied.";
     info_.outputs = {{"dataset", artifact::kDataset, "The dataset"}};
-    info_.parameters = {
-        {"type", "object"},
-        {"properties",
-         {{"path", {{"type", "string"}, {"description", "Dataset directory (.vsieve)"}}}}},
-        {"required", {"path"}}};
+    info_.parameters = {{"type", "object"},
+                        {"properties",
+                         {{"path",
+                           {{"type", "string"},
+                            {"format", "path"},
+                            {"description", "Dataset directory (.vsieve)"}}}}},
+                        {"required", {"path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -150,7 +152,7 @@ class ImportRaw final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"path", {{"type", "string"}, {"description", "Raw volume file"}}},
+         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "Raw volume file"}}},
           {"dims", dims},
           {"sample_type",
            {{"type", "string"}, {"enum", {"uint16", "uint8"}}, {"default", "uint16"}}},
@@ -254,7 +256,10 @@ class ImportTiff final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"path", {{"type", "string"}, {"description", "Directory, TIFF file or ZIP archive"}}},
+         {{"path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description", "Directory, TIFF file or ZIP archive"}}},
           {"value_range",
            {{"type", "array"},
             {"items", {{"type", "number"}}},
@@ -491,7 +496,8 @@ class CompareCad final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"cad_path", {{"type", "string"}, {"description", "CAD model as STL in mm"}}},
+         {{"cad_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "CAD model as STL in mm"}}},
           {"alignment",
            {{"type", "string"},
             {"enum", {"auto", "refine", "none"}},
@@ -575,8 +581,10 @@ class Report final : public Operation {
             {"description",
              "Inspection order: laboratory, customer, part, scan, acceptance limits (see "
              "examples/inspection_order.json)"}}},
-          {"order_path", {{"type", "string"}, {"description", "Inspection order file"}}},
-          {"template_path", {{"type", "string"}, {"description", "Report template file"}}}}}};
+          {"order_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Inspection order file"}}},
+          {"template_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Report template file"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -737,7 +745,8 @@ class SegmentWithModel final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"model_path", {{"type", "string"}, {"description", "Learned model (.vsm)"}}},
+         {{"model_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Learned model (.vsm)"}}},
           {"tile",
            {{"type", "integer"},
             {"minimum", 16},
@@ -784,7 +793,8 @@ class AddMesh final : public Operation {
     info_.outputs = {{"mesh", artifact::kMesh, "The mesh (STL)"}};
     info_.parameters = {
         {"type", "object"},
-        {"properties", {{"path", {{"type", "string"}, {"description", "STL file in mm"}}}}},
+        {"properties",
+         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}}}},
         {"required", {"path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }

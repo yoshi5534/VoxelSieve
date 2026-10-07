@@ -311,7 +311,7 @@ Studio::Studio(const std::vector<std::filesystem::path>& plugin_dirs)
 }
 
 std::vector<StudioMethod> Studio::methods() const {
-  const Json path = {{"type", "string"}, {"description", "Project directory"}};
+  const Json path = {{"type", "string"}, {"format", "path"}, {"description", "Project directory"}};
   std::vector<StudioMethod> methods = {
       {"project_create",
        "Creates a new project in an empty or missing directory and opens it. Every step is saved "
@@ -338,10 +338,12 @@ std::vector<StudioMethod> Studio::methods() const {
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
        "object, as a step. Raw volumes and TIFF stacks become objects through run_import_raw "
        "and run_import_tiff. Objects are placed with run_move.",
-       objectSchema(
-           {{"path", {{"type", "string"}, {"description", "Dataset directory or STL file"}}},
-            {"name", {{"type", "string"}, {"description", "Default: the file name"}}}},
-           {"path"})},
+       objectSchema({{"path",
+                      {{"type", "string"},
+                       {"format", "path"},
+                       {"description", "Dataset directory or STL file"}}},
+                     {"name", {{"type", "string"}, {"description", "Default: the file name"}}}},
+                    {"path"})},
       {"object_select",
        "Chooses the active object: steps run without explicit inputs take them from its outputs "
        "first. An empty id clears the choice. Not a step.",
@@ -452,9 +454,9 @@ std::vector<StudioMethod> Studio::methods() const {
        "directory with TIFF slices, for import_tiff) or file; directories carry directory: true.",
        objectSchema({{"path",
                       {{"type", "string"},
+                       {"format", "path"},
                        {"description",
-                        "Default: the working "
-                        "directory"}}}})},
+                        "Default: the first allowed directory, else the working directory"}}}})},
       {"read_file",
        "Reads a text file of a step output, such as report.json or porosity.json (at most 1 MB).",
        [] {
@@ -1268,11 +1270,55 @@ Json Studio::runOperation(const std::string& operation, Json params,
   }
 }
 
+void Studio::setAllowedRoots(const std::vector<std::filesystem::path>& roots) {
+  std::vector<std::filesystem::path> canonical;
+  for (const auto& root : roots) {
+    if (!std::filesystem::is_directory(root)) {
+      throw std::invalid_argument("Not a directory: " + root.string());
+    }
+    canonical.push_back(std::filesystem::canonical(root));
+  }
+  allowed_roots_ = std::move(canonical);
+}
+
+void Studio::checkAllowedPath(const std::filesystem::path& path) const {
+  if (allowed_roots_.empty()) {
+    return;
+  }
+  // Symbolic links and ".." are resolved first, so neither leads out of a root.
+  const auto resolved = std::filesystem::weakly_canonical(std::filesystem::absolute(path));
+  for (const auto& root : allowed_roots_) {
+    const auto relative = resolved.lexically_relative(root);
+    if (!relative.empty() && *relative.begin() != "..") {
+      return;
+    }
+  }
+  std::string roots;
+  for (const auto& root : allowed_roots_) {
+    roots += (roots.empty() ? "" : ", ") + root.string();
+  }
+  throw std::invalid_argument("Outside the allowed directories (" + roots +
+                              "): " + resolved.string());
+}
+
 Json Studio::call(const std::string& method, const Json& arguments,
                   const std::function<void(double)>& progress) {
   const Json params = arguments.is_null() ? Json::object() : arguments;  // `{}` in C++ is null
   if (!params.is_object()) {
     throw std::invalid_argument("Parameters must be an object");
+  }
+  if (!allowed_roots_.empty()) {
+    for (const StudioMethod& known : methods()) {
+      if (known.name != method || !known.parameters.contains("properties")) {
+        continue;
+      }
+      for (const auto& [key, schema] : known.parameters.at("properties").items()) {
+        if (schema.value("format", "") == "path" && params.contains(key) &&
+            params.at(key).is_string()) {
+          checkAllowedPath(params.at(key).get<std::string>());
+        }
+      }
+    }
   }
   if (method.starts_with(kRunPrefix)) {
     const std::string operation = method.substr(std::string(kRunPrefix).size());
@@ -1466,9 +1512,11 @@ Json Studio::call(const std::string& method, const Json& arguments,
       return {{"deleted", checked.at("id")}};
     }
     if (method == "browse") {
-      return browse(checked.contains("path")
-                        ? std::filesystem::path(checked.at("path").get<std::string>())
-                        : std::filesystem::current_path());
+      if (checked.contains("path")) {
+        return browse(checked.at("path").get<std::string>());
+      }
+      return browse(allowed_roots_.empty() ? std::filesystem::current_path()
+                                           : allowed_roots_.front());
     }
     if (method == "read_file") {
       const auto root = artifactPath(checked);
