@@ -432,7 +432,11 @@ class VolumeViewer {
   attach(canvas) {
     this.canvas = canvas;
     this.gl = canvas.getContext('webgl2');
-    if (!this.gl) throw new Error('The browser does not support WebGL2');
+    if (!this.gl) {
+      throw new Error('The 3D view needs WebGL2, which this browser has turned off. Try Edge or ' +
+        'Chrome; in Firefox set webgl.force-enabled to true in about:config, or update the ' +
+        'graphics driver.');
+    }
     // A new canvas has a new context; textures of the old one are gone with it.
     this.uploaded = false;
     this.textures = null;
