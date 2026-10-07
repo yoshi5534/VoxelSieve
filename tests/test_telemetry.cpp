@@ -30,11 +30,29 @@ namespace {
 
 using Json = nlohmann::json;
 
+/// CPU time of the process so far. std::clock measures wall time on Windows, so it asks the
+/// system there.
+double cpuSeconds() {
+#ifdef _WIN32
+  FILETIME created{};
+  FILETIME exited{};
+  FILETIME kernel{};
+  FILETIME user{};
+  GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+  const auto ticks = [](const FILETIME& t) {
+    return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32U) | t.dwLowDateTime;
+  };
+  return static_cast<double>(ticks(kernel) + ticks(user)) * 1e-7;  // 100 ns units
+#else
+  return static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+#endif
+}
+
 /// Spends `seconds` of CPU time on the calling thread and returns a value the compiler cannot drop.
 double busy(double seconds) {
-  const std::clock_t end = std::clock() + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC);
+  const double end = cpuSeconds() + seconds;
   double x = 0.0;
-  while (std::clock() < end) {
+  while (cpuSeconds() < end) {
     for (int i = 0; i < 10000; ++i) {
       x += 1e-9 * i;
     }
@@ -97,10 +115,11 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   const Json inner = phase(record, "inner");
   EXPECT_EQ(compute.at("depth"), 0);
   EXPECT_EQ(inner.at("depth"), 1);
-  EXPECT_GE(compute.at("wall_s").get<double>(), 0.3);
+  // Windows counts CPU time in scheduler ticks of about 15.6 ms; allow for one and for rounding.
+  EXPECT_GE(compute.at("wall_s").get<double>(), 0.28);
   EXPECT_GE(inner.at("wall_s").get<double>(), 0.1);
   EXPECT_LT(inner.at("wall_s").get<double>(), compute.at("wall_s").get<double>());
-  EXPECT_GE(compute.at("cpu_s").get<double>(), 0.29);
+  EXPECT_GE(compute.at("cpu_s").get<double>(), 0.28);
   EXPECT_GT(compute.at("cores_used").get<double>(), 0.0);
 
   const double memory_peak = phase(record, "memory").at("peak_rss_mb").get<double>();
