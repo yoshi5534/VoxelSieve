@@ -146,18 +146,20 @@ TEST(TelemetryTest, PhasesWithoutARecorderDoNothing) {
 }
 
 TEST(TelemetryTest, TimelineIsSampledAndThinned) {
-  Telemetry telemetry("timeline", {.sample_interval_s = 0.02, .max_samples = 8});
+  // Long enough for more than max_samples samples even when wake-ups come late, as on macOS
+  // runners, where timer coalescing can delay a 10 ms wait several times over.
+  Telemetry telemetry("timeline", {.sample_interval_s = 0.01, .max_samples = 8});
   {
     const TelemetryScope scope(telemetry);
     const TelemetryPhase phase("busy");
-    EXPECT_GT(busy(0.5), 0.0);
+    EXPECT_GT(busy(1.5), 0.0);
   }
   const Json record = telemetry.finish();
   const Json& timeline = record.at("timeline");
   const auto points = timeline.at("t_s").size();
   EXPECT_GE(points, 3U);
   EXPECT_LE(points, 9U);
-  EXPECT_GT(timeline.at("interval_s").get<double>(), 0.02);  // thinned at least once
+  EXPECT_GT(timeline.at("interval_s").get<double>(), 0.01);  // thinned at least once
   for (const char* series : {"cores_used", "rss_anon_mb", "rss_file_mb", "disk_read_mb_s",
                              "disk_write_mb_s", "major_faults_s", "phase"}) {
     EXPECT_EQ(timeline.at(series).size(), points) << series;

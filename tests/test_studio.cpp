@@ -85,7 +85,7 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   EXPECT_EQ(objects[0].at("pose")[3], 0.0);
   EXPECT_EQ(objects[2].at("pose")[3], 10.0);
   EXPECT_EQ(objects[2].at("pose")[11], -2.5);
-  EXPECT_EQ(objects[2].at("moved_by"), Json({moved.at("id")}));
+  EXPECT_EQ(objects[2].at("moved_by"), Json::array({moved.at("id")}));
   studio.call("undo", {});
   EXPECT_EQ(studio.call("objects", {}).at("objects")[2].at("pose")[3], 0.0);
 
