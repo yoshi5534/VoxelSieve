@@ -521,7 +521,7 @@ TEST_F(DatasetReaderTest, SamplesMatchInMemorySieve) {
   EXPECT_FALSE(dataset.sample(0, {-1, 5, 5}).has_value());
   EXPECT_FALSE(dataset.sample(0, {5, 5, 128}).has_value());
   EXPECT_FALSE(dataset.hasBrick(0, {0, 0, 0}));
-  EXPECT_EQ(dataset.brick(0, {0, 0, 0}), nullptr);
+  EXPECT_EQ(dataset.brick(0, {0, 0, 0}).get(), nullptr);
   EXPECT_THROW((void)dataset.sample(7, {0, 0, 0}), std::out_of_range);
 }
 
@@ -569,7 +569,7 @@ TEST_F(DatasetReaderTest, CacheStaysWithinBudget) {
   const auto& bricks = dataset.level(0).bricks;
   ASSERT_GT(bricks.size(), 10U);
   for (const Index3& brick : bricks) {
-    ASSERT_NE(dataset.brick(0, brick), nullptr);
+    ASSERT_NE(dataset.brick(0, brick).get(), nullptr);
     const CacheStats stats = dataset.cacheStats();
     EXPECT_TRUE(stats.bytes <= budget || stats.bricks == 1) << stats.bytes;
   }
@@ -599,8 +599,8 @@ TEST_F(DatasetReaderTest, DatasetsShareOneCacheBudget) {
   const auto& bricks = first.level(0).bricks;
   ASSERT_GT(bricks.size(), 10U);
   for (const Index3& brick : bricks) {
-    ASSERT_NE(first.brick(0, brick), nullptr);
-    ASSERT_NE(second->brick(0, brick), nullptr);
+    ASSERT_NE(first.brick(0, brick).get(), nullptr);
+    ASSERT_NE(second->brick(0, brick).get(), nullptr);
     const CacheStats stats = cache->stats();
     EXPECT_TRUE(stats.bytes <= cache->budget() || stats.bricks == 1) << stats.bytes;
   }
