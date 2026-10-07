@@ -125,7 +125,8 @@ add_test(NAME vs_report_cli_images
 set_tests_properties(vs_report_cli_images PROPERTIES DEPENDS vs_compare_cli PASS_REGULAR_EXPRESSION "report.html")
 
 add_test(NAME vs_studio_mcp_cli
-  COMMAND sh -c "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | \"$<TARGET_FILE:vs-studio>\" --mcp")
+  COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:vs-studio> -DARGS=--mcp
+          -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/mcp_tools_list.jsonl -P ${CMAKE_CURRENT_SOURCE_DIR}/run_with_input.cmake)
 set_tests_properties(vs_studio_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity")
 add_test(NAME vs_studio_rejects_arguments COMMAND vs-studio --bogus)
 set_tests_properties(vs_studio_rejects_arguments PROPERTIES WILL_FAIL TRUE)

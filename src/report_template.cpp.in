@@ -3,10 +3,14 @@
 #include "voxelsieve/report.hpp"
 
 namespace voxelsieve {
+namespace {
+
+const unsigned char kTemplate[] = {@VOXELSIEVE_REPORT_TEMPLATE@};
+
+}  // namespace
 
 std::string_view defaultReportTemplate() {
-  static constexpr std::string_view kTemplate = R"vs_template(@VOXELSIEVE_REPORT_TEMPLATE@)vs_template";
-  return kTemplate;
+  return {reinterpret_cast<const char*>(kTemplate), sizeof(kTemplate)};
 }
 
 }  // namespace voxelsieve

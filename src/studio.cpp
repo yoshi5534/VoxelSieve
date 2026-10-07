@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -222,6 +223,14 @@ bool containsTiff(const std::filesystem::path& dir, int depth = 1) {
   return false;
 }
 
+/// The modification time of a file as text, for cache keys. (Its clock's count may be a 128-bit
+/// integer, as in libc++, which std::to_string does not take.)
+std::string fileStamp(const std::filesystem::path& file) {
+  return std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::filesystem::last_write_time(file).time_since_epoch())
+                            .count());
+}
+
 Json browse(const std::filesystem::path& requested) {
   const auto dir = std::filesystem::weakly_canonical(std::filesystem::absolute(requested));
   if (!std::filesystem::is_directory(dir)) {
@@ -277,7 +286,13 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
   }
   std::stringstream stream(value);
   std::string dir;
-  while (std::getline(stream, dir, ':')) {
+  // Separated like PATH: ';' on Windows, where ':' follows drive letters.
+#ifdef _WIN32
+  constexpr char kSeparator = ';';
+#else
+  constexpr char kSeparator = ':';
+#endif
+  while (std::getline(stream, dir, kSeparator)) {
     if (!dir.empty()) {
       dirs.emplace_back(dir);
     }
@@ -638,8 +653,7 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMeshOf(const std::filesystem::
                                                          std::size_t max_triangles) const {
   // The file time is part of the key: an undone step and its successor share the directory.
   const std::filesystem::path key =
-      file.string() + "#" + std::to_string(max_triangles) + "#" +
-      std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());
+      file.string() + "#" + std::to_string(max_triangles) + "#" + fileStamp(file);
   {
     const std::scoped_lock lock(surface_mutex_);
     for (const auto& [path, mesh] : surface_meshes_) {
@@ -668,10 +682,7 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
     const Json params = comparison_step ? Json{{"step", *comparison_step}} : Json::object();
     dir = project().resolve(artifactRef(params, artifact::kComparison));
   }
-  const std::filesystem::path key =
-      dir.string() + "#" +
-      std::to_string(
-          std::filesystem::last_write_time(dir / "deviation.ply").time_since_epoch().count());
+  const std::filesystem::path key = dir.string() + "#" + fileStamp(dir / "deviation.ply");
   {
     const std::scoped_lock lock(surface_mutex_);
     for (const auto& [path, view] : deviation_meshes_) {
@@ -703,9 +714,7 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
 }
 
 std::shared_ptr<const IndexedMesh> Studio::stlMesh(const std::filesystem::path& file) const {
-  const std::filesystem::path key =
-      file.string() + "#stl#" +
-      std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());
+  const std::filesystem::path key = file.string() + "#stl#" + fileStamp(file);
   {
     const std::scoped_lock lock(surface_mutex_);
     for (const auto& [path, mesh] : surface_meshes_) {

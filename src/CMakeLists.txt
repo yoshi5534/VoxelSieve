@@ -1,23 +1,26 @@
+# Files compiled in become byte arrays: string literals are limited to 64 KiB by the standard and
+# by MSVC, and the browser UI's scripts are larger.
+function(voxelsieve_embed out_var file)
+  file(READ ${file} hex HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," bytes "${hex}")
+  set(${out_var} "${bytes}" PARENT_SCOPE)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
+endfunction()
+
 # The report template is compiled in, so vs-report works without installed data files.
-set(VOXELSIEVE_REPORT_TEMPLATE_FILE ${PROJECT_SOURCE_DIR}/resources/report_template.html)
-file(READ ${VOXELSIEVE_REPORT_TEMPLATE_FILE} VOXELSIEVE_REPORT_TEMPLATE)
+voxelsieve_embed(VOXELSIEVE_REPORT_TEMPLATE ${PROJECT_SOURCE_DIR}/resources/report_template.html)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${VOXELSIEVE_REPORT_TEMPLATE_FILE})
 
 # The browser UI of vs-studio is compiled in the same way.
 set(VOXELSIEVE_UI_DIR ${PROJECT_SOURCE_DIR}/resources/ui)
-file(READ ${VOXELSIEVE_UI_DIR}/index.html VOXELSIEVE_UI_INDEX)
-file(READ ${VOXELSIEVE_UI_DIR}/app.js VOXELSIEVE_UI_SCRIPT)
-file(READ ${VOXELSIEVE_UI_DIR}/app.css VOXELSIEVE_UI_STYLE)
-file(READ ${VOXELSIEVE_UI_DIR}/viewer.js VOXELSIEVE_UI_VIEWER)
-file(READ ${VOXELSIEVE_UI_DIR}/volume.js VOXELSIEVE_UI_VOLUME)
-file(READ ${VOXELSIEVE_UI_DIR}/transfer.js VOXELSIEVE_UI_TRANSFER)
-file(READ ${VOXELSIEVE_UI_DIR}/scene.js VOXELSIEVE_UI_SCENE)
+voxelsieve_embed(VOXELSIEVE_UI_INDEX ${VOXELSIEVE_UI_DIR}/index.html)
+voxelsieve_embed(VOXELSIEVE_UI_SCRIPT ${VOXELSIEVE_UI_DIR}/app.js)
+voxelsieve_embed(VOXELSIEVE_UI_STYLE ${VOXELSIEVE_UI_DIR}/app.css)
+voxelsieve_embed(VOXELSIEVE_UI_VIEWER ${VOXELSIEVE_UI_DIR}/viewer.js)
+voxelsieve_embed(VOXELSIEVE_UI_VOLUME ${VOXELSIEVE_UI_DIR}/volume.js)
+voxelsieve_embed(VOXELSIEVE_UI_TRANSFER ${VOXELSIEVE_UI_DIR}/transfer.js)
+voxelsieve_embed(VOXELSIEVE_UI_SCENE ${VOXELSIEVE_UI_DIR}/scene.js)
 configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  ${VOXELSIEVE_UI_DIR}/index.html ${VOXELSIEVE_UI_DIR}/app.js ${VOXELSIEVE_UI_DIR}/app.css
-  ${VOXELSIEVE_UI_DIR}/viewer.js ${VOXELSIEVE_UI_DIR}/volume.js ${VOXELSIEVE_UI_DIR}/transfer.js
-  ${VOXELSIEVE_UI_DIR}/scene.js)
 
 add_library(voxelsieve SHARED
   builtin_operations.cpp

@@ -109,6 +109,13 @@ void registerBuiltinOperations(OperationRegistry& registry);
 [[nodiscard]] nlohmann::json validateParameters(const nlohmann::json& schema,
                                                 const nlohmann::json& params);
 
+/// File extension of plugin libraries on this platform (CMake's MODULE libraries).
+#ifdef _WIN32
+inline constexpr const char* kPluginExtension = ".dll";
+#else
+inline constexpr const char* kPluginExtension = ".so";
+#endif
+
 /// Plugin API version; plugins built against another version are rejected.
 inline constexpr int kPluginApiVersion = 3;
 
@@ -120,4 +127,8 @@ inline constexpr int kPluginApiVersion = 3;
 ///   extern "C" void voxelsieve_register_operations(voxelsieve::OperationRegistry& registry) {
 ///     registry.add(std::make_shared<MyOperation>());
 ///   }
+#ifdef _WIN32
+#define VOXELSIEVE_PLUGIN_EXPORT extern "C" __declspec(dllexport)
+#else
 #define VOXELSIEVE_PLUGIN_EXPORT extern "C" __attribute__((visibility("default")))
+#endif

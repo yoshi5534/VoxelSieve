@@ -22,6 +22,12 @@ faster and leaner we need the same numbers from every operation, per phase, kept
   `/proc/self/status`; the peak memory of each phase comes from resetting the high-water mark at
   each phase boundary (`/proc/self/clear_refs`, Linux 4.0+). Where that is not allowed the peaks
   count from process start, and the record says so. No new dependency.
+- Amendment (2026-10-07, Windows and macOS builds): macOS reads `getrusage`, `task_info` (memory
+  footprint as own pages, the rest of the resident set as mapped files) and `proc_pid_rusage`
+  (bytes to and from the device; logical writes). Windows reads `GetProcessTimes`,
+  `GetProcessMemoryInfo` (the whole working set counts as own pages, all page faults as minor)
+  and `GetProcessIoCounters` (bytes read and written, no device counters). On both the peaks
+  count from process start.
 - Library code marks its phases with `TelemetryPhase`, which goes to the calling thread's current
   recorder (`TelemetryScope`) and does nothing without one. So `writeDataset`,
   `analyzePorosity`, `segmentMaterials` and `compareToCad` report the same phases in the studio

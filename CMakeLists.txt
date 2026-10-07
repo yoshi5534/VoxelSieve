@@ -40,7 +40,14 @@ find_package(tinyply CONFIG REQUIRED)
 
 add_library(voxelsieve_warnings INTERFACE)
 if(MSVC)
-  target_compile_options(voxelsieve_warnings INTERFACE /W4)
+  # Standard C++ and UTF-8 sources; C4251/C4275 (members and bases of exported classes need a DLL
+  # interface) only matter for mixing compilers, which a C++ API cannot do anyway.
+  target_compile_options(voxelsieve_warnings INTERFACE /W4 /permissive- /utf-8 /bigobj
+                         /Zc:__cplusplus /Zc:preprocessor /external:W0 /wd4251 /wd4275)
+  target_compile_definitions(voxelsieve_warnings INTERFACE NOMINMAX WIN32_LEAN_AND_MEAN
+                             _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0A00)
+  # Every target links voxelsieve_warnings, so every program gets the UTF-8 manifest.
+  target_sources(voxelsieve_warnings INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/utf8.manifest)
   if(VOXELSIEVE_WARNINGS_AS_ERRORS)
     target_compile_options(voxelsieve_warnings INTERFACE /WX)
   endif()
@@ -49,6 +56,13 @@ else()
   if(VOXELSIEVE_WARNINGS_AS_ERRORS)
     target_compile_options(voxelsieve_warnings INTERFACE -Werror)
   endif()
+endif()
+
+if(WIN32)
+  # The library has no export macros: export everything, as on Linux and macOS. Programs, the
+  # library and vcpkg's DLLs share one directory, so the tools and tests find them.
+  set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
 add_subdirectory(src)

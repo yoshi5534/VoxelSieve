@@ -1,6 +1,13 @@
 #include "voxelsieve/operation.hpp"
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -131,6 +138,21 @@ std::vector<std::shared_ptr<const Operation>> OperationRegistry::all() const {
 }
 
 void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
+  using VersionFn = int (*)();
+  using RegisterFn = void (*)(OperationRegistry&);
+#ifdef _WIN32
+  HMODULE handle = LoadLibraryW(library.c_str());
+  if (handle == nullptr) {
+    throw std::runtime_error("Cannot load " + library.string() + ": Windows error " +
+                             std::to_string(GetLastError()));
+  }
+  std::shared_ptr<void> guard(handle, [](void* h) { FreeLibrary(static_cast<HMODULE>(h)); });
+  // GetProcAddress returns a generic function pointer; the plugin defines the real types.
+  auto* version =
+      reinterpret_cast<VersionFn>(GetProcAddress(handle, "voxelsieve_plugin_api_version"));
+  auto* register_operations =
+      reinterpret_cast<RegisterFn>(GetProcAddress(handle, "voxelsieve_register_operations"));
+#else
   void* handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
     const char* error = dlerror();
@@ -138,12 +160,11 @@ void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
                              (error != nullptr ? error : "unknown error"));
   }
   std::shared_ptr<void> guard(handle, [](void* h) { dlclose(h); });
-  using VersionFn = int (*)();
-  using RegisterFn = void (*)(OperationRegistry&);
   // dlsym returns object pointers; converting them to function pointers is how POSIX works.
   auto* version = reinterpret_cast<VersionFn>(dlsym(handle, "voxelsieve_plugin_api_version"));
   auto* register_operations =
       reinterpret_cast<RegisterFn>(dlsym(handle, "voxelsieve_register_operations"));
+#endif
   if (version == nullptr || register_operations == nullptr) {
     throw std::runtime_error(library.string() + " is not a VoxelSieve plugin");
   }
@@ -163,7 +184,7 @@ std::vector<std::string> OperationRegistry::loadPlugins(const std::filesystem::p
   }
   std::vector<std::filesystem::path> libraries;
   for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".so") {
+    if (entry.is_regular_file() && entry.path().extension() == kPluginExtension) {
       libraries.push_back(entry.path());
     }
   }
