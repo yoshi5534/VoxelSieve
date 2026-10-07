@@ -49,6 +49,11 @@ the result in its binary cache for later builds. A build directory configured be
 vcpkg does not pick up its toolchain; configure it again with `--fresh`
 (`cmake --preset release --fresh`).
 
+On Windows (x64, Visual Studio 2022 with the C++ workload, from a Developer PowerShell with Git
+Bash on the PATH) and macOS (Apple silicon, Xcode command line tools plus
+`brew install ninja autoconf autoconf-archive automake libtool pkg-config`), use the preset
+`windows` or `macos` instead of `release`. On Windows the programs land in `build/windows/bin`.
+
 ## Sieve a volume
 
 VoxelSieve writes either a bricked dataset (any size, streamed) or a single `.vdb` grid (small
@@ -300,7 +305,7 @@ change their inputs.
 ```cpp
 voxelsieve::OperationRegistry registry;
 voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, import_tiff, porosity, …
-registry.loadPlugins("plugins");                    // every *.so in the directory
+registry.loadPlugins("plugins");                    // every *.so (*.dll) in the directory
 auto project = voxelsieve::Project::create("casting.vsproj", "Casting 4711");
 project.run(registry, "import_raw", {{"path", "scan.raw"}});
 project.run(registry, "porosity");                  // input: the latest dataset

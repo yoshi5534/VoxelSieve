@@ -59,6 +59,10 @@ cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan   # 
 tools/lint.sh                                                                  # clang-format + parallel clang-tidy
 ```
 
+Windows and macOS build with the presets `windows` (MSVC, from a Developer PowerShell) and
+`macos` (Apple silicon); CI builds and tests both. Platform code stays behind `#ifdef _WIN32` /
+`__APPLE__` in few places (plugin loading, telemetry counters, signals); tests must not use a shell.
+
 clang-tidy is slow because every file pulls in the large OpenVDB headers; `tools/lint.sh` runs it
 in parallel and filters the noise about suppressed header findings. CI runs all of these; a PR is mergeable only when they pass. Presets build with warnings as errors.
 

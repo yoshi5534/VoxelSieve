@@ -335,7 +335,7 @@ TEST_F(ProjectTest, PluginsAddOperations) {
   ASSERT_NE(registry.find("histogram"), nullptr);
 
   std::filesystem::create_directories(dir_ / "bad");
-  std::ofstream(dir_ / "bad" / "not_a_plugin.so") << "text";
+  std::ofstream(dir_ / "bad" / (std::string("not_a_plugin") + kPluginExtension)) << "text";
   const auto bad = registry.loadPlugins(dir_ / "bad");
   ASSERT_EQ(bad.size(), 1U);
   EXPECT_EQ(bad.front().find("loaded"), std::string::npos);

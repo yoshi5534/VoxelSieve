@@ -110,3 +110,76 @@ jobs:
         run: cmake --preset debug
       - name: clang-format and clang-tidy
         run: tools/lint.sh build/debug
+
+  # Windows and macOS: the release preset of each platform, built and tested like on Linux. Each
+  # keeps its own vcpkg binary cache; the first run builds the dependencies from source.
+  platforms:
+    name: Build and test (${{ matrix.preset }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            preset: windows
+          - os: macos-15
+            preset: macos
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja autoconf autoconf-archive automake libtool pkg-config
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up vcpkg
+        run: |
+          temp="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == Windows ]]; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          echo "VCPKG_ROOT=$temp/vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$temp/vcpkg-archives" >> "$GITHUB_ENV"
+          mkdir -p "$temp/vcpkg-archives"
+          VCPKG_ROOT="$temp/vcpkg" tools/setup-vcpkg.sh
+      # A first run may hit the job timeout while building the dependencies; what it built is
+      # kept as a partial cache that the next run continues from.
+      - name: Restore binary cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-complete
+          restore-keys: |
+            vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-partial-
+            vcpkg-${{ matrix.preset }}-
+      - name: Configure
+        id: configure
+        timeout-minutes: 150
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Save binary cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-complete
+      - name: Save partial binary cache
+        if: failure() && steps.configure.outcome == 'failure'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Build
+        # Keep going after errors, so one run shows every file a compiler disagrees with.
+        run: cmake --build --preset ${{ matrix.preset }} -- -k 0
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --timeout 600 --parallel 4
+      - name: Upload vcpkg logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-${{ matrix.preset }}
+          path: build/vcpkg_installed/vcpkg/blds/**/*.log
+          if-no-files-found: ignore

@@ -1,9 +1,20 @@
 // vs-studio: the VoxelSieve studio (ADR 0008). Serves the browser UI on a local port, or with
 // --mcp the studio API to AI systems over the Model Context Protocol on stdin/stdout.
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <fcntl.h>
+#include <io.h>
+#include <windows.h>
+#else
 #include <pthread.h>
 
 #include <csignal>
+#endif
+
+#include <atomic>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -37,8 +48,9 @@ Options:
                         authentication; keep it on the local machine
   --mcp                 Serve MCP on stdin/stdout instead of the browser UI
   --project <dir>       Open this project at start; created if the directory has no project
-  --plugins <dir>       Load operation plugins (*.so) from <dir>; repeatable. Directories in
-                        VOXELSIEVE_PLUGIN_PATH (colon-separated) are loaded too
+  --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
+                        repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
+                        PATH) are loaded too
   -h, --help            Show this help
 )";
 
@@ -85,6 +97,37 @@ std::optional<Options> parse(int argc, char** argv) {
   return options;
 }
 
+#ifdef _WIN32
+std::atomic<bool> g_stop{false};
+
+BOOL WINAPI onConsoleEvent(DWORD /*event*/) {
+  g_stop = true;
+  g_stop.notify_all();
+  return TRUE;
+}
+#endif
+
+/// Serves the browser UI until Ctrl+C or a stop signal.
+void serveUntilStopped(voxelsieve::HttpServer& server) {
+#ifdef _WIN32
+  SetConsoleCtrlHandler(onConsoleEvent, TRUE);
+  std::thread thread([&server] { server.run(); });
+  g_stop.wait(false);
+#else
+  // Block the stop signals in all threads; this thread waits for them.
+  sigset_t signals;
+  sigemptyset(&signals);
+  sigaddset(&signals, SIGINT);
+  sigaddset(&signals, SIGTERM);
+  pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+  std::thread thread([&server] { server.run(); });
+  int signal = 0;
+  sigwait(&signals, &signal);
+#endif
+  server.stop();
+  thread.join();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -107,23 +150,18 @@ int main(int argc, char** argv) {
                         {{"path", options->project->string()}});
     }
     if (options->mcp) {
+#ifdef _WIN32
+      // Messages are lines ending in \n; text mode would turn them into \r\n.
+      (void)_setmode(_fileno(stdin), _O_BINARY);
+      (void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
       voxelsieve::McpServer::serve(studio, std::cin, std::cout);
       return 0;
     }
-    // Block the stop signals in all threads; this thread waits for them.
-    sigset_t signals;
-    sigemptyset(&signals);
-    sigaddset(&signals, SIGINT);
-    sigaddset(&signals, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &signals, nullptr);
     voxelsieve::HttpServer server(studio, options->host, options->port);
     std::cerr << "vs-studio: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
               << ":" << server.port() << "/  (Ctrl+C to stop)\n";
-    std::thread thread([&server] { server.run(); });
-    int signal = 0;
-    sigwait(&signals, &signal);
-    server.stop();
-    thread.join();
+    serveUntilStopped(server);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "vs-studio: " << error.what() << "\n";

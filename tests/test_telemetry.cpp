@@ -1,5 +1,12 @@
 #include <gtest/gtest.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #include <cstdint>
 #include <cstring>
@@ -23,11 +30,29 @@ namespace {
 
 using Json = nlohmann::json;
 
+/// CPU time of the process so far. std::clock measures wall time on Windows, so it asks the
+/// system there.
+double cpuSeconds() {
+#ifdef _WIN32
+  FILETIME created{};
+  FILETIME exited{};
+  FILETIME kernel{};
+  FILETIME user{};
+  GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+  const auto ticks = [](const FILETIME& t) {
+    return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32U) | t.dwLowDateTime;
+  };
+  return static_cast<double>(ticks(kernel) + ticks(user)) * 1e-7;  // 100 ns units
+#else
+  return static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+#endif
+}
+
 /// Spends `seconds` of CPU time on the calling thread and returns a value the compiler cannot drop.
 double busy(double seconds) {
-  const std::clock_t end = std::clock() + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC);
+  const double end = cpuSeconds() + seconds;
   double x = 0.0;
-  while (std::clock() < end) {
+  while (cpuSeconds() < end) {
     for (int i = 0; i < 10000; ++i) {
       x += 1e-9 * i;
     }
@@ -59,11 +84,18 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
     {
       const TelemetryPhase memory("memory");
       // Mapped directly, so it is returned on unmap (malloc and ASan's quarantine would keep it).
+#ifdef _WIN32
+      void* block = VirtualAlloc(nullptr, kMemoryBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+      ASSERT_NE(block, nullptr);
+      std::memset(block, 1, kMemoryBytes);  // touched, so resident
+      VirtualFree(block, 0, MEM_RELEASE);
+#else
       void* block =
           mmap(nullptr, kMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       ASSERT_NE(block, MAP_FAILED);
       std::memset(block, 1, kMemoryBytes);  // touched, so resident
       munmap(block, kMemoryBytes);
+#endif
     }
     {
       const TelemetryPhase write("write");
@@ -83,10 +115,11 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   const Json inner = phase(record, "inner");
   EXPECT_EQ(compute.at("depth"), 0);
   EXPECT_EQ(inner.at("depth"), 1);
-  EXPECT_GE(compute.at("wall_s").get<double>(), 0.3);
+  // Windows counts CPU time in scheduler ticks of about 15.6 ms; allow for one and for rounding.
+  EXPECT_GE(compute.at("wall_s").get<double>(), 0.28);
   EXPECT_GE(inner.at("wall_s").get<double>(), 0.1);
   EXPECT_LT(inner.at("wall_s").get<double>(), compute.at("wall_s").get<double>());
-  EXPECT_GE(compute.at("cpu_s").get<double>(), 0.29);
+  EXPECT_GE(compute.at("cpu_s").get<double>(), 0.28);
   EXPECT_GT(compute.at("cores_used").get<double>(), 0.0);
 
   const double memory_peak = phase(record, "memory").at("peak_rss_mb").get<double>();
@@ -132,18 +165,20 @@ TEST(TelemetryTest, PhasesWithoutARecorderDoNothing) {
 }
 
 TEST(TelemetryTest, TimelineIsSampledAndThinned) {
-  Telemetry telemetry("timeline", {.sample_interval_s = 0.02, .max_samples = 8});
+  // Long enough for more than max_samples samples even when wake-ups come late, as on macOS
+  // runners, where timer coalescing can delay a 10 ms wait several times over.
+  Telemetry telemetry("timeline", {.sample_interval_s = 0.01, .max_samples = 8});
   {
     const TelemetryScope scope(telemetry);
     const TelemetryPhase phase("busy");
-    EXPECT_GT(busy(0.5), 0.0);
+    EXPECT_GT(busy(1.5), 0.0);
   }
   const Json record = telemetry.finish();
   const Json& timeline = record.at("timeline");
   const auto points = timeline.at("t_s").size();
   EXPECT_GE(points, 3U);
   EXPECT_LE(points, 9U);
-  EXPECT_GT(timeline.at("interval_s").get<double>(), 0.02);  // thinned at least once
+  EXPECT_GT(timeline.at("interval_s").get<double>(), 0.01);  // thinned at least once
   for (const char* series : {"cores_used", "rss_anon_mb", "rss_file_mb", "disk_read_mb_s",
                              "disk_write_mb_s", "major_faults_s", "phase"}) {
     EXPECT_EQ(timeline.at(series).size(), points) << series;

@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include <tiffio.h>
-#include <unistd.h>
 #include <zip.h>
 
 #include <algorithm>
@@ -13,6 +12,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -89,18 +89,24 @@ std::vector<std::uint8_t> chunkSamples(const TiffSpec& spec, const std::vector<P
   return out;
 }
 
+/// Distinguishes the scratch files of test processes that run at the same time.
+std::string uniqueTag() {
+  static const std::string tag = std::to_string(std::random_device{}());
+  return tag;
+}
+
 /// A TIFF file with one page per entry of `pages`, written by libtiff.
 template <typename Pixel>
 std::vector<std::uint8_t> writeTiffPages(const TiffSpec& spec,
                                          const std::vector<std::vector<Pixel>>& pages) {
-  const auto file = std::filesystem::temp_directory_path() /
-                    ("voxelsieve_tiff_writer_" + std::to_string(::getpid()) + ".tif");
+  const auto file =
+      std::filesystem::temp_directory_path() / ("voxelsieve_tiff_writer_" + uniqueTag() + ".tif");
   std::string mode = "w";
   mode += spec.big_endian ? "b" : "l";
   if (spec.bigtiff) {
     mode += "8";
   }
-  TIFF* tiff = TIFFOpen(file.c_str(), mode.c_str());
+  TIFF* tiff = TIFFOpen(file.string().c_str(), mode.c_str());
   EXPECT_NE(tiff, nullptr);
   if (tiff == nullptr) {
     return {};
@@ -178,11 +184,11 @@ void writeFile(const std::filesystem::path& path, const std::vector<std::uint8_t
 /// A ZIP archive written by libzip; entries are deflated unless `stored`.
 std::vector<std::uint8_t> writeZip(
     const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& entries, bool stored) {
-  const auto file = std::filesystem::temp_directory_path() /
-                    ("voxelsieve_zip_writer_" + std::to_string(::getpid()) + ".zip");
+  const auto file =
+      std::filesystem::temp_directory_path() / ("voxelsieve_zip_writer_" + uniqueTag() + ".zip");
   std::filesystem::remove(file);
   int error = 0;
-  zip_t* archive = zip_open(file.c_str(), ZIP_CREATE | ZIP_EXCL, &error);
+  zip_t* archive = zip_open(file.string().c_str(), ZIP_CREATE | ZIP_EXCL, &error);
   EXPECT_NE(archive, nullptr);
   if (archive == nullptr) {
     return {};

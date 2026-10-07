@@ -11,7 +11,16 @@ if [[ ! -d "$root/.git" ]]; then
 fi
 git -C "$root" fetch --quiet origin "$baseline" 2>/dev/null || git -C "$root" fetch --quiet origin
 git -C "$root" -c advice.detachedHead=false checkout --quiet "$baseline"
-if [[ ! -x "$root/vcpkg" ]]; then
-  "$root/bootstrap-vcpkg.sh" -disableMetrics
-fi
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)  # Git Bash on Windows
+    if [[ ! -x "$root/vcpkg.exe" ]]; then
+      cmd //c "$(cygpath -w "$root/bootstrap-vcpkg.bat")" -disableMetrics
+    fi
+    ;;
+  *)
+    if [[ ! -x "$root/vcpkg" ]]; then
+      "$root/bootstrap-vcpkg.sh" -disableMetrics
+    fi
+    ;;
+esac
 echo "vcpkg $baseline in $root; export VCPKG_ROOT=$root before cmake --preset"

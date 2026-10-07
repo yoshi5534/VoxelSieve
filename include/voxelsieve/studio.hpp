@@ -190,7 +190,8 @@ class Studio {
   mutable std::mutex surface_mutex_;
 };
 
-/// Plugin directories from the environment variable VOXELSIEVE_PLUGIN_PATH (colon-separated).
+/// Plugin directories from the environment variable VOXELSIEVE_PLUGIN_PATH, separated like PATH
+/// (colons, semicolons on Windows).
 [[nodiscard]] std::vector<std::filesystem::path> pluginPathFromEnvironment();
 
 }  // namespace voxelsieve
