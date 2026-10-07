@@ -128,11 +128,14 @@ Project Project::create(const std::filesystem::path& dir, const std::string& nam
 }
 
 Project Project::open(const std::filesystem::path& dir) {
-  std::ifstream in(dir / "project.json");
-  if (!in) {
-    throw std::invalid_argument("Not a VoxelSieve project: " + dir.string());
-  }
-  const Json json = Json::parse(in);
+  // Closed before a migration saves the project: Windows cannot replace a file that is open.
+  const Json json = [&dir] {
+    std::ifstream in(dir / "project.json");
+    if (!in) {
+      throw std::invalid_argument("Not a VoxelSieve project: " + dir.string());
+    }
+    return Json::parse(in);
+  }();
   const int format = json.value("format", 0);
   if (format > kProjectFormat) {
     throw std::invalid_argument("Project was written by a newer VoxelSieve: " + dir.string());
