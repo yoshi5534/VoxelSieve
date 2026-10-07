@@ -172,7 +172,8 @@ jobs:
           path: ${{ runner.temp }}/vcpkg-archives
           key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        # Keep going after errors, so one run shows every file a compiler disagrees with.
+        run: cmake --build --preset ${{ matrix.preset }} -- -k 0
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --timeout 600 --parallel 4
       - name: Upload vcpkg logs
