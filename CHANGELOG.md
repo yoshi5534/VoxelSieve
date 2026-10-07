@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Faster material segmentation**: bricks are segmented in parallel. Before, only the filters
+  inside one brick ran in parallel and the 1250 x 1250 x 4000 LoDoInd scan took 23 min with 1.3
+  of 16 cores busy. A 768³ phantom now takes 8 s instead of 19 s on 4 cores; memory grows by
+  about 300 MB per core.
+
 ## 0.2.1 (2026-10-07)
 
 - **MCP bundles hold the server again**: the `.mcpb` files of 0.2.0 were empty (22 bytes) because
