@@ -390,13 +390,37 @@ The server listens on 127.0.0.1 only and has no authentication; do not expose it
 ## AI systems: MCP
 
 `vs-studio --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
-drive VoxelSieve: create or open a project, run operations, undo and redo, and read results.
-Register it with an MCP client as a stdio server, for example:
+drive VoxelSieve: create or open a project, run operations, undo and redo, and read results. It
+runs on your machine: scans stay where they are, and the assistant only receives results such as
+pore lists, measurements, slice images and reports.
+
+**Install.** Every [release](https://github.com/yoshi5534/VoxelSieve/releases) has packages for
+Linux (x64), Windows (x64) and macOS (Apple silicon), built from the same sources:
+
+- `voxelsieve-<version>-<platform>.mcpb`: an MCP bundle. Open it with Claude Desktop (double-click it, or
+  drag it onto the Extensions page of the settings) and choose the directories with your scans.
+- `voxelsieve-<version>-<platform>.tar.gz` / `.zip`: all tools with their libraries. Unpack it
+  anywhere; nothing else needs to be installed.
+
+The packages are not signed yet. On macOS, clear the download flag once with
+`xattr -dr com.apple.quarantine voxelsieve-*`; on Windows, SmartScreen may ask for confirmation.
+The Linux build needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40).
+
+**Register** the unpacked server with any MCP client as a stdio server. Directories after the
+options are the only places VoxelSieve reads data from and keeps projects in:
+
+```sh
+claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-studio --mcp /data/scans   # Claude Code
+```
 
 ```json
-{"mcpServers": {"voxelsieve": {"command": "vs-studio",
-                               "args": ["--mcp", "--project", "/data/casting.vsproj"]}}}
+{"mcpServers": {"voxelsieve": {"command": "/opt/voxelsieve/bin/vs-studio",
+                               "args": ["--mcp", "/data/scans"]}}}
 ```
+
+Then ask, for example: "Import /data/scans/housing.raw, analyse the porosity and write an
+inspection report with the example order", or "Show me slice 400 of the latest dataset with the
+pores". A client can cancel a running import or analysis; it stops at its next progress report.
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
 `list_operations`, `dataset_info`, `view_slice` (a slice as an image, with pores and zones),

@@ -1,0 +1,130 @@
+name: Packages
+
+# Builds the self-contained packages of VoxelSieve for Linux, Windows and macOS: an archive of the
+# installed tree (programs, libraries, examples, licenses) and an MCP bundle (.mcpb) for one-click
+# installation in Claude Desktop. When a release is published on GitHub, the packages are attached
+# to it; otherwise they are workflow artifacts. Publishing stays a manual step.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+      - cmake/Install.cmake
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: release
+            platform: linux
+            arch: x64
+          - os: windows-2022
+            preset: windows
+            platform: win32
+            arch: x64
+          - os: macos-15
+            preset: macos
+            platform: darwin
+            arch: arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build autoconf autoconf-archive \
+            automake libtool pkg-config
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja autoconf autoconf-archive automake libtool pkg-config
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up vcpkg
+        id: vcpkg
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            # The same cache as the Linux CI jobs.
+            echo "VCPKG_ROOT=/home/runner/vcpkg" >> "$GITHUB_ENV"
+            echo "archives=$HOME/.cache/vcpkg/archives" >> "$GITHUB_OUTPUT"
+            echo "key=vcpkg-$(g++ -dumpfullversion)-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}" >> "$GITHUB_OUTPUT"
+            VCPKG_ROOT=/home/runner/vcpkg tools/setup-vcpkg.sh
+          else
+            temp="$RUNNER_TEMP"
+            if [[ "$RUNNER_OS" == Windows ]]; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+            echo "VCPKG_ROOT=$temp/vcpkg" >> "$GITHUB_ENV"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$temp/vcpkg-archives" >> "$GITHUB_ENV"
+            mkdir -p "$temp/vcpkg-archives"
+            echo "archives=$temp/vcpkg-archives" >> "$GITHUB_OUTPUT"
+            echo "key=vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-complete" >> "$GITHUB_OUTPUT"
+            VCPKG_ROOT="$temp/vcpkg" tools/setup-vcpkg.sh
+          fi
+      - name: Restore binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.vcpkg.outputs.archives }}
+          key: ${{ steps.vcpkg.outputs.key }}
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }} -DVOXELSIEVE_BUILD_TESTS=OFF -DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Install
+        id: install
+        run: |
+          version="$(sed -n 's/^project(VoxelSieve VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          name="voxelsieve-${version}-${{ matrix.platform }}-${{ matrix.arch }}"
+          cmake --install build/${{ matrix.preset }} --prefix "stage/$name"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Check that the installed tree runs on its own
+        run: |
+          # The MCP server answers tools/list with the bundled libraries only (the build tree and
+          # vcpkg are moved away first).
+          mv build build-moved
+          mkdir -p check
+          stage/${{ steps.install.outputs.name }}/bin/vs-studio --mcp check < tests/mcp_tools_list.jsonl > tools.json
+          grep -q run_porosity tools.json
+          mv build-moved build
+      - name: Pack
+        run: |
+          name="${{ steps.install.outputs.name }}"
+          mkdir -p dist
+          cmake -DSTAGE="stage/$name" -DOUT="dist/$name.mcpb" -DVERSION="${{ steps.install.outputs.version }}" \
+            -DPLATFORM=${{ matrix.platform }} -P packaging/make-mcpb.cmake
+          cd stage
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cmake -E tar cf "../dist/$name.zip" --format=zip "$name"
+          else
+            tar czf "../dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.install.outputs.name }}
+          path: dist/*
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber

@@ -1,0 +1,33 @@
+{
+  "manifest_version": "0.3",
+  "name": "voxelsieve",
+  "display_name": "VoxelSieve",
+  "version": "@VERSION@",
+  "description": "Analyse industrial CT scans on your own machine: porosity, surfaces, nominal-actual comparison with CAD models and inspection reports, also for scans larger than memory.",
+  "long_description": "VoxelSieve removes the outside air from reconstructed CT volumes and keeps the part with its pores in a sparse, bricked dataset. Your scans stay on this computer: the AI assistant only receives results such as pore lists, measurements, slice images and reports. VoxelSieve reads data and keeps its projects only in the directories you choose here.",
+  "author": { "name": "VoxelSieve contributors", "url": "https://github.com/yoshi5534/VoxelSieve" },
+  "homepage": "https://github.com/yoshi5534/VoxelSieve",
+  "documentation": "https://github.com/yoshi5534/VoxelSieve#readme",
+  "repository": { "type": "git", "url": "https://github.com/yoshi5534/VoxelSieve" },
+  "license": "Apache-2.0",
+  "keywords": ["ct", "computed tomography", "porosity", "inspection", "openvdb"],
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/vs-studio@EXE@",
+    "mcp_config": {
+      "command": "${__dirname}/bin/vs-studio@EXE@",
+      "args": ["--mcp", "${user_config.directories}"]
+    }
+  },
+  "user_config": {
+    "directories": {
+      "type": "directory",
+      "title": "CT data directories",
+      "description": "Directories with your scans and CAD models. VoxelSieve reads data and keeps projects only here.",
+      "multiple": true,
+      "required": true
+    }
+  },
+  "tools_generated": true,
+  "compatibility": { "platforms": ["@PLATFORM@"] }
+}
