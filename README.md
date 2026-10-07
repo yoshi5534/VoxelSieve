@@ -16,7 +16,7 @@ All three images come from one synthetic scan of 1025 × 775 × 525 voxels (830 
 `vs-synth --box 80 60 40 --voxel-size 0.08 --lunker 6 --loosening 3 --noise 500 --cupping 0.1
 --seed 7`. Every lunker volume and every zone is found within 2 % of the ground truth.
 
-Status: early development, first release 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)). The tools:
+Status: early development, latest release 0.2.0 (see [CHANGELOG.md](CHANGELOG.md)). The tools:
 
 | Tool | Does |
 |---|---|
