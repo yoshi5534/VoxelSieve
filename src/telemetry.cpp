@@ -35,7 +35,6 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
-#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -396,9 +395,30 @@ struct Telemetry::Impl {
   double interval_s = 0.0;
 
   std::optional<Json> record;
-  std::condition_variable_any wake;
-  // Last, so it stops (and joins) before the members it uses are destroyed.
-  std::jthread sampler;
+  std::condition_variable wake;
+  bool stopping = false;
+  std::thread sampler;
+
+  Impl() = default;
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  Impl(Impl&&) = delete;
+  Impl& operator=(Impl&&) = delete;
+  ~Impl() { stopSampler(); }
+
+  /// Stops the sampling thread and waits for it. (std::jthread would do this, but libc++ before
+  /// LLVM 20, as in Xcode 16, has it only as an experimental feature.)
+  void stopSampler() {
+    if (!sampler.joinable()) {
+      return;
+    }
+    {
+      const std::scoped_lock lock(mutex);
+      stopping = true;
+    }
+    wake.notify_all();
+    sampler.join();
+  }
 
   /// Folds the counters into every open phase; at a phase boundary also restarts the peak, so
   /// the next interval gets its own. Needs the lock.
@@ -425,11 +445,11 @@ struct Telemetry::Impl {
     }
   }
 
-  void sample(const std::stop_token& stop) {
+  void sample() {
     std::unique_lock lock(mutex);
     while (true) {
-      wake.wait_for(lock, stop, std::chrono::duration<double>(interval_s), [] { return false; });
-      if (stop.stop_requested()) {
+      wake.wait_for(lock, std::chrono::duration<double>(interval_s), [this] { return stopping; });
+      if (stopping) {
         break;
       }
       const Counters c = readCounters(start);
@@ -495,7 +515,7 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
   d.total.fold(d.total.begin);
   if (d.interval_s > 0.0) {
     d.samples.push_back({d.total.begin, ""});
-    d.sampler = std::jthread([&d](const std::stop_token& stop) { d.sample(stop); });
+    d.sampler = std::thread([&d] { d.sample(); });
   }
 }
 
@@ -544,10 +564,7 @@ nlohmann::json Telemetry::finish() {
       return *d.record;
     }
   }
-  if (d.sampler.joinable()) {
-    d.sampler.request_stop();
-    d.sampler.join();
-  }
+  d.stopSampler();
   const std::scoped_lock lock(d.mutex);
   const Counters c = readCounters(d.start);
   d.boundary(c);
