@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <future>
 #include <istream>
+#include <list>
 #include <ostream>
 #include <stdexcept>
 
@@ -58,7 +61,12 @@ Json toolResult(Json value, bool is_error) {
 McpServer::McpServer(Studio& studio, std::function<void(const Json&)> send)
     : studio_(studio), send_(std::move(send)) {}
 
-Json McpServer::callTool(const Json& params) {
+bool McpServer::cancelled(const Json& id) const {
+  const std::scoped_lock lock(mutex_);
+  return cancelled_.contains(id.dump());
+}
+
+Json McpServer::callTool(const Json& id, const Json& params) {
   if (!params.contains("name") || !params.at("name").is_string()) {
     throw std::invalid_argument("tools/call needs a tool name");
   }
@@ -78,6 +86,18 @@ Json McpServer::callTool(const Json& params) {
              {"params", {{"progressToken", token}, {"progress", fraction}, {"total", 1.0}}}});
     };
   }
+  {
+    const std::scoped_lock lock(mutex_);
+    running_.insert(id.dump());
+  }
+  struct Done {
+    McpServer& server;
+    std::string id;
+    ~Done() {
+      const std::scoped_lock lock(server.mutex_);
+      server.running_.erase(id);
+    }
+  } const done{*this, id.dump()};
   try {
     return toolResult(studio_.call(name, arguments, progress), false);
   } catch (const std::exception& error) {
@@ -97,7 +117,16 @@ std::optional<Json> McpServer::handle(const Json& message) {
   }
   const std::string method = message.at("method").get<std::string>();
   if (!message.contains("id")) {
-    return std::nullopt;  // notifications: initialized, cancelled, ...
+    if (method == "notifications/cancelled" && message.contains("params") &&
+        message.at("params").contains("requestId")) {
+      const std::string id = message.at("params").at("requestId").dump();
+      const std::scoped_lock lock(mutex_);
+      if (running_.contains(id)) {
+        cancelled_.insert(id);
+        studio_.cancel();  // one operation runs at a time: the one of this call
+      }
+    }
+    return std::nullopt;  // other notifications: initialized, ...
   }
   const Json& id = message.at("id");
   const Json params = message.value("params", Json::object());
@@ -128,7 +157,7 @@ std::optional<Json> McpServer::handle(const Json& message) {
       return std::make_optional(resultResponse(id, {{"tools", tools}}));
     }
     if (method == "tools/call") {
-      return std::make_optional(resultResponse(id, callTool(params)));
+      return std::make_optional(resultResponse(id, callTool(id, params)));
     }
     return std::make_optional(errorResponse(id, kMethodNotFound, "Method not found: " + method));
   } catch (const std::invalid_argument& error) {
@@ -139,12 +168,19 @@ std::optional<Json> McpServer::handle(const Json& message) {
 }
 
 void McpServer::serve(Studio& studio, std::istream& in, std::ostream& out) {
-  const auto send = [&out](const Json& message) {
-    out << message.dump(-1, ' ', false, Json::error_handler_t::replace) << '\n' << std::flush;
+  std::mutex out_mutex;
+  const auto send = [&out, &out_mutex](const Json& message) {
+    const std::string text = message.dump(-1, ' ', false, Json::error_handler_t::replace);
+    const std::scoped_lock lock(out_mutex);
+    out << text << '\n' << std::flush;
   };
   McpServer server(studio, send);
+  std::list<std::future<void>> calls;
   std::string line;
   while (std::getline(in, line)) {
+    std::erase_if(calls, [](const std::future<void>& call) {
+      return call.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    });
     if (line.find_first_not_of(" \t\r") == std::string::npos) {
       continue;
     }
@@ -155,10 +191,25 @@ void McpServer::serve(Studio& studio, std::istream& in, std::ostream& out) {
       send(errorResponse(Json(), kParseError, error.what()));
       continue;
     }
+    if (message.is_object() && message.contains("id") &&
+        message.value("method", "") == "tools/call") {
+      calls.push_back(std::async(std::launch::async, [&server, &send, message] {
+        if (const auto response = server.handle(message);
+            response && !server.cancelled(message.at("id"))) {
+          send(*response);
+        }
+      }));
+      continue;
+    }
     if (const auto response = server.handle(message)) {
       send(*response);
     }
   }
+  // The client is gone: stop what still runs.
+  if (!calls.empty()) {
+    studio.cancel();
+  }
+  calls.clear();  // waits for each call
 }
 
 }  // namespace voxelsieve
