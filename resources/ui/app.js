@@ -1828,7 +1828,12 @@ function renderSceneView(panel) {
   panel.append(el('div', { className: 'viewer scene' }, el('div', {}, tools, canvas, status),
     side));
   describe();
-  scene.attach(canvas);
+  try {
+    scene.attach(canvas);
+  } catch (error) {
+    status.textContent = error.message;
+    return;
+  }
   scene.setObjects(objects.map((object, index) => ({ ...object, index,
     key: objectKey(object) }))).catch((error) => { status.textContent = error.message; });
 }

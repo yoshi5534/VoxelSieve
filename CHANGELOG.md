@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-10-07)
+
+- **Clear message without WebGL2**: when the browser has WebGL2 turned off, the 3D and Objects
+  views say so and how to turn it on, instead of failing silently.
+
 - **Packages and MCP bundles**: every published release gets self-contained packages for Linux
   (x64), Windows (x64) and macOS (Apple silicon), as an archive with all tools and their libraries
   and as an MCP bundle (`.mcpb`) for one-click installation in Claude Desktop. `cmake --install`
