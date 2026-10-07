@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 (2026-10-07)
+
 - **MCP bundles hold the server again**: the `.mcpb` files of 0.2.0 were empty (22 bytes) because
   the packing script resolved the install directory wrongly; it now checks that each bundle holds
   `manifest.json` and `vs-studio`.

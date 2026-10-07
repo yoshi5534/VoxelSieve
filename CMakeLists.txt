@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(VoxelSieve VERSION 0.2.0 LANGUAGES CXX)
+project(VoxelSieve VERSION 0.2.1 LANGUAGES CXX)
 
 # The presets set VCPKG_TARGET_TRIPLET. CMake only loads a toolchain on the first configure of a
 # build directory, so a directory configured before the switch to vcpkg silently keeps finding the
