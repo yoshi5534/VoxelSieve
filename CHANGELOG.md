@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Packages and MCP bundles**: every published release gets self-contained packages for Linux
+  (x64), Windows (x64) and macOS (Apple silicon), as an archive with all tools and their libraries
+  and as an MCP bundle (`.mcpb`) for one-click installation in Claude Desktop. `cmake --install`
+  installs the tools; `-DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON` adds the libraries they need.
+
+- **Windows and macOS** (#44): VoxelSieve builds and passes its tests with MSVC on Windows (x64)
+  and with Apple Clang on macOS (Apple silicon), presets `windows` and `macos`; CI runs both.
+  Plugins are DLLs on Windows, and telemetry reads the counters of each system.
+
+- **Allowed directories and cancelling over MCP**: `vs-studio [--mcp] <dir>...` reads data and
+  keeps projects only inside the given directories (path parameters carry `"format": "path"` in
+  their schemas and are checked, symbolic links and `..` included). MCP tool calls run on their
+  own threads, so a client can cancel a running operation (`notifications/cancelled`); it stops
+  at its next progress report, which imports reach often.
+
 - **Smooth other volumes in the slice view**: another volume shown in the slice is interpolated
   between its voxels and its material edge fades in around its threshold, so a turned scan no
   longer looks like a staircase of voxels.

@@ -52,6 +52,8 @@ struct OperationContext {
   std::filesystem::path output_dir;
   std::function<void(double fraction)> progress = [](double) {};
   std::function<void(const std::string& message)> log = [](const std::string&) {};
+  /// Set when the operation should stop. `progress` throws once it is set, so an operation that
+  /// reports progress stops without looking at it.
   const std::atomic<bool>* cancel = nullptr;
   /// The objects of the project before this step (ADR 0018): an array of {id, name, kind, pose,
   /// outputs}, the pose as a row-major 4x4 matrix from object to global coordinates in mm and

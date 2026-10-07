@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -528,4 +529,52 @@ TEST_F(StudioTest, McpServeReadsLines) {
 }
 
 }  // namespace
+TEST_F(StudioTest, AllowedRootsKeepPathsInside) {
+  Studio studio;
+  std::filesystem::create_directories(dir_ / "data");
+  std::filesystem::copy_file(dir_ / "scan.raw", dir_ / "data" / "scan.raw");
+  std::filesystem::copy_file(dir_ / "scan.json", dir_ / "data" / "scan.json");
+  studio.setAllowedRoots({dir_ / "data"});
+  EXPECT_THROW(studio.setAllowedRoots({dir_ / "missing"}), std::invalid_argument);
+  ASSERT_EQ(studio.allowedRoots().size(), 1U);
+
+  // Browsing starts in the root and stays inside; "..", other directories and files are refused.
+  EXPECT_EQ(std::filesystem::path(studio.call("browse", {}).at("path").get<std::string>()),
+            std::filesystem::canonical(dir_ / "data"));
+  EXPECT_THROW(studio.call("browse", {{"path", dir_.string()}}), std::invalid_argument);
+  EXPECT_THROW(studio.call("browse", {{"path", (dir_ / "data" / "..").string()}}),
+               std::invalid_argument);
+  EXPECT_THROW(studio.call("project_create", {{"path", (dir_ / "p").string()}}),
+               std::invalid_argument);
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "p"));
+
+  studio.call("project_create", {{"path", (dir_ / "data" / "p").string()}});
+  EXPECT_THROW(studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}}),
+               std::invalid_argument);
+  const Json step = studio.call(
+      "run_import_raw", {{"path", (dir_ / "data" / "scan.raw").string()}, {"brick_size", 32}});
+  EXPECT_EQ(step.at("status"), "done");
+}
+
+TEST_F(StudioTest, CancelledOperationsFailAtTheirNextProgressReport) {
+  OperationRegistry registry;
+  registerBuiltinOperations(registry);
+  Project project = Project::create(dir_ / "p", "p");
+  const std::atomic<bool> cancel = true;
+  EXPECT_THROW(
+      project.run(registry, "import_raw",
+                  {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}}, {}, {}, &cancel),
+      std::runtime_error);
+  ASSERT_EQ(project.steps().size(), 1U);
+  EXPECT_EQ(project.steps().front().status, "failed");
+}
+
+TEST_F(StudioTest, McpCancellationOnlyConcernsRunningCalls) {
+  Studio studio;
+  McpServer server(studio, [](const Json&) {});
+  EXPECT_FALSE(server.handle(
+      {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}}));
+  EXPECT_FALSE(server.cancelled(7));
+}
+
 }  // namespace voxelsieve

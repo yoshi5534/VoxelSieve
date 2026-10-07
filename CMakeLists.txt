@@ -18,6 +18,17 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(VOXELSIEVE_BUILD_TESTS "Build unit tests" ON)
 option(VOXELSIEVE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(VOXELSIEVE_INSTALL_RUNTIME_DEPS
+       "Install the shared libraries the programs need next to them, for self-contained packages" OFF)
+
+# Installed programs find libvoxelsieve and the bundled libraries in ../lib (on Windows, DLLs sit
+# next to the programs in bin).
+include(GNUInstallDirs)
+if(APPLE)
+  set(CMAKE_INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+elseif(UNIX)
+  set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindOpenVDBModule)
@@ -80,3 +91,5 @@ if(VOXELSIEVE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+include(cmake/Install.cmake)

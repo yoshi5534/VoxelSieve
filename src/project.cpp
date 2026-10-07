@@ -433,9 +433,15 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
     context.inputs[name] = resolve(ref);
   }
   context.output_dir = dir;
-  if (progress) {
-    context.progress = progress;
-  }
+  // A cancelled operation stops at its next progress report; the step fails with this message.
+  context.progress = [progress, cancel](double fraction) {
+    if (cancel != nullptr && cancel->load()) {
+      throw std::runtime_error("Cancelled");
+    }
+    if (progress) {
+      progress(fraction);
+    }
+  };
   context.log = [&stored](const std::string& message) { stored.messages.push_back(message); };
   context.cancel = cancel;
   // The objects with their latest output of every type, so operations can work on several.
