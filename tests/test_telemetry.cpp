@@ -1,5 +1,12 @@
 #include <gtest/gtest.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #include <cstdint>
 #include <cstring>
@@ -59,11 +66,18 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
     {
       const TelemetryPhase memory("memory");
       // Mapped directly, so it is returned on unmap (malloc and ASan's quarantine would keep it).
+#ifdef _WIN32
+      void* block = VirtualAlloc(nullptr, kMemoryBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+      ASSERT_NE(block, nullptr);
+      std::memset(block, 1, kMemoryBytes);  // touched, so resident
+      VirtualFree(block, 0, MEM_RELEASE);
+#else
       void* block =
           mmap(nullptr, kMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       ASSERT_NE(block, MAP_FAILED);
       std::memset(block, 1, kMemoryBytes);  // touched, so resident
       munmap(block, kMemoryBytes);
+#endif
     }
     {
       const TelemetryPhase write("write");

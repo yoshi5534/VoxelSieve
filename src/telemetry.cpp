@@ -1,7 +1,23 @@
 #include "voxelsieve/telemetry.hpp"
 
-#include <sys/resource.h>
 #include <tbb/task_arena.h>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// windows.h first: psapi.h needs its types.
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <libproc.h>
+#include <mach/mach.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
+#else
+#include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -22,6 +38,7 @@
 #include <stop_token>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace voxelsieve {
@@ -30,7 +47,7 @@ namespace {
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-constexpr double kKb = 1024.0;
+[[maybe_unused]] constexpr double kKb = 1024.0;  // Linux reports kB
 constexpr double kMb = 1024.0 * 1024.0;
 
 /// Cumulative counters of the process at one moment.
@@ -40,6 +57,7 @@ struct Counters {
   double cpu_system_s = 0.0;
   std::int64_t major_faults = 0;
   std::int64_t minor_faults = 0;
+  // Linux fills every field; macOS and Windows what they report (see readProcessCounters).
   // /proc/self/io: rchar/wchar count every read() and write() (page cache hits too, but not
   // accesses to mapped files); read_bytes/write_bytes what reached the storage device.
   double read_mb = 0.0;
@@ -53,9 +71,112 @@ struct Counters {
   double hwm_mb = 0.0;
 };
 
+#if defined(_WIN32)
+
+double fileTimeSeconds(const FILETIME& time) {
+  const auto ticks = (static_cast<std::uint64_t>(time.dwHighDateTime) << 32U) | time.dwLowDateTime;
+  return static_cast<double>(ticks) * 1e-7;  // 100 ns ticks
+}
+
+/// Windows has no split of resident memory into own and file pages without walking the working
+/// set, so all of it counts as the process's own; page faults are not split into major and minor.
+void readProcessCounters(Counters& c) {
+  const HANDLE process = GetCurrentProcess();
+  FILETIME created{};
+  FILETIME exited{};
+  FILETIME kernel{};
+  FILETIME user{};
+  if (GetProcessTimes(process, &created, &exited, &kernel, &user) != 0) {
+    c.cpu_user_s = fileTimeSeconds(user);
+    c.cpu_system_s = fileTimeSeconds(kernel);
+  }
+  PROCESS_MEMORY_COUNTERS memory{};
+  if (GetProcessMemoryInfo(process, &memory, sizeof(memory)) != 0) {
+    c.minor_faults = memory.PageFaultCount;
+    c.rss_anon_mb = static_cast<double>(memory.WorkingSetSize) / kMb;
+    c.hwm_mb = static_cast<double>(memory.PeakWorkingSetSize) / kMb;
+  }
+  IO_COUNTERS io{};
+  if (GetProcessIoCounters(process, &io) != 0) {
+    c.read_mb = static_cast<double>(io.ReadTransferCount) / kMb;
+    c.write_mb = static_cast<double>(io.WriteTransferCount) / kMb;
+  }
+}
+
+/// Total and available physical memory in MB.
+std::pair<double, double> systemMemoryMb() {
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  if (GlobalMemoryStatusEx(&status) == 0) {
+    return {0.0, 0.0};
+  }
+  return {static_cast<double>(status.ullTotalPhys) / kMb,
+          static_cast<double>(status.ullAvailPhys) / kMb};
+}
+
+#else
+
 double timevalSeconds(const timeval& tv) {
   return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) * 1e-6;
 }
+
+void readUsage(Counters& c) {
+  rusage usage{};
+  if (getrusage(RUSAGE_SELF, &usage) == 0) {
+    c.cpu_user_s = timevalSeconds(usage.ru_utime);
+    c.cpu_system_s = timevalSeconds(usage.ru_stime);
+    c.major_faults = usage.ru_majflt;
+    c.minor_faults = usage.ru_minflt;
+#if defined(__APPLE__)
+    c.hwm_mb = static_cast<double>(usage.ru_maxrss) / kMb;  // bytes on macOS
+#endif
+  }
+}
+
+#endif
+
+#if defined(__APPLE__)
+
+/// macOS: the memory footprint counts as the process's own pages, the rest of the resident set
+/// as mapped files; bytes read and written come from the storage device counters.
+void readProcessCounters(Counters& c) {
+  readUsage(c);
+  task_vm_info_data_t info{};
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) ==
+      KERN_SUCCESS) {
+    const auto own = static_cast<double>(info.phys_footprint);
+    const auto resident = static_cast<double>(info.resident_size);
+    c.rss_anon_mb = own / kMb;
+    c.rss_file_mb = std::max(0.0, resident - own) / kMb;
+  }
+  rusage_info_v4 io{};
+  if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, reinterpret_cast<rusage_info_t*>(&io)) == 0) {
+    c.disk_read_mb = static_cast<double>(io.ri_diskio_bytesread) / kMb;
+    c.disk_write_mb = static_cast<double>(io.ri_diskio_byteswritten) / kMb;
+    c.read_mb = c.disk_read_mb;
+    c.write_mb = static_cast<double>(io.ri_logical_writes) / kMb;
+  }
+}
+
+std::pair<double, double> systemMemoryMb() {
+  std::uint64_t total = 0;
+  std::size_t size = sizeof(total);
+  if (sysctlbyname("hw.memsize", &total, &size, nullptr, 0) != 0) {
+    return {0.0, 0.0};
+  }
+  vm_statistics64_data_t vm{};
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  double available = 0.0;
+  if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm),
+                        &count) == KERN_SUCCESS) {
+    available = static_cast<double>(vm.free_count + vm.inactive_count + vm.purgeable_count) *
+                static_cast<double>(sysconf(_SC_PAGESIZE));
+  }
+  return {static_cast<double>(total) / kMb, available / kMb};
+}
+
+#elif !defined(_WIN32)
 
 /// Reads "key: value" lines, value in the unit of the file (kB in status and meminfo).
 void readKeyValues(const char* file, const std::function<void(std::string_view, double)>& use) {
@@ -76,16 +197,8 @@ void readKeyValues(const char* file, const std::function<void(std::string_view, 
   }
 }
 
-Counters readCounters(Clock::time_point start) {
-  Counters c;
-  c.t_s = std::chrono::duration<double>(Clock::now() - start).count();
-  rusage usage{};
-  if (getrusage(RUSAGE_SELF, &usage) == 0) {
-    c.cpu_user_s = timevalSeconds(usage.ru_utime);
-    c.cpu_system_s = timevalSeconds(usage.ru_stime);
-    c.major_faults = usage.ru_majflt;
-    c.minor_faults = usage.ru_minflt;
-  }
+void readProcessCounters(Counters& c) {
+  readUsage(c);
   readKeyValues("/proc/self/io", [&c](std::string_view key, double value) {
     if (key == "rchar") {
       c.read_mb = value / kMb;
@@ -106,16 +219,41 @@ Counters readCounters(Clock::time_point start) {
       c.hwm_mb = value / kKb;
     }
   });
+}
+
+std::pair<double, double> systemMemoryMb() {
+  double total = 0.0;
+  double available = 0.0;
+  readKeyValues("/proc/meminfo", [&](std::string_view key, double value) {
+    if (key == "MemTotal") {
+      total = value / kKb;
+    } else if (key == "MemAvailable") {
+      available = value / kKb;
+    }
+  });
+  return {total, available};
+}
+
+#endif
+
+Counters readCounters(Clock::time_point start) {
+  Counters c;
+  c.t_s = std::chrono::duration<double>(Clock::now() - start).count();
+  readProcessCounters(c);
   return c;
 }
 
 /// Resets the high-water mark of resident memory to the current value (Linux 4.0 and later), so
 /// each phase gets its own peak. Returns false where that is not possible.
 bool resetPeakMemory() {
+#if defined(__linux__)
   std::ofstream clear("/proc/self/clear_refs");
   clear << "5";
   clear.flush();
   return static_cast<bool>(clear);
+#else
+  return false;
+#endif
 }
 
 double rounded(double value, int digits) {
@@ -126,7 +264,11 @@ double rounded(double value, int digits) {
 std::string nowUtc() {
   const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
+#ifdef _WIN32
+  gmtime_s(&tm, &now);
+#else
   gmtime_r(&now, &tm);
+#endif
   std::array<char, 32> buffer{};
   (void)std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
   return buffer.data();
@@ -340,15 +482,7 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
   d.options = options;
   d.options.max_samples = std::max<std::size_t>(d.options.max_samples, 2);
   d.interval_s = d.options.sample_interval_s;
-  double memory_total = 0.0;
-  double memory_available = 0.0;
-  readKeyValues("/proc/meminfo", [&](std::string_view key, double value) {
-    if (key == "MemTotal") {
-      memory_total = value / kKb;
-    } else if (key == "MemAvailable") {
-      memory_available = value / kKb;
-    }
-  });
+  const auto [memory_total, memory_available] = systemMemoryMb();
   d.peak_per_phase = resetPeakMemory();
   d.system = {{"cores", std::thread::hardware_concurrency()},
               {"threads", tbb::this_task_arena::max_concurrency()},

@@ -1,7 +1,11 @@
 // vs-sieve: converts a raw CT volume into a sparse OpenVDB grid that keeps the part, its internal
 // voids and an air margin, and drops the air connected to the volume boundary.
 
+#ifdef _WIN32
+#include <io.h>  // _isatty
+#else
 #include <unistd.h>  // isatty
+#endif
 
 #include <array>
 #include <bit>
@@ -420,7 +424,11 @@ class ProgressPrinter {
     return std::string(stage);
   }
 
+#ifdef _WIN32
+  bool terminal_ = _isatty(_fileno(stderr)) != 0;
+#else
   bool terminal_ = isatty(fileno(stderr)) != 0;
+#endif
   std::string stage_;
   std::chrono::steady_clock::time_point stage_start_;
   int last_logged_ = -1;

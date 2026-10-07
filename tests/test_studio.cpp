@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -344,7 +345,8 @@ TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
   ASSERT_EQ(segmented.at("status"), "done");
   // One material: the box of 6 x 5 x 4 mm with two lunkers of 0.5 mm radius.
   const Json& material = segmented.at("summary").at("materials").at(0);
-  EXPECT_NEAR(material.at("volume_mm3").get<double>(), 120.0 - 2 * 4.0 / 3.0 * M_PI * 0.125, 3.0);
+  EXPECT_NEAR(material.at("volume_mm3").get<double>(),
+              120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 3.0);
 
   const Json slice = studio.call("view_slice", {});
   EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
@@ -387,7 +389,8 @@ TEST_F(StudioTest, SegmentsWithALearnedModel) {
   EXPECT_EQ(segmented.at("summary").at("model"), "Schwelle");
   const Json& result = segmented.at("summary").at("materials").at(0);
   EXPECT_EQ(result.at("name"), "Guss");
-  EXPECT_NEAR(result.at("volume_mm3").get<double>(), 120.0 - 2 * 4.0 / 3.0 * M_PI * 0.125, 3.0);
+  EXPECT_NEAR(result.at("volume_mm3").get<double>(),
+              120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 3.0);
   const Json slice = studio.call("view_slice", {});
   EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
   EXPECT_THROW((void)studio.call("run_segment_model", {}), std::invalid_argument);

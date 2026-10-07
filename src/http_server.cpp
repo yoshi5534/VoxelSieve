@@ -1,6 +1,10 @@
 #include "voxelsieve/http_server.hpp"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <sys/socket.h>
+#endif
 
 #include <bit>
 #include <boost/asio.hpp>
@@ -513,7 +517,7 @@ struct HttpServer::Impl {
                                           const std::filesystem::path& resolved) {
     http::response<http::file_body> response(http::status::ok, request.version());
     beast::error_code failure;
-    response.body().open(resolved.c_str(), beast::file_mode::scan, failure);
+    response.body().open(resolved.string().c_str(), beast::file_mode::scan, failure);
     if (failure) {
       return error(request, http::status::not_found, failure.message());
     }
@@ -538,7 +542,11 @@ struct HttpServer::Impl {
     }
     for (const auto& connection : open) {
       // Wakes a thread blocked in read; the socket object itself stays with its thread.
+#ifdef _WIN32
+      ::shutdown(connection->socket.native_handle(), SD_BOTH);
+#else
       ::shutdown(connection->socket.native_handle(), SHUT_RDWR);
+#endif
     }
     for (const auto& connection : open) {
       connection->thread.join();

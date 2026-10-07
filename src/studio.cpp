@@ -277,7 +277,13 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
   }
   std::stringstream stream(value);
   std::string dir;
-  while (std::getline(stream, dir, ':')) {
+  // Separated like PATH: ';' on Windows, where ':' follows drive letters.
+#ifdef _WIN32
+  constexpr char kSeparator = ';';
+#else
+  constexpr char kSeparator = ':';
+#endif
+  while (std::getline(stream, dir, kSeparator)) {
     if (!dir.empty()) {
       dirs.emplace_back(dir);
     }

@@ -24,7 +24,11 @@ constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
 std::string nowUtc() {
   const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
+#ifdef _WIN32
+  gmtime_s(&tm, &now);
+#else
   gmtime_r(&now, &tm);
+#endif
   std::array<char, 32> buffer{};
   (void)std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
   return buffer.data();
