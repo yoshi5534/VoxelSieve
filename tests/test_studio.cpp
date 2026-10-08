@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <numbers>
 #include <sstream>
 #include <string>
@@ -251,7 +252,10 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_EQ(Json::parse(text.at("text").get<std::string>()).at("pores").size(), 2U);
   EXPECT_THROW(studio.call("read_file", {{"file", "../../../project.json"}}),
                std::invalid_argument);
-  EXPECT_THROW(studio.call("read_file", {{"file", "projection_z.png"}}), std::invalid_argument);
+  // Pictures come back as images; other binary files are refused.
+  EXPECT_EQ(studio.call("read_file", {{"file", "projection_z.png"}}).at("image").at("mime_type"),
+            "image/png");
+  EXPECT_THROW(studio.call("read_file", {{"file", "analysis.vdb"}}), std::invalid_argument);
 
   // The surface of the box: 6 x 5 x 4 mm, lunkers inside, as mask, images and mesh.
   const Json surface = studio.call("run_surface", {{"stl", true}});
@@ -460,11 +464,28 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
   EXPECT_FALSE(
       server.handle({{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}).has_value());
 
+  // The analysis profile leaves out the six methods of the UI's saved views.
   const auto list = handle(request(3, "tools/list"));
-  EXPECT_EQ(list.at("result").at("tools").size(), studio.methods().size());
+  EXPECT_EQ(list.at("result").at("tools").size(), studio.methods().size() - 6);
   for (const Json& tool : list.at("result").at("tools")) {
     EXPECT_TRUE(tool.contains("inputSchema"));
+    EXPECT_NE(tool.at("name"), "view_set");
+    EXPECT_NE(tool.at("name"), "view_delete");
+    EXPECT_FALSE(tool.at("annotations").at("openWorldHint"));
+    if (tool.at("name") == "dataset_info") {
+      EXPECT_TRUE(tool.at("annotations").at("readOnlyHint"));
+    }
+    if (tool.at("name") == "run_porosity") {
+      EXPECT_FALSE(tool.at("annotations").at("readOnlyHint"));
+      EXPECT_FALSE(tool.at("annotations").at("destructiveHint"));
+    }
   }
+  const Json hidden =
+      handle(request(30, "tools/call", {{"name", "view_set"}, {"arguments", {{"state", {}}}}}));
+  EXPECT_TRUE(hidden.at("result").at("isError"));
+  McpServer all(studio, [](const Json&) {}, McpTools::kAll);
+  EXPECT_EQ(all.handle(request(31, "tools/list")).value_or(Json()).at("result").at("tools").size(),
+            studio.methods().size());
 
   const Json created = handle(
       request(4, "tools/call",
@@ -505,9 +526,100 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
             std::string::npos);
 
   EXPECT_EQ(handle(request(8, "tools/call")).at("error").at("code"), -32602);
-  EXPECT_EQ(handle(request(9, "resources/list")).at("error").at("code"), -32601);
+  EXPECT_EQ(handle(request(9, "sampling/createMessage")).at("error").at("code"), -32601);
   EXPECT_EQ(handle(Json::array()).at("error").at("code"), -32600);
   EXPECT_EQ(handle(request(10, "ping")).at("result"), Json::object());
+}
+
+// A whole session as a client such as Claude Desktop runs it, each request after the response to
+// the one before: the porosity_check prompt's steps, then the results read back as resources. The
+// pore count is scored against the ground truth of the synthetic scan.
+TEST_F(StudioTest, McpSessionFindsThePoresOfASyntheticScan) {
+  SyntheticSpec spec;
+  spec.noise_sigma = 500.0;
+  spec.lunker_count = 3;
+  spec.lunker_radius_mm = 0.5;
+  const SyntheticScan scan(boxMesh({10.0, 6.0, 4.0}), spec);
+  ASSERT_EQ(scan.defects().size(), 3U);
+  writeRaw(dir_ / "lunkers.raw", scan);
+  writeJson(dir_ / "lunkers.json", scan.toJson());
+
+  Studio studio;
+  studio.setAllowedRoots({dir_});
+  const auto call = [](int id, const std::string& tool, const Json& arguments) {
+    return request(id, "tools/call", {{"name", tool}, {"arguments", arguments}});
+  };
+  McpServer server(studio, [](const Json&) {});
+  const auto handle = [&server](const Json& message) {
+    return server.handle(message).value_or(Json());
+  };
+  std::map<int, Json> responses;
+  for (const Json& message : {
+           request(1, "initialize", {{"protocolVersion", "2025-06-18"}}),
+           Json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}},
+           request(2, "prompts/get",
+                   {{"name", "porosity_check"}, {"arguments", {{"scan", "lunkers.raw"}}}}),
+           call(3, "project_create", {{"path", (dir_ / "p").string()}}),
+           call(4, "run_import_raw", {{"path", (dir_ / "lunkers.raw").string()}}),
+           call(5, "run_porosity", Json::object()),
+           call(6, "run_report", Json::object()),
+           request(7, "resources/list"),
+       }) {
+    if (const Json response = handle(message); !response.is_null()) {
+      responses[response.at("id").get<int>()] = response;
+    }
+  }
+  ASSERT_EQ(responses.size(), 7U);
+  for (const auto& [id, response] : responses) {
+    ASSERT_TRUE(response.contains("result")) << response.dump();
+  }
+  EXPECT_TRUE(responses[1].at("result").at("capabilities").contains("resources"));
+  const std::string recipe =
+      responses[2].at("result").at("messages")[0].at("content").at("text").get<std::string>();
+  EXPECT_NE(recipe.find("lunkers.raw"), std::string::npos);
+  EXPECT_NE(recipe.find("run_porosity"), std::string::npos);
+  for (int id = 3; id <= 6; ++id) {
+    EXPECT_FALSE(responses[id].at("result").at("isError")) << responses[id].dump();
+  }
+  EXPECT_EQ(responses[5].at("result").at("structuredContent").at("summary").at("pores"),
+            scan.defects().size());
+
+  // The results are resources: porosity.json with every pore, the report, the pictures.
+  const Json& resources = responses[7].at("result").at("resources");
+  const auto find = [&resources](const std::string& name) {
+    const auto it = std::ranges::find_if(
+        resources, [&name](const Json& resource) { return resource.at("name") == name; });
+    return it == resources.end() ? Json() : *it;
+  };
+  ASSERT_FALSE(find("porosity.json").is_null()) << resources.dump(2);
+  ASSERT_FALSE(find("report.html").is_null()) << resources.dump(2);
+  ASSERT_FALSE(find("projection_z.png").is_null()) << resources.dump(2);
+  EXPECT_EQ(find("report.html").at("mimeType"), "text/html");
+  const Json porosity =
+      handle(request(8, "resources/read", {{"uri", find("porosity.json").at("uri")}}));
+  ASSERT_TRUE(porosity.contains("result")) << porosity.dump();
+  const Json& content = porosity.at("result").at("contents")[0];
+  EXPECT_EQ(content.at("mimeType"), "application/json");
+  EXPECT_EQ(Json::parse(content.at("text").get<std::string>()).at("pores").size(),
+            scan.defects().size());
+  const Json picture =
+      handle(request(9, "resources/read", {{"uri", find("projection_z.png").at("uri")}}));
+  ASSERT_TRUE(picture.contains("result")) << picture.dump().substr(0, 300);
+  EXPECT_FALSE(picture.at("result").at("contents")[0].at("blob").get<std::string>().empty());
+
+  // Unknown resources and prompts, and prompts without their required arguments, are errors.
+  for (const std::string uri :
+       {"voxelsieve://step/99/porosity/porosity.json", "voxelsieve://step/x/a/b.json",
+        "voxelsieve://step/3/porosity/../../project.json", "file:///etc/passwd"}) {
+    EXPECT_EQ(handle(request(10, "resources/read", {{"uri", uri}})).at("error").at("code"), -32002)
+        << uri;
+  }
+  EXPECT_EQ(handle(request(11, "prompts/get", {{"name", "nothing"}})).at("error").at("code"),
+            -32602);
+  EXPECT_EQ(
+      handle(request(12, "prompts/get", {{"name", "compare_with_cad"}})).at("error").at("code"),
+      -32602);
+  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 3U);
 }
 
 TEST_F(StudioTest, McpServeReadsLines) {

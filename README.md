@@ -423,13 +423,24 @@ inspection report with the example order", or "Show me slice 400 of the latest d
 pores". A client can cancel a running import or analysis; it stops at its next progress report.
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
-`list_operations`, `dataset_info`, `view_slice` (a slice as an image, with pores and zones),
-`view_list` and `view_image` (saved views and their pictures), `view_save`, `view_set`,
-`view_rename`, `view_delete`, `list_files`, `read_file`, `browse` and one `run_<operation>` per
-operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). Parameter schemas
-come from the operations, errors come back as tool errors with the reason, and long operations
-report progress. Datasets are never sent over the protocol, only their metadata and small text
-results such as `porosity.json` or `report.json`.
+`objects`, `object_add`, `object_select`, `list_operations`, `dataset_info`, `view_slice` (a slice
+as an image, with pores and zones), `view_objects`, `step_telemetry`, `list_files`, `read_file`
+(text files, and PNG pictures as images), `browse` and one `run_<operation>` per operation,
+including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). The methods that keep the browser
+UI's saved views (`view_set`, `view_save`, `view_list`, `view_image`, `view_rename`,
+`view_delete`) are left out unless `--tools all` is given. Tools carry annotations, so a client
+knows which only read (`readOnlyHint`) and which delete something (`destructiveHint`). Parameter
+schemas come from the operations, errors come back as tool errors with the reason, and long
+operations report progress.
+
+Resources: the result files of the project's steps (`report.html`, `report.json`,
+`porosity.json`, the projection pictures, comparison results) are listed as
+`voxelsieve://step/<id>/<output>/<file>`, so a client can attach them to the conversation.
+Datasets are never sent over the protocol, only their metadata and these results.
+
+Prompts: `porosity_check` (porosity against an inspection order, with report),
+`compare_with_cad` (nominal-actual comparison) and `first_look` (size, voxel size, three slices)
+walk a model through the usual inspections.
 
 ## Contributing
 
