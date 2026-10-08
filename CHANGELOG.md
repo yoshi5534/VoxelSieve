@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **MCP for analysis**: tools carry annotations (read-only, destructive), the result files of the
+  steps are MCP resources, and three prompts (`porosity_check`, `compare_with_cad`, `first_look`)
+  walk a model through the usual inspections. The six tools of the UI's saved views are left out
+  unless `vs-studio --mcp --tools all` is given, and `read_file` returns PNG pictures as images.
+
 - **Faster material segmentation**: bricks are segmented in parallel. Before, only the filters
   inside one brick ran in parallel and the 1250 x 1250 x 4000 LoDoInd scan took 23 min with 1.3
   of 16 cores busy. A 768³ phantom now takes 8 s instead of 19 s on 4 cores; memory grows by

@@ -24,6 +24,7 @@ using Json = nlohmann::json;
 
 constexpr const char* kRunPrefix = "run_";
 constexpr std::uintmax_t kMaxReadBytes = 1U << 20U;
+constexpr std::uintmax_t kMaxImageBytes = 8U << 20U;
 constexpr std::size_t kMaxListedFiles = 1000;
 
 Json objectSchema(Json properties, Json required = Json::array()) {
@@ -458,7 +459,8 @@ std::vector<StudioMethod> Studio::methods() const {
                        {"description",
                         "Default: the first allowed directory, else the working directory"}}}})},
       {"read_file",
-       "Reads a text file of a step output, such as report.json or porosity.json (at most 1 MB).",
+       "Reads a text file of a step output, such as report.json or porosity.json (at most 1 MB), "
+       "or a PNG picture such as projection_z.png of a porosity step (at most 8 MB).",
        [] {
          Json properties = artifactProperties();
          properties["file"] = {{"type", "string"},
@@ -1529,6 +1531,16 @@ Json Studio::call(const std::string& method, const Json& arguments,
       }
       if (!std::filesystem::is_regular_file(file)) {
         throw std::invalid_argument("Not a file: " + file.string());
+      }
+      if (file.extension() == ".png") {
+        if (std::filesystem::file_size(file) > kMaxImageBytes) {
+          throw std::invalid_argument("Picture is larger than 8 MB: " + file.string());
+        }
+        std::ifstream in(file, std::ios::binary);
+        const std::vector<std::uint8_t> png{std::istreambuf_iterator<char>(in),
+                                            std::istreambuf_iterator<char>()};
+        return {{"path", file.string()},
+                {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
       }
       if (std::filesystem::file_size(file) > kMaxReadBytes) {
         throw std::invalid_argument("File is larger than 1 MB: " + file.string());

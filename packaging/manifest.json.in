@@ -29,5 +29,6 @@
     }
   },
   "tools_generated": true,
+  "prompts_generated": true,
   "compatibility": { "platforms": ["@PLATFORM@"] }
 }
