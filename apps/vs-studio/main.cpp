@@ -39,8 +39,9 @@ dataset, run operations, create the report) with the step protocol and undo/redo
 With --mcp it serves the studio over the Model Context Protocol (JSON-RPC on stdin/stdout)
 instead. Register it with an MCP client as a stdio server, for example:
   {"command": "vs-studio", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
-Every studio function is a tool: projects, undo/redo, operations (run_<id>), dataset info and
-reading result files.
+Every studio function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
+slice pictures and reading result files. The result files of the steps are also resources, and
+the prompts porosity_check, compare_with_cad and first_look walk through typical inspections.
 
 Directories given after the options are the only places the studio reads data from and keeps
 projects in (with everything below them); without any, every path is allowed. Give the
@@ -51,6 +52,8 @@ Options:
   --host <address>      Address to listen on (default 127.0.0.1). The server has no
                         authentication; keep it on the local machine
   --mcp                 Serve MCP on stdin/stdout instead of the browser UI
+  --tools <profile>     Tools offered over MCP: analysis (default) leaves out the methods
+                        that keep the browser UI's saved views; all offers every method
   --project <dir>       Open this project at start; created if the directory has no project
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
@@ -60,6 +63,7 @@ Options:
 
 struct Options {
   bool mcp = false;
+  voxelsieve::McpTools tools = voxelsieve::McpTools::kAnalysis;
   std::string host = "127.0.0.1";
   unsigned short port = 8410;
   std::optional<std::filesystem::path> project;
@@ -83,6 +87,15 @@ std::optional<Options> parse(int argc, char** argv) {
     }
     if (arg == "--mcp") {
       options.mcp = true;
+    } else if (arg == "--tools") {
+      const std::string profile = next();
+      if (profile == "analysis") {
+        options.tools = voxelsieve::McpTools::kAnalysis;
+      } else if (profile == "all") {
+        options.tools = voxelsieve::McpTools::kAll;
+      } else {
+        throw std::invalid_argument("Unknown tool profile " + profile + " (analysis or all)");
+      }
     } else if (arg == "--host") {
       options.host = next();
     } else if (arg == "--port") {
@@ -163,7 +176,7 @@ int main(int argc, char** argv) {
       (void)_setmode(_fileno(stdin), _O_BINARY);
       (void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
-      voxelsieve::McpServer::serve(studio, std::cin, std::cout);
+      voxelsieve::McpServer::serve(studio, std::cin, std::cout, options->tools);
       return 0;
     }
     voxelsieve::HttpServer server(studio, options->host, options->port);
