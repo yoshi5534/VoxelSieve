@@ -257,6 +257,10 @@ TEST(Sieve, StoresMetadataAndRoundTripsThroughFile) {
   EXPECT_FLOAT_EQ(loaded->metaValue<float>("voxelsieve_threshold"), result.stats.threshold);
   EXPECT_EQ(loaded->metaValue<openvdb::Vec3i>("voxelsieve_source_dims"),
             openvdb::Vec3i(64, 64, 64));
+
+  // A file that cannot be created is reported, not left out silently.
+  EXPECT_THROW(writeVdb(path.parent_path() / "voxelsieve_no_such_dir" / "grid.vdb", {result.grid}),
+               std::runtime_error);
 }
 
 TEST(Sieve, RejectsInvalidOptions) {

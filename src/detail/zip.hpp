@@ -2,6 +2,7 @@
 
 // Read access to ZIP archives through libzip (ADR 0016), without extracting them.
 
+#include <atomic>
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <cstdint>
 #include <filesystem>
@@ -53,6 +54,8 @@ class ZipArchive {
   /// file in large blocks instead of libzip's 4 KiB reads, each after a seek.
   boost::iostreams::mapped_file_source file_;
   std::vector<Entry> entries_;
+  static constexpr std::uint64_t kReadsPerRelease = 64;
+  mutable std::atomic<std::uint64_t> reads_{0};
   mutable std::mutex mutex_;
   mutable std::vector<Handle> idle_;  // open handles not in use
 };

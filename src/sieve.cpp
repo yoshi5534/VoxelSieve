@@ -12,10 +12,13 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "detail/blocks.hpp"
@@ -168,20 +171,41 @@ SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
   return result;
 }
 
+namespace {
+
+/// The archive that openvdb::io::File writes, written into memory. io::File writes leaf by leaf
+/// through a std::ofstream, in pieces of a few kB; on Windows those writes took longer than
+/// compressing the data, and the bricks of a dataset were written with half the cores idle.
+class MemoryArchive final : public openvdb::io::Archive {
+ public:
+  void writeTo(std::ostream& out, const openvdb::GridPtrVec& grids) const {
+    Archive::write(out, grids, /*seekable=*/true);
+  }
+};
+
+}  // namespace
+
 void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grids) {
   openvdb::initialize();
-  openvdb::io::File file(path.string());
-  file.setCompression(openvdb::io::Archive::hasBloscCompression() ? openvdb::io::COMPRESS_BLOSC
-                                                                  : openvdb::io::COMPRESS_ZIP);
-  file.write(grids);
-  file.close();
-  // OpenVDB does not report failed writes. A full disk is the usual cause, and it would only
-  // show later as "not a VDB file", so check for it here.
+  MemoryArchive archive;
+  archive.setCompression(openvdb::io::Archive::hasBloscCompression() ? openvdb::io::COMPRESS_BLOSC
+                                                                     : openvdb::io::COMPRESS_ZIP);
+  std::ostringstream buffer(std::ios::binary);
+  archive.writeTo(buffer, grids);
+  const std::string bytes = std::move(buffer).str();
+  std::ofstream out(path, std::ios::binary);
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  out.close();
+  // A full disk is the usual cause of a failed write; say so rather than leave a file that only
+  // shows later as "not a VDB file".
   std::error_code error;
   const auto space =
       std::filesystem::space(path.parent_path().empty() ? "." : path.parent_path(), error);
   if (!error && space.available < (std::uintmax_t{1} << 20)) {
     throw std::runtime_error("No space left on the device while writing " + path.string());
+  }
+  if (!out) {
+    throw std::runtime_error("Cannot write " + path.string());
   }
 }
 

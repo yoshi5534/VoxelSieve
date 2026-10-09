@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "detail/pages.hpp"
+
 namespace voxelsieve {
 namespace {
 
@@ -88,6 +90,10 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLay
 }
 
 MappedRawSource::~MappedRawSource() = default;
+
+void MappedRawSource::releaseMemory() const {
+  detail::releaseMappedPages(mapping_->file.data(), mapping_->file.size());
+}
 
 void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   const auto& dims = layout_.dims;

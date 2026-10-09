@@ -49,6 +49,18 @@ temporary disk space the size of a uint16 raw volume; `writeDataset` checks that
 The copy is off with `stage_slow_sources = false` (`vs-sieve --no-staging`). Raw inputs are not
 copied, since they are memory-mapped already.
 
+**Amendment (memory and writes on Windows).** On Windows the 22 GB stack above peaked at 35 GB of
+working set: the memory-mapped archive and the staging copy stayed resident, since `madvise` does
+not exist there. `detail::releaseMappedPages` is the portable hint (`VirtualUnlock` on Windows,
+`madvise(MADV_DONTNEED)` elsewhere): the archive lets its pages go every 64 entries it inflates,
+staging lets each written slice go, and the passes let the staged copy go now and then (pass 1
+every 1024 rows of blocks, pass 2 every 16 bricks). The pages stay in the file cache, so reading
+them again costs a soft fault. The peak fell to 4.8 GB. Bricks are now serialised into memory and
+written in one piece: OpenVDB's `io::File` writes leaf by leaf through a `std::ofstream`, and on
+Windows those small writes left about half the cores waiting. Pass 2 fell from 118 s to 78 s, the
+whole import from 175 s to 133 s. Blosc compression is now most of pass 2 and is kept, since
+uncompressed bricks are 70 % larger and slower to write.
+
 The TIFF and ZIP readers were first written in the library on top of zlib and CRC-32 from Boost.
 Since ADR 0016 they are libtiff and libzip: `src/detail/tiff.cpp` feeds libtiff from a file or an
 inflated archive entry through `TIFFClientOpen`, and `src/detail/zip.cpp` keeps one libzip handle

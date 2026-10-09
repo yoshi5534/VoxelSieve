@@ -21,6 +21,7 @@
 #include <string>
 
 #include "detail/blocks.hpp"
+#include "detail/pages.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -130,8 +131,11 @@ class StagedSource {
         // One slice per task: each slice is decoded exactly once, all cores in parallel.
         tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, dims[2], 1), [&](const auto& range) {
           for (std::int64_t z = range.begin(); z != range.end(); ++z) {
-            source.readRegion(Box{{0, 0, z}, {dims[0], dims[1], z + 1}},
-                              {data + static_cast<std::size_t>(z) * slice_voxels, slice_voxels});
+            std::uint16_t* slice = data + static_cast<std::size_t>(z) * slice_voxels;
+            source.readRegion(Box{{0, 0, z}, {dims[0], dims[1], z + 1}}, {slice, slice_voxels});
+            // The slice is written; its pages go to the file cache instead of staying in the
+            // process's memory (Windows kept the whole copy in the working set).
+            detail::releaseMappedPages(slice, slice_voxels * sizeof(std::uint16_t));
             progress.step();
           }
         });
@@ -176,8 +180,25 @@ struct BlockStatistics {
   Index3 block_dims{};
 };
 
+/// Lets the pages of a staged copy go now and then while it is read; the passes read each part
+/// of it about once, so pages read long ago are only memory taken from others.
+class PageRelease {
+ public:
+  PageRelease(const VolumeSource* staged, std::size_t every) : staged_(staged), every_(every) {}
+  void step() {
+    if (staged_ != nullptr && ++count_ % every_ == 0) {
+      staged_->releaseMemory();
+    }
+  }
+
+ private:
+  const VolumeSource* staged_;
+  std::size_t every_;
+  std::atomic<std::size_t> count_{0};
+};
+
 BlockStatistics collectBlockStatistics(const VolumeSource& source, int k,
-                                       const DatasetOptions& options) {
+                                       const DatasetOptions& options, PageRelease& release) {
   constexpr std::int64_t kB = kBlockSize;
   const Index3 dims = source.dims();
   BlockStatistics stats;
@@ -201,6 +222,7 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source, int k,
                     {dims[0], std::min((by + 1) * kB, dims[1]), std::min((bz + 1) * kB, dims[2])}};
       buffer.resize(static_cast<std::size_t>(box.voxelCount()));
       source.readRegion(box, buffer);
+      release.step();
       std::uint16_t* block_kth = &stats.block_kth[static_cast<std::size_t>(
           stats.block_dims[0] * (by + stats.block_dims[1] * bz))];
       progress.step();
@@ -470,8 +492,9 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   const VolumeSource& source = staged ? staged->source() : input;
 
   std::optional<TelemetryPhase> phase(std::in_place, "pass 1 (histogram)");
+  PageRelease rows_release(staged ? &source : nullptr, 1024);
   const BlockStatistics stats =
-      collectBlockStatistics(source, options.min_material_voxels, options);
+      collectBlockStatistics(source, options.min_material_voxels, options, rows_release);
   const detail::ThresholdResult estimate = detail::airThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
@@ -485,9 +508,11 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   std::mutex mutex;
   ProgressCounter brick_progress(options, "bricks", product(brick_dims));
+  PageRelease bricks_release(staged ? &source : nullptr, 16);
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
     auto grid = buildBrick(source, blocks, brick, options);
+    bricks_release.step();
     brick_progress.step();
     if (!grid) {
       return;
