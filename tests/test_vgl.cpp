@@ -199,9 +199,10 @@ TEST_F(VglTest, ReadsTheVolumesAndFindsTheirFiles) {
     ASSERT_EQ(volume.files.size(), static_cast<std::size_t>(kDims[2]));
     EXPECT_EQ(volume.files.front().reference, files_.front());
     ASSERT_TRUE(volume.files.front().path);
-    EXPECT_EQ(*volume.files.front().path, (dir_ / "part" / "slices" / "s0.dcm").lexically_normal());
+    EXPECT_EQ(volume.files.front().path.value(),
+              (dir_ / "part" / "slices" / "s0.dcm").lexically_normal());
     ASSERT_TRUE(volume.files.back().path);  // found by its name next to the project
-    EXPECT_EQ(*volume.files.back().path, (dir_ / "part" / "s7.dcm").lexically_normal());
+    EXPECT_EQ(volume.files.back().path.value(), (dir_ / "part" / "s7.dcm").lexically_normal());
 
     EXPECT_EQ(project.volumes[1].format, "");
     EXPECT_EQ(project.volumes[1].import_class, "SomeOtherImportSettings");

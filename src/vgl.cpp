@@ -30,7 +30,7 @@ std::string projectXml(const std::filesystem::path& file) {
   if (!in) {
     throw std::runtime_error("Cannot open " + file.string());
   }
-  const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
   if (bytes.size() < 2 || static_cast<unsigned char>(bytes[0]) != 0x1f ||
       static_cast<unsigned char>(bytes[1]) != 0x8b) {
     return bytes;  // plain XML
@@ -203,7 +203,7 @@ void readVolume(pugi::xml_node render_object, const ObjectIndex& index, const Fi
         continue;
       }
       imported_io.insert(io.internal_object());
-      if (std::string reference = text(io, "FileName"); !reference.empty()) {
+      if (const std::string reference = text(io, "FileName"); !reference.empty()) {
         volume.files.push_back(finder.find(reference));
       }
     }

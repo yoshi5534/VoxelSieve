@@ -72,7 +72,7 @@ struct SliceHeader {
   std::optional<double> spacing_between_slices;
 };
 
-OFFilename fileName(const std::filesystem::path& path) { return OFFilename(path.string().c_str()); }
+OFFilename fileName(const std::filesystem::path& path) { return {path.string().c_str()}; }
 
 std::optional<double> getDouble(DcmItem& item, const DcmTagKey& tag, unsigned long index = 0) {
   Float64 value = 0.0;
