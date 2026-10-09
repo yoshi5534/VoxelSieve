@@ -10,6 +10,11 @@
   masks and other inputs of the project are reported as not imported. `vs-sieve` reads both. New
   dependencies: DCMTK, pugixml, zlib (ADR 0019).
 
+- **Material segmentation in the 3D view**: the surface and transfer function views colour the
+  materials of the latest segmentation, and a legend under the view and next to the slice lets
+  each material be hidden, so the base material can be left out to see the inclusions in it. The
+  legend also gives each material's share of all material in percent.
+
 - **Bell housing sample part and realistic defect placement**: `vs-synth --part bellhousing` scans
   a cast bell housing (75 mm across) with flanges, bolt lugs, bosses, ribs, a starter motor mount
   and an inspection window. `--hot-spots` places lunkers and loosened zones in the thickest
