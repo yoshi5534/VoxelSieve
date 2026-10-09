@@ -11,6 +11,7 @@ foreach(var SYNTH ORDER OUT)
     message(FATAL_ERROR "make-samples.cmake needs -D${var}=...")
   endif()
 endforeach()
+get_filename_component(synth_path "${SYNTH}" ABSOLUTE)
 get_filename_component(out_path "${OUT}" ABSOLUTE)
 get_filename_component(order_path "${ORDER}" ABSOLUTE)
 get_filename_component(out_dir "${out_path}" DIRECTORY)
@@ -19,7 +20,7 @@ file(REMOVE_RECURSE "${stage}")
 file(MAKE_DIRECTORY "${stage}")
 
 execute_process(
-  COMMAND "${SYNTH}" --part housing --voxel-size 0.25 --lunker 3 --loosening 1 --noise 400
+  COMMAND "${synth_path}" --part housing --voxel-size 0.25 --lunker 3 --loosening 1 --noise 400
           --blur 0.1 --cupping 0.05 --stl housing.stl --out housing
   WORKING_DIRECTORY "${stage}" RESULT_VARIABLE result OUTPUT_QUIET)
 if(NOT result EQUAL 0)
