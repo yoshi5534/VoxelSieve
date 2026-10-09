@@ -43,6 +43,7 @@ add_library(voxelsieve SHARED
   ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp
   dataset.cpp
   dataset_reader.cpp
+  dicom.cpp
   detail/blocks.cpp
   detail/png.cpp
   detail/tiff.cpp
@@ -56,6 +57,7 @@ add_library(voxelsieve SHARED
   telemetry.cpp
   tiff.cpp
   vdb.cpp
+  vgl.cpp
   voxel_size.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
@@ -70,6 +72,7 @@ find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json
   PRIVATE Boost::iostreams Boost::headers TIFF::TIFF PNG::PNG libzip::zip tinyply
+          DCMTK::dcmdata pugixml::pugixml ZLIB::ZLIB
           ${CMAKE_DL_LIBS}
   PRIVATE voxelsieve_warnings
 )

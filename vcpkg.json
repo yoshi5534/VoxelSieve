@@ -7,13 +7,16 @@
     "boost-beast",
     "boost-crc",
     { "name": "boost-iostreams", "default-features": false, "features": ["zstd"] },
+    { "name": "dcmtk", "default-features": false },
     "gtest",
     { "name": "libpng", "default-features": false },
     { "name": "libzip", "default-features": false },
     "nlohmann-json",
     "openvdb",
+    "pugixml",
     "tinyply",
-    { "name": "tiff", "default-features": false, "features": ["zip"] }
+    { "name": "tiff", "default-features": false, "features": ["zip"] },
+    "zlib"
   ],
   "builtin-baseline": "b3ae22aef2b857af6e80d756c13f15db12be4e8a"
 }

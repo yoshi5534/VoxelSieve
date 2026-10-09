@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **DICOM stacks and VGStudio projects as input**: `import_dicom` reads a directory of DICOM
+  slices with DCMTK (uncompressed or RLE, with or without preamble), sorted by position, with the
+  voxel size and pose of the files; signed values and the rescale slope and intercept are kept as
+  the value mapping. `import_vgl` imports a volume of a VGStudio project (`.vgl`) from the DICOM
+  files it refers to, also when the project folder was moved, and places it as in VGStudio;
+  masks and other inputs of the project are reported as not imported. `vs-sieve` reads both. New
+  dependencies: DCMTK, pugixml, zlib (ADR 0019).
+
 - **Bell housing sample part and realistic defect placement**: `vs-synth --part bellhousing` scans
   a cast bell housing (75 mm across) with flanges, bolt lugs, bosses, ribs, a starter motor mount
   and an inspection window. `--hot-spots` places lunkers and loosened zones in the thickest

@@ -2,6 +2,7 @@ find_package(GTest REQUIRED)
 
 add_executable(voxelsieve_tests
   test_dataset.cpp
+  test_dicom.cpp
   test_io.cpp
   test_materials.cpp
   test_model.cpp
@@ -22,10 +23,11 @@ add_executable(voxelsieve_tests
   test_telemetry.cpp
   test_tiff.cpp
   test_voxel_size.cpp
+  test_vgl.cpp
   test_vdb.cpp
 )
 target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers
-                      TIFF::TIFF libzip::zip)
+                      TIFF::TIFF libzip::zip DCMTK::dcmdata ZLIB::ZLIB)
 # Tests of internals (detail/) see the private headers.
 target_include_directories(voxelsieve_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

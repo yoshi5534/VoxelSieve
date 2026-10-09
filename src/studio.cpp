@@ -14,8 +14,10 @@
 #include "detail/png.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/dicom.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/vgl.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -253,12 +255,15 @@ Json browse(const std::filesystem::path& requested) {
       entry["kind"] = std::filesystem::exists(path / "project.json", ignored) ? "project"
                       : std::filesystem::exists(path / "index.json", ignored) ? "dataset"
                       : containsTiff(path)                                    ? "tiff"
+                      : containsDicom(path)                                   ? "dicom"
                                                                               : "dir";
       entry["directory"] = true;
     } else {
       auto sidecar = path;
       sidecar.replace_extension(".json");
       entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
+                      : isVglFile(path)                                  ? "vgl"
+                      : isDicomFile(path)                                ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
                           : "file";
@@ -337,8 +342,9 @@ std::vector<StudioMethod> Studio::methods() const {
        objectSchema(Json::object())},
       {"object_add",
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
-       "object, as a step. Raw volumes and TIFF stacks become objects through run_import_raw "
-       "and run_import_tiff. Objects are placed with run_move.",
+       "object, as a step. Raw volumes, TIFF stacks, DICOM stacks and VGStudio projects become "
+       "objects through run_import_raw, run_import_tiff, run_import_dicom and run_import_vgl. "
+       "Objects are placed with run_move.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
@@ -450,9 +456,11 @@ std::vector<StudioMethod> Studio::methods() const {
        objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
-       "datasets (.vsieve), projects and inspection orders. Entries have a kind: dir, project, "
-       "dataset, raw (a file with a JSON sidecar), tiff (a TIFF file, a ZIP archive or a "
-       "directory with TIFF slices, for import_tiff) or file; directories carry directory: true.",
+       "DICOM stacks, VGStudio projects, datasets (.vsieve), projects and inspection orders. "
+       "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar), tiff (a "
+       "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
+       "DICOM file or a directory with DICOM slices, for import_dicom), vgl (a VGStudio project, "
+       "for import_vgl) or file; directories carry directory: true.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
@@ -1344,8 +1352,9 @@ Json Studio::call(const std::string& method, const Json& arguments,
       return runOperation("add_mesh", run, progress);
     }
     throw std::invalid_argument("Not a dataset or an STL file: " + path.string() +
-                                "; import raw volumes and TIFF stacks with run_import_raw and "
-                                "run_import_tiff");
+                                "; import raw volumes, TIFF stacks, DICOM stacks and VGStudio "
+                                "projects with run_import_raw, run_import_tiff, run_import_dicom "
+                                "and run_import_vgl");
   }
   if (method == "view_objects") {
     // Not under the lock: building the meshes of the objects takes it only to find them.

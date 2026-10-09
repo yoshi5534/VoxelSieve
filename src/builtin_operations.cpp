@@ -12,6 +12,7 @@
 
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/dicom.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -24,6 +25,7 @@
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
+#include "voxelsieve/vgl.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -351,6 +353,244 @@ class ImportTiff final : public Operation {
                     " values lay outside the value range and were clipped; widen value_range");
       }
     }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+/// Parameters of the sieve shared by the imports of DICOM stacks and VGStudio projects.
+void addSieveParameters(Json& properties) {
+  properties["threshold"] = {
+      {"type", "number"},
+      {"description", "Air/material grey value; default: estimated (valley after the air peak)"}};
+  properties["margin_voxels"] = {{"type", "integer"}, {"minimum", 0}, {"default", 3}};
+  properties["min_material_voxels"] = {
+      {"type", "integer"},
+      {"minimum", 1},
+      {"maximum", 512},
+      {"default", 1},
+      {"description",
+       "Voxels above the threshold for an 8^3 block to count as material; raise it for noisy "
+       "scans"}};
+  properties["outside_air_axes"] = {
+      {"type", "string"},
+      {"pattern", "^[xyz]+$"},
+      {"default", "xyz"},
+      {"description",
+       "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+       "through the part (a pipe), so its inside is kept"}};
+  properties["brick_size"] = {{"type", "integer"}, {"minimum", 8}, {"default", 256}};
+}
+
+DatasetOptions sieveOptions(const OperationContext& context) {
+  const Json& p = context.params;
+  DatasetOptions options;
+  if (p.contains("threshold")) {
+    options.threshold = p.at("threshold").get<float>();
+  }
+  options.margin_voxels = p.value("margin_voxels", 3);
+  options.brick_size = p.value("brick_size", std::int64_t{256});
+  options.min_material_voxels = p.value("min_material_voxels", 1);
+  options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+  options.progress = datasetProgress(context);
+  return options;
+}
+
+/// Places the object a step creates where its source says it lies (ADR 0018), as the motion of
+/// the step; nothing for the identity.
+void placeObject(const OperationContext& context, const RigidTransform& pose, Json& summary) {
+  if (context.object.empty() || pose.matrix() == RigidTransform{}.matrix()) {
+    return;
+  }
+  summary[kMovedObjectsKey] = Json::array({context.object});
+  summary[kMotionKey] = pose.matrix();
+}
+
+void logDicom(const DicomStackSource& source, const OperationContext& context) {
+  for (const auto& [uid, slices] : source.otherSeries()) {
+    context.log("Also in the input: series " + uid + " with " + std::to_string(slices) +
+                " slices (choose with 'series')");
+  }
+  if (source.skippedFiles() > 0) {
+    context.log("Skipped " + std::to_string(source.skippedFiles()) +
+                " files that are not DICOM images");
+  }
+  if (const ValueMapping mapping = source.valueMapping(); !mapping.isIdentity()) {
+    context.log("Stored values = " + std::to_string(mapping.offset) + " + " +
+                std::to_string(mapping.scale) + " * grey" +
+                (source.isSigned() ? " (signed samples shifted by 32768)" : ""));
+  }
+}
+
+/// Writes the dataset of a DICOM stack and describes it.
+OperationResult sieveDicom(const DicomStackSource& source, const RigidTransform& pose,
+                           const OperationContext& context) {
+  const DatasetInfo info =
+      writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
+  OperationResult result;
+  result.outputs["dataset"] = "dataset.vsieve";
+  result.summary = datasetSummary(info);
+  result.summary["slices"] = source.dims()[2];
+  result.summary["bits_stored"] = source.bitsStored();
+  result.summary["signed"] = source.isSigned();
+  placeObject(context, pose, result.summary);
+  return result;
+}
+
+std::string describeDims(const std::array<std::int64_t, 3>& dims) {
+  return std::to_string(dims[0]) + " x " + std::to_string(dims[1]) + " x " +
+         std::to_string(dims[2]);
+}
+
+class ImportDicom final : public Operation {
+ public:
+  ImportDicom() {
+    info_.id = "import_dicom";
+    info_.title = "Import DICOM stack";
+    info_.description =
+        "Removes the outside air from a stack of DICOM slices and writes a bricked dataset. "
+        "Slices are sorted by their position, the voxel size comes from the files, and the "
+        "object is placed where the files say it lies. Signed samples and the rescale slope and "
+        "intercept are kept with the dataset as a value mapping.";
+    info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description", "Directory of slices, or one slice file"}}},
+          {"series",
+           {{"type", "string"},
+            {"description",
+             "Series Instance UID when the directory holds several; default: the series with "
+             "the most slices"}}}}},
+        {"required", {"path"}}};
+    addSieveParameters(info_.parameters["properties"]);
+    addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files");
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    DicomStackOptions dicom;
+    dicom.series = p.value("series", std::string());
+    const std::filesystem::path path = p.at("path").get<std::string>();
+    if (!p.contains("voxel_size_mm") && p.contains("slice_thickness_mm")) {
+      // The thickness alone: the spacing comes from the files.
+      dicom.voxel_size = DicomStackSource(path, dicom).voxelSize();
+    }
+    dicom.voxel_size = voxelSizeParameter(p, dicom.voxel_size);
+    const DicomStackSource source(path, dicom);
+    logDicom(source, context);
+    if (!dicom.voxel_size && !source.fileVoxelSize()) {
+      context.log("The files give no pixel spacing; 1 mm assumed. Set voxel_size_mm.");
+    }
+    context.log(describeDims(source.dims()) + " voxels, voxel size " +
+                describe(source.voxelSize()));
+    OperationResult result = sieveDicom(source, source.filePose(), context);
+    result.summary["series"] = source.seriesUid();
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class ImportVgl final : public Operation {
+ public:
+  ImportVgl() {
+    info_.id = "import_vgl";
+    info_.title = "Import VGStudio project";
+    info_.description =
+        "Imports a volume of a VGStudio project (.vgl) from the files it was imported from, "
+        "found where the project names them or next to the project, and places it as in the "
+        "project. Removes the outside air and writes a bricked dataset. DICOM stacks are read; "
+        "other inputs and further files of the project, such as masks, are reported.";
+    info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"path",
+           {{"type", "string"}, {"format", "path"}, {"description", "VGStudio project (.vgl)"}}},
+          {"volume",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description", "Which volume of the project, counted from 0"}}}}},
+        {"required", {"path"}}};
+    addSieveParameters(info_.parameters["properties"]);
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const VglProject project = readVglProject(p.at("path").get<std::string>());
+    if (project.volumes.empty()) {
+      throw std::runtime_error("The project holds no volume");
+    }
+    const auto chosen = p.value("volume", std::size_t{0});
+    if (chosen >= project.volumes.size()) {
+      throw std::invalid_argument("The project holds " + std::to_string(project.volumes.size()) +
+                                  " volumes; 'volume' counts from 0");
+    }
+    context.log("Project of " + project.app_name + " " + project.app_version + " with " +
+                std::to_string(project.volumes.size()) + " volume(s)");
+    for (std::size_t i = 0; i < project.volumes.size(); ++i) {
+      if (i != chosen) {
+        context.log("Also in the project: volume " + std::to_string(i) + " '" +
+                    project.volumes[i].name + "' (choose with 'volume')");
+      }
+    }
+    for (const VglReference& other : project.other_files) {
+      context.log("Not imported: " + other.description + ", " +
+                  (other.file.path ? other.file.path->filename().string()
+                                   : other.file.reference + " (not found)"));
+    }
+    const VglVolume& volume = project.volumes[chosen];
+    context.log("Volume '" + volume.name + "': " + describeDims(volume.dims) + " " +
+                volume.sample_type + ", voxel size " + describe(volume.voxel_size));
+    for (const std::string& note : volume.notes) {
+      context.log("Not applied: " + note);
+    }
+    if (volume.format != "dicom") {
+      throw std::runtime_error("Volume '" + volume.name + "' was imported with " +
+                               volume.import_class +
+                               ", which VoxelSieve does not read yet; DICOM stacks are supported");
+    }
+    std::vector<std::filesystem::path> files;
+    std::size_t missing = 0;
+    for (const VglFile& file : volume.files) {
+      if (file.path) {
+        files.push_back(*file.path);
+      } else if (missing++ == 0) {
+        context.log("Missing: " + file.reference);
+      }
+    }
+    if (missing > 0) {
+      throw std::runtime_error(std::to_string(missing) + " of " +
+                               std::to_string(volume.files.size()) +
+                               " files of the volume were not found, neither where the project "
+                               "names them nor next to it");
+    }
+    DicomStackOptions dicom;
+    dicom.voxel_size = volume.voxel_size;
+    const DicomStackSource source(files, dicom);
+    logDicom(source, context);
+    if (source.dims() != volume.dims) {
+      context.log("The files hold " + describeDims(source.dims()) + " voxels, the project " +
+                  describeDims(volume.dims));
+    }
+    if (const auto from_files = source.fileVoxelSize();
+        from_files && describe(*from_files) != describe(volume.voxel_size)) {
+      context.log("Voxel size of the project used; the files give " + describe(*from_files));
+    }
+    OperationResult result = sieveDicom(source, volume.pose, context);
+    result.summary["volume"] = volume.name;
+    result.summary["format"] = volume.format;
+    result.summary["not_imported"] = project.other_files.size();
     return result;
   }
 
@@ -1183,6 +1423,8 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<OpenDataset>());
   registry.add(std::make_shared<ImportRaw>());
   registry.add(std::make_shared<ImportTiff>());
+  registry.add(std::make_shared<ImportDicom>());
+  registry.add(std::make_shared<ImportVgl>());
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
