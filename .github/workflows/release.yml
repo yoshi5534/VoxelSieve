@@ -2,8 +2,10 @@ name: Packages
 
 # Builds the self-contained packages of VoxelSieve for Linux, Windows and macOS: an archive of the
 # installed tree (programs, libraries, examples, licenses) and an MCP bundle (.mcpb) for one-click
-# installation in Claude Desktop. When a release is published on GitHub, the packages are attached
-# to it; otherwise they are workflow artifacts. Publishing stays a manual step.
+# installation in Claude Desktop. The Linux job also writes the sample data of the quickstart and
+# builds and checks the Docker image from its package. When a release is published on GitHub, the
+# packages and the sample data are attached to it; otherwise they are workflow artifacts.
+# Publishing stays a manual step.
 on:
   release:
     types: [published]
@@ -13,6 +15,7 @@ on:
       - .github/workflows/release.yml
       - packaging/**
       - cmake/Install.cmake
+      - docs/quickstart.md
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -119,6 +122,22 @@ jobs:
           else
             tar czf "../dist/$name.tar.gz" "$name"
           fi
+      - name: Sample data (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -DSYNTH="stage/${{ steps.install.outputs.name }}/bin/vs-synth" \
+            -DORDER=examples/inspection_order.json \
+            -DOUT="dist/voxelsieve-${{ steps.install.outputs.version }}-samples.zip" \
+            -P packaging/make-samples.cmake
+      - name: Docker image (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          version="${{ steps.install.outputs.version }}"
+          docker build -f packaging/Dockerfile --build-arg PACKAGE="${{ steps.install.outputs.name }}" \
+            --build-arg VERSION="$version" -t "voxelsieve:$version" stage
+          # The image answers tools/list over MCP on its own.
+          docker run -i --rm "voxelsieve:$version" --mcp /data < tests/mcp_tools_list.jsonl > image-tools.json
+          grep -q run_porosity image-tools.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.install.outputs.name }}
