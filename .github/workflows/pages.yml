@@ -1,0 +1,60 @@
+name: Website
+
+# Builds the project website from site/ and the screenshots in docs/images and publishes it with
+# GitHub Pages (Settings > Pages > Source: GitHub Actions). Pull requests only build it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - docs/images/**
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - site/**
+      - docs/images/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble site
+        run: |
+          mkdir -p _site/images
+          cp -r site/. _site/
+          cp docs/images/*.png _site/images/
+          # Every image the pages reference must exist.
+          missing=0
+          for img in $(grep -ho 'images/[A-Za-z0-9._-]*\.png' _site/*.html | sort -u); do
+            [ -f "_site/$img" ] || { echo "missing $img"; missing=1; }
+          done
+          exit $missing
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
