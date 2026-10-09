@@ -7,13 +7,10 @@
   written in one piece instead of leaf by leaf, and pages of the input archive and the staging copy
   that were read already are let go on Windows too (ADR 0011).
 
-- **DICOM stacks and VGStudio projects as input**: `import_dicom` reads a directory of DICOM
-  slices with DCMTK (uncompressed or RLE, with or without preamble), sorted by position, with the
-  voxel size and pose of the files; signed values and the rescale slope and intercept are kept as
-  the value mapping. `import_vgl` imports a volume of a VGStudio project (`.vgl`) from the DICOM
-  files it refers to, also when the project folder was moved, and places it as in VGStudio;
-  masks and other inputs of the project are reported as not imported. `vs-sieve` reads both. New
-  dependencies: DCMTK, pugixml, zlib (ADR 0019).
+- **DICOM stacks as input**: `import_dicom` reads a directory of DICOM slices with DCMTK
+  (uncompressed or RLE, with or without preamble), sorted by position, with the voxel size and
+  pose of the files; signed values and the rescale slope and intercept are kept as the value
+  mapping. `vs-sieve` reads them too. New dependencies: DCMTK, pugixml, zlib (ADR 0019).
 
 - **Material segmentation in the 3D view**: the surface and transfer function views colour the
   materials of the latest segmentation, and a legend under the view and next to the slice lets
