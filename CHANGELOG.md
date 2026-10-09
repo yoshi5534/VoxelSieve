@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Faster import with far less memory on Windows**: a 22 GB TIFF stack (1250 x 1250 x 4000,
+  float, ZIP) imports in 133 s instead of 175 s, with a peak of 4.8 GB instead of 35 GB. Bricks are
+  written in one piece instead of leaf by leaf, and pages of the input archive and the staging copy
+  that were read already are let go on Windows too (ADR 0011).
+
 - **DICOM stacks and VGStudio projects as input**: `import_dicom` reads a directory of DICOM
   slices with DCMTK (uncompressed or RLE, with or without preamble), sorted by position, with the
   voxel size and pose of the files; signed values and the rescale slope and intercept are kept as
