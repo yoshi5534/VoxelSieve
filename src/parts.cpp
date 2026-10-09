@@ -144,6 +144,70 @@ double hub(const Vec3& p) {
   return d;
 }
 
+/// Distance in a plane from (`x`, `y`) to the segment from `a` to `b`.
+double segment(double x, double y, const std::array<double, 2>& a, const std::array<double, 2>& b) {
+  const double vx = b[0] - a[0];
+  const double vy = b[1] - a[1];
+  const double t = std::clamp(((x - a[0]) * vx + (y - a[1]) * vy) / (vx * vx + vy * vy), 0.0, 1.0);
+  return std::hypot(x - a[0] - t * vx, y - a[1] - t * vy);
+}
+
+/// `p` turned about the z axis by -`angle` (in degrees), so that direction `angle` becomes +x.
+Vec3 turned(const Vec3& p, double angle) {
+  const double a = angle * std::numbers::pi / 180.0;
+  return {p[0] * std::cos(a) + p[1] * std::sin(a), -p[0] * std::sin(a) + p[1] * std::cos(a), p[2]};
+}
+
+/// Bell housing (clutch housing) between engine and gearbox: a thin bell of a skirt and a cone,
+/// the engine flange with eight bolt lugs at uneven spacing, the gearbox flange with six bolt
+/// bosses, a guide sleeve for the release bearing, outer ribs, the mount of the starter motor
+/// with its bore and an inspection window. The thick lugs, bosses and the starter mount are the
+/// hot spots where a real casting shrinks last.
+double bellHousing(const Vec3& p) {
+  const double r = std::hypot(p[0], p[1]);
+  // The bell as a wall of 2.5 mm around a profile in (r, z): skirt, cone and shoulder.
+  double d = std::min({segment(r, p[2], {30.5, 1.25}, {30.5, 9.0}),
+                       segment(r, p[2], {30.5, 9.0}, {20.0, 28.0}),
+                       segment(r, p[2], {20.0, 28.0}, {13.5, 31.0})}) -
+             1.25;
+  d = smoothUnion(d, ring(p, 26.5, 33.0, 0.0, 4.25), 1.2);
+  constexpr std::array<double, 8> kLugs{0.0, 45.0, 90.0, 140.0, 180.0, 225.0, 270.0, 320.0};
+  for (const double angle : kLugs) {
+    d = smoothUnion(d, cylinder(turned(p, angle), {34.5, 0.0, 2.5}, 2, 2.75, 2.5), 1.5);
+  }
+  d = smoothUnion(d, ring(p, 8.0, 20.0, 30.0, 33.5), 1.5);
+  d = smoothUnion(d, ring(p, 8.0, 11.0, 22.0, 36.0), 1.5);
+  for (int k = 0; k < 6; ++k) {
+    d = smoothUnion(d, cylinder(turned(p, 30.0 + 60.0 * k), {17.0, 0.0, 32.5}, 2, 3.0, 3.5), 1.0);
+  }
+  // Ribs from the engine flange up the cone, between the lugs.
+  for (const double angle : {22.5, 67.5, 115.0, 202.5, 247.5, 295.0, 340.0}) {
+    const Vec3 q = turned(p, angle);
+    // Outside of the bell only: beyond the skirt or the cone, whichever lies farther in.
+    const double outside = std::min(29.5 - q[0], -plane(q, {29.5, 0.0, 9.0}, {19.0, 0.0, 10.5}));
+    const double rib = std::max({std::abs(q[1]) - 0.9, outside, q[2] - 30.5, 2.0 - q[2],
+                                 plane(q, {33.5, 0.0, 3.5}, {27.5, 0.0, 13.0})});
+    d = smoothUnion(d, rib, 1.0);
+  }
+  // Starter motor mount: a heavy boss across the wall with a dowel boss beside it.
+  const Vec3 starter = turned(p, 160.0);
+  d = smoothUnion(d, cylinder(starter, {27.5, 0.0, 12.0}, 0, 6.5, 7.5), 2.0);
+  const Vec3 dowel = turned(p, 128.0);
+  d = smoothUnion(d, cylinder(dowel, {28.0, 0.0, 8.0}, 0, 3.2, 4.0), 1.5);
+  d = subtract(d, ring(p, 0.0, 7.5, 10.0, 40.0));
+  d = subtract(d, cylinder(starter, {26.0, 0.0, 12.0}, 0, 4.2, 12.0));
+  d = subtract(d, cylinder(dowel, {28.0, 0.0, 8.0}, 0, 1.4, 6.0));
+  for (const double angle : kLugs) {
+    d = subtract(d, cylinder(turned(p, angle), {34.5, 0.0, 2.5}, 2, 1.5, 4.0));
+  }
+  for (int k = 0; k < 6; ++k) {
+    d = subtract(d, cylinder(turned(p, 30.0 + 60.0 * k), {17.0, 0.0, 31.0}, 2, 1.1, 7.0));
+  }
+  // Inspection window through the cone.
+  const double window = std::max({std::abs(p[1]) - 5.0, std::abs(p[2] - 17.0) - 4.0, 15.0 - p[0]});
+  return smoothSubtract(d, window, 0.8);
+}
+
 using DistanceFunction = double (*)(const Vec3&);
 
 struct PartEntry {
@@ -166,6 +230,11 @@ const std::vector<PartEntry>& parts() {
         "Wheel hub with rim, five spokes, a bore with keyway and a bolt circle",
         {{-22.0, -22.0, -4.0}, {22.0, 22.0, 10.0}}},
        &hub},
+      {{"bellhousing",
+        "Bell housing between engine and gearbox with flanges, bolt lugs and bosses, ribs, a "
+        "starter motor mount and an inspection window",
+        {{-37.25, -37.25, 0.0}, {37.25, 37.25, 36.0}}},
+       &bellHousing},
   };
   return entries;
 }

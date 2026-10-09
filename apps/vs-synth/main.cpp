@@ -22,7 +22,7 @@ namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-synth <part.stl> --out <prefix> [options]
        vs-synth --box <x> <y> <z> --out <prefix> [options]
-       vs-synth --part <housing|bracket|hub> --out <prefix> [options]
+       vs-synth --part <housing|bracket|hub|bellhousing> --out <prefix> [options]
 
 Writes <prefix>.raw (uint16, little endian, x fastest) and <prefix>.json with the ground truth.
 STL coordinates are taken as mm. Sizes left at 0 are chosen from the part size.
@@ -30,7 +30,8 @@ STL coordinates are taken as mm. Sizes left at 0 are chosen from the part size.
 Geometry:
   --out <prefix>              Output path without extension (required)
   --box <x> <y> <z>           Use a box with these edge lengths in mm instead of an STL file
-  --part <name>               Use a sample casting: housing, bracket or hub (30 to 50 mm long)
+  --part <name>               Use a sample casting: housing, bracket, hub (30 to 50 mm long)
+                              or bellhousing (75 mm across)
   --scale <f>                 Scale of the sample part (default 1)
   --stl <file>                Also write the mesh of the part as STL
   --voxel-size <mm>           Voxel edge length (default 0.1)
@@ -40,6 +41,8 @@ Geometry:
 Defects:
   --lunker <n>                Number of shrinkage cavities (default 0)
   --lunker-radius <mm>        Enclosing radius of a lunker (default 5 % of the smallest extent)
+  --lunker-spread <f>         Lunker radii vary down to (1 - f) times the radius (default 0)
+  --hot-spots                 Place lunkers and loosening zones in the thickest sections
   --loosening <n>             Number of zones of loosened microstructure (default 0)
   --loosening-radius <mm>     Zone radius (default 10 % of the smallest extent)
   --loosening-porosity <f>    Void fraction in a zone (default 0.05)
@@ -112,6 +115,10 @@ std::optional<Options> parse(int argc, char** argv) {
       spec.lunker_count = std::stoi(next());
     } else if (arg == "--lunker-radius") {
       spec.lunker_radius_mm = std::stod(next());
+    } else if (arg == "--lunker-spread") {
+      spec.lunker_size_spread = std::stod(next());
+    } else if (arg == "--hot-spots") {
+      spec.defects_at_hot_spots = true;
     } else if (arg == "--loosening") {
       spec.loosening_count = std::stoi(next());
     } else if (arg == "--loosening-radius") {

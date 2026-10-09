@@ -36,6 +36,10 @@ constexpr std::int64_t kMinImagePixels = 512;
 /// A block counts as material when at most this many voxels lie below the threshold (small pores
 /// of loosened material, noise).
 constexpr int kMaxBelowInMaterialBlock = kBlockVoxels / 16;
+/// Width of the surface band: voxels this close to outside air are darkened by partial volume
+/// and the unsharpness of the scan, so they describe neither the material nor a zone. On faces
+/// that run obliquely through the blocks they would otherwise darken whole blocks.
+constexpr int kSurfaceBandVoxels = 3;
 
 Coord blockOf(const Coord& voxel) { return {voxel.x() >> 3, voxel.y() >> 3, voxel.z() >> 3}; }
 
@@ -78,6 +82,15 @@ double median(std::vector<float> values) {
 struct BlockStats {
   float mean = 0.0F;
   float variance = 0.0F;
+};
+
+/// Sums over the voxels of a block that a pore shell leaves: grey values outside the surface band
+/// and their count, and the grey values above air inside it.
+struct BlockSums {
+  int count = 0;
+  double sum = 0.0;
+  double sum_sq = 0.0;
+  double band_above_air = 0.0;
 };
 
 /// Everything the first streaming pass collects.
@@ -168,9 +181,10 @@ Scan scanBricks(const Dataset& dataset) {
 }
 
 /// Connected components (26-neighbourhood) of the candidates that are not connected to a seed.
-/// Counts the outside-air voxels per block in `outside`.
-std::vector<std::vector<Coord>> internalComponents(const Scan& scan,
-                                                   std::map<Coord, int>& outside) {
+/// Counts the outside-air voxels per block in `outside` and marks them in `outside_air`.
+std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Coord, int>& outside,
+                                                   openvdb::BoolGrid& outside_air) {
+  auto outside_acc = outside_air.getAccessor();
   auto visited = openvdb::BoolGrid::create(false);
   auto visited_acc = visited->getAccessor();
   const auto candidate_acc = scan.candidates->getConstAccessor();
@@ -186,6 +200,7 @@ std::vector<std::vector<Coord>> internalComponents(const Scan& scan,
         component->push_back(c);
       } else {
         ++outside[blockOf(c)];
+        outside_acc.setValueOn(c);
       }
       for (const Coord& d : neighbours26()) {
         const Coord n = c + d;
@@ -419,7 +434,17 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   phase.reset();
   phase.emplace("pores and zones");
   std::map<Coord, int> outside;
-  const std::vector<std::vector<Coord>> components = internalComponents(scan, outside);
+  auto band = openvdb::BoolGrid::create(false);
+  const std::vector<std::vector<Coord>> components = internalComponents(scan, outside, *band);
+  openvdb::tools::dilateActiveValues(band->tree(), kSurfaceBandVoxels,
+                                     openvdb::tools::NN_FACE_EDGE_VERTEX);
+  band->tree().voxelizeActiveTiles();
+  // Blocks are 8^3 like the leaves of the grid, so a block touches the band when its leaf exists.
+  const auto touches_band = [&](const Coord& block) {
+    const auto* leaf = band->tree().probeConstLeaf(
+        Coord(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock));
+    return leaf != nullptr && !leaf->isEmpty();
+  };
 
   // Pore candidates and their one-voxel shells. Blocks they touch do not describe the material,
   // so they are left out of the material level; their zone deficit is computed without the shell.
@@ -450,6 +475,66 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     pore.voxel_count = static_cast<std::int64_t>(component.size());
     result.pores.push_back(pore);
     shells.push_back(shell);
+  }
+
+  // Blocks at the surface or at a pore: sums over their voxels outside the pore shells, apart
+  // for the surface band and the rest, in one more pass over the bricks.
+  std::set<Coord> restricted;
+  for (const auto& [block, unused] : scan.blocks) {
+    if (!material_blocks.contains(block) || touches_band(block)) {
+      restricted.insert(block);
+    }
+  }
+  tbb::combinable<std::map<Coord, BlockSums>> partial_sums;
+  dataset.forEachBrick(0, [&](const Index3&, const openvdb::FloatGrid& grid) {
+    auto& local = partial_sums.local();
+    const auto band_in_brick = band->getConstAccessor();
+    const auto shells_in_brick = all_shells->getConstAccessor();
+    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+      const Coord block = blockOf(leaf->origin());
+      if (!restricted.contains(block)) {
+        continue;
+      }
+      BlockSums sums;
+      for (auto it = leaf->cbeginValueOn(); it; ++it) {
+        const Coord c = it.getCoord();
+        if (shells_in_brick.isValueOn(c)) {
+          continue;
+        }
+        const double value = *it;
+        if (band_in_brick.isValueOn(c)) {
+          sums.band_above_air += value - air;
+        } else {
+          sums.sum += value;
+          sums.sum_sq += value * value;
+          ++sums.count;
+        }
+      }
+      local[block] = sums;
+    }
+  });
+  std::map<Coord, BlockSums> block_sums;
+  partial_sums.combine_each([&](const std::map<Coord, BlockSums>& local) {
+    // Bricks do not share blocks.
+    block_sums.insert(local.begin(), local.end());
+  });
+
+  // Material blocks at the surface: statistics of the voxels outside the band only.
+  for (auto it = material_blocks.begin(); it != material_blocks.end();) {
+    const auto sums = block_sums.find(it->first);
+    if (sums == block_sums.end()) {
+      ++it;
+      continue;
+    }
+    const BlockSums& s = sums->second;
+    if (s.count < kBlockVoxels / 4) {
+      it = material_blocks.erase(it);
+      continue;
+    }
+    const double mean = s.sum / s.count;
+    it->second = {static_cast<float>(mean),
+                  static_cast<float>(std::max(0.0, s.sum_sq / s.count - mean * mean))};
+    ++it;
   }
 
   std::vector<float> means;
@@ -500,7 +585,6 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   std::map<Coord, double> deficits;
   auto flagged = openvdb::BoolGrid::create(false);
   auto flagged_acc = flagged->getAccessor();
-  const auto shell_acc = all_shells->getConstAccessor();
   for (const auto& [block, stats] : scan.blocks) {
     const double material =
         reference.at(Coord(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock));
@@ -510,29 +594,21 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
     double deficit = (material - stats.mean) / contrast;
     int counted = kBlockVoxels;
-    if (!material_blocks.contains(block)) {
-      // The pore's own voids are in its volume already: sum the other voxels only.
-      double sum = 0.0;
-      counted = 0;
-      const Coord origin(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock);
-      for (int z = 0; z < kBlock; ++z) {
-        for (int y = 0; y < kBlock; ++y) {
-          for (int x = 0; x < kBlock; ++x) {
-            const Coord c = origin + Coord(x, y, z);
-            if (shell_acc.isValueOn(c)) {
-              continue;
-            }
-            if (const auto value = dataset.sample(0, {c.x(), c.y(), c.z()})) {
-              sum += (material - *value) / contrast;
-              ++counted;
-            }
-          }
-        }
-      }
+    if (const auto sums = block_sums.find(block); sums != block_sums.end()) {
+      // The pore's own voids are in its volume already: sum the other voxels only. The surface
+      // band is darkened by the air outside, so its voids cannot be told from its grey values;
+      // they are taken at the void fraction of the rest of the block, over the band's share of
+      // the part (its grey values above air, which the voids lower by that same fraction).
+      const BlockSums& s = sums->second;
+      counted = s.count;
       if (counted < kBlockVoxels / 4) {
         continue;
       }
-      deficit = sum / kBlockVoxels;  // void fraction of the whole block
+      const double sum = (counted * material - s.sum) / contrast;
+      const double void_fraction = std::clamp(sum / counted, 0.0, 0.5);
+      const double band_part = s.band_above_air / contrast / (1.0 - void_fraction);
+      // Void fraction of the whole block.
+      deficit = (sum + void_fraction * band_part) / kBlockVoxels;
     }
     deficits[block] = deficit;
     const double n = counted;

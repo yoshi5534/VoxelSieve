@@ -9,12 +9,16 @@ On top of it, it finds pores and loosened microstructure and writes an inspectio
 
 | CT slice | Porosity analysis | Inspection report |
 |---|---|---|
-| ![Slice through a synthetic casting scan with two zones of loosened microstructure and a shrinkage cavity](docs/images/ct-slice.png) | ![Projection of the part in grey with pores in red and loosened zones in yellow](docs/images/porosity-projection.png) | ![Evaluation table of the inspection report with two inspection zones](docs/images/report-evaluation.png) |
-| Synthetic scan with noise and cupping: two loosened zones and a shrinkage cavity | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 scheme) |
+| ![Section through the axis of a cast bell housing, enlarged: a zone of loosened microstructure and a shrinkage cavity in the engine flange](docs/images/ct-slice.png) | ![Bell housing projected along its axis in grey, pores in red and loosened zones in yellow](docs/images/porosity-projection.png) | ![Evaluation table of the inspection report with three inspection zones](docs/images/report-evaluation.png) |
+| Section through a synthetic scan of a bell housing: a loosened zone and a shrinkage cavity in the engine flange | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 scheme) |
 
-All three images come from one synthetic scan of 1025 × 775 × 525 voxels (830 MB), made with
-`vs-synth --box 80 60 40 --voxel-size 0.08 --lunker 6 --loosening 3 --noise 500 --cupping 0.1
---seed 7`. Every lunker volume and every zone is found within 2 % of the ground truth.
+All images of the porosity analysis come from one synthetic scan of the sample bell housing,
+765 × 765 × 380 voxels of 0.1 mm (445 MB), with the shrinkage cavities and loosened zones where a
+casting solidifies last: `vs-synth --part bellhousing --voxel-size 0.1 --hot-spots --lunker 12
+--lunker-radius 0.9 --lunker-spread 0.6 --loosening 3 --loosening-radius 1.5 --noise 500
+--cupping 0.08 --blur 0.07 --seed 12`. Every lunker volume is found within 2 % of the ground
+truth (the smallest, 0.06 mm³, within 4 %), the zones deep in the flanges within 2 % and those
+just below the surface within 10 %, and the part volume within 0.02 %.
 
 Status: early development, latest release 0.2.1 (see [CHANGELOG.md](CHANGELOG.md)). New here?
 The [quickstart](docs/quickstart.md) takes you from download to a porosity report with an AI
@@ -171,10 +175,13 @@ artefacts, plus a JSON sidecar with the ground truth. It is the test bed for def
   below the voxel size up to `--loosening-porosity` (default 5 %).
 - `--noise`, `--cupping` (beam hardening), `--rings` (ring artefacts around the z axis).
 - `--blur MM`: unsharpness of the imaging chain, a Gaussian point spread function with this sigma.
-- `--box X Y Z` uses a box instead of an STL file; `--part housing|bracket|hub` uses a sample
-  casting with walls, ribs, bosses, bores and fillets (`--scale`, `--stl` writes its mesh).
+- `--hot-spots` places lunkers and loosened zones in the thickest sections, where a casting
+  solidifies last, instead of anywhere with room; `--lunker-spread F` varies the lunker sizes down
+  to (1 - F) times `--lunker-radius`.
+- `--box X Y Z` uses a box instead of an STL file; `--part housing|bracket|hub|bellhousing` uses a
+  sample casting with walls, ribs, bosses, bores and fillets (`--scale`, `--stl` writes its mesh).
 
-![Sample parts: gearbox housing, angle bracket and wheel hub](docs/images/sample-parts.png)
+![Sample parts: gearbox housing, angle bracket, wheel hub and bell housing](docs/images/sample-parts.png)
 
 `part.json` lists every defect with its position, size and void volume, and the total porosity.
 The grey values carry the void volume exactly, even for pores much smaller than a voxel (see
@@ -254,7 +261,10 @@ Zones are 8³ blocks whose grey value lies clearly below the material level at t
 the surface, so cupping from beam hardening is not reported as porosity (see
 `docs/adr/0006-porosity-analysis.md`). On an 830 MB synthetic scan (1025 × 775 × 525 voxels,
 6 lunkers, 3 loosened zones, noise and 10 % cupping) every lunker is within 2 % of its true volume,
-every zone within 2 %, and the total porosity within 1 %; the analysis takes 14 s on 4 cores.
+every zone within 2 %, and the total porosity within 1 %; the analysis takes about 30 s on 4
+cores. Voxels within 3 voxels of the outside air are left out of the zone detection, so oblique
+faces, fillets and bores, whose partial-volume edge cuts through the blocks, are not taken for
+loosened material.
 `PorosityOptions` and the `--min-pore`, `--zone-sigma` and `--zone-min` options set the detection
 limits.
 
@@ -334,7 +344,7 @@ resolution level that matches the zoom, so it stays fast on scans of hundreds of
 dragging pans, the arrow keys (or Shift and the wheel) step through slices; pores are tinted red
 and loosened zones yellow, and a click on a pore in the list jumps to it.
 
-![Slice view of an 830 MB scan zoomed onto a shrinkage cavity](docs/images/slice-view.png)
+![Slice view zoomed onto the engine flange of the bell housing: a shrinkage cavity in red next to a loosened zone in yellow](docs/images/slice-view.png)
 
 The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis) in the browser:
 "Surface" shades the part surface at a threshold dragged in the histogram, "Transfer function"
@@ -359,7 +369,7 @@ When a volume is loaded, the view suggests two or three renderings from its hist
 small picture: the density spread of the material, densities below the material (pores,
 loosened structure) and further peaks such as inclusions, or else the part as a solid body.
 
-![3D view with pores and loosened zones inside the translucent part](docs/images/volume-view.png)
+![3D view with pores and loosened zones inside the translucent bell housing](docs/images/volume-view.png)
 
 The project remembers how it was shown: stage, slice, zoom and window, camera, transfer function,
 colours and background come back when it is opened again. "Save view" keeps the current
