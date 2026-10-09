@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoxelSieve: open-source software for industrial CT</title>
+<meta name="description" content="Open-source software for very large industrial CT volumes: sparse OpenVDB datasets, porosity analysis with a BDG P 202 inspection report, nominal-actual comparison with CAD, a browser UI and an MCP server for AI assistants.">
+<meta property="og:title" content="VoxelSieve">
+<meta property="og:description" content="Open-source software for very large industrial CT volumes: porosity, nominal-actual comparison, inspection reports, browser UI and MCP server.">
+<meta property="og:image" content="https://yoshi5534.github.io/VoxelSieve/images/nominal-actual.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='6' height='6' fill='%233b82c4'/%3E%3Crect x='9' y='1' width='6' height='6' fill='%233b82c4' opacity='.5'/%3E%3Crect x='1' y='9' width='6' height='6' fill='%233b82c4' opacity='.5'/%3E%3Crect x='9' y='9' width='6' height='6' fill='%233b82c4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./">VoxelSieve</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#ai">AI assistants</a>
+      <a href="#start">Get started</a>
+      <a href="https://github.com/yoshi5534/VoxelSieve">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <h1>Industrial CT volumes, sieved.</h1>
+      <p class="lead">VoxelSieve removes the outside air from reconstructed CT scans, keeps the part
+        and its internal voids, and stores the result as a sparse
+        <a href="https://www.openvdb.org/">OpenVDB</a> dataset. On top of it: porosity analysis,
+        inspection reports after BDG&nbsp;P&nbsp;202, nominal-actual comparison with the CAD model,
+        a browser UI and an MCP server for AI assistants. Scans larger than memory work, streamed
+        out of core.</p>
+      <p class="actions">
+        <a class="btn primary" href="https://github.com/yoshi5534/VoxelSieve/blob/main/docs/quickstart.md">Quickstart</a>
+        <a class="btn" href="https://github.com/yoshi5534/VoxelSieve/releases/latest">Download</a>
+        <a class="btn" href="https://github.com/yoshi5534/VoxelSieve">Source on GitHub</a>
+      </p>
+      <p class="meta">Apache-2.0 · Linux, Windows, macOS · C++20</p>
+    </div>
+    <figure class="hero-img">
+      <img src="images/nominal-actual.png" width="1014" height="504"
+           alt="Deviation of a warped housing with a dent from its CAD model, coloured by deviation">
+    </figure>
+  </div>
+</section>
+
+<section id="features" class="wrap">
+  <h2>What it does</h2>
+  <div class="cards">
+    <article>
+      <h3>Sieve</h3>
+      <p>Raw volumes (with vendor headers) and TIFF stacks, also inside ZIP archives, become a
+        bricked VDB dataset. Bricks with only outside air are not written. Grey values stay
+        lossless.</p>
+    </article>
+    <article>
+      <h3>Porosity</h3>
+      <p>Finds pores and zones of loosened microstructure, with volumes from the grey values and
+        cupping kept apart from porosity. On an 830&nbsp;MB synthetic scan every defect is within
+        2&nbsp;% of the ground truth.</p>
+    </article>
+    <article>
+      <h3>Inspection report</h3>
+      <p>Evaluates the analysis against acceptance limits per inspection zone (BDG&nbsp;P&nbsp;202
+        scheme) and writes an HTML report to print as PDF.</p>
+    </article>
+    <article>
+      <h3>Nominal-actual</h3>
+      <p>Aligns the CAD model (STL) to the scanned surface, from any pose, and measures the signed
+        deviation of every surface point, with statistics and a coloured mesh.</p>
+    </article>
+    <article>
+      <h3>Studio</h3>
+      <p>A browser UI with slice and 3D views that load only what is on screen, a wizard, undo and
+        redo, saved views and several objects in one coordinate system.</p>
+    </article>
+    <article>
+      <h3>Learned segmentation</h3>
+      <p>Material classes by grey value or a learned model run on the CPU tile by tile, scored
+        against labels. Training scripts in PyTorch are included.</p>
+    </article>
+  </div>
+</section>
+
+<section class="wrap gallery">
+  <figure>
+    <img src="images/porosity-projection.png" width="513" height="388" loading="lazy"
+         alt="Projection of the part in grey with pores in red and loosened zones in yellow">
+    <figcaption>Porosity: pores in red, loosened zones in yellow.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/report-evaluation.png" width="696" height="441" loading="lazy"
+         alt="Evaluation table of the inspection report with two inspection zones">
+    <figcaption>Inspection report: evaluation per zone.</figcaption>
+  </figure>
+  <figure class="wide">
+    <img src="images/volume-view.png" width="1400" height="1000" loading="lazy"
+         alt="3D view of a cast part with pores and loosened zones inside the translucent volume">
+    <figcaption>3D view: pores and loosened zones inside the translucent part.</figcaption>
+  </figure>
+  <figure class="wide">
+    <img src="images/studio.png" width="1280" height="892" loading="lazy"
+         alt="Studio in the browser with the step protocol and a porosity result">
+    <figcaption>The studio: every step in the protocol, with undo and redo.</figcaption>
+  </figure>
+  <figure class="wide">
+    <img src="images/slice-view.png" width="1400" height="900" loading="lazy"
+         alt="Slice view of an 830 MB scan zoomed onto a shrinkage cavity">
+    <figcaption>Slice view, zoomed onto a shrinkage cavity in an 830&nbsp;MB scan.</figcaption>
+  </figure>
+</section>
+
+<section id="ai" class="band">
+  <div class="wrap two">
+    <div>
+      <h2>Works with AI assistants</h2>
+      <p><code>vs-studio --mcp</code> serves VoxelSieve over the Model Context Protocol. An
+        assistant such as Claude Desktop or Claude Code can create projects, run the analyses,
+        look at slices and write the report.</p>
+      <p>It runs on your computer: the scans stay where they are, and the assistant only receives
+        results such as pore lists, measurements, slice pictures and reports.</p>
+    </div>
+    <pre><code>claude mcp add voxelsieve -- \
+  /opt/voxelsieve/bin/vs-studio --mcp /data/scans
+
+&gt; Import /data/scans/housing.raw, analyse the
+  porosity and write an inspection report with
+  the example order.</code></pre>
+  </div>
+</section>
+
+<section id="start" class="wrap">
+  <h2>Get started</h2>
+  <ol class="steps">
+    <li><strong>Download</strong> a package from the
+      <a href="https://github.com/yoshi5534/VoxelSieve/releases/latest">latest release</a>: an MCP
+      bundle (<code>.mcpb</code>) for Claude Desktop, or an archive with all tools for Linux,
+      Windows and macOS. A Docker image builds from the Linux package.</li>
+    <li><strong>Get the sample data</strong>: a synthetic scan of a cast housing with its CAD
+      model, an inspection order and the ground truth of its defects.</li>
+    <li><strong>Follow the <a href="https://github.com/yoshi5534/VoxelSieve/blob/main/docs/quickstart.md">quickstart</a></strong>
+      from download to a porosity report and a CAD comparison in about ten minutes.</li>
+  </ol>
+  <p>To build from source, see the
+    <a href="https://github.com/yoshi5534/VoxelSieve#build">README</a>; dependencies come from
+    vcpkg. Contributions are welcome, see
+    <a href="https://github.com/yoshi5534/VoxelSieve/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</p>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    VoxelSieve is licensed under Apache-2.0. ·
+    <a href="https://github.com/yoshi5534/VoxelSieve">GitHub</a> ·
+    <a href="https://github.com/yoshi5534/VoxelSieve/blob/main/CHANGELOG.md">Changelog</a>
+  </div>
+</footer>
+</body>
+</html>
