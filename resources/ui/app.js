@@ -973,6 +973,43 @@ function materialsOf(datasetStep) {
   return steps.length ? steps[steps.length - 1] : null;
 }
 
+/// Material classes left out of the views, for the material segmentation step `step`; a new
+/// segmentation shows all of them again.
+function hiddenMaterials(step) {
+  if (state.hiddenMaterials?.step !== step) state.hiddenMaterials = { step, ids: [] };
+  return state.hiddenMaterials.ids;
+}
+
+/// Legend of a material segmentation: per class its colour, the grey value it starts at, its
+/// volume and share of all material, and a box that shows or hides it in the slice and 3D views.
+function materialLegend(materials, onChange) {
+  const list = materials.summary?.materials ?? [];
+  const total = list.reduce((sum, material) => sum + material.volume_mm3, 0);
+  const hidden = hiddenMaterials(materials.id);
+  const rows = list.map((material) => {
+    const show = el('input', { type: 'checkbox', checked: !hidden.includes(material.id),
+      title: 'Show this material' });
+    show.addEventListener('change', () => {
+      const ids = hiddenMaterials(materials.id).filter((id) => id !== material.id);
+      if (!show.checked) ids.push(material.id);
+      state.hiddenMaterials.ids = ids.sort((a, b) => a - b);
+      onChange(state.hiddenMaterials.ids);
+    });
+    return el('tr', {},
+      el('td', {}, el('label', {}, show, el('span', { className: 'swatch', style: 'background: rgb(' +
+        MATERIAL_COLORS[(material.id - 1) % 8].join(',') + ')' }), ' ' + material.id)),
+      el('td', {}, formatNumber(Math.round(material.from_grey_value))),
+      el('td', {}, formatNumber(material.volume_mm3)),
+      el('td', {}, total > 0 ? (100 * material.volume_mm3 / total).toFixed(1) : '–'));
+  });
+  return [el('h3', {}, 'Materials (step ' + materials.id + ')'),
+    el('table', { className: 'materials' }, el('thead', {}, el('tr', {}, el('th', {}, 'No.'),
+      el('th', {}, 'from grey value'), el('th', {}, 'mm³'), el('th', { title: 'Share of all material' }, '%'))),
+    el('tbody', {}, rows)),
+    el('p', { className: 'hint' }, 'Untick a material to look past it, for instance the base ' +
+      'material to see the inclusions in it.')];
+}
+
 async function loadPores(step) {
   if (state.pores.step === step) return;
   state.pores = { step, list: [] };
@@ -1096,15 +1133,8 @@ function renderViewStage(panel) {
   side.prepend(...sliceObjectsCard(viewer, dataset));
 
   if (materials !== null) {
-    // Legend: the classes with the grey value they start at and their volume.
-    const rows = (materials.summary?.materials ?? []).map((material) => el('tr', {},
-      el('td', {}, el('span', { className: 'swatch', style: 'background: rgb(' +
-        MATERIAL_COLORS[(material.id - 1) % 8].join(',') + ')' }), ' ' + material.id),
-      el('td', {}, formatNumber(Math.round(material.from_grey_value))),
-      el('td', {}, formatNumber(material.volume_mm3))));
-    side.append(el('h3', {}, 'Materials (step ' + materials.id + ')'),
-      el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'No.'), el('th', {}, 'from grey value'),
-        el('th', {}, 'mm³'))), el('tbody', {}, rows)));
+    viewer.setHiddenMaterials(hiddenMaterials(materials.id));
+    side.append(...materialLegend(materials, (ids) => viewer.setHiddenMaterials(ids)));
   }
   panel.append(el('div', { className: 'viewer' },
     el('div', {}, tools, canvas, status), side));
@@ -1219,6 +1249,7 @@ function renderVolumeView(panel, dataset) {
   const transfer = state.transfer ??
     (state.transfer = { key: null, preset: null, colorMap: 'viridis', points: null });
   const porosity = porosityOf(dataset.step.id);
+  const materials = materialsOf(dataset.step.id);
   const surfaceStep = surfaceOf(dataset.step.id);
   const comparisonStep = comparisonOf(dataset.step.id);
   // Without a surface or comparison step its mesh cannot be shown; fall back to the grey values.
@@ -1262,6 +1293,13 @@ function renderVolumeView(panel, dataset) {
   const pores = el('input', { type: 'checkbox', checked: volume.pores,
     disabled: porosity === null });
   pores.addEventListener('change', () => update({ pores: pores.checked }));
+  const showMaterials = el('input', { type: 'checkbox', checked: volume.materials,
+    disabled: materials === null, title: materials === null
+      ? 'Run the operation "Material segmentation" first' : 'Colour the materials' });
+  showMaterials.addEventListener('change', () => update({ materials: showMaterials.checked }));
+  volume.hiddenMaterials = materials === null ? [] : [...hiddenMaterials(materials.id)];
+  const materialPanel = materials === null ? null : el('div', { className: 'pores material-legend' },
+    ...materialLegend(materials, (ids) => update({ hiddenMaterials: [...ids] })));
   const poreColor = colorInput('Pore colour', () => volume.poreColor,
     (rgb) => update({ poreColor: rgb }));
   const zoneColor = colorInput('Colour of the loosened zones', () => volume.zoneColor,
@@ -1470,8 +1508,9 @@ function renderVolumeView(panel, dataset) {
     el('label', { className: 'group' }, shading, 'Lighting'),
     el('label', { className: 'group' }, 'Cut x', cut),
     el('label', { className: 'group' }, pores, 'Pores', poreColor, zoneColor),
+    el('label', { className: 'group' }, showMaterials, 'Materials'),
     el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
-  canvas, legend, status, suggestionRow,
+  canvas, legend, materialPanel, status, suggestionRow,
   el('div', { className: 'transfer-editor' },
     el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogram'), curveTools, surfaceTools),
     histogram, hint));
@@ -1482,7 +1521,7 @@ function renderVolumeView(panel, dataset) {
     status.textContent = error.message;
     return;
   }
-  volume.load(dataset.step.id, porosity).then(() => {
+  volume.load(dataset.step.id, porosity, materials?.id ?? null).then(() => {
     const key = volume.volume.key;
     const restore = state.restore;
     if (restore?.volume || restore?.transfer) {
