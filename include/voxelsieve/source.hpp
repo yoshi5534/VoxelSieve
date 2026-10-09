@@ -54,7 +54,8 @@ class VolumeSource {
   [[nodiscard]] virtual ValueMapping valueMapping() const { return {}; }
   /// Whether reading small regions in any order costs much more than reading the volume once,
   /// slice by slice: slices that are stored compressed or decoded as a whole, such as TIFF stacks
-  /// in a ZIP archive. `writeDataset` first copies such a volume to a temporary raw file.
+  /// in a ZIP archive, or files on a network share, where every small read is a request of its
+  /// own. `writeDataset` first copies such a volume to a temporary raw file.
   [[nodiscard]] virtual bool slowRandomAccess() const { return false; }
   /// Lets go of memory held for faster reading, such as caches of decoded data or pages of a
   /// memory-mapped input; later reads work as before. Called once a source has been copied, and
@@ -106,6 +107,9 @@ class MappedRawSource final : public VolumeSource {
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
   /// Header size in bytes, as given or detected.
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
+  /// True when the file lies on a network share (SMB, NFS, a mapped network drive): the import
+  /// then reads it once, slice by slice, instead of twice in small pieces (ADR 0020).
+  [[nodiscard]] bool slowRandomAccess() const override { return on_network_share_; }
   /// Lets the pages read so far go from the process's memory; they are read again when needed.
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
@@ -115,6 +119,7 @@ class MappedRawSource final : public VolumeSource {
   std::unique_ptr<Mapping> mapping_;
   RawLayout layout_;
   std::uint64_t header_bytes_ = 0;
+  bool on_network_share_ = false;
 };
 
 /// Computes the synthetic phantom on the fly, so tests and benchmarks can use volumes of any size

@@ -14,7 +14,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     stacks (`DicomStackSource`, DCMTK) and `vgl.hpp` VGStudio projects (`readVglProject`), whose
     DICOM volumes are imported from the files they refer to (ADR 0019)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
-    and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
+    and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
+    `preview.hpp` the first look at a volume that every import shows before its passes, from
+    slices the staging copy reads first (ADR 0020)
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
   - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts;
     `parts.hpp` sample castings (housing, bracket, hub) with an analytic surface

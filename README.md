@@ -149,6 +149,23 @@ the project's voxel size and placed as in VGStudio; other inputs and the project
 (`.vgm`) are reported as not imported. In the studio these are the operations `import_dicom` and
 `import_vgl`.
 
+### First look while importing, also from a network share
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve /mnt/ct-share/part.zip --out part.vsieve --preview first.png
+```
+
+Before the passes, the import reads 64 whole slices spread evenly over the volume and shows them
+at once: the central sections normal to z, y and x, averaged to at most 256 voxels per edge, and
+the histogram of those slices with the estimated threshold (ADR 0020). Slices are what every
+input stores together (a file of a stack, a contiguous part of a raw file), so this is one
+request per slice, also over SMB. The import goes on without reading them again: stacks and
+files on a network share are copied once, slice by slice, to a local staging file, and the
+preview's slices are copied first. Raw files on SMB or NFS shares and mapped network drives are
+detected and staged too, instead of being read twice in small pieces. In the studio the preview
+appears in the progress bar of every import and stays with the step (`preview.png`); AI
+assistants get it with `import_preview`.
+
 ### Single grid
 
 ```sh

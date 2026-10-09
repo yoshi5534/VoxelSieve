@@ -94,6 +94,9 @@ Options:
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
   --dense                 .vdb only: write every voxel without sieving (baseline)
+  --preview <file.png>    Datasets: write a first look at the input as soon as it is read: a
+                          few slices spread over the volume, its sections and histogram with
+                          the estimated threshold. The import reads these slices only once
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -115,6 +118,7 @@ struct Options {
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
   bool dense = false;
+  std::filesystem::path preview;
   std::filesystem::path telemetry;
 
   [[nodiscard]] bool singleGrid() const { return out.extension() == ".vdb"; }
@@ -186,6 +190,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.dataset.staging_dir = next();
     } else if (arg == "--no-staging") {
       options.dataset.stage_slow_sources = false;
+    } else if (arg == "--preview") {
+      options.preview = next();
     } else if (arg == "--dense") {
       options.dense = true;
     } else if (arg == "--join") {
@@ -515,6 +521,21 @@ void runDataset(const Options& options) {
   dataset.progress = [&printer](std::string_view stage, double fraction) {
     printer(stage, fraction);
   };
+  if (!options.preview.empty()) {
+    dataset.preview = [&](const voxelsieve::ImportPreview& preview) {
+      const std::vector<std::uint8_t> png = voxelsieve::previewPng(preview);
+      std::ofstream(options.preview, std::ios::binary)
+          .write(reinterpret_cast<const char*>(png.data()),
+                 static_cast<std::streamsize>(png.size()));
+      printer.finishLine();
+      std::cout << std::fixed << std::setprecision(1) << "preview            after "
+                << seconds(start, std::chrono::steady_clock::now()) << " s, "
+                << preview.slices.size() << " of " << preview.source_dims[2]
+                << " slices, threshold estimate " << std::setprecision(0) << preview.threshold
+                << " -> " << options.preview.string() << '\n'
+                << std::flush;
+    };
+  }
   const auto info = voxelsieve::writeDataset(*source, options.out, dataset);
   printer.finishLine();
   const auto done = std::chrono::steady_clock::now();

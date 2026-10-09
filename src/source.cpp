@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "detail/network.hpp"
 #include "detail/pages.hpp"
 
 namespace voxelsieve {
@@ -87,6 +88,7 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLay
   if (!mapping_->file.is_open()) {
     throw std::runtime_error("Cannot map " + path.string());
   }
+  on_network_share_ = detail::onNetworkShare(path);
 }
 
 MappedRawSource::~MappedRawSource() = default;

@@ -37,6 +37,7 @@ add_library(voxelsieve SHARED
   mesh.cpp
   parts.cpp
   phantom.cpp
+  preview.cpp
   porosity.cpp
   report.cpp
   template.cpp
@@ -45,6 +46,7 @@ add_library(voxelsieve SHARED
   dataset_reader.cpp
   dicom.cpp
   detail/blocks.cpp
+  detail/network.cpp
   detail/png.cpp
   detail/tiff.cpp
   detail/zip.cpp

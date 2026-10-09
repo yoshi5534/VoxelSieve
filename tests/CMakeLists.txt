@@ -8,6 +8,7 @@ add_executable(voxelsieve_tests
   test_model.cpp
   test_phantom.cpp
   test_porosity.cpp
+  test_preview.cpp
   test_alignment.cpp
   test_objects.cpp
   test_project.cpp
@@ -50,8 +51,10 @@ add_test(NAME vs_sieve_dataset_cli_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset)
 set_tests_properties(vs_sieve_dataset_cli_clean PROPERTIES FIXTURES_SETUP cli_dataset)
 add_test(NAME vs_sieve_dataset_cli
-         COMMAND vs-sieve --phantom 64 --brick-size 32 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset)
-set_tests_properties(vs_sieve_dataset_cli PROPERTIES FIXTURES_REQUIRED cli_dataset)
+         COMMAND vs-sieve --phantom 64 --brick-size 32 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset
+         --preview ${CMAKE_CURRENT_BINARY_DIR}/cli_preview.png)
+set_tests_properties(vs_sieve_dataset_cli PROPERTIES FIXTURES_REQUIRED cli_dataset
+                     PASS_REGULAR_EXPRESSION "preview +after [0-9.]+ s, 64 of 64 slices")
 # Materials of the sieved phantom (one class, the box).
 add_test(NAME vs_segment_cli_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_materials)

@@ -139,6 +139,8 @@ class Studio {
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
   nlohmann::json viewSlice(const nlohmann::json& params) const;
+  /// The import_preview method; needs mutex_.
+  [[nodiscard]] nlohmann::json importPreview(const nlohmann::json& params) const;
   nlohmann::json viewObjects(const nlohmann::json& params) const;
   /// Draws objects into the RGB image of a slice for view_slice; needs mutex_.
   nlohmann::json drawObjects(const Dataset& base, const ArtifactRef& base_ref,
@@ -183,6 +185,9 @@ class Studio {
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_
   std::string running_operation_;
+  // The preview the running import handed over (ADR 0020), guarded by mutex_.
+  nlohmann::json running_preview_;
+  std::vector<std::uint8_t> running_preview_png_;
   mutable std::mutex mutex_;
   // Open datasets and porosity results for viewing, most recently used last.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;

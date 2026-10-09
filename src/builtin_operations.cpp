@@ -4,10 +4,13 @@
 #include <openvdb/io/File.h>
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 
 #include "voxelsieve/compare.hpp"
@@ -19,6 +22,7 @@
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/preview.hpp"
 #include "voxelsieve/project.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
@@ -62,6 +66,30 @@ std::function<void(std::string_view, double)> datasetProgress(const OperationCon
     } else {
       context.progress(0.9 + 0.1 * fraction);
     }
+  };
+}
+
+/// Shows the preview of an import as soon as it is read (ADR 0020) and keeps it with the step as
+/// preview.json and preview.png. The time counts from the start of the operation, as the user
+/// waits.
+std::function<void(const ImportPreview&)> importPreview(const OperationContext& context) {
+  const auto start = std::chrono::steady_clock::now();
+  return [&context, start](const ImportPreview& preview) {
+    const std::vector<std::uint8_t> png = previewPng(preview);
+    Json summary = previewSummary(preview);
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    summary["seconds"] = seconds;
+    std::ofstream(context.output_dir / "preview.json") << summary.dump(2) << '\n';
+    std::ofstream(context.output_dir / "preview.png", std::ios::binary)
+        .write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << "Preview after " << seconds
+         << " s: " << preview.slices.size() << " of " << preview.source_dims[2] << " slices ("
+         << 100.0 * preview.fractionRead() << " % of the voxels), threshold estimate "
+         << std::setprecision(0) << preview.threshold;
+    context.log(text.str());
+    context.preview(summary, png);
   };
 }
 
@@ -232,6 +260,7 @@ class ImportRaw final : public Operation {
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
     options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
     options.progress = datasetProgress(context);
+    options.preview = importPreview(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
@@ -339,6 +368,7 @@ class ImportTiff final : public Operation {
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
     options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
     options.progress = datasetProgress(context);
+    options.preview = importPreview(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
@@ -395,6 +425,7 @@ DatasetOptions sieveOptions(const OperationContext& context) {
   options.min_material_voxels = p.value("min_material_voxels", 1);
   options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
   options.progress = datasetProgress(context);
+  options.preview = importPreview(context);
   return options;
 }
 

@@ -45,10 +45,10 @@ constexpr std::array<std::string_view, 6> kViewStateMethods = {
     "view_set", "view_save", "view_list", "view_image", "view_rename", "view_delete"};
 
 /// Methods that change nothing: no project, no file, no state of the studio.
-constexpr std::array<std::string_view, 12> kReadOnlyMethods = {
-    "project_status", "objects",    "step_telemetry", "list_operations",
-    "dataset_info",   "list_files", "view_slice",     "view_objects",
-    "view_list",      "view_image", "browse",         "read_file"};
+constexpr std::array<std::string_view, 13> kReadOnlyMethods = {
+    "project_status", "objects",    "step_telemetry", "list_operations", "dataset_info",
+    "list_files",     "view_slice", "view_objects",   "view_list",       "view_image",
+    "browse",         "read_file",  "import_preview"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
 constexpr std::array<std::string_view, 1> kDestructiveMethods = {"view_delete"};
