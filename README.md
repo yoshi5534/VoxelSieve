@@ -16,7 +16,9 @@ All three images come from one synthetic scan of 1025 × 775 × 525 voxels (830 
 `vs-synth --box 80 60 40 --voxel-size 0.08 --lunker 6 --loosening 3 --noise 500 --cupping 0.1
 --seed 7`. Every lunker volume and every zone is found within 2 % of the ground truth.
 
-Status: early development, latest release 0.2.1 (see [CHANGELOG.md](CHANGELOG.md)). The tools:
+Status: early development, latest release 0.2.1 (see [CHANGELOG.md](CHANGELOG.md)). New here?
+The [quickstart](docs/quickstart.md) takes you from download to a porosity report with an AI
+assistant, using sample data. The tools:
 
 | Tool | Does |
 |---|---|
@@ -401,6 +403,10 @@ Linux (x64), Windows (x64) and macOS (Apple silicon), built from the same source
   drag it onto the Extensions page of the settings) and choose the directories with your scans.
 - `voxelsieve-<version>-<platform>.tar.gz` / `.zip`: all tools with their libraries. Unpack it
   anywhere; nothing else needs to be installed.
+- `voxelsieve-<version>-samples.zip`: a synthetic scan of a cast housing with its CAD model,
+  inspection order and the ground truth of its defects, for the [quickstart](docs/quickstart.md).
+- A Docker image built from the Linux package with `packaging/Dockerfile`: the browser UI by
+  default, MCP with `--mcp` (see the [quickstart](docs/quickstart.md#docker)).
 
 The packages are not signed yet. On macOS, clear the download flag once with
 `xattr -dr com.apple.quarantine voxelsieve-*`; on Windows, SmartScreen may ask for confirmation.

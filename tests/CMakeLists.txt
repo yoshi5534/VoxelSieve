@@ -129,6 +129,12 @@ add_test(NAME vs_studio_mcp_cli
           -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/mcp_tools_list.jsonl -P ${CMAKE_CURRENT_SOURCE_DIR}/run_with_input.cmake)
 set_tests_properties(vs_studio_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity"
                      FAIL_REGULAR_EXPRESSION "\"view_set\"")
+# The sample data of a release (docs/quickstart.md), written with the vs-synth just built.
+add_test(NAME sample_data
+  COMMAND ${CMAKE_COMMAND} -DSYNTH=$<TARGET_FILE:vs-synth>
+          -DORDER=${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+          -DOUT=${CMAKE_CURRENT_BINARY_DIR}/samples/voxelsieve-samples.zip
+          -P ${PROJECT_SOURCE_DIR}/packaging/make-samples.cmake)
 add_test(NAME vs_studio_rejects_arguments COMMAND vs-studio --bogus)
 set_tests_properties(vs_studio_rejects_arguments PROPERTIES WILL_FAIL TRUE)
 

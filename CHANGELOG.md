@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Quickstart, sample data and Docker image**: `docs/quickstart.md` walks from download to a
+  porosity report and a CAD comparison with an AI assistant. Releases get
+  `voxelsieve-<version>-samples.zip`, a synthetic scan of the sample housing with its CAD model,
+  inspection order and ground truth. `packaging/Dockerfile` builds an image from the Linux package
+  that serves the browser UI, or MCP with `--mcp`; the release workflow builds and checks it.
+
 - **MCP for analysis**: tools carry annotations (read-only, destructive), the result files of the
   steps are MCP resources, and three prompts (`porosity_check`, `compare_with_cad`, `first_look`)
   walk a model through the usual inspections. The six tools of the UI's saved views are left out

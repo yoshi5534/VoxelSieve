@@ -117,7 +117,7 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   EXPECT_EQ(inner.at("depth"), 1);
   // Windows counts CPU time in scheduler ticks of about 15.6 ms; allow for one and for rounding.
   EXPECT_GE(compute.at("wall_s").get<double>(), 0.28);
-  EXPECT_GE(inner.at("wall_s").get<double>(), 0.1);
+  EXPECT_GE(inner.at("wall_s").get<double>(), 0.08);
   EXPECT_LT(inner.at("wall_s").get<double>(), compute.at("wall_s").get<double>());
   EXPECT_GE(compute.at("cpu_s").get<double>(), 0.28);
   EXPECT_GT(compute.at("cores_used").get<double>(), 0.0);

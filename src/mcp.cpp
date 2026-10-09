@@ -145,9 +145,9 @@ const std::vector<Prompt>& prompts() {
              {"required", false}}}),
        "Compare the CT scan {scan} with the CAD model {cad} using VoxelSieve.\n"
        "1. Open or create the project {project} (next to the scan if none is given).\n"
-       "2. Import the scan (run_import_raw, run_import_tiff or run_open_dataset) and add the CAD "
-       "model with object_add.\n"
-       "3. Extract the surface with run_surface, then run run_compare_cad.\n"
+       "2. Import the scan (run_import_raw, run_import_tiff or run_open_dataset).\n"
+       "3. Extract the surface with run_surface, then run run_compare_cad with cad_path {cad}; "
+       "it aligns the scan to the model.\n"
        "4. Check the alignment with view_objects and report the deviations: share within "
        "tolerance, largest deviations and where they are.\n"
        "Quote the numbers of the comparison step; do not estimate them."},
