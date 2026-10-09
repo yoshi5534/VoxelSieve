@@ -10,7 +10,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `voxel_size.hpp` voxel edge length per axis and slice thickness (ADR 0012)
   - `source.hpp` read access to volumes larger than RAM (`MappedRawSource`, `PhantomSource`, ...)
     and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011); float
-    input is mapped onto 16 bit with a recorded `ValueMapping` (ADR 0015)
+    input is mapped onto 16 bit with a recorded `ValueMapping` (ADR 0015); `dicom.hpp` DICOM
+    stacks (`DicomStackSource`, DCMTK) and `vgl.hpp` VGStudio projects (`readVglProject`), whose
+    DICOM volumes are imported from the files they refer to (ADR 0019)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)

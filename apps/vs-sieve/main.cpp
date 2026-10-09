@@ -21,21 +21,25 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/dicom.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
+#include "voxelsieve/vgl.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
        vs-sieve <slices/ | stack.tif | slices.zip> --out <output> [options]
+       vs-sieve <dicom-slices/ | project.vgl> --out <output> [options]
        vs-sieve <part1> <part2> ... --join <x|y|z> --out <output> [options]
        vs-sieve --phantom <n> --out <output> [options]
 
@@ -48,6 +52,10 @@ without extracting it. Slices are sorted by name, numbers by value. The voxel si
 --voxel-size, else from the files, else 1 mm. Float slices are mapped linearly onto 16-bit grey
 values over --value-range (default: estimated from a few slices); the mapping is recorded in the
 dataset (docs/adr/0015).
+
+Also reads DICOM stacks, a directory of slice files sorted by their position, and the first
+volume of a VGStudio project (.vgl) from the DICOM files it refers to (docs/adr/0019). Signed
+samples and the rescale slope and intercept are recorded as the value mapping.
 
 Several inputs are joined one after another along --join (default z) into one volume, for scans
 reconstructed in parts. Their other dimensions and voxel sizes must match.
@@ -256,7 +264,59 @@ bool isTiffInput(const Options& options) {
 /// Float TIFF inputs, to report their clipped values after the run.
 using FloatInputs = std::vector<const voxelsieve::TiffStackSource*>;
 
+/// A DICOM stack: a directory of slices, or the first volume of a VGStudio project.
+std::unique_ptr<voxelsieve::VolumeSource> openDicom(const Options& options) {
+  voxelsieve::DicomStackOptions dicom;
+  dicom.voxel_size = options.voxel_size;
+  std::unique_ptr<voxelsieve::DicomStackSource> source;
+  if (voxelsieve::isVglFile(options.input)) {
+    const voxelsieve::VglProject project = voxelsieve::readVglProject(options.input);
+    if (project.volumes.empty() || project.volumes.front().format != "dicom") {
+      throw std::runtime_error("The project's first volume is not a DICOM stack");
+    }
+    const voxelsieve::VglVolume& volume = project.volumes.front();
+    std::vector<std::filesystem::path> files;
+    for (const voxelsieve::VglFile& file : volume.files) {
+      if (!file.path) {
+        throw std::runtime_error("Not found: " + file.reference);
+      }
+      files.push_back(*file.path);
+    }
+    std::cout << "vgstudio project   volume '" << volume.name << "' of " << project.volumes.size()
+              << "\n";
+    dicom.voxel_size = dicom.voxel_size.value_or(volume.voxel_size);
+    source = std::make_unique<voxelsieve::DicomStackSource>(files, dicom);
+  } else {
+    source = std::make_unique<voxelsieve::DicomStackSource>(options.input, dicom);
+  }
+  if (options.slice_thickness_mm) {
+    dicom.voxel_size = withThickness(source->voxelSize(), options);
+    source = std::make_unique<voxelsieve::DicomStackSource>(source->files(), dicom);
+  }
+  const auto dims = source->dims();
+  std::cout << "dicom stack        " << dims[2] << " slices of " << dims[0] << "x" << dims[1]
+            << ", " << source->bitsStored() << " bit "
+            << (source->isSigned() ? "signed" : "unsigned") << "\n";
+  for (const auto& [uid, slices] : source->otherSeries()) {
+    std::cout << "also in input      series " << uid << " (" << slices << " slices)\n";
+  }
+  if (!source->valueMapping().isIdentity()) {
+    std::cout << "value              " << source->valueMapping().offset << " + "
+              << source->valueMapping().scale << " * grey\n";
+  }
+  std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
+  return source;
+}
+
+bool isDicomInput(const Options& options) {
+  return voxelsieve::isVglFile(options.input) || voxelsieve::isDicomFile(options.input) ||
+         (std::filesystem::is_directory(options.input) && voxelsieve::containsDicom(options.input));
+}
+
 std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, FloatInputs& floats) {
+  if (isDicomInput(options)) {
+    return openDicom(options);
+  }
   if (isTiffInput(options)) {
     voxelsieve::TiffStackOptions tiff;
     tiff.folder = options.folder;

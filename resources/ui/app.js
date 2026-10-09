@@ -499,9 +499,10 @@ async function browserLoad(path) {
         }
       });
       item.addEventListener('dblclick', () => {
-        // A directory of TIFF slices is chosen by a click and the button; a double click opens it.
-        if (selectable && entry.kind === 'tiff' && entry.directory) browserLoad(entry.path);
-        else if (selectable) browserFinish(entry);
+        // A directory of TIFF or DICOM slices is chosen by a click and the button; a double click opens it.
+        if (selectable && ['tiff', 'dicom'].includes(entry.kind) && entry.directory) {
+          browserLoad(entry.path);
+        } else if (selectable) browserFinish(entry);
       });
       list.append(item);
     }
@@ -513,7 +514,7 @@ async function browserLoad(path) {
 
 function kindLabel(kind) {
   return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
-    tiff: 'TIFF', file: 'File' }[kind] ?? kind;
+    tiff: 'TIFF', dicom: 'DICOM', vgl: 'VGStudio', file: 'File' }[kind] ?? kind;
 }
 
 function browserFinish(entry) {
@@ -844,22 +845,23 @@ function renderDatasetStage(panel) {
       el('div', { className: 'row' }, nextButton('On to the analysis', 'analysis'))));
   } else {
     panel.append(el('p', { className: 'hint' },
-      'Choose a sieved dataset (.vsieve), a raw file or a TIFF stack (folder, multi-page TIFF ' +
-      'or ZIP). On import, raw data is freed from the air around the part and stored as a ' +
+      'Choose a sieved dataset (.vsieve), a raw file, a TIFF stack (folder, multi-page TIFF ' +
+      'or ZIP), a folder of DICOM slices or a VGStudio project (.vgl). On import, raw data is freed from the air around the part and stored as a ' +
       'dataset with resolution levels; the original stays unchanged.'));
   }
   panel.append(el('div', { className: 'row' }, el('button', {
     disabled: state.busy,
     onclick: async () => {
       const chosen = await browse({ title: 'Choose a dataset or raw data',
-        kinds: ['dataset', 'raw', 'tiff', 'file'] });
+        kinds: ['dataset', 'raw', 'tiff', 'dicom', 'vgl', 'file'] });
       if (!chosen) return;
       if (chosen.kind === 'dataset') {
         state.rawPath = null;
         await runStep('open_dataset', { path: chosen.path });
       } else {
         state.rawPath = chosen.path;
-        state.rawOperation = chosen.kind === 'tiff' ? 'import_tiff' : 'import_raw';
+        state.rawOperation = { tiff: 'import_tiff', dicom: 'import_dicom', vgl: 'import_vgl' }[
+          chosen.kind] ?? 'import_raw';
         render();
       }
     },
@@ -875,6 +877,12 @@ function renderDatasetStage(panel) {
         ? 'The slices are sorted by name (numbers by value) and read directly from the folder or ' +
           'ZIP. With several folders, the grey values are chosen over label or mask folders. ' +
           'Without a voxel size in the files, 1 mm is assumed.'
+        : importOperation === 'import_dicom'
+        ? 'The slices are sorted by their position; voxel size and placement come from the ' +
+          'files. Signed values and the rescale slope and intercept are kept.'
+        : importOperation === 'import_vgl'
+        ? 'The volume is read from the files the project was made from, found where the project ' +
+          'names them or next to it, and placed as in the project. DICOM stacks are supported.'
         : 'Dimensions and voxel size come from the JSON file next to the raw data when they are ' +
           'not given. Without a threshold, it is found automatically (valley after the air peak).'),
       form.element,
