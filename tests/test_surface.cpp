@@ -45,7 +45,7 @@ TEST(SurfaceCodeTest, KeepsTheSignAndStaysWithinHalfAStep) {
 }
 
 TEST(SamplePartTest, MeshesAreClosedAndMatchTheirDistanceFunction) {
-  ASSERT_EQ(samplePartInfos().size(), 3U);
+  ASSERT_EQ(samplePartInfos().size(), 4U);
   for (const SamplePartInfo& part : samplePartInfos()) {
     SamplePartOptions options;
     options.resolution_mm = 0.25;
@@ -215,7 +215,9 @@ class SurfaceTest : public ::testing::Test {
 
 TEST_F(SurfaceTest, SamplePartsAreLocatedWithSubVoxelAccuracy) {
   for (const SamplePartInfo& part : samplePartInfos()) {
-    const auto scan = scanOf(part.name, 0.3, 0.15, part.name == "housing" ? 3 : 0);
+    // The bell housing is thin-walled and larger: at the same scale its walls would be 5 voxels.
+    const double scale = part.name == "bellhousing" ? 0.5 : 0.3;
+    const auto scan = scanOf(part.name, scale, 0.15, part.name == "housing" ? 3 : 0);
     const Dataset dataset = sieve(*scan, part.name + ".vsieve");
     const SurfaceInfo info = writeSurface(dataset, dir_ / (part.name + ".vss"));
     const SurfaceMask mask = SurfaceMask::open(dir_ / (part.name + ".vss"));

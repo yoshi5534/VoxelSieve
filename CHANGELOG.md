@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Bell housing sample part and realistic defect placement**: `vs-synth --part bellhousing` scans
+  a cast bell housing (75 mm across) with flanges, bolt lugs, bosses, ribs, a starter motor mount
+  and an inspection window. `--hot-spots` places lunkers and loosened zones in the thickest
+  sections, where a casting solidifies last, and `--lunker-spread` varies their sizes. The
+  porosity images in the README and on the website now show this part instead of a box.
+
+- **Fix: oblique and curved faces were taken for loosened zones.** Where the partial-volume edge
+  cut through a block at an angle, its mean fell below the material reference; the bell housing
+  showed hundreds of false zones. Voxels within 3 voxels of the outside air are now left out of
+  the zone detection (ADR 0006). The analysis takes about 15 % longer.
+
 - **Quickstart, sample data and Docker image**: `docs/quickstart.md` walks from download to a
   porosity report and a CAD comparison with an AI assistant. Releases get
   `voxelsieve-<version>-samples.zip`, a synthetic scan of the sample housing with its CAD model,

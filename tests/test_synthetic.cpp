@@ -262,6 +262,38 @@ TEST(Synthetic, SieveKeepsDefects) {
   }
 }
 
+TEST(Synthetic, HotSpotsTakeTheDefectsIntoThickSections) {
+  // A thin plate with a thick block beside it: the block is where a casting shrinks last.
+  Mesh part = boxMesh({12.0, 12.0, 1.6}, {-4.0, 0.0, 0.0});
+  const Mesh block = boxMesh({6.0, 6.0, 6.0}, {7.0, 0.0, 0.0});
+  part.triangles.insert(part.triangles.end(), block.triangles.begin(), block.triangles.end());
+  SyntheticSpec spec;
+  spec.lunker_count = 6;
+  spec.lunker_radius_mm = 0.4;
+  spec.lunker_size_spread = 0.5;
+  spec.loosening_count = 1;
+  spec.loosening_radius_mm = 0.6;
+  spec.defects_at_hot_spots = true;
+  const SyntheticScan scan(part, spec);
+  ASSERT_EQ(scan.defects().size(), 7U);
+  double smallest = 1.0;
+  double largest = 0.0;
+  for (const Defect& defect : scan.defects()) {
+    EXPECT_GT(defect.center_mm[0], 4.0) << toString(defect.type);
+    if (defect.type == DefectType::kLunker) {
+      EXPECT_GE(defect.radius_mm, 0.2);
+      EXPECT_LE(defect.radius_mm, 0.4);
+      smallest = std::min(smallest, defect.radius_mm);
+      largest = std::max(largest, defect.radius_mm);
+    }
+  }
+  EXPECT_LT(smallest, largest);
+  EXPECT_EQ(scan.toJson()["synthetic"]["defects_at_hot_spots"], true);
+
+  spec.lunker_size_spread = 1.0;
+  EXPECT_THROW(SyntheticScan(part, spec), std::invalid_argument);
+}
+
 TEST(Synthetic, ThinPartsAndBadMeshes) {
   SyntheticSpec spec;
   spec.lunker_count = 2;
