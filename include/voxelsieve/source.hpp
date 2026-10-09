@@ -57,7 +57,8 @@ class VolumeSource {
   /// in a ZIP archive. `writeDataset` first copies such a volume to a temporary raw file.
   [[nodiscard]] virtual bool slowRandomAccess() const { return false; }
   /// Lets go of memory held for faster reading, such as caches of decoded data or pages of a
-  /// memory-mapped input; later reads work as before. Called once a source has been copied.
+  /// memory-mapped input; later reads work as before. Called once a source has been copied, and
+  /// for a raw copy now and then while it is read.
   virtual void releaseMemory() const {}
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
@@ -105,6 +106,8 @@ class MappedRawSource final : public VolumeSource {
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
   /// Header size in bytes, as given or detected.
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
+  /// Lets the pages read so far go from the process's memory; they are read again when needed.
+  void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
  private:

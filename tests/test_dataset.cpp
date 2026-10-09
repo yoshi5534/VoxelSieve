@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -119,6 +120,11 @@ TEST_F(DatasetTest, MappedRawSourceReadsRegions) {
   std::vector<std::uint16_t> expected(static_cast<std::size_t>(box.voxelCount()));
   std::vector<std::uint16_t> actual(expected.size());
   MemorySource(volume).readRegion(box, expected);
+  mapped.readRegion(box, actual);
+  EXPECT_EQ(actual, expected);
+  // Letting the pages go changes nothing that is read afterwards.
+  mapped.releaseMemory();
+  std::ranges::fill(actual, 0);
   mapped.readRegion(box, actual);
   EXPECT_EQ(actual, expected);
 

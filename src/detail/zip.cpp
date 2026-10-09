@@ -4,6 +4,8 @@
 
 #include <stdexcept>
 
+#include "detail/pages.hpp"
+
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
 #endif
@@ -63,12 +65,7 @@ ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
 
 ZipArchive::~ZipArchive() = default;
 
-void ZipArchive::releasePages() const {
-#if defined(__unix__) || defined(__APPLE__)
-  // The mapping is read-only, so dropped pages are read from the file again when needed.
-  (void)madvise(const_cast<char*>(file_.data()), file_.size(), MADV_DONTNEED);
-#endif
-}
+void ZipArchive::releasePages() const { releaseMappedPages(file_.data(), file_.size()); }
 
 std::vector<std::uint8_t> ZipArchive::read(const Entry& entry) const {
   Handle archive;
@@ -106,6 +103,11 @@ std::vector<std::uint8_t> ZipArchive::read(const Entry& entry) const {
       throw std::runtime_error("Cannot inflate " + entry.name + " in " + path_.string() + ": " +
                                message);
     }
+  }
+  // Entries are mostly read once, front to back (a stack being copied), so the pages read so far
+  // are let go now and then; without this, Windows keeps the whole archive in the working set.
+  if (++reads_ % kReadsPerRelease == 0) {
+    releasePages();
   }
   const std::lock_guard lock(mutex_);
   idle_.push_back(std::move(archive));
