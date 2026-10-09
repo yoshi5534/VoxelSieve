@@ -326,7 +326,7 @@ std::vector<std::uint16_t> DicomStackSource::Impl::decode(const SliceHeader& hea
   }
   DcmDataset& data = *file.getDataset();
   const E_TransferSyntax transfer = data.getOriginalXfer();
-  if (DcmXfer(transfer).isEncapsulated() &&
+  if (DcmXfer(transfer).usesEncapsulatedFormat() &&
       data.chooseRepresentation(EXS_LittleEndianExplicit, nullptr).bad()) {
     throw std::runtime_error(name + " is compressed as " + DcmXfer(transfer).getXferName() +
                              ", which is not supported (uncompressed and RLE are)");
