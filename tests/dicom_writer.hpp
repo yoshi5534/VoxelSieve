@@ -97,7 +97,8 @@ inline void writeDicomSlice(const std::filesystem::path& path, const DicomSliceS
   check(data.putAndInsertUint16(DCM_BitsAllocated, 16));
   check(data.putAndInsertUint16(DCM_BitsStored, static_cast<Uint16>(spec.bits_stored)));
   check(data.putAndInsertUint16(DCM_HighBit, static_cast<Uint16>(spec.bits_stored - 1)));
-  check(data.putAndInsertUint16(DCM_PixelRepresentation, Uint16{spec.is_signed ? 1U : 0U}));
+  check(data.putAndInsertUint16(DCM_PixelRepresentation,
+                                static_cast<Uint16>(spec.is_signed ? 1 : 0)));
   std::vector<Uint16> words(samples.size());
   for (std::size_t i = 0; i < samples.size(); ++i) {
     words[i] = static_cast<Uint16>(samples[i]);  // two's complement for negative values
