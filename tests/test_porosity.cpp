@@ -9,6 +9,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/parts.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/synthetic.hpp"
 
@@ -117,6 +118,23 @@ TEST_F(PorosityTest, TinyBrickCacheGivesTheSameResult) {
   EXPECT_NEAR(result.poreVolumeMm3(), reference.poreVolumeMm3(), 1e-9);
   EXPECT_NEAR(result.part_volume_mm3, reference.part_volume_mm3, 1e-6);
   EXPECT_GT(tiny.cacheStats().misses, tiny.cacheStats().bricks);
+}
+
+TEST_F(PorosityTest, ObliqueAndCurvedFacesAreNoZones) {
+  // A thin-walled casting: on its cone, fillets and bores the surface cuts obliquely through the
+  // blocks, so many blocks hold a sliver of the partial-volume edge.
+  SamplePartOptions part;
+  part.scale = 0.3;
+  part.resolution_mm = 0.1;
+  SyntheticSpec spec;
+  spec.noise_sigma = 500.0;
+  spec.cupping = 0.08;
+  spec.blur_sigma_mm = 0.07;
+  const SyntheticScan scan(samplePartMesh("bellhousing", part), spec);
+  const PorosityResult result = analyze(scan);
+  EXPECT_TRUE(result.pores.empty());
+  EXPECT_TRUE(result.zones.empty()) << result.zones.size() << " zones";
+  EXPECT_NEAR(result.part_volume_mm3, scan.meshVolumeMm3(), 0.005 * scan.meshVolumeMm3());
 }
 
 TEST_F(PorosityTest, LoosenedZonesMatchGroundTruth) {

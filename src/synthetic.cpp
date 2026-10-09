@@ -432,21 +432,35 @@ struct SyntheticScan::Impl {
   }
 
   /// Random centre whose depth leaves room for a ball of `radius`, or nothing after many tries.
+  /// At hot spots, the deepest of several such centres: thick sections solidify last.
   std::optional<Vec3> placeBall(Random& random, double radius, double min_depth) {
+    constexpr int kHotSpotCandidates = 6;
+    const int wanted = spec.defects_at_hot_spots ? kHotSpotCandidates : 1;
     Evaluator eval(*this);
-    for (int attempt = 0; attempt < 2000; ++attempt) {
+    std::optional<Vec3> best;
+    double best_depth = 0.0;
+    int found = 0;
+    for (int attempt = 0; attempt < 2000 * wanted && found < wanted; ++attempt) {
       const Vec3 c = random.inBox(bounds.min, bounds.max);
-      if (eval.depth(c) > min_depth && !overlapsDefect(c, radius)) {
-        return c;
+      const double depth = eval.depth(c);
+      if (depth > min_depth && !overlapsDefect(c, radius)) {
+        ++found;
+        if (!best || depth > best_depth) {
+          best = c;
+          best_depth = depth;
+        }
       }
     }
-    return std::nullopt;
+    return best;
   }
 
   void placeLunkers(Random& random) {
-    const double radius =
+    const double largest =
         spec.lunker_radius_mm > 0.0 ? spec.lunker_radius_mm : 0.05 * smallestExtent();
     for (int n = 0; n < spec.lunker_count; ++n) {
+      const double radius = spec.lunker_size_spread > 0.0
+                                ? largest * (1.0 - spec.lunker_size_spread * random.uniform())
+                                : largest;
       const auto center = placeBall(random, radius, radius + 1.5 * coarse_voxel_mm);
       if (!center) {
         warnings.push_back("Placed only " + std::to_string(n) + " of " +
@@ -537,6 +551,9 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
   }
   if (spec.voxel_size[0] <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0) {
     throw std::invalid_argument("voxel size must be > 0, padding and blur >= 0");
+  }
+  if (spec.lunker_size_spread < 0.0 || spec.lunker_size_spread >= 1.0) {
+    throw std::invalid_argument("lunker size spread must be in [0, 1)");
   }
   if (!spec.voxel_size.isotropic()) {
     // The mesh distance fields (OpenVDB level sets) need cubic voxels.
@@ -687,6 +704,8 @@ nlohmann::json SyntheticScan::toJson() const {
         {"noise_sigma", s.noise_sigma},
         {"cupping", s.cupping},
         {"blur_sigma_mm", s.blur_sigma_mm},
+        {"lunker_size_spread", s.lunker_size_spread},
+        {"defects_at_hot_spots", s.defects_at_hot_spots},
         {"ring_count", s.ring_count},
         {"ring_strength", s.ring_strength}}},
       {"ground_truth",

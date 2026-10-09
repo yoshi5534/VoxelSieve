@@ -36,6 +36,14 @@ blocks near the surface. Memory grows with the voids and the part surface, not w
   a zone counts and a residual cupping bias does not. Zones whose mean void fraction ends up below
   `min_zone_void_fraction` are dropped. Pore shells are left out of zone blocks, so no void counts
   twice.
+- **Surface band:** voxels within 3 voxels of outside air are darkened by partial volume and the
+  unsharpness of the scan. On faces that run obliquely through the blocks (cones, fillets, bores)
+  a fully material block can hold a sliver of that edge and look a few percent void, which flagged
+  hundreds of false zones on a thin-walled bell housing. Band voxels are left out of the material
+  statistics and of the zone deficit; the deficit of a block at the surface takes the void
+  fraction of its other voxels for the band's share of the part (band grey values against the
+  local level, divided by one minus that void fraction). Added after the first release, when the
+  sample parts grew oblique walls.
 - **Part volume:** the material fraction of every kept voxel against the local material level plus
   the void of pores and zones. Porosity is void volume over part volume.
 - **Output:** `porosity.json` (levels, noise, part volume, every pore and zone with centre, bounds
@@ -52,7 +60,8 @@ blocks near the surface. Memory grows with the voids and the part surface, not w
   zones inside the part within 1 to 10 %, total porosity of an 830 MB scan within 1 %, no findings
   on sound parts.
 - Zones within about one block (8 voxels) of the surface are underestimated, because the reference
-  there is extrapolated and the rim is cut by the surface.
+  there is extrapolated, the rim is cut by the surface, and blocks that are mostly surface band
+  are skipped: on the bell housing such zones come out about 10 % low, deeper ones within 2 %.
 - Strong ring artefacts (amplitude of the order of the noise) can produce small false zones of 2 to
   3 blocks; very steep cupping biases the part volume slightly. A ring correction before the
   analysis would be the fix, not a looser detection limit.

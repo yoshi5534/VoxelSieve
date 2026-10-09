@@ -53,6 +53,14 @@ struct SyntheticSpec {
   int lunker_count = 0;
   /// Enclosing radius of a lunker; 0 picks 5 % of the smallest mesh extent.
   double lunker_radius_mm = 0.0;
+  /// Spread of the lunker sizes: radii are drawn evenly between (1 - spread) and 1 times
+  /// `lunker_radius_mm`. 0 makes all lunkers the same size.
+  double lunker_size_spread = 0.0;
+
+  /// Place lunkers and loosening zones at hot spots, the thick sections that solidify last and
+  /// where real castings shrink: each defect goes to the deepest of several random positions
+  /// with room for it. Otherwise anywhere with room.
+  bool defects_at_hot_spots = false;
 
   int loosening_count = 0;
   /// Zone radius; 0 picks 10 % of the smallest mesh extent.
