@@ -545,6 +545,14 @@ function setupBrowser() {
       browserLoad($('browser-path').value);
     }
   });
+  // Enter in the name field confirms; otherwise the form's implicit submission would press the
+  // first button, Cancel, and only close the dialog.
+  $('browser-name').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      $('browser-ok').click();
+    }
+  });
   $('browser-ok').addEventListener('click', () => {
     if (browserOptions.name !== null) {
       const name = $('browser-name').value.trim();
