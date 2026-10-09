@@ -112,6 +112,9 @@ uniform int mode;        // 0 surface, 1 transfer function, 2 maximum intensity 
                          // 3 background only (the mesh is drawn on top)
 uniform bool shading;
 uniform bool pores;
+uniform bool materials;    // colour the material classes of a segmentation
+uniform int hiddenMaterials; // bit m - 1 set: material class m is left out
+uniform vec3 materialColors[8];
 uniform float cut;       // texture x beyond which the part is cut away
 uniform vec3 surfaceColor;
 uniform vec3 poreColor;
@@ -207,6 +210,15 @@ int classAt(vec3 t) {
   return int(value * 255.0 + 0.5);
 }
 
+// Material class 1 to 8 of an overlay class (SliceOverlay::kMaterial + m), 0 for none.
+int materialOf(int kind) {
+  return materials && kind > 16 ? kind - 16 : 0;
+}
+
+bool materialHidden(int material) {
+  return material > 0 && ((hiddenMaterials >> (material - 1)) & 1) == 1;
+}
+
 // Opacity of one step of the given length for an opacity per reference length.
 float stepOpacity(float opacity, float stepSize) {
   return 1.0 - pow(1.0 - min(opacity, 0.999), stepSize / kReferenceLength);
@@ -261,6 +273,13 @@ void main() {
     }
     int kind = classAt(tex);
     float value = greyAt(tex);
+    int material = materialOf(kind);
+    // A material left out is seen through like air, and so is what the segmentation counts as
+    // air: the grey values blend across the edge of a material left out.
+    if (materialHidden(material) || (mode == 0 && materials && kind == 0)) {
+      entered = true;
+      continue;
+    }
     if (mode == 0) {
       if (pores && kind == 1) {
         color = vec4(shade(poreColor, normalAt(tex), direction), 1.0);
@@ -270,7 +289,8 @@ void main() {
         // On the cut face the grey gradient says nothing; light it as the plane it is.
         bool onCut = cut < 1.0 && tex.x > cut - 1.5 * voxel.x && !entered;
         vec3 n = onCut ? vec3(1.0, 0.0, 0.0) : normalAt(tex);
-        vec3 base = (pores && kind == 2) ? zoneColor : surfaceColor;
+        vec3 base = (pores && kind == 2) ? zoneColor
+            : material > 0 ? materialColors[(material - 1) % 8] : surfaceColor;
         color = vec4(shade(base, n, direction), 1.0);
         return;
       }
@@ -288,6 +308,7 @@ void main() {
         sample_ = texture(transfer, vec2(value, 0.5));
         // Quadratic, so the low opacities that matter for looking through get room on the curve.
         sample_.a *= sample_.a;
+        if (material > 0) sample_.rgb = materialColors[(material - 1) % 8];
       }
       float a = stepOpacity(sample_.a, stepSize);
       if (a < 0.0005) continue;
@@ -315,6 +336,8 @@ class VolumeViewer {
     this.volume = null;       // {dims, level, voxelSize, window, key}
     this.mode = 0;
     this.pores = true;
+    this.materials = true;      // colour the classes of a material segmentation, if loaded
+    this.hiddenMaterials = [];  // ids of the material classes left out
     this.cut = 1;
     this.threshold = 0.5;
     this.shading = true;
@@ -345,7 +368,8 @@ class VolumeViewer {
   getState() {
     return {
       key: this.volume?.key ?? null,
-      mode: this.mode, shading: this.shading, pores: this.pores, cut: this.cut,
+      mode: this.mode, shading: this.shading, pores: this.pores, materials: this.materials,
+      cut: this.cut,
       threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
       target: this.target, surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
       background: this.background,
@@ -353,7 +377,7 @@ class VolumeViewer {
   }
 
   setState(saved) {
-    const keys = ['mode', 'shading', 'pores', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
+    const keys = ['mode', 'shading', 'pores', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
       'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background'];
     for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
     this.requestDraw();
@@ -384,13 +408,15 @@ class VolumeViewer {
     return scaled.toDataURL('image/png');
   }
 
-  /// Loads the volume preview of a dataset step (with the overlay of a porosity step).
-  async load(step, porosity) {
-    const key = step + '/' + (porosity ?? '-');
+  /// Loads the volume preview of a dataset step (with the overlay of a porosity step and of a
+  /// material segmentation step).
+  async load(step, porosity, materials = null) {
+    const key = step + '/' + (porosity ?? '-') + (materials === null ? '' : '/' + materials);
     if (this.volume?.key === key) return;
-    this.source = { step, porosity };
+    this.source = { step, porosity, materials };
     const params = new URLSearchParams({ step, max: 256 });
     if (porosity !== null) params.set('porosity', porosity);
+    if (materials !== null) params.set('materials', materials);
     const response = await fetch('api/volume?' + params);
     if (!response.ok) throw new Error((await response.json()).error);
     const dims = response.headers.get('X-Dims').split(',').map(Number);
@@ -652,6 +678,12 @@ class VolumeViewer {
   /// Whether the coarse voxel with this grey value and overlay class shows in the current mode.
   visible(grey, kind) {
     if (this.pores && kind === 1) return true;
+    // MATERIAL_OVERLAY + m is material class m (viewer.js); as in the shader, materials left out
+    // and on the surface what the segmentation counts as air are seen through.
+    if (this.materials && this.source?.materials != null) {
+      if (this.hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) return false;
+      if (this.mode === 0 && kind === 0) return false;
+    }
     if (this.mode === 1) return (this.transfer?.[grey * 4 + 3] ?? 0) > 8;
     return grey >= this.threshold * 255;
   }
@@ -767,6 +799,7 @@ class VolumeViewer {
       low: Math.round(this.volume.window[0]), high: Math.round(this.volume.window[1]),
     });
     if (this.source.porosity !== null) params.set('porosity', this.source.porosity);
+    if (this.source.materials !== null) params.set('materials', this.source.materials);
     // Only the latest region matters; a request for an earlier one stops.
     this.detailAbort?.abort();
     this.detailAbort = new AbortController();
@@ -934,6 +967,10 @@ class VolumeViewer {
     gl.uniform1f(uniform('threshold'), this.threshold);
     gl.uniform1i(uniform('mode'), this.mode);
     gl.uniform1i(uniform('pores'), this.pores ? 1 : 0);
+    gl.uniform1i(uniform('materials'), this.materials && this.source?.materials != null ? 1 : 0);
+    gl.uniform1i(uniform('hiddenMaterials'),
+      this.hiddenMaterials.reduce((mask, id) => mask | (1 << (id - 1)), 0));
+    gl.uniform3fv(uniform('materialColors'), MATERIAL_COLORS.flat().map((c) => c / 255));
     gl.uniform1f(uniform('cut'), this.cut);
     gl.uniform1i(uniform('shading'), this.shading ? 1 : 0);
     const color = (name, rgb) => gl.uniform3fv(uniform(name), rgb.map((c) => c / 255));
