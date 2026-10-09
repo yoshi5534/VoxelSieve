@@ -18,6 +18,11 @@
   of 16 cores busy. A 768³ phantom now takes 8 s instead of 19 s on 4 cores; memory grows by
   about 300 MB per core.
 
+- **Fix: porosity results could vary from run to run.** In about 3 % of runs `analyzePorosity`
+  gave slightly different pore and part volumes for the same dataset (relative about 1e-5): a
+  thread could start on another brick while it was still merging the previous one into its
+  per-thread result. The merge now runs isolated, so the results are reproducible.
+
 ## 0.2.1 (2026-10-07)
 
 - **MCP bundles hold the server again**: the `.mcpb` files of 0.2.0 were empty (22 bytes) because
