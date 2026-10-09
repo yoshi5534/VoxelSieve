@@ -2,7 +2,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { cutsToScreen, insideWindow, layerPixels } = require(
+const { cutsToScreen, insideWindow, layerPixels, slicePixels } = require(
   path.join(__dirname, '../../resources/ui/viewer.js'));
 
 // A cut through the centre of voxel 10 lies in the middle of its pixels: voxel u spans the screen
@@ -49,4 +49,25 @@ const { cutsToScreen, insideWindow, layerPixels } = require(
   assert.deepEqual(pixel(0, 40), [128, 128, 128, 255]);
   assert.equal(pixel(1, 40)[3], 255);
   assert.equal(pixel(40, 40)[3], 0);
+}
+
+// Materials in their colour over the grey value, pores tinted red; a hidden material and the whole
+// overlay switched off leave the grey value.
+{
+  const data = new Float32Array([0, 100, 100, 100, 100]);
+  const overlay = new Uint8Array([0, 0, 1, 17, 18]);
+  const out = new Uint8ClampedArray(5 * 4);
+  const pixel = (i) => [...out.slice(i * 4, i * 4 + 4)];
+  slicePixels(data, overlay, [0, 100], [], out);
+  assert.deepEqual(pixel(0), [0, 0, 0, 255]);
+  assert.deepEqual(pixel(1), [255, 255, 255, 255]);
+  assert.ok(pixel(2)[0] > pixel(2)[1]);
+  assert.deepEqual(pixel(3), [160, 200, 226, 255]);  // material 1: half white, half its colour
+  assert.deepEqual(pixel(4), [242, 190, 144, 255]);  // material 2
+  slicePixels(data, overlay, [0, 100], [2], out);
+  assert.deepEqual(pixel(3), [160, 200, 226, 255]);
+  assert.deepEqual(pixel(4), [255, 255, 255, 255]);
+  slicePixels(data, overlay, [0, 100], null, out);
+  assert.deepEqual(pixel(2), [255, 255, 255, 255]);
+  assert.deepEqual(pixel(3), [255, 255, 255, 255]);
 }

@@ -106,6 +106,7 @@ class SliceViewer {
     this.center = [0, 0];       // level-0 voxel coordinates of the view centre (u, v)
     this.window = null;         // [low, high]
     this.showOverlay = true;
+    this.hiddenMaterials = [];  // ids of the material classes left out of the overlay
     // Other objects: {id, number, kind, color, version, show, mode, opacity, window}; `version`
     // changes with anything that moves the object relative to the slice.
     this.layers = [];
@@ -673,6 +674,12 @@ class SliceViewer {
     this.requestDraw();
   }
 
+  /// Leaves the material classes with these ids out of the overlay.
+  setHiddenMaterials(ids) {
+    this.hiddenMaterials = [...ids];
+    this.requestDraw();
+  }
+
   renderLayerTile(tile, layer) {
     const state = [layer.window?.[0], layer.window?.[1], layer.mode, layer.opacity].join('/');
     if (tile.rendered === state) return tile.canvas;
@@ -691,7 +698,8 @@ class SliceViewer {
   }
 
   renderTile(tile) {
-    const state = [this.window?.[0], this.window?.[1], this.showOverlay].join('/');
+    const state = [this.window?.[0], this.window?.[1], this.showOverlay,
+      this.hiddenMaterials.join(',')].join('/');
     if (tile.rendered === state) return tile.canvas;
     if (!tile.canvas) {
       tile.canvas = document.createElement('canvas');
@@ -700,36 +708,41 @@ class SliceViewer {
     }
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
-    const pixels = image.data;
-    const [low, high] = this.window ?? [0, 1];
-    const scale = 255 / (high - low);
-    for (let i = 0; i < tile.data.length; i += 1) {
-      const grey = Math.min(Math.max((tile.data[i] - low) * scale, 0), 255);
-      let r = grey;
-      let g = grey;
-      let b = grey;
-      if (this.showOverlay) {
-        const overlay = tile.overlay[i];
-        // Tinted, so the grey values stay readable: pores red, zones yellow.
-        if (overlay === 1) {
-          r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
-        } else if (overlay === 2) {
-          r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
-        } else if (overlay > MATERIAL_OVERLAY) {
-          // Materials in their colour, half covering the grey value.
-          const [mr, mg, mb] = MATERIAL_COLORS[(overlay - MATERIAL_OVERLAY - 1) % 8];
-          r = 0.5 * grey + 0.5 * mr; g = 0.5 * grey + 0.5 * mg; b = 0.5 * grey + 0.5 * mb;
-        }
-      }
-      const p = i * 4;
-      pixels[p] = r;
-      pixels[p + 1] = g;
-      pixels[p + 2] = b;
-      pixels[p + 3] = 255;
-    }
+    slicePixels(tile.data, tile.overlay, this.window ?? [0, 1],
+      this.showOverlay ? this.hiddenMaterials : null, image.data);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;
+  }
+}
+
+/// Pixels of a tile of the volume, RGBA: the grey values between `low` and `high`, with the
+/// overlay tinted on top unless `hiddenMaterials` (ids of material classes left out) is null.
+function slicePixels(data, overlay, [low, high], hiddenMaterials, out) {
+  const scale = 255 / (high - low);
+  for (let i = 0; i < data.length; i += 1) {
+    const grey = Math.min(Math.max((data[i] - low) * scale, 0), 255);
+    let r = grey;
+    let g = grey;
+    let b = grey;
+    if (hiddenMaterials) {
+      const kind = overlay[i];
+      // Tinted, so the grey values stay readable: pores red, zones yellow.
+      if (kind === 1) {
+        r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
+      } else if (kind === 2) {
+        r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
+      } else if (kind > MATERIAL_OVERLAY && !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
+        // Materials in their colour, half covering the grey value.
+        const [mr, mg, mb] = MATERIAL_COLORS[(kind - MATERIAL_OVERLAY - 1) % 8];
+        r = 0.5 * grey + 0.5 * mr; g = 0.5 * grey + 0.5 * mg; b = 0.5 * grey + 0.5 * mb;
+      }
+    }
+    const p = i * 4;
+    out[p] = r;
+    out[p + 1] = g;
+    out[p + 2] = b;
+    out[p + 3] = 255;
   }
 }
 
@@ -737,5 +750,5 @@ if (typeof window !== 'undefined') {
   Object.assign(window, { SliceViewer, MATERIAL_COLORS, SLICE_AXIS_NAMES: AXIS_NAMES });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { cutsToScreen, insideWindow, layerPixels };
+  module.exports = { cutsToScreen, insideWindow, layerPixels, slicePixels };
 }

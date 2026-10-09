@@ -143,6 +143,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .pores td, .pores th { padding: 3px 6px; }
 .pores tbody tr { cursor: pointer; }
 .pores tbody tr:hover { background: var(--bg); }
+.pores table.materials tbody tr { cursor: default; }
+.pores table.materials label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.material-legend { max-width: 520px; margin-top: 8px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 @media (max-width: 1000px) { .viewer { grid-template-columns: 1fr; } }
 .view-modes { margin-bottom: 10px; }
