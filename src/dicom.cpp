@@ -281,7 +281,8 @@ void DicomStackSource::Impl::open(const std::vector<std::filesystem::path>& cand
         }
       }
     }
-  } else if (std::ranges::all_of(slices, [](const SliceHeader& s) { return s.instance; })) {
+  } else if (std::ranges::all_of(slices,
+                                 [](const SliceHeader& s) { return s.instance.has_value(); })) {
     std::ranges::sort(slices, {}, [](const SliceHeader& s) { return *s.instance; });
   } else {
     std::ranges::sort(slices, [](const SliceHeader& a, const SliceHeader& b) {
