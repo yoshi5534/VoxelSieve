@@ -53,6 +53,33 @@ that is cheap to read on every input and does not have to be read again by the i
   writes the picture as soon as it is read. The new member is the last of `OperationContext`, so
   plugins built against plugin API version 3 keep working and the version stays.
 
+**Amendment (gzip-compressed raw files).** `GzipRawSource` reads `<name>.raw.gz` (sidecar
+`<name>.json`) with zlib, which is already a dependency (ADR 0019); concatenated gzip members
+(pigz) are read as one stream. gzip can only be decompressed forward, so the source reports
+`sequentialAccess()`: `writeDataset` always stages it (also with staging off), in one pass in
+slice order on one thread, and takes the preview's slices as the copy passes them. The preview
+therefore comes only at the end of that pass, not after 3 % of the reading; reading the 64 slices
+first would mean decompressing everything up to the last of them anyway. `readImportPreview`
+reads such a source in order. The header size is not known without decompressing everything, so
+it is 0 unless given. `import_raw`, `vs-sieve` and the studio's file browser take `.raw.gz`.
+
+**Measured (explicit reads of whole slices).** A share was emulated with sshfs over loopback
+through a proxy adding 0.25 ms each way and capping the bandwidth (sequential `cat`: 86 MB/s at
+the 1 Gbit/s cap). Reading a 512 MB raw file slice by slice on 4 threads, page cache dropped:
+
+| link | memory map | `read` per slice, file kept open | `read` per slice, opened each time |
+|------|-----------:|---------------------------------:|-----------------------------------:|
+| 1 Gbit/s | 81–83 MB/s | 81–83 MB/s | 65–70 MB/s |
+| 10 Gbit/s | 369–446 MB/s | 437–483 MB/s | 311–359 MB/s |
+
+Reading slice by slice through the memory map lets the kernel read ahead and fills the link.
+Explicit reads with the file kept open gain about 10 % at 10 Gbit/s and nothing at 1 Gbit/s, and
+lose when the file is opened per slice. Not adopted: the memory map stays. What matters on a
+share is reading in large pieces in order, which staging ensures. A 500 MB phantom imported from the emulated 1 Gbit/s share took 22.8 s
+read directly and 23.2 s staged, since it fits the page cache and pass 2 reads it from there;
+staging pays off for volumes larger than memory, where the passes read the share twice and pass 2
+in bricks. The same phantom gzip-compressed (430 MB) took 25.1 s, its preview came after 7.8 s.
+
 ## Consequences
 
 - The first picture comes after about 3 % of the reading: on 1 Gbit/s Ethernet after about 11 s

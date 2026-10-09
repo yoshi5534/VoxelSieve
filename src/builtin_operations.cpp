@@ -172,7 +172,9 @@ class ImportRaw final : public Operation {
     info_.title = "Import raw volume";
     info_.description =
         "Removes the outside air from a raw CT volume and writes a bricked dataset. Dimensions "
-        "and voxel size come from the JSON sidecar unless given; a vendor header is skipped.";
+        "and voxel size come from the JSON sidecar unless given; a vendor header is skipped. "
+        "gzip-compressed files (.raw.gz, sidecar <name>.json) are decompressed as they are "
+        "read; give header_bytes when they have a header.";
     info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
     const Json dims = {{"type", "array"},
                        {"items", {{"type", "integer"}, {"minimum", 1}}},
@@ -182,7 +184,10 @@ class ImportRaw final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "Raw volume file"}}},
+         {{"path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description", "Raw volume file, plain or gzip-compressed"}}},
           {"dims", dims},
           {"sample_type",
            {{"type", "string"}, {"enum", {"uint16", "uint8"}}, {"default", "uint16"}}},
@@ -190,7 +195,8 @@ class ImportRaw final : public Operation {
           {"header_bytes",
            {{"type", "integer"},
             {"minimum", 0},
-            {"description", "Header size; default: file size minus voxel data"}}},
+            {"description",
+             "Header size; default: file size minus voxel data (0 for gzip-compressed files)"}}},
           {"threshold",
            {{"type", "number"},
             {"description",
@@ -222,8 +228,7 @@ class ImportRaw final : public Operation {
     const std::filesystem::path path = p.at("path").get<std::string>();
     RawLayout layout;
     Json sidecar;
-    if (auto file = std::filesystem::path(path).replace_extension(".json");
-        std::filesystem::exists(file)) {
+    if (const auto file = rawSidecarPath(path); std::filesystem::exists(file)) {
       std::ifstream in(file);
       sidecar = Json::parse(in);
     }
@@ -247,9 +252,14 @@ class ImportRaw final : public Operation {
     if (p.contains("header_bytes")) {
       layout.header_bytes = p.at("header_bytes").get<std::uint64_t>();
     }
-    const MappedRawSource source(path, layout);
-    if (source.headerBytes() > 0) {
-      context.log("Skipped a header of " + std::to_string(source.headerBytes()) + " bytes");
+    std::uint64_t header_bytes = 0;
+    const auto opened = openRawVolume(path, layout, &header_bytes);
+    const VolumeSource& source = *opened;
+    if (header_bytes > 0) {
+      context.log("Skipped a header of " + std::to_string(header_bytes) + " bytes");
+    }
+    if (source.sequentialAccess()) {
+      context.log("gzip-compressed: decompressed once, in slice order, into the staging copy");
     }
     DatasetOptions options;
     if (p.contains("threshold")) {
@@ -265,7 +275,7 @@ class ImportRaw final : public Operation {
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
-    result.summary["header_bytes"] = source.headerBytes();
+    result.summary["header_bytes"] = header_bytes;
     return result;
   }
 

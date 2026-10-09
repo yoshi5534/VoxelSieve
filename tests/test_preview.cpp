@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
@@ -312,6 +313,33 @@ TEST_F(PreviewTest, StudioShowsThePreviewWhileTheImportRunsAndKeepsItWithTheStep
   EXPECT_TRUE(kept.contains("seconds"));
   EXPECT_EQ(studio.call("import_preview", {{"step", step.at("id")}}).at("step"), step.at("id"));
   EXPECT_THROW((void)studio.call("import_preview", {{"step", 1}}), std::invalid_argument);
+}
+
+TEST_F(PreviewTest, StudioImportsGzipRawVolumesWithTheirSidecar) {
+  const Volume16 volume = generatePhantom(spec());
+  gzFile file = gzopen((dir_ / "scan.raw.gz").string().c_str(), "wb");
+  ASSERT_NE(file, nullptr);
+  const auto bytes = static_cast<unsigned>(volume.data.size() * sizeof(std::uint16_t));
+  ASSERT_EQ(gzwrite(file, volume.data.data(), bytes), static_cast<int>(bytes));
+  gzclose(file);
+  writeJson(dir_ / "scan.json",
+            {{"dims", volume.dims}, {"voxel_size_mm", {0.1, 0.1, 0.15}}, {"format", "uint16"}});
+
+  Studio studio;
+  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json listed = studio.call("browse", {{"path", dir_.string()}});
+  const Json& entries = listed.at("entries");
+  EXPECT_TRUE(std::any_of(entries.begin(), entries.end(), [](const Json& entry) {
+    return entry.at("name") == "scan.raw.gz" && entry.at("kind") == "raw";
+  }));
+  const Json step = studio.call("run_import_raw",
+                                {{"path", (dir_ / "scan.raw.gz").string()}, {"brick_size", 32}});
+  const auto messages = step.at("messages").get<std::vector<std::string>>();
+  EXPECT_TRUE(std::any_of(messages.begin(), messages.end(), [](const std::string& message) {
+    return message.starts_with("gzip-compressed");
+  }));
+  EXPECT_EQ(step.at("summary").at("dims"), volume.dims);
+  EXPECT_EQ(studio.call("import_preview", {}).at("slices_read"), 64);
 }
 
 }  // namespace

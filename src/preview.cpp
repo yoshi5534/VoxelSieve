@@ -153,15 +153,21 @@ ImportPreview readImportPreview(const VolumeSource& source, const PreviewOptions
   detail::PreviewBuilder builder(dims, source.voxelSize(), source.valueMapping(), options);
   const auto& slices = builder.slices();
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
-  // One slice per task: on a network share several requests are in flight at once.
-  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, slices.size(), 1), [&](const auto& range) {
+  const auto read = [&](std::size_t begin, std::size_t end) {
     std::vector<std::uint16_t> buffer(slice_voxels);
-    for (std::size_t k = range.begin(); k != range.end(); ++k) {
+    for (std::size_t k = begin; k != end; ++k) {
       const std::int64_t z = slices[k];
       source.readRegion(Box{{0, 0, z}, {dims[0], dims[1], z + 1}}, buffer);
       builder.add(k, buffer.data());
     }
-  });
+  };
+  if (source.sequentialAccess()) {
+    read(0, slices.size());  // in order: a compressed stream is decompressed once
+  } else {
+    // One slice per task: on a network share several requests are in flight at once.
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, slices.size(), 1),
+                      [&](const auto& range) { read(range.begin(), range.end()); });
+  }
   return builder.finish();
 }
 

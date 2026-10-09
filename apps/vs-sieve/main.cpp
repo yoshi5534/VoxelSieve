@@ -45,7 +45,9 @@ constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output
 
 Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json (as written by
 vs-phantom) unless given on the command line. A vendor header before the voxel data is detected
-from the file size and skipped; use --header when the file also has a footer.
+from the file size and skipped; use --header when the file also has a footer. A gzip-compressed
+raw file (<name>.raw.gz with <name>.json) is decompressed once, in slice order, into the staging
+file; give --header when it has a header.
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
@@ -235,8 +237,7 @@ Geometry resolveGeometry(const Options& options) {
   if (options.dims && options.voxel_size) {
     return {*options.dims, withThickness(*options.voxel_size, options)};
   }
-  auto sidecar = options.input;
-  sidecar.replace_extension(".json");
+  const auto sidecar = voxelsieve::rawSidecarPath(options.input);
   if (!std::filesystem::exists(sidecar)) {
     throw std::invalid_argument("No --dims/--voxel-size given and no sidecar " + sidecar.string());
   }
@@ -357,11 +358,17 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, Float
     return source;
   }
   const Geometry geometry = resolveGeometry(options);
-  auto source = std::make_unique<voxelsieve::MappedRawSource>(
-      options.input, voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
-                                           options.byte_order, options.header_bytes});
-  if (source->headerBytes() > 0) {
-    std::cout << "header             " << source->headerBytes() << " bytes skipped\n";
+  std::uint64_t header_bytes = 0;
+  auto source = voxelsieve::openRawVolume(
+      options.input,
+      voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
+                            options.byte_order, options.header_bytes},
+      &header_bytes);
+  if (source->sequentialAccess()) {
+    std::cout << "gzip               decompressed once, in slice order\n";
+  }
+  if (header_bytes > 0) {
+    std::cout << "header             " << header_bytes << " bytes skipped\n";
   }
   std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
   return source;

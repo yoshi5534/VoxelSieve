@@ -57,6 +57,10 @@ class VolumeSource {
   /// in a ZIP archive, or files on a network share, where every small read is a request of its
   /// own. `writeDataset` first copies such a volume to a temporary raw file.
   [[nodiscard]] virtual bool slowRandomAccess() const { return false; }
+  /// Whether reading is efficient only forward from the start, as in a compressed stream: going
+  /// back means decompressing again from the beginning. `writeDataset` always copies such a
+  /// volume, in one pass in slice order (implies slowRandomAccess).
+  [[nodiscard]] virtual bool sequentialAccess() const { return false; }
   /// Lets go of memory held for faster reading, such as caches of decoded data or pages of a
   /// memory-mapped input; later reads work as before. Called once a source has been copied, and
   /// for a raw copy now and then while it is read.
@@ -122,6 +126,43 @@ class MappedRawSource final : public VolumeSource {
   bool on_network_share_ = false;
 };
 
+/// Raw volume file compressed with gzip (`.raw.gz`), decompressed with zlib as it is read (ADR
+/// 0020). gzip can only be read forward, so this source is read in one pass in slice order;
+/// reading a region before the last one starts again at the beginning of the file. A header in
+/// the uncompressed data is skipped when `header_bytes` is given (default 0: the size of the
+/// uncompressed data is not known without reading it all). Concatenated gzip members (pigz) are
+/// read as one stream.
+class GzipRawSource final : public VolumeSource {
+ public:
+  GzipRawSource(const std::filesystem::path& path, const RawLayout& layout);
+  ~GzipRawSource() override;
+
+  [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
+  [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
+  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  [[nodiscard]] bool sequentialAccess() const override { return true; }
+  void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
+
+ private:
+  struct Stream;
+  std::unique_ptr<Stream> stream_;
+  RawLayout layout_;
+  std::uint64_t header_bytes_ = 0;
+};
+
+/// Whether `path` is a gzip file (it starts with the gzip magic bytes 1f 8b).
+[[nodiscard]] bool isGzipFile(const std::filesystem::path& path);
+
+/// The JSON sidecar of a raw volume: `scan.json` for `scan.raw` and for `scan.raw.gz`.
+[[nodiscard]] std::filesystem::path rawSidecarPath(const std::filesystem::path& raw);
+
+/// A raw volume file: gzip-compressed (GzipRawSource) or plain (MappedRawSource). `header_bytes`
+/// receives the header size skipped.
+[[nodiscard]] std::unique_ptr<VolumeSource> openRawVolume(const std::filesystem::path& path,
+                                                          const RawLayout& layout,
+                                                          std::uint64_t* header_bytes = nullptr);
+
 /// Computes the synthetic phantom on the fly, so tests and benchmarks can use volumes of any size
 /// without memory or disk.
 class PhantomSource final : public VolumeSource {
@@ -148,6 +189,7 @@ class ConcatSource final : public VolumeSource {
     return parts_.front()->valueMapping();
   }
   [[nodiscard]] bool slowRandomAccess() const override;
+  [[nodiscard]] bool sequentialAccess() const override;
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 

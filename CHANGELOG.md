@@ -10,6 +10,10 @@
   mapped network drives are now staged too, so they cross the network once instead of twice in
   small pieces (ADR 0020).
 
+- **gzip-compressed raw volumes**: `scan.raw.gz` with `scan.json` imports with `vs-sieve`,
+  `import_raw` and the studio's file browser, decompressed once with zlib into the staging file
+  (ADR 0020).
+
 - **Faster import with far less memory on Windows**: a 22 GB TIFF stack (1250 x 1250 x 4000,
   float, ZIP) imports in 133 s instead of 175 s, with a peak of 4.8 GB instead of 35 GB. Bricks are
   written in one piece instead of leaf by leaf, and pages of the input archive and the staging copy

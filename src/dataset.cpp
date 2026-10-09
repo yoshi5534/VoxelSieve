@@ -148,12 +148,23 @@ class StagedSource {
         [&preview](std::size_t k, const std::uint16_t* slice) { preview.add(k, slice); });
   }
 
-  /// Copies the slices not copied yet; the copy is then what `source` reads.
-  void finish() {
+  /// Copies the slices not copied yet; the copy is then what `source` reads. With `preview`, the
+  /// preview's slices among them are handed to it as they pass (sources read in one pass).
+  void finish(detail::PreviewBuilder* preview = nullptr) {
     copy(
         static_cast<std::size_t>(dims_[2]),
         [](std::size_t z) { return static_cast<std::int64_t>(z); },
-        [](std::size_t, const std::uint16_t*) {});
+        [preview](std::size_t z, const std::uint16_t* slice) {
+          if (preview == nullptr) {
+            return;
+          }
+          const auto& slices = preview->slices();
+          const auto it =
+              std::lower_bound(slices.begin(), slices.end(), static_cast<std::int64_t>(z));
+          if (it != slices.end() && *it == static_cast<std::int64_t>(z)) {
+            preview->add(static_cast<std::size_t>(it - slices.begin()), slice);
+          }
+        });
     file_.close();
     raw_ = std::make_unique<MappedRawSource>(
         path_, RawLayout{dims_, input_.voxelSize(), SampleType::kUInt16, std::endian::native,
@@ -169,21 +180,31 @@ class StagedSource {
   void copy(std::size_t count, const Slice& slice, const Visit& visit) {
     auto* data = reinterpret_cast<std::uint16_t*>(file_.data());
     const auto slice_voxels = static_cast<std::size_t>(dims_[0] * dims_[1]);
+    const auto copy_slice = [&](std::size_t k) {
+      const std::int64_t z = slice(k);
+      if (copied_[static_cast<std::size_t>(z)] != 0) {
+        return;
+      }
+      std::uint16_t* target = data + static_cast<std::size_t>(z) * slice_voxels;
+      input_.readRegion(Box{{0, 0, z}, {dims_[0], dims_[1], z + 1}}, {target, slice_voxels});
+      visit(k, target);
+      // The slice is written; its pages go to the file cache instead of staying in the
+      // process's memory (Windows kept the whole copy in the working set).
+      detail::releaseMappedPages(target, slice_voxels * sizeof(std::uint16_t));
+      copied_[static_cast<std::size_t>(z)] = 1;
+      progress_.step();
+    };
+    if (input_.sequentialAccess()) {
+      // A compressed stream decodes on one thread anyway; in order, it is read once.
+      for (std::size_t k = 0; k < count; ++k) {
+        copy_slice(k);
+      }
+      return;
+    }
     // One slice per task: each slice is decoded exactly once, all cores in parallel.
     tbb::parallel_for(tbb::blocked_range<std::size_t>(0, count, 1), [&](const auto& range) {
       for (std::size_t k = range.begin(); k != range.end(); ++k) {
-        const std::int64_t z = slice(k);
-        if (copied_[static_cast<std::size_t>(z)] != 0) {
-          continue;
-        }
-        std::uint16_t* target = data + static_cast<std::size_t>(z) * slice_voxels;
-        input_.readRegion(Box{{0, 0, z}, {dims_[0], dims_[1], z + 1}}, {target, slice_voxels});
-        visit(k, target);
-        // The slice is written; its pages go to the file cache instead of staying in the
-        // process's memory (Windows kept the whole copy in the working set).
-        detail::releaseMappedPages(target, slice_voxels * sizeof(std::uint16_t));
-        copied_[static_cast<std::size_t>(z)] = 1;
-        progress_.step();
+        copy_slice(k);
       }
     });
   }
@@ -521,21 +542,26 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   info.min_material_voxels = options.min_material_voxels;
   info.outside_air_axes = options.outside_air_axes;
 
+  // A source read in one pass (gzip) is always copied: read in place, every brick would start
+  // the stream again.
+  const bool sequential = input.sequentialAccess();
   std::unique_ptr<StagedSource> staged;
-  if (options.stage_slow_sources && input.slowRandomAccess()) {
+  if ((options.stage_slow_sources && input.slowRandomAccess()) || sequential) {
     staged = std::make_unique<StagedSource>(
         input, options.staging_dir.empty() ? dir : options.staging_dir, options);
   }
-  if (options.preview) {
+  std::optional<detail::PreviewBuilder> builder;
+  if (options.preview && staged) {
+    builder.emplace(info.dims, info.voxel_size, info.value_mapping, options.preview_options);
+  }
+  if (options.preview && !sequential) {
     // The preview's slices are the first the staging copy reads (ADR 0020).
     std::optional<ImportPreview> preview;
     {
       const TelemetryPhase phase("preview");
-      if (staged) {
-        detail::PreviewBuilder builder(info.dims, info.voxel_size, info.value_mapping,
-                                       options.preview_options);
-        staged->copyPreview(builder);
-        preview = builder.finish();
+      if (staged && builder) {
+        staged->copyPreview(*builder);
+        preview = builder->finish();
       } else {
         preview = readImportPreview(input, options.preview_options);
       }
@@ -543,10 +569,16 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
     options.preview(*preview);
   }
   if (staged) {
-    const TelemetryPhase phase("staging");
-    staged->finish();
-    // The copy is all the passes read, so its pages should stay in memory, not the input's.
-    input.releaseMemory();
+    {
+      const TelemetryPhase phase("staging");
+      // In one pass, the preview's slices are taken as the copy passes them.
+      staged->finish(sequential && builder ? &*builder : nullptr);
+      // The copy is all the passes read, so its pages should stay in memory, not the input's.
+      input.releaseMemory();
+    }
+    if (sequential && builder) {
+      options.preview(builder->finish());
+    }
   }
   const VolumeSource& source = staged ? staged->source() : input;
 

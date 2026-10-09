@@ -166,6 +166,11 @@ detected and staged too, instead of being read twice in small pieces. In the stu
 appears in the progress bar of every import and stays with the step (`preview.png`); AI
 assistants get it with `import_preview`.
 
+gzip-compressed raw files (`scan.raw.gz` next to `scan.json`) are read too, with `vs-sieve`,
+`import_raw` and the studio's file browser. gzip can only be read forward, so such a file is
+decompressed once, in slice order, into the staging file; its preview comes at the end of that
+pass. Give `--header` when the uncompressed data has a header.
+
 ### Single grid
 
 ```sh

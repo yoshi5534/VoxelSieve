@@ -259,8 +259,7 @@ Json browse(const std::filesystem::path& requested) {
                                                                               : "dir";
       entry["directory"] = true;
     } else {
-      auto sidecar = path;
-      sidecar.replace_extension(".json");
+      const auto sidecar = rawSidecarPath(path);
       entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
                       : isVglFile(path)                                  ? "vgl"
                       : isDicomFile(path)                                ? "dicom"
@@ -465,7 +464,8 @@ std::vector<StudioMethod> Studio::methods() const {
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
        "DICOM stacks, VGStudio projects, datasets (.vsieve), projects and inspection orders. "
-       "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar), tiff (a "
+       "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar, also "
+       "name.raw.gz with name.json), tiff (a "
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
        "DICOM file or a directory with DICOM slices, for import_dicom), vgl (a VGStudio project, "
        "for import_vgl) or file; directories carry directory: true.",
