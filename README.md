@@ -131,6 +131,24 @@ For a dataset, the slices are first decoded once, on all cores, into a temporary
 bytes per voxel in the output directory (elsewhere with `--staging-dir`), which is removed at the
 end; `--no-staging` reads the slices directly, which is much slower for large stacks.
 
+### DICOM stacks and gzipped XML projects
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve dicom/ --out scan.vsieve          # a directory of slices
+./build/release/apps/vs-sieve/vs-sieve part.gzxml --out scan.vsieve        # gzipped XML project
+```
+
+A directory of DICOM slices is read with DCMTK (`voxelsieve::DicomStackSource`, ADR 0019):
+uncompressed or RLE, with or without preamble, sorted along the slice normal by their position.
+Voxel size and pose come from the files. Signed samples are shifted by 32768 and, with the
+rescale slope and intercept, recorded as the value mapping, so no value is lost. When a directory
+holds several series, the largest is read and the others are printed. A gzipped XML project (`.gzxml`)
+is read for the files its volumes were imported from; they are found where the project names
+them, at the same place relative to the project, or next to it. DICOM volumes are imported with
+the project's voxel size and placed as in the application; other inputs and the project's masks
+(`.mask`) are reported as not imported. In the studio these are the operations `import_dicom` and
+`import_gzipped_xml`.
+
 ### Single grid
 
 ```sh

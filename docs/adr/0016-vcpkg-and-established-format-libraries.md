@@ -43,6 +43,7 @@ the triplet or the runner's compiler changes.
 | zstd, memory-mapped files, CRC | Boost.Iostreams, Boost.CRC | (already used) |
 | VDB | OpenVDB | (already used) |
 | JSON | nlohmann/json | (already used) |
+| DICOM, XML, gzip (ADR 0019) | DCMTK, pugixml, zlib | (new formats) |
 
 Adding a dependency still needs a reason; the question for format and codec code is only *which*
 established library, not whether to write our own. A new library is added to `vcpkg.json` and to
