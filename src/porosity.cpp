@@ -3,6 +3,7 @@
 #include <openvdb/io/File.h>
 #include <openvdb/tools/Morphology.h>
 #include <tbb/combinable.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <cmath>
@@ -144,12 +145,16 @@ Scan scanBricks(const Dataset& dataset) {
       }
     }
 
-    Scan& local = partial_scans.local();
-    local.candidates->tree().topologyUnion(candidates->tree());
-    local.seeds->tree().topologyUnion(seeds->tree());
-    local.blocks.merge(blocks);
-    local.solid.merge(solid);
-    local.partial.merge(partial);
+    // topologyUnion runs TBB tasks. Isolated, the waiting thread cannot pick up another brick,
+    // whose body would change this thread's accumulator while the union is still writing it.
+    tbb::this_task_arena::isolate([&] {
+      Scan& local = partial_scans.local();
+      local.candidates->tree().topologyUnion(candidates->tree());
+      local.seeds->tree().topologyUnion(seeds->tree());
+      local.blocks.merge(blocks);
+      local.solid.merge(solid);
+      local.partial.merge(partial);
+    });
   });
   Scan scan;
   partial_scans.combine_each([&](Scan& local) {
