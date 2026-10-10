@@ -151,12 +151,16 @@ operation `import_dicom`.
 ```
 
 Before the passes, the import reads 64 whole slices spread evenly over the volume and shows them
-at once: the central sections normal to z, y and x, averaged to at most 256 voxels per edge, and
-the histogram of those slices with the estimated threshold (ADR 0020). Slices are what every
+at once: the central sections normal to z, y and x, averaged in-plane to at most 1024 voxels per
+edge and 32 million voxels in all, and the histogram of those slices with the estimated threshold
+(ADR 0020). While a staged import copies the rest, the preview gets sharper: it reads the other
+preview slices coarse to fine, three times as many in each round, and shows a new preview after
+every round, the last with the histogram of the whole volume. Slices are what every
 input stores together (a file of a stack, a contiguous part of a raw file), so this is one
 request per slice, also over SMB. The import goes on without reading them again: stacks and
 files on a network share are copied once, slice by slice, to a local staging file, and the
-preview's slices are copied first. Raw files on SMB or NFS shares and mapped network drives are
+preview's slices are copied first. Local raw files are read directly and get only the first
+look; their import is limited by the passes, not by reading. Raw files on SMB or NFS shares and mapped network drives are
 detected and staged too, instead of being read twice in small pieces. In the studio the preview
 appears in the progress bar of every import and stays with the step (`preview.png`); AI
 assistants get it with `import_preview`.

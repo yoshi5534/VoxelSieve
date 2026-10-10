@@ -452,7 +452,8 @@ std::vector<StudioMethod> Studio::methods() const {
        "when nothing runs: the latest). Gives the slices read, the threshold estimate, the grey "
        "value window, a histogram and a picture of the central sections normal to z, y and x "
        "with the histogram below (threshold in red). The import goes on without reading these "
-       "slices again.",
+       "slices again; a staged import (stacks, files on a share) replaces the preview with a "
+       "sharper one as it copies more slices, until `complete` (every slice read).",
        objectSchema({{"step", {{"type", "integer"}}}})},
       {"view_image", "The picture of a saved view as a PNG image.",
        objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},

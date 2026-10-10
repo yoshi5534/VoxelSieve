@@ -50,7 +50,7 @@ double ImportPreview::fractionRead() const {
   const auto& d = source_dims;
   const double total =
       static_cast<double>(d[0]) * static_cast<double>(d[1]) * static_cast<double>(d[2]);
-  return total > 0.0 ? static_cast<double>(slices.size()) * static_cast<double>(d[0]) *
+  return total > 0.0 ? static_cast<double>(slices_read) * static_cast<double>(d[0]) *
                            static_cast<double>(d[1]) / total
                      : 0.0;
 }
@@ -63,7 +63,8 @@ std::vector<std::int64_t> previewSlices(std::int64_t depth, std::int64_t count) 
   std::vector<std::int64_t> slices;
   slices.reserve(static_cast<std::size_t>(count));
   for (std::int64_t k = 0; k < count; ++k) {
-    // Middle of part k of `count` equal parts: (k + 0.5) * depth / count, in integers.
+    // Middle of part k of `count` equal parts: (k + 0.5) * depth / count, in integers. The
+    // middles of three times as many parts include these, so the rounds of a preview nest.
     slices.push_back(((2 * k + 1) * depth) / (2 * count));
   }
   return slices;
@@ -74,23 +75,62 @@ namespace detail {
 PreviewBuilder::PreviewBuilder(const std::array<std::int64_t, 3>& dims, const VoxelSize& voxel_size,
                                const ValueMapping& mapping, const PreviewOptions& options)
     : histograms_([] { return Histogram(kHistogramBins, 0); }) {
-  if (options.slices < 1 || options.size < 1) {
+  if (options.slices < 1 || options.size < 1 || options.voxels < 1) {
     throw std::invalid_argument("A preview needs at least one slice and one voxel per axis");
   }
   preview_.source_dims = dims;
   preview_.value_mapping = mapping;
-  preview_.slices = previewSlices(dims[2], options.slices);
-  const std::int64_t stride = ceilDiv(std::max(dims[0], dims[1]), options.size);
-  preview_.pixel_stride = std::max<std::int64_t>(stride, 1);
-  const std::array<std::int64_t, 3> preview_dims{ceilDiv(dims[0], preview_.pixel_stride),
-                                                 ceilDiv(dims[1], preview_.pixel_stride),
-                                                 static_cast<std::int64_t>(preview_.slices.size())};
+  // Preview slices about as far apart as the preview voxels are wide, but at least the slices of
+  // the first look; blocks as small as `size` and `voxels` allow.
+  const auto depth = [&](std::int64_t stride) {
+    const double pitch = static_cast<double>(stride) * std::min(voxel_size[0], voxel_size[1]);
+    const auto isotropic =
+        static_cast<std::int64_t>(std::ceil(static_cast<double>(dims[2]) * voxel_size[2] / pitch));
+    return std::clamp(isotropic, std::min(options.slices, dims[2]), dims[2]);
+  };
+  const std::int64_t widest = std::max(dims[0], dims[1]);
+  std::int64_t stride = std::max<std::int64_t>(ceilDiv(widest, options.size), 1);
+  while (stride < widest &&
+         ceilDiv(dims[0], stride) * ceilDiv(dims[1], stride) * depth(stride) > options.voxels) {
+    ++stride;
+  }
+  preview_.pixel_stride = stride;
+  targets_ = previewSlices(dims[2], depth(stride));
+  added_.assign(targets_.size(), 0);
+  const std::array<std::int64_t, 3> preview_dims{ceilDiv(dims[0], stride), ceilDiv(dims[1], stride),
+                                                 static_cast<std::int64_t>(targets_.size())};
   const double spacing = preview_dims[2] > 0
                              ? static_cast<double>(dims[2]) / static_cast<double>(preview_dims[2])
                              : 1.0;
-  const auto s = static_cast<double>(preview_.pixel_stride);
+  const auto s = static_cast<double>(stride);
   preview_.volume = Volume16(
       preview_dims, VoxelSize(voxel_size[0] * s, voxel_size[1] * s, voxel_size[2] * spacing));
+  first_look_ = std::min<std::int64_t>(options.slices, preview_dims[2]);
+}
+
+std::vector<std::vector<std::size_t>> PreviewBuilder::rounds() const {
+  const auto n = static_cast<std::int64_t>(targets_.size());
+  std::vector<std::vector<std::size_t>> rounds;
+  std::vector<std::uint8_t> taken(targets_.size(), 0);
+  if (n == 0) {
+    return rounds;
+  }
+  for (std::int64_t count = first_look_;; count *= 3) {
+    std::vector<std::size_t> round;
+    for (const std::int64_t k : previewSlices(n, count)) {
+      if (taken[static_cast<std::size_t>(k)] == 0) {
+        taken[static_cast<std::size_t>(k)] = 1;
+        round.push_back(static_cast<std::size_t>(k));
+      }
+    }
+    if (!round.empty()) {
+      rounds.push_back(std::move(round));
+    }
+    if (count >= n) {
+      break;
+    }
+  }
+  return rounds;
 }
 
 void PreviewBuilder::add(std::size_t k, const std::uint16_t* slice) {
@@ -123,27 +163,69 @@ void PreviewBuilder::add(std::size_t k, const std::uint16_t* slice) {
           static_cast<std::uint16_t>((sums[static_cast<std::size_t>(px)] + count / 2) / count);
     }
   }
+  added_[k] = 1;
+  ++slices_read_;
 }
 
-ImportPreview PreviewBuilder::finish() {
-  preview_.histogram.assign(kHistogramBins, 0);
-  histograms_.combine_each([this](const Histogram& local) {
+void PreviewBuilder::count(const std::uint16_t* slice) {
+  Histogram& histogram = histograms_.local();
+  const auto voxels = static_cast<std::size_t>(preview_.source_dims[0] * preview_.source_dims[1]);
+  for (std::size_t i = 0; i < voxels; ++i) {
+    ++histogram[slice[i]];
+  }
+  ++slices_read_;
+}
+
+ImportPreview PreviewBuilder::snapshot() {
+  ImportPreview preview = preview_;
+  preview.slices_read = slices_read_.load();
+  // A preview slice not read yet shows the nearest slice that was, the lower one of two as near.
+  const std::size_t n = targets_.size();
+  const auto plane = static_cast<std::size_t>(preview.volume.dims[0] * preview.volume.dims[1]);
+  std::vector<std::size_t> shown(n, n);
+  std::size_t last = n;
+  for (std::size_t k = 0; k < n; ++k) {
+    last = added_[k] != 0 ? k : last;
+    shown[k] = last;
+  }
+  std::size_t next = n;
+  for (std::size_t k = n; k-- > 0;) {
+    next = added_[k] != 0 ? k : next;
+    if (next != n &&
+        (shown[k] == n || targets_[next] - targets_[k] < targets_[k] - targets_[shown[k]])) {
+      shown[k] = next;
+    }
+  }
+  preview.slices.assign(n, 0);
+  for (std::size_t k = 0; k < n; ++k) {
+    if (shown[k] == n) {
+      continue;  // nothing read yet: background
+    }
+    preview.slices[k] = targets_[shown[k]];
+    if (shown[k] != k) {
+      std::copy_n(preview_.volume.data.begin() + static_cast<std::ptrdiff_t>(shown[k] * plane),
+                  plane, preview.volume.data.begin() + static_cast<std::ptrdiff_t>(k * plane));
+    }
+  }
+
+  preview.histogram.assign(kHistogramBins, 0);
+  histograms_.combine_each([&preview](const Histogram& local) {
     for (std::size_t v = 0; v < kHistogramBins; ++v) {
-      preview_.histogram[v] += local[v];
+      preview.histogram[v] += local[v];
     }
   });
   std::uint64_t total = 0;
-  for (const std::uint64_t count : preview_.histogram) {
+  for (const std::uint64_t count : preview.histogram) {
     total += count;
   }
   if (total > 0) {
-    const ThresholdResult estimate = airThreshold(preview_.histogram);
-    preview_.threshold = estimate.threshold;
-    preview_.air_level = estimate.air_level;
-    preview_.window = {percentile(preview_.histogram, total, 0.005),
-                       percentile(preview_.histogram, total, 0.995)};
+    const ThresholdResult estimate = airThreshold(preview.histogram);
+    preview.threshold = estimate.threshold;
+    preview.air_level = estimate.air_level;
+    preview.window = {percentile(preview.histogram, total, 0.005),
+                      percentile(preview.histogram, total, 0.995)};
   }
-  return std::move(preview_);
+  return preview;
 }
 
 }  // namespace detail
@@ -151,28 +233,31 @@ ImportPreview PreviewBuilder::finish() {
 ImportPreview readImportPreview(const VolumeSource& source, const PreviewOptions& options) {
   const auto dims = source.dims();
   detail::PreviewBuilder builder(dims, source.voxelSize(), source.valueMapping(), options);
-  const auto& slices = builder.slices();
+  const auto& targets = builder.targets();
+  const auto rounds = builder.rounds();
+  const std::vector<std::size_t> first_look =
+      rounds.empty() ? std::vector<std::size_t>{} : rounds.front();
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
   const auto read = [&](std::size_t begin, std::size_t end) {
     std::vector<std::uint16_t> buffer(slice_voxels);
-    for (std::size_t k = begin; k != end; ++k) {
-      const std::int64_t z = slices[k];
+    for (std::size_t i = begin; i != end; ++i) {
+      const std::size_t k = first_look[i];
+      const std::int64_t z = targets[k];
       source.readRegion(Box{{0, 0, z}, {dims[0], dims[1], z + 1}}, buffer);
       builder.add(k, buffer.data());
     }
   };
   if (source.sequentialAccess()) {
-    read(0, slices.size());  // in order: a compressed stream is decompressed once
+    read(0, first_look.size());  // in order: a compressed stream is decompressed once
   } else {
     // One slice per task: on a network share several requests are in flight at once.
-    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, slices.size(), 1),
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, first_look.size(), 1),
                       [&](const auto& range) { read(range.begin(), range.end()); });
   }
-  return builder.finish();
+  return builder.snapshot();
 }
 
 PreviewImage renderPreview(const ImportPreview& preview) {
-  constexpr int kLargest = 256;  // pixels of the longest section edge
   constexpr int kGap = 4;
   constexpr int kHistogramHeight = 96;
   constexpr std::uint8_t kBackground = 24;
@@ -195,7 +280,13 @@ PreviewImage renderPreview(const ImportPreview& preview) {
   for (std::size_t a = 0; a < 3; ++a) {
     largest_mm = std::max(largest_mm, static_cast<double>(d[a]) * pitch[a]);
   }
-  const double mm_per_pixel = largest_mm > 0.0 ? largest_mm / kLargest : 1.0;
+  // The longest section edge gets a pixel per preview voxel, at least 256 and at most 1024.
+  constexpr double kFewest = 256.0;
+  constexpr double kMost = 1024.0;
+  const double finest = std::min({pitch[0], pitch[1], pitch[2]});
+  const double largest = std::clamp(std::round(largest_mm / finest), kFewest, kMost);
+  const int largest_pixels = static_cast<int>(largest);
+  const double mm_per_pixel = largest_mm > 0.0 ? largest_mm / largest : 1.0;
   int width = 0;
   int height = 0;
   for (Section& section : sections) {
@@ -208,7 +299,7 @@ PreviewImage renderPreview(const ImportPreview& preview) {
     width += section.width + kGap;
     height = std::max(height, section.height);
   }
-  width = std::max(width - kGap, kLargest);
+  width = std::max(width - kGap, largest_pixels);
   PreviewImage image;
   image.width = width;
   image.height = height + kGap + kHistogramHeight;
@@ -280,8 +371,9 @@ std::vector<std::uint8_t> previewPng(const ImportPreview& preview) {
 }
 
 nlohmann::json previewSummary(const ImportPreview& preview, int bins) {
-  nlohmann::json summary = {{"slices_read", preview.slices.size()},
+  nlohmann::json summary = {{"slices_read", preview.slices_read},
                             {"slices", preview.source_dims[2]},
+                            {"complete", preview.complete()},
                             {"source_dims", preview.source_dims},
                             {"dims", preview.volume.dims},
                             {"pixel_stride", preview.pixel_stride},

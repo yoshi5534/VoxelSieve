@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The import preview gets sharper as the import goes on**: after the first look, a staged
+  import (stacks, ZIP archives, DICOM, files on a share) copies the rest of the preview's slices
+  coarse to fine and shows a sharper preview after each round, three times as many slices each
+  time, until every slice is read and the histogram and threshold are those of the whole volume.
+  The preview is finer in-plane too (up to 1024 voxels per edge, 32 million in all). The studio
+  replaces the picture under the progress bar as each arrives; nothing is read twice (ADR 0020).
+
 - **Grey values in the input's 16 or 8 bits instead of float**: datasets and `.vdb` files store
   `uint16` grids, or `uint8` for 8-bit raw files, TIFF and DICOM stacks, with exactly the input's
   values. Bricks take half (a quarter) of the memory in the cache, datasets are 11 to 17 %
