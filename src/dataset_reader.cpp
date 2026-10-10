@@ -6,11 +6,13 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -254,6 +256,42 @@ std::optional<float> Dataset::sample(int level, const Index3& voxel) const {
     return std::nullopt;
   }
   return value;
+}
+
+Dataset::Sampler::Sampler(const Dataset& dataset, int level)
+    : dataset_(&dataset),
+      level_(level),
+      dims_(dataset.level(level).dims),
+      brick_size_(dataset.info().brick_size) {}
+
+std::optional<float> Dataset::Sampler::operator()(const Index3& voxel) {
+  for (std::size_t i = 0; i < 3; ++i) {
+    if (voxel[i] < 0 || voxel[i] >= dims_[i]) {
+      return std::nullopt;
+    }
+  }
+  const Index3 index{voxel[0] / brick_size_, voxel[1] / brick_size_, voxel[2] / brick_size_};
+  if (index != current_) {
+    current_ = index;
+    accessor_ = std::monostate{};  // before the brick it points into is released
+    brick_ = dataset_->brick(level_, index);
+    if (brick_) {
+      brick_->visit([&](const auto& grid) { accessor_ = grid.getConstAccessor(); });
+    }
+  }
+  return std::visit(
+      [&](const auto& accessor) -> std::optional<float> {
+        if constexpr (std::is_same_v<std::decay_t<decltype(accessor)>, std::monostate>) {
+          return std::nullopt;
+        } else {
+          typename std::decay_t<decltype(accessor)>::ValueType value{};
+          if (accessor.probeValue(toCoord(voxel), value)) {
+            return static_cast<float>(value);
+          }
+          return std::nullopt;
+        }
+      },
+      accessor_);
 }
 
 void Dataset::readRegion(int level, const Box& box, std::span<float> out, float fill) const {
