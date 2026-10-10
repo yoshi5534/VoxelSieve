@@ -104,8 +104,8 @@ class ProgressCounter {
 // decodes every slice again for each brick it touches whenever the slices of a brick layer do
 // not fit into the source's own cache.
 
-/// A temporary raw copy of a source, removed on destruction. Slices are copied in two rounds: the
-/// slices of the preview first, then the rest, so the preview costs no extra reading.
+/// A temporary raw copy of a source, removed on destruction. The slices of the preview are copied
+/// first, round by round, coarse to fine, then the rest, so the preview costs no extra reading.
 class StagedSource {
  public:
   StagedSource(const VolumeSource& source, const std::filesystem::path& dir,
@@ -143,16 +143,17 @@ class StagedSource {
   StagedSource& operator=(StagedSource&&) = delete;
   ~StagedSource() { remove(); }
 
-  /// Copies the slices of the preview and hands each to `preview` while it is still in memory.
-  void copyPreview(detail::PreviewBuilder& preview) {
-    const auto& slices = preview.slices();
+  /// Copies the preview slices `round` (indices into `preview.targets()`) and hands each to
+  /// `preview` while it is still in memory.
+  void copyRound(detail::PreviewBuilder& preview, const std::vector<std::size_t>& round) {
+    const auto& targets = preview.targets();
     copy(
-        slices.size(), [&slices](std::size_t k) { return slices[k]; },
-        [&preview](std::size_t k, const std::uint16_t* slice) { preview.add(k, slice); });
+        round.size(), [&](std::size_t i) { return targets[round[i]]; },
+        [&](std::size_t i, const std::uint16_t* slice) { preview.add(round[i], slice); });
   }
 
-  /// Copies the slices not copied yet; the copy is then what `source` reads. With `preview`, the
-  /// preview's slices among them are handed to it as they pass (sources read in one pass).
+  /// Copies the slices not copied yet; the copy is then what `source` reads. With `preview`, each
+  /// is handed to it as it passes: added when a preview slice shows it, else counted.
   void finish(detail::PreviewBuilder* preview = nullptr) {
     copy(
         static_cast<std::size_t>(dims_[2]),
@@ -161,11 +162,13 @@ class StagedSource {
           if (preview == nullptr) {
             return;
           }
-          const auto& slices = preview->slices();
+          const auto& targets = preview->targets();
           const auto it =
-              std::lower_bound(slices.begin(), slices.end(), static_cast<std::int64_t>(z));
-          if (it != slices.end() && *it == static_cast<std::int64_t>(z)) {
-            preview->add(static_cast<std::size_t>(it - slices.begin()), slice);
+              std::lower_bound(targets.begin(), targets.end(), static_cast<std::int64_t>(z));
+          if (it != targets.end() && *it == static_cast<std::int64_t>(z)) {
+            preview->add(static_cast<std::size_t>(it - targets.begin()), slice);
+          } else {
+            preview->count(slice);
           }
         });
     file_.close();
@@ -614,30 +617,35 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   if (options.preview && staged) {
     builder.emplace(info.dims, info.voxel_size, info.value_mapping, options.preview_options);
   }
+  // The preview's slices are the first the staging copy reads, coarse to fine (ADR 0020): the
+  // first round is the first look, each further round gives a sharper preview.
+  std::vector<std::vector<std::size_t>> rounds;
   if (options.preview && !sequential) {
-    // The preview's slices are the first the staging copy reads (ADR 0020).
-    std::optional<ImportPreview> preview;
-    {
-      const TelemetryPhase phase("preview");
-      if (staged && builder) {
-        staged->copyPreview(*builder);
-        preview = builder->finish();
-      } else {
-        preview = readImportPreview(input, options.preview_options);
-      }
+    const TelemetryPhase phase("preview");
+    if (builder) {
+      rounds = builder->rounds();
+      staged->copyRound(*builder, rounds.front());
+      options.preview(builder->snapshot());
+    } else {
+      options.preview(readImportPreview(input, options.preview_options));
     }
-    options.preview(*preview);
   }
   if (staged) {
     {
       const TelemetryPhase phase("staging");
-      // In one pass, the preview's slices are taken as the copy passes them.
-      staged->finish(sequential && builder ? &*builder : nullptr);
+      for (std::size_t r = 1; builder && r < rounds.size(); ++r) {
+        staged->copyRound(*builder, rounds[r]);
+        options.preview(builder->snapshot());
+      }
+      const std::int64_t previewed = builder && !sequential ? builder->slicesRead() : 0;
+      // The rest of the slices; the preview takes them as they pass (a stream read in one pass
+      // passes all of them here) and so ends with the histogram of the whole volume.
+      staged->finish(builder ? &*builder : nullptr);
       // The copy is all the passes read, so its pages should stay in memory, not the input's.
       input.releaseMemory();
-    }
-    if (sequential && builder) {
-      options.preview(builder->finish());
+      if (builder && builder->slicesRead() > previewed) {
+        options.preview(builder->snapshot());
+      }
     }
   }
   const VolumeSource& source = staged ? staged->source() : input;

@@ -80,6 +80,32 @@ read directly and 23.2 s staged, since it fits the page cache and pass 2 reads i
 staging pays off for volumes larger than memory, where the passes read the share twice and pass 2
 in bricks. The same phantom gzip-compressed (430 MB) took 25.1 s, its preview came after 7.8 s.
 
+**Amendment (a preview that gets sharper, 2026-10-10).** The first look stays as it is, but
+it no longer has to be all: a staged import copies every slice anyway, so it may as well copy the
+slices that make the preview sharper first and show them as they arrive.
+
+- The preview has one resolution from the start: blocks of `pixel_stride` voxels in-plane, as
+  small as `PreviewOptions::size` (1024 per edge) and `PreviewOptions::voxels` (32 million in
+  all) allow, and slices about as far apart as a block is wide, but at least the 64 of the first
+  look. Each preview slice shows one input slice, the middle of its part of the volume
+  (`previewSlices`).
+- The first look reads the middles of 64 equal parts of those preview slices; every preview slice
+  shows the slice read nearest to it. A staged import then copies the preview slices in rounds:
+  the middles of three times as many parts each round (they include the earlier ones), until
+  all. After each round `DatasetOptions::preview` is called again with the sharper preview. Then
+  the copy takes the remaining slices, counts them in the histogram only, and calls a last time,
+  with the histogram of the whole volume: its threshold is the one the import uses.
+  `ImportPreview::slices_read` and `complete()` say how far it is.
+- The picture gets about a pixel per preview voxel, 256 to 1024 pixels along the longest edge.
+  The studio replaces it under the progress bar as each preview arrives (the UI watches
+  `slices_read` in `project_status`); the step keeps the last one.
+- Sources read directly (local raw files, phantoms) get only the first look: reading more there
+  would read the volume twice, and their import is bound by the passes, not by reading. A stream
+  read in one pass (gzip) still gives its one preview at the end of the copy, now complete.
+- Example: 2000 slices of 3072 x 3072 voxels give blocks of 9 voxels and 223 preview slices
+  (342 x 342 x 223, 26 million voxels, 52 MB). Previews come after 64, 192 and 223 slices and at
+  the end; the first look still costs 3 % of the reading, the sharp preview 11 %.
+
 ## Consequences
 
 - The first picture comes after about 3 % of the reading: on 1 Gbit/s Ethernet after about 11 s
@@ -91,6 +117,5 @@ in bricks. The same phantom gzip-compressed (430 MB) took 25.1 s, its preview ca
   measuring.
 - Raw files on a share now need local disk space for the staging copy (2 bytes per voxel), as
   stacks already do; `--no-staging` keeps reading them directly.
-- Not done: a finer preview while the import goes on (more slices as staging proceeds), and
-  starting the import from the preview's threshold with a dialog in between. The import does not
-  wait for the user.
+- Not done: starting the import from the preview's threshold with a dialog in between. The
+  import does not wait for the user.

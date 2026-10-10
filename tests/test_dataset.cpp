@@ -300,10 +300,12 @@ TEST_F(DatasetTest, GzipRawImportsInOnePassWithItsPreview) {
             (std::vector<std::string>{"staging", "preview", "histogram", "bricks", "levels"}));
   expectSameDataset(dir_ / "plain", dir_ / "gzip");
   EXPECT_EQ(info.active_voxel_count, reference.active_voxel_count);
+  // Every slice passed: each preview slice shows its own, and the histogram is the volume's.
+  EXPECT_TRUE(preview.complete());
+  EXPECT_EQ(preview.slices, previewSlices(phantom.dims[2], preview.volume.dims[2]));
+  EXPECT_EQ(preview.threshold, info.threshold);
+  // Read directly, the first look reads the stream once, in order.
   const ImportPreview direct = readImportPreview(PhantomSource(phantom), options.preview_options);
-  EXPECT_EQ(preview.volume.data, direct.volume.data);
-  EXPECT_EQ(preview.histogram, direct.histogram);
-  // Read directly, the preview reads the stream once, in order.
   EXPECT_EQ(readImportPreview(gzip, options.preview_options).volume.data, direct.volume.data);
 }
 
