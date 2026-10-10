@@ -406,15 +406,17 @@ async function runStep(operation, params) {
   $('busy-preview').hidden = true;
   $('busy').hidden = false;
   render();
-  let previewShown = false;
+  // Slices read by the preview shown; a staged import sends a sharper one after each round.
+  let previewSlices = 0;
   const poll = setInterval(async () => {
     try {
       const status = await api('project_status');
       if (status.running && status.running.progress > 0) {
         $('busy-progress').value = status.running.progress;
       }
-      if (status.running?.preview && !previewShown) {
-        previewShown = true;
+      const slicesRead = status.running?.preview?.slices_read ?? 0;
+      if (slicesRead > previewSlices) {
+        previewSlices = slicesRead;
         await showImportPreview();
       }
     } catch {
@@ -436,8 +438,9 @@ async function runStep(operation, params) {
   return step;
 }
 
-/// Shows the first look at a volume while its import runs: a few slices spread over the volume,
-/// read first, with their histogram and the estimated threshold (ADR 0020).
+/// Shows the preview of a volume while its import runs (ADR 0020): first a few slices spread over
+/// the volume, read first, with their histogram and the estimated threshold; then, while a
+/// staged import copies the rest, sharper ones, until the histogram holds the whole volume.
 async function showImportPreview() {
   const preview = await api('import_preview');
   if (!state.busy) return;
@@ -450,11 +453,16 @@ async function showImportPreview() {
   const stride = preview.pixel_stride > 1
     ? ', averaged over ' + preview.pixel_stride + ' × ' + preview.pixel_stride + ' voxels'
     : '';
-  $('busy-preview-text').textContent = 'First look after ' + preview.seconds.toFixed(1) +
-    ' s: ' + preview.slices_read + ' of ' + preview.slices + ' slices (' +
-    (100 * preview.fraction_read).toFixed(1) + ' % of the voxels' + stride +
-    '), sections normal to z, y and x. Estimated threshold ' + threshold +
-    ' (red line in the histogram). The import goes on and does not read these slices again.';
+  const what = preview.complete
+    ? 'every slice read'
+    : preview.slices_read + ' of ' + preview.slices + ' slices read (' +
+      (100 * preview.fraction_read).toFixed(1) + ' % of the voxels)';
+  const then = preview.complete
+    ? 'The import goes on with the histogram and the bricks.'
+    : 'The import goes on and does not read these slices again; the preview gets sharper.';
+  $('busy-preview-text').textContent = 'Preview after ' + preview.seconds.toFixed(1) + ' s, ' +
+    what + stride + ': sections normal to z, y and x. Estimated threshold ' + threshold +
+    ' (red line in the histogram). ' + then;
   $('busy-preview').hidden = false;
 }
 

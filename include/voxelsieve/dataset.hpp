@@ -56,10 +56,12 @@ struct DatasetOptions {
   /// viewers such as Blender and Houdini, which do not know VoxelSieve's integer grids. `kUInt8`
   /// requires 8-bit input: grey values are never quantised.
   std::optional<ValueType> value_type;
-  /// Called once before the passes with a first look at the input (ADR 0020): a few whole slices
+  /// Called before the passes with a first look at the input (ADR 0020): a few whole slices
   /// spread over the volume (`preview_options`), their histogram and a threshold estimate. A
-  /// staged source copies those slices first and the rest after the call, so every slice is read
-  /// once; other sources are read directly, which is cheap for them.
+  /// staged source copies those slices first, then the other slices of the preview coarse to fine
+  /// with a sharper preview after each round, then the rest, with a last call once the histogram
+  /// holds every slice; every slice is read once. Other sources get only the first look, read
+  /// directly, which is cheap for them. Called from the thread of writeDataset.
   std::function<void(const ImportPreview& preview)> preview;
   PreviewOptions preview_options;
   /// Called as the sieve advances, with the stage ("staging": copying a slow source, "histogram":

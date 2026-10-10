@@ -88,9 +88,9 @@ std::function<void(std::string_view, double)> datasetProgress(const OperationCon
   };
 }
 
-/// Shows the preview of an import as soon as it is read (ADR 0020) and keeps it with the step as
-/// preview.json and preview.png. The time counts from the start of the operation, as the user
-/// waits.
+/// Shows the preview of an import as soon as it is read and each sharper one after it (ADR 0020),
+/// and keeps the last with the step as preview.json and preview.png. The time counts from the
+/// start of the operation, as the user waits.
 std::function<void(const ImportPreview&)> importPreview(const OperationContext& context) {
   const auto start = std::chrono::steady_clock::now();
   return [&context, start](const ImportPreview& preview) {
@@ -104,7 +104,7 @@ std::function<void(const ImportPreview&)> importPreview(const OperationContext& 
         .write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
     std::ostringstream text;
     text << std::fixed << std::setprecision(1) << "Preview after " << seconds
-         << " s: " << preview.slices.size() << " of " << preview.source_dims[2] << " slices ("
+         << " s: " << preview.slices_read << " of " << preview.source_dims[2] << " slices ("
          << 100.0 * preview.fractionRead() << " % of the voxels), threshold estimate "
          << std::setprecision(0) << preview.threshold;
     context.log(text.str());

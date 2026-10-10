@@ -103,7 +103,8 @@ Options:
   --dense                 .vdb only: write every voxel without sieving (baseline)
   --preview <file.png>    Datasets: write a first look at the input as soon as it is read: a
                           few slices spread over the volume, its sections and histogram with
-                          the estimated threshold. The import reads these slices only once
+                          the estimated threshold. A staged input rewrites it sharper as more
+                          slices are copied. The import reads every slice only once
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -556,10 +557,10 @@ void runDataset(const Options& options) {
                  static_cast<std::streamsize>(png.size()));
       printer.finishLine();
       std::cout << std::fixed << std::setprecision(1) << "preview            after "
-                << seconds(start, std::chrono::steady_clock::now()) << " s, "
-                << preview.slices.size() << " of " << preview.source_dims[2]
-                << " slices, threshold estimate " << std::setprecision(0) << preview.threshold
-                << " -> " << options.preview.string() << '\n'
+                << seconds(start, std::chrono::steady_clock::now()) << " s, " << preview.slices_read
+                << " of " << preview.source_dims[2] << " slices, threshold estimate "
+                << std::setprecision(0) << preview.threshold << " -> " << options.preview.string()
+                << '\n'
                 << std::flush;
     };
   }
