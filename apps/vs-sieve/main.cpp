@@ -45,7 +45,9 @@ constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output
 
 Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json (as written by
 vs-phantom) unless given on the command line. A vendor header before the voxel data is detected
-from the file size and skipped; use --header when the file also has a footer.
+from the file size and skipped; use --header when the file also has a footer. A gzip-compressed
+raw file (<name>.raw.gz with <name>.json) is decompressed once, in slice order, into the staging
+file; give --header when it has a header.
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
@@ -94,6 +96,9 @@ Options:
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
   --dense                 .vdb only: write every voxel without sieving (baseline)
+  --preview <file.png>    Datasets: write a first look at the input as soon as it is read: a
+                          few slices spread over the volume, its sections and histogram with
+                          the estimated threshold. The import reads these slices only once
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -115,6 +120,7 @@ struct Options {
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
   bool dense = false;
+  std::filesystem::path preview;
   std::filesystem::path telemetry;
 
   [[nodiscard]] bool singleGrid() const { return out.extension() == ".vdb"; }
@@ -186,6 +192,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.dataset.staging_dir = next();
     } else if (arg == "--no-staging") {
       options.dataset.stage_slow_sources = false;
+    } else if (arg == "--preview") {
+      options.preview = next();
     } else if (arg == "--dense") {
       options.dense = true;
     } else if (arg == "--join") {
@@ -229,8 +237,7 @@ Geometry resolveGeometry(const Options& options) {
   if (options.dims && options.voxel_size) {
     return {*options.dims, withThickness(*options.voxel_size, options)};
   }
-  auto sidecar = options.input;
-  sidecar.replace_extension(".json");
+  const auto sidecar = voxelsieve::rawSidecarPath(options.input);
   if (!std::filesystem::exists(sidecar)) {
     throw std::invalid_argument("No --dims/--voxel-size given and no sidecar " + sidecar.string());
   }
@@ -351,11 +358,17 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, Float
     return source;
   }
   const Geometry geometry = resolveGeometry(options);
-  auto source = std::make_unique<voxelsieve::MappedRawSource>(
-      options.input, voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
-                                           options.byte_order, options.header_bytes});
-  if (source->headerBytes() > 0) {
-    std::cout << "header             " << source->headerBytes() << " bytes skipped\n";
+  std::uint64_t header_bytes = 0;
+  auto source = voxelsieve::openRawVolume(
+      options.input,
+      voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
+                            options.byte_order, options.header_bytes},
+      &header_bytes);
+  if (source->sequentialAccess()) {
+    std::cout << "gzip               decompressed once, in slice order\n";
+  }
+  if (header_bytes > 0) {
+    std::cout << "header             " << header_bytes << " bytes skipped\n";
   }
   std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
   return source;
@@ -515,6 +528,21 @@ void runDataset(const Options& options) {
   dataset.progress = [&printer](std::string_view stage, double fraction) {
     printer(stage, fraction);
   };
+  if (!options.preview.empty()) {
+    dataset.preview = [&](const voxelsieve::ImportPreview& preview) {
+      const std::vector<std::uint8_t> png = voxelsieve::previewPng(preview);
+      std::ofstream(options.preview, std::ios::binary)
+          .write(reinterpret_cast<const char*>(png.data()),
+                 static_cast<std::streamsize>(png.size()));
+      printer.finishLine();
+      std::cout << std::fixed << std::setprecision(1) << "preview            after "
+                << seconds(start, std::chrono::steady_clock::now()) << " s, "
+                << preview.slices.size() << " of " << preview.source_dims[2]
+                << " slices, threshold estimate " << std::setprecision(0) << preview.threshold
+                << " -> " << options.preview.string() << '\n'
+                << std::flush;
+    };
+  }
   const auto info = voxelsieve::writeDataset(*source, options.out, dataset);
   printer.finishLine();
   const auto done = std::chrono::steady_clock::now();

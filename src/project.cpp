@@ -333,10 +333,11 @@ Json toJson(const ProjectObject& object) {
           {"moved_by", object.moved_by}};
 }
 
-const Step& Project::run(const OperationRegistry& registry, const std::string& operation_id,
-                         const Json& params, const std::map<std::string, ArtifactRef>& inputs,
-                         const std::function<void(double)>& progress,
-                         const std::atomic<bool>* cancel, const StepTarget& target) {
+const Step& Project::run(
+    const OperationRegistry& registry, const std::string& operation_id, const Json& params,
+    const std::map<std::string, ArtifactRef>& inputs, const std::function<void(double)>& progress,
+    const std::atomic<bool>* cancel, const StepTarget& target,
+    const std::function<void(const Json&, const std::vector<std::uint8_t>&)>& preview) {
   const auto operation = registry.find(operation_id);
   if (!operation) {
     throw std::invalid_argument("Unknown operation '" + operation_id + "'");
@@ -444,6 +445,9 @@ const Step& Project::run(const OperationRegistry& registry, const std::string& o
   };
   context.log = [&stored](const std::string& message) { stored.messages.push_back(message); };
   context.cancel = cancel;
+  if (preview) {
+    context.preview = preview;
+  }
   // The objects with their latest output of every type, so operations can work on several.
   std::map<std::string, Json> outputs;
   for (std::size_t i = 0; i < cursor_; ++i) {

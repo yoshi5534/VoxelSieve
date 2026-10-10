@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -61,6 +62,11 @@ struct OperationContext {
   nlohmann::json objects = nlohmann::json::array();
   /// The object the step belongs to; empty for steps of no object.
   std::string object;
+  /// Hands over a first look at the input while an import still runs (ADR 0020): the summary of
+  /// the preview (previewSummary) and its picture as PNG. The studio shows it at once. Last
+  /// member, so plugins built against the same API version keep the layout of the others.
+  std::function<void(const nlohmann::json& summary, const std::vector<std::uint8_t>& png)> preview =
+      [](const nlohmann::json&, const std::vector<std::uint8_t>&) {};
 };
 
 /// Result of an operation: output paths (relative to the output directory) per output port, and a

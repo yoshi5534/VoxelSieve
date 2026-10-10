@@ -44,9 +44,13 @@ header {
 
 .error { background: #ffebe9; color: var(--bad); padding: 8px 16px;
   border-bottom: 1px solid #ffcecb; white-space: pre-wrap; }
-.busy { display: flex; gap: 12px; align-items: center; padding: 6px 16px; background: #ddf4ff;
-  border-bottom: 1px solid #b6e3ff; }
+.busy { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 6px 16px;
+  background: #ddf4ff; border-bottom: 1px solid #b6e3ff; }
 .busy progress { flex: 1; max-width: 400px; }
+.busy-preview { flex-basis: 100%; margin: 4px 0; }
+.busy-preview img { display: block; max-width: 100%; max-height: 40vh; image-rendering: pixelated;
+  border-radius: 4px; }
+.busy-preview figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
 
 main { flex: 1; display: grid; grid-template-columns: minmax(240px, 320px) 1fr; min-height: 0; }
 aside { border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; background: var(--panel); }

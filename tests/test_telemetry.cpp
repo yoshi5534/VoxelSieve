@@ -210,7 +210,8 @@ TEST(TelemetryTest, EveryStepOfAProjectRecordsItsPhases) {
     for (const Json& p : summary.at("phases")) {
       names.push_back(p.at("name"));
     }
-    EXPECT_EQ(names, (std::vector<std::string>{"pass 1 (histogram)", "pass 2 (bricks)", "levels"}));
+    EXPECT_EQ(names, (std::vector<std::string>{"preview", "pass 1 (histogram)", "pass 2 (bricks)",
+                                               "levels"}));
     (void)studio.call("run_porosity", {});
 
     const Json full = studio.call("step_telemetry", {{"step", imported.at("id")}});

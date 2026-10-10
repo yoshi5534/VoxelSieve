@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "voxelsieve/preview.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/voxel_size.hpp"
@@ -47,6 +48,12 @@ struct DatasetOptions {
   bool stage_slow_sources = true;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.
   std::filesystem::path staging_dir;
+  /// Called once before the passes with a first look at the input (ADR 0020): a few whole slices
+  /// spread over the volume (`preview_options`), their histogram and a threshold estimate. A
+  /// staged source copies those slices first and the rest after the call, so every slice is read
+  /// once; other sources are read directly, which is cheap for them.
+  std::function<void(const ImportPreview& preview)> preview;
+  PreviewOptions preview_options;
   /// Called as the sieve advances, with the stage ("staging": copying a slow source, "histogram":
   /// pass 1 over the input, "bricks": pass 2, "levels": the coarser levels) and the fraction of
   /// that stage done, 0 to 1.
