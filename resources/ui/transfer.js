@@ -246,6 +246,123 @@ function suggestTransfers(histogram) {
   return suggestions.slice(0, 3);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Materials in the histogram: classes of grey values for the material segmentation (ADR 0013).
+// Each is {name, color: [r, g, b], x, opacity} where x (0..1 like the transfer points) is the grey
+// value it starts at; below the first one is air. They are sorted by x.
+
+/// Index of the material that the grey value x (0..1) belongs to, -1 for air.
+function materialAt(materials, x) {
+  let index = -1;
+  materials.forEach((material, i) => {
+    if (x >= material.x) index = i;
+  });
+  return index;
+}
+
+/// Voxels of the histogram per material (index 0 of the result: air, then the materials).
+function materialCounts(histogram, materials) {
+  const counts = new Array(materials.length + 1).fill(0);
+  histogram.forEach((count, bin) => {
+    counts[materialAt(materials, bin / (histogram.length - 1)) + 1] += count;
+  });
+  return counts;
+}
+
+/// 256 RGBA entries (bytes): every grey value in the colour and opacity of its material, air
+/// transparent; for looking at the classes in 3D before segmenting.
+function materialTable(materials) {
+  const table = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i += 1) {
+    const material = materials[materialAt(materials, i / 255)];
+    if (!material) continue;
+    table.set([...material.color, Math.round(255 * material.opacity)], i * 4);
+  }
+  return table;
+}
+
+/// Thresholds (x in 0..1, ascending) that split the bins of `histogram` from x = `from` on into
+/// `classes` classes with the largest between-class variance (multi-level Otsu, as the
+/// segmentation does by default).
+function multiOtsuBins(histogram, from, classes) {
+  const last = histogram.length - 1;
+  const first = Math.min(Math.max(Math.ceil(from * last), 0), last);
+  const n = last - first + 1;
+  if (classes <= 1 || n < classes) return [];
+  // Prefix sums of counts and of count * bin, so the score of a class is O(1).
+  const weight = new Float64Array(n + 1);
+  const moment = new Float64Array(n + 1);
+  for (let i = 0; i < n; i += 1) {
+    weight[i + 1] = weight[i] + histogram[first + i];
+    moment[i + 1] = moment[i] + histogram[first + i] * (first + i);
+  }
+  const score = (a, b) => {   // bins a .. b - 1
+    const w = weight[b] - weight[a];
+    const m = moment[b] - moment[a];
+    return w > 0 ? (m * m) / w : 0;
+  };
+  // best[c][j]: best score of the first j bins in c + 1 classes; start[c][j]: where class c begins.
+  const best = [Float64Array.from({ length: n + 1 }, (_, j) => score(0, j))];
+  const start = [new Int32Array(n + 1)];
+  for (let c = 1; c < classes; c += 1) {
+    const row = new Float64Array(n + 1).fill(-Infinity);
+    const begins = new Int32Array(n + 1);
+    for (let j = c + 1; j <= n; j += 1) {
+      for (let k = c; k < j; k += 1) {
+        const value = best[c - 1][k] + score(k, j);
+        if (value > row[j]) {
+          row[j] = value;
+          begins[j] = k;
+        }
+      }
+    }
+    best.push(row);
+    start.push(begins);
+  }
+  const thresholds = [];
+  let j = n;
+  for (let c = classes - 1; c > 0; c -= 1) {
+    j = start[c][j];
+    thresholds.unshift((first + j) / last);
+  }
+  return thresholds;
+}
+
+/// The lowest point of the (smoothed, logarithmic) histogram within `radius` bins of x: the
+/// valley between two materials that a boundary belongs in.
+function snapToValley(histogram, x, radius = 10) {
+  const last = histogram.length - 1;
+  const log = smoothHistogram(histogram, 2).map((count) => Math.log1p(count));
+  const centre = Math.round(x * last);
+  let best = centre;
+  for (let i = Math.max(centre - radius, 1); i <= Math.min(centre + radius, last); i += 1) {
+    if (log[i] < log[best] || (log[i] === log[best] &&
+        Math.abs(i - centre) < Math.abs(best - centre))) best = i;
+  }
+  return best / last;
+}
+
+/// Colours for new materials, the same as the default ones of the material volume.
+const MATERIAL_PALETTE = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
+  [142, 99, 190], [214, 190, 40], [23, 170, 170], [140, 110, 80]];
+
+/// Materials starting at the air threshold `air` (x in 0..1), split into `classes` by
+/// multi-level Otsu. The material with most voxels is shown faint, the others strong, so the
+/// 3D preview looks through the base material at the inclusions in it.
+function suggestMaterials(histogram, air, classes, previous = []) {
+  const xs = [air, ...multiOtsuBins(histogram, air, classes)];
+  const materials = xs.map((x, i) => ({
+    name: previous[i]?.name ?? 'Material ' + (i + 1),
+    color: [...(previous[i]?.color ?? MATERIAL_PALETTE[i % MATERIAL_PALETTE.length])],
+    x,
+    opacity: 0.6,
+  }));
+  const counts = materialCounts(histogram, materials).slice(1);
+  const largest = counts.indexOf(Math.max(...counts));
+  if (materials.length > 1 && largest >= 0) materials[largest].opacity = 0.1;
+  return materials;
+}
+
 function hexColor(color) {
   return '#' + color.map((c) => c.toString(16).padStart(2, '0')).join('');
 }
@@ -256,13 +373,17 @@ function parseHexColor(hex) {
 
 /// Histogram editor on a 2D canvas. In 'curve' mode the control points of the transfer function
 /// are dragged (click adds a point, double click or Delete removes it); in 'threshold' mode the
-/// air/material threshold of the surface view.
+/// air/material threshold of the surface view; in 'materials' mode the grey values where the
+/// materials start (drag a boundary, click selects a material, double click on a boundary puts
+/// it into the nearest valley of the histogram).
 class TransferEditor {
   constructor(canvas) {
     this.canvas = canvas;
     this.histogram = new Array(256).fill(0);
     this.points = transferPreset('durchsicht', 0.5);
     this.threshold = 0.5;
+    this.materials = [];        // in 'materials' mode, see materialAt
+    this.selectedMaterial = -1;
     this.mode = 'curve';
     this.selected = -1;
     this.hover = null;
@@ -330,7 +451,36 @@ class TransferEditor {
     return best;
   }
 
+  /// Index of the material whose boundary is near the canvas position px, else -1.
+  boundaryAt(px) {
+    let best = -1;
+    let bestDistance = 6;
+    this.materials.forEach((material, i) => {
+      const distance = Math.abs(this.toCanvas(material.x, 0)[0] - px);
+      if (distance < bestDistance) {
+        best = i;
+        bestDistance = distance;
+      }
+    });
+    return best;
+  }
+
+  /// Moves the boundary of material i to x, between its neighbours.
+  moveBoundary(i, x) {
+    const step = 1 / 255;
+    const low = i > 0 ? this.materials[i - 1].x + step : 0;
+    const high = i < this.materials.length - 1 ? this.materials[i + 1].x - step : 1;
+    this.materials[i].x = Math.min(Math.max(x, low), high);
+  }
+
   removeSelected() {
+    if (this.mode === 'materials') {
+      if (this.selectedMaterial < 0 || this.materials.length <= 1) return;
+      this.materials.splice(this.selectedMaterial, 1);
+      this.selectedMaterial = -1;
+      this.changed();
+      return;
+    }
     if (this.selected < 0 || this.points.length <= 2) return;
     this.points.splice(this.selected, 1);
     this.selected = -1;
@@ -351,6 +501,14 @@ class TransferEditor {
         this.changed();
         return;
       }
+      if (this.mode === 'materials') {
+        const boundary = this.boundaryAt(at.px);
+        this.selectedMaterial = boundary >= 0 ? boundary : materialAt(this.materials, at.x);
+        drag = boundary >= 0 ? { boundary } : null;
+        this.draw();
+        this.onSelect();
+        return;
+      }
       let index = this.pointAt(at.px, at.py);
       if (index < 0) {
         // A new point on the curve's colour at that grey value.
@@ -368,7 +526,10 @@ class TransferEditor {
     canvas.addEventListener('pointermove', (event) => {
       const at = this.fromEvent(event);
       this.hover = at.x;
-      if (drag?.threshold) {
+      if (drag?.boundary !== undefined) {
+        this.moveBoundary(drag.boundary, at.x);
+        this.changed();
+      } else if (drag?.threshold) {
         this.threshold = at.x;
         this.changed();
       } else if (drag) {
@@ -391,6 +552,13 @@ class TransferEditor {
     });
     canvas.addEventListener('dblclick', (event) => {
       const at = this.fromEvent(event);
+      if (this.mode === 'materials') {
+        const boundary = this.boundaryAt(at.px);
+        if (boundary < 0) return;
+        this.moveBoundary(boundary, snapToValley(this.histogram, this.materials[boundary].x));
+        this.changed();
+        return;
+      }
       const index = this.pointAt(at.px, at.py);
       if (index >= 0) {
         this.selected = index;
@@ -422,16 +590,48 @@ class TransferEditor {
     g.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     const r = this.area();
 
-    // Histogram, logarithmic.
+    // Histogram, logarithmic; in 'materials' mode every bar in the colour of its material.
     const peak = Math.log1p(Math.max(...this.histogram, 1));
     const bar = r.width / 256;
-    g.fillStyle = '#4a4a4a';
+    const materials = this.mode === 'materials' ? this.materials : [];
+    if (materials.length) {
+      materials.forEach((material, i) => {
+        const [x0] = this.toCanvas(material.x, 0);
+        const [x1] = this.toCanvas(materials[i + 1]?.x ?? 1, 0);
+        g.fillStyle = `rgba(${material.color.join(',')},${i === this.selectedMaterial ? 0.22 : 0.1})`;
+        g.fillRect(x0, r.top, x1 - x0, r.height);
+      });
+    }
     this.histogram.forEach((count, i) => {
       const h = (Math.log1p(count) / peak) * r.height;
+      const material = materials[materialAt(materials, i / 255)];
+      g.fillStyle = material ? hexColor(material.color) : '#4a4a4a';
       g.fillRect(r.left + i * bar, r.top + r.height - h, Math.ceil(bar), h);
     });
 
-    if (this.mode === 'curve') {
+    if (materials.length) {
+      g.font = '11px system-ui, sans-serif';
+      g.textBaseline = 'top';
+      g.textAlign = 'left';
+      materials.forEach((material, i) => {
+        const [x0] = this.toCanvas(material.x, 0);
+        const [x1] = this.toCanvas(materials[i + 1]?.x ?? 1, 0);
+        g.strokeStyle = i === this.selectedMaterial ? '#4fa3ff' : '#eee';
+        g.lineWidth = i === this.selectedMaterial ? 2.5 : 1.5;
+        g.beginPath();
+        g.moveTo(x0, r.top);
+        g.lineTo(x0, r.top + r.height);
+        g.stroke();
+        g.fillStyle = hexColor(material.color);
+        g.fillRect(x0 - 4, r.top, 8, 8);
+        // The name where it fits.
+        const name = material.name;
+        if (g.measureText(name).width + 12 < x1 - x0) {
+          g.fillStyle = '#eee';
+          g.fillText(name, x0 + 6, r.top + 10);
+        }
+      });
+    } else if (this.mode === 'curve') {
       // Area under the curve in the colour of the transfer function.
       const table = lookupTable(this.points);
       for (let i = 0; i < 256; i += 1) {
@@ -479,7 +679,9 @@ class TransferEditor {
     g.fillText(this.label(0), r.left, bottom);
     g.textAlign = 'right';
     g.fillText(this.label(1), r.left + r.width, bottom);
-    const marker = this.mode === 'threshold' ? this.threshold : this.hover;
+    const marker = this.mode === 'threshold' ? this.threshold
+      : this.hover ?? (this.mode === 'materials' && this.selectedMaterial >= 0
+        ? this.materials[this.selectedMaterial].x : null);
     if (marker !== null) {
       g.textAlign = 'center';
       g.fillStyle = '#ddd';
@@ -490,10 +692,14 @@ class TransferEditor {
 }
 
 if (typeof window !== 'undefined') {
-  Object.assign(window, { COLOR_MAPS, TRANSFER_PRESETS, TransferEditor, applyColorMap, colorMapAt,
-    hexColor, lookupTable, parseHexColor, suggestTransfers, transferPreset });
+  Object.assign(window, { COLOR_MAPS, MATERIAL_PALETTE, TRANSFER_PRESETS, TransferEditor,
+    applyColorMap, colorMapAt, hexColor, lookupTable, materialAt, materialCounts, materialTable,
+    multiOtsuBins, parseHexColor, snapToValley, suggestMaterials, suggestTransfers,
+    transferPreset });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { COLOR_MAPS, applyColorMap, colorMapAt, hexColor, histogramPeaks, lookupTable,
-    otsuThreshold, parseHexColor, suggestTransfers, transferPreset };
+  module.exports = { COLOR_MAPS, MATERIAL_PALETTE, applyColorMap, colorMapAt, hexColor,
+    histogramPeaks, lookupTable, materialAt, materialCounts, materialTable, multiOtsuBins,
+    otsuThreshold, parseHexColor, snapToValley, suggestMaterials, suggestTransfers,
+    transferPreset };
 }

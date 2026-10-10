@@ -104,6 +104,27 @@ TEST_F(MaterialsTest, RejectsBadOptions) {
   options.material_thresholds.clear();
   options.min_neighbours = 28;
   EXPECT_THROW((void)segmentMaterials(dataset, dir_ / "c", options), std::invalid_argument);
+  options.min_neighbours = 6;
+  options.names = {"a", "b", "c"};
+  EXPECT_THROW((void)segmentMaterials(dataset, dir_ / "d", options), std::invalid_argument);
+}
+
+TEST_F(MaterialsTest, KeepsNamesAndColoursOfTheClasses) {
+  const Scene scene = makeScene();
+  DatasetOptions sieve;
+  sieve.threshold = kThreshold;
+  (void)writeDataset(MemorySource(scene.grey), dir_ / "dataset", sieve);
+  const Dataset dataset = Dataset::open(dir_ / "dataset");
+  SegmentationOptions options;
+  options.names = {"Polymer"};  // the second class keeps its default name
+  options.colors = {{10, 20, 30}, {200, 100, 50}};
+  (void)segmentMaterials(dataset, dir_ / "materials", options);
+  const MaterialVolumeInfo info = readMaterialVolumeInfo(dir_ / "materials");
+  ASSERT_EQ(info.materials.size(), 2U);
+  EXPECT_EQ(info.materials[0].name, "Polymer");
+  EXPECT_EQ(info.materials[1].name, "Material 2");
+  EXPECT_EQ(info.materials[0].color, (std::array<std::uint8_t, 3>{10, 20, 30}));
+  EXPECT_EQ(info.materials[1].color, (std::array<std::uint8_t, 3>{200, 100, 50}));
 }
 
 }  // namespace

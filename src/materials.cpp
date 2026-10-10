@@ -240,6 +240,10 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
        !std::is_sorted(options.material_thresholds.begin(), options.material_thresholds.end()))) {
     throw std::invalid_argument("material_thresholds needs materials - 1 ascending values");
   }
+  if (options.names.size() > static_cast<std::size_t>(options.materials) ||
+      options.colors.size() > static_cast<std::size_t>(options.materials)) {
+    throw std::invalid_argument("More material names or colours than materials");
+  }
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
   }
@@ -266,8 +270,12 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   for (int m = 0; m < options.materials; ++m) {
     Material material;
     material.id = m + 1;
-    material.name = "Material " + std::to_string(m + 1);
-    material.color = detail::materialColor(m + 1);
+    const auto index = static_cast<std::size_t>(m);
+    material.name = index < options.names.size() && !options.names[index].empty()
+                        ? options.names[index]
+                        : "Material " + std::to_string(m + 1);
+    material.color =
+        index < options.colors.size() ? options.colors[index] : detail::materialColor(m + 1);
     material.lower = m == 0 ? info.air_threshold : thresholds[static_cast<std::size_t>(m - 1)];
     info.materials.push_back(material);
   }

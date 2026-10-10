@@ -338,6 +338,7 @@ class VolumeViewer {
     this.pores = true;
     this.materials = true;      // colour the classes of a material segmentation, if loaded
     this.hiddenMaterials = [];  // ids of the material classes left out
+    this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
     this.cut = 1;
     this.threshold = 0.5;
     this.shading = true;
@@ -970,7 +971,8 @@ class VolumeViewer {
     gl.uniform1i(uniform('materials'), this.materials && this.source?.materials != null ? 1 : 0);
     gl.uniform1i(uniform('hiddenMaterials'),
       this.hiddenMaterials.reduce((mask, id) => mask | (1 << (id - 1)), 0));
-    gl.uniform3fv(uniform('materialColors'), MATERIAL_COLORS.flat().map((c) => c / 255));
+    gl.uniform3fv(uniform('materialColors'), MATERIAL_COLORS.map((fallback, m) =>
+      this.materialColors[m] ?? fallback).flat().map((c) => c / 255));
     gl.uniform1f(uniform('cut'), this.cut);
     gl.uniform1i(uniform('shading'), this.shading ? 1 : 0);
     const color = (name, rgb) => gl.uniform3fv(uniform(name), rgb.map((c) => c / 255));

@@ -39,7 +39,12 @@ A classical segmentation (`include/voxelsieve/materials.hpp`, `segmentMaterials`
   reconstructed in parts is sieved, segmented and scored as one volume.
 
 Tools: `vs-segment` (with `--truth` for scoring) and the studio operation `segment_materials`;
-the slice view shows the classes in colour.
+the slice view shows the classes in colour. The classes can be defined in the histogram of the
+studio's 3D view: boundaries between them (the first is the air threshold, multi-level Otsu
+proposes the others), a name and a colour each, with a 3D preview of the grey value classes
+before segmenting. They reach the operation as `air_threshold`, `material_thresholds`,
+`material_names` and `material_colors`, and the names and colours are kept in `materials.json`.
+The colours of a segmentation can still be changed for the views; that is view state, not a step.
 
 ## Consequences
 

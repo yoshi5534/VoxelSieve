@@ -4,6 +4,8 @@
 #include <openvdb/io/File.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iomanip>
@@ -963,6 +965,39 @@ class Report final : public Operation {
   OperationInfo info_;
 };
 
+/// Colour "#rrggbb" as RGB.
+std::array<std::uint8_t, 3> parseColor(const std::string& text) {
+  const bool hex = text.size() == 7 && text[0] == '#' &&
+                   std::all_of(text.begin() + 1, text.end(),
+                               [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+  if (!hex) {
+    throw std::invalid_argument("Colour '" + text + "' is not of the form #rrggbb");
+  }
+  std::array<std::uint8_t, 3> color{};
+  for (std::size_t c = 0; c < 3; ++c) {
+    color[c] = static_cast<std::uint8_t>(std::stoi(text.substr(1 + 2 * c, 2), nullptr, 16));
+  }
+  return color;
+}
+
+/// Materials of a segmentation for the summary of its step: id, name, colour, volume and, for
+/// the threshold segmentation, the grey value each class starts at.
+Json materialSummary(const MaterialVolumeInfo& info, bool with_thresholds) {
+  Json materials = Json::array();
+  for (const Material& material : info.materials) {
+    Json entry = {{"id", material.id},
+                  {"name", material.name},
+                  {"color", material.color},
+                  {"voxels", material.voxel_count},
+                  {"volume_mm3", material.volume_mm3}};
+    if (with_thresholds) {
+      entry["from_grey_value"] = material.lower;
+    }
+    materials.push_back(entry);
+  }
+  return materials;
+}
+
 class SegmentMaterials final : public Operation {
  public:
   SegmentMaterials() {
@@ -999,7 +1034,15 @@ class SegmentMaterials final : public Operation {
             {"minimum", 0},
             {"maximum", 1},
             {"default", 0.5},
-            {"description", "Lower threshold between air level (0) and air threshold (1)"}}}}}};
+            {"description", "Lower threshold between air level (0) and air threshold (1)"}}},
+          {"material_names",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "Names of the classes, in order; default: Material 1, 2, ..."}}},
+          {"material_colors",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "Colours of the classes as #rrggbb, in order"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1016,19 +1059,21 @@ class SegmentMaterials final : public Operation {
     options.min_neighbours = p.at("min_neighbours").get<int>();
     options.grow_steps = p.at("grow_steps").get<int>();
     options.grow_fraction = p.at("grow_fraction").get<float>();
+    if (p.contains("material_names")) {
+      options.names = p.at("material_names").get<std::vector<std::string>>();
+    }
+    if (p.contains("material_colors")) {
+      for (const Json& color : p.at("material_colors")) {
+        options.colors.push_back(parseColor(color.get<std::string>()));
+      }
+    }
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const MaterialVolumeInfo info =
         segmentMaterials(dataset, context.output_dir / "materials", options);
     OperationResult result;
     result.outputs["materials"] = "materials";
-    Json materials = Json::array();
-    for (const Material& material : info.materials) {
-      materials.push_back({{"id", material.id},
-                           {"from_grey_value", material.lower},
-                           {"voxels", material.voxel_count},
-                           {"volume_mm3", material.volume_mm3}});
-    }
-    result.summary = {{"air_threshold", info.air_threshold}, {"materials", materials}};
+    result.summary = {{"air_threshold", info.air_threshold},
+                      {"materials", materialSummary(info, true)}};
     return result;
   }
 
@@ -1073,14 +1118,7 @@ class SegmentWithModel final : public Operation {
         segmentMaterialsWithModel(dataset, model, context.output_dir / "materials", options);
     OperationResult result;
     result.outputs["materials"] = "materials";
-    Json materials = Json::array();
-    for (const Material& material : info.materials) {
-      materials.push_back({{"id", material.id},
-                           {"name", material.name},
-                           {"voxels", material.voxel_count},
-                           {"volume_mm3", material.volume_mm3}});
-    }
-    result.summary = {{"model", info.model}, {"materials", materials}};
+    result.summary = {{"model", info.model}, {"materials", materialSummary(info, false)}};
     return result;
   }
 

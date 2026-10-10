@@ -346,12 +346,18 @@ TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
   (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
   const Json imported =
       studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
-  const Json segmented = studio.call("run_segment_materials", {{"materials", 1}});
+  // Name and colour as the histogram of the studio defines them.
+  const Json segmented =
+      studio.call("run_segment_materials", {{"materials", 1},
+                                            {"material_names", Json::array({"Aluminium"})},
+                                            {"material_colors", Json::array({"#20a0ff"})}});
   ASSERT_EQ(segmented.at("status"), "done");
   // One material: the box of 6 x 5 x 4 mm with two lunkers of 0.5 mm radius.
   const Json& material = segmented.at("summary").at("materials").at(0);
   EXPECT_NEAR(material.at("volume_mm3").get<double>(),
               120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 3.0);
+  EXPECT_EQ(material.at("name"), "Aluminium");
+  EXPECT_EQ(material.at("color"), Json::array({32, 160, 255}));
 
   const Json slice = studio.call("view_slice", {});
   EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));

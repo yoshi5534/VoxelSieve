@@ -107,6 +107,7 @@ class SliceViewer {
     this.window = null;         // [low, high]
     this.showOverlay = true;
     this.hiddenMaterials = [];  // ids of the material classes left out of the overlay
+    this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
     // Other objects: {id, number, kind, color, version, show, mode, opacity, window}; `version`
     // changes with anything that moves the object relative to the slice.
     this.layers = [];
@@ -680,6 +681,12 @@ class SliceViewer {
     this.requestDraw();
   }
 
+  /// Colours of the material classes (material m at m - 1), as segmented or chosen in the view.
+  setMaterialColors(colors) {
+    this.materialColors = colors.map((color) => [...color]);
+    this.requestDraw();
+  }
+
   renderLayerTile(tile, layer) {
     const state = [layer.window?.[0], layer.window?.[1], layer.mode, layer.opacity].join('/');
     if (tile.rendered === state) return tile.canvas;
@@ -699,7 +706,7 @@ class SliceViewer {
 
   renderTile(tile) {
     const state = [this.window?.[0], this.window?.[1], this.showOverlay,
-      this.hiddenMaterials.join(',')].join('/');
+      this.hiddenMaterials.join(','), this.materialColors.flat().join(',')].join('/');
     if (tile.rendered === state) return tile.canvas;
     if (!tile.canvas) {
       tile.canvas = document.createElement('canvas');
@@ -709,7 +716,7 @@ class SliceViewer {
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
     slicePixels(tile.data, tile.overlay, this.window ?? [0, 1],
-      this.showOverlay ? this.hiddenMaterials : null, image.data);
+      this.showOverlay ? this.hiddenMaterials : null, image.data, this.materialColors);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;
@@ -717,8 +724,10 @@ class SliceViewer {
 }
 
 /// Pixels of a tile of the volume, RGBA: the grey values between `low` and `high`, with the
-/// overlay tinted on top unless `hiddenMaterials` (ids of material classes left out) is null.
-function slicePixels(data, overlay, [low, high], hiddenMaterials, out) {
+/// overlay tinted on top unless `hiddenMaterials` (ids of material classes left out) is null;
+/// material m in `materialColors[m - 1]`.
+function slicePixels(data, overlay, [low, high], hiddenMaterials, out,
+  materialColors = MATERIAL_COLORS) {
   const scale = 255 / (high - low);
   for (let i = 0; i < data.length; i += 1) {
     const grey = Math.min(Math.max((data[i] - low) * scale, 0), 255);
@@ -734,7 +743,8 @@ function slicePixels(data, overlay, [low, high], hiddenMaterials, out) {
         r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
       } else if (kind > MATERIAL_OVERLAY && !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
         // Materials in their colour, half covering the grey value.
-        const [mr, mg, mb] = MATERIAL_COLORS[(kind - MATERIAL_OVERLAY - 1) % 8];
+        const id = kind - MATERIAL_OVERLAY;
+        const [mr, mg, mb] = materialColors[id - 1] ?? MATERIAL_COLORS[(id - 1) % 8];
         r = 0.5 * grey + 0.5 * mr; g = 0.5 * grey + 0.5 * mg; b = 0.5 * grey + 0.5 * mb;
       }
     }
