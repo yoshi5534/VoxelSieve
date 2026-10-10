@@ -805,8 +805,7 @@ TEST_F(DatasetReaderTest, SamplesMatchInMemorySieve) {
 
 TEST_F(DatasetReaderTest, SamplerMatchesSample) {
   (void)writeReference();
-  // A cache of one brick: the sampler's brick is evicted while it still reads from it.
-  const Dataset dataset = Dataset::open(dir_, 1);
+  const Dataset dataset = Dataset::open(dir_);
   for (const int level : {0, 1}) {
     const Index3 dims = dataset.level(level).dims;
     Dataset::Sampler sampler(dataset, level);
@@ -825,13 +824,16 @@ TEST_F(DatasetReaderTest, SamplerMatchesSample) {
       EXPECT_EQ(active, dataset.info().active_voxel_count);
     }
   }
-  // Jumping back and forth between bricks.
-  Dataset::Sampler sampler(dataset, 0);
+  // Jumping back and forth between bricks with a cache of one brick: the sampler's brick is
+  // evicted while it still reads from it. The full scan above stays on the default cache, which
+  // would otherwise reload a brick at every crossing and outlast the ASan timeout.
+  const Dataset small = Dataset::open(dir_, 1);
+  Dataset::Sampler sampler(small, 0);
   for (const Index3& voxel : {Index3{64, 64, 0}, Index3{0, 0, 0}, Index3{64, 64, 0},
                               Index3{127, 64, 64}, Index3{64, 64, 0}}) {
-    EXPECT_EQ(sampler(voxel), dataset.sample(0, voxel));
+    EXPECT_EQ(sampler(voxel), small.sample(0, voxel));
   }
-  EXPECT_THROW(Dataset::Sampler(dataset, 7), std::out_of_range);
+  EXPECT_THROW(Dataset::Sampler(small, 7), std::out_of_range);
 }
 
 TEST_F(DatasetReaderTest, RegionAcrossBricksMatchesInMemorySieve) {
