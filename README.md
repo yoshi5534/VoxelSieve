@@ -144,6 +144,28 @@ rescale slope and intercept, recorded as the value mapping, so no value is lost.
 holds several series, the largest is read and the others are printed. In the studio this is the
 operation `import_dicom`.
 
+### First look while importing, also from a network share
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve /mnt/ct-share/part.zip --out part.vsieve --preview first.png
+```
+
+Before the passes, the import reads 64 whole slices spread evenly over the volume and shows them
+at once: the central sections normal to z, y and x, averaged to at most 256 voxels per edge, and
+the histogram of those slices with the estimated threshold (ADR 0020). Slices are what every
+input stores together (a file of a stack, a contiguous part of a raw file), so this is one
+request per slice, also over SMB. The import goes on without reading them again: stacks and
+files on a network share are copied once, slice by slice, to a local staging file, and the
+preview's slices are copied first. Raw files on SMB or NFS shares and mapped network drives are
+detected and staged too, instead of being read twice in small pieces. In the studio the preview
+appears in the progress bar of every import and stays with the step (`preview.png`); AI
+assistants get it with `import_preview`.
+
+gzip-compressed raw files (`scan.raw.gz` next to `scan.json`) are read too, with `vs-sieve`,
+`import_raw` and the studio's file browser. gzip can only be read forward, so such a file is
+decompressed once, in slice order, into the staging file; its preview comes at the end of that
+pass. Give `--header` when the uncompressed data has a header.
+
 ### Single grid
 
 ```sh

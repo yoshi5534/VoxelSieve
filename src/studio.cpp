@@ -259,8 +259,7 @@ Json browse(const std::filesystem::path& requested) {
                                                                               : "dir";
       entry["directory"] = true;
     } else {
-      auto sidecar = path;
-      sidecar.replace_extension(".json");
+      const auto sidecar = rawSidecarPath(path);
       entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
                       : isVglFile(path)                                  ? "vgl"
                       : isDicomFile(path)                                ? "dicom"
@@ -447,6 +446,14 @@ std::vector<StudioMethod> Studio::methods() const {
                     {"name"})},
       {"view_list", "The saved views of the project with name, state and whether a picture exists.",
        objectSchema(Json::object())},
+      {"import_preview",
+       "A first look at the input of the import that is running, available after a few slices, "
+       "long before the import is done; or the preview kept with import step `step` (default "
+       "when nothing runs: the latest). Gives the slices read, the threshold estimate, the grey "
+       "value window, a histogram and a picture of the central sections normal to z, y and x "
+       "with the histogram below (threshold in red). The import goes on without reading these "
+       "slices again.",
+       objectSchema({{"step", {{"type", "integer"}}}})},
       {"view_image", "The picture of a saved view as a PNG image.",
        objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
       {"view_rename", "Renames a saved view.",
@@ -457,7 +464,8 @@ std::vector<StudioMethod> Studio::methods() const {
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
        "DICOM stacks, VGStudio projects, datasets (.vsieve), projects and inspection orders. "
-       "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar), tiff (a "
+       "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar, also "
+       "name.raw.gz with name.json), tiff (a "
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
        "DICOM file or a directory with DICOM slices, for import_dicom), vgl (a VGStudio project, "
        "for import_vgl) or file; directories carry directory: true.",
@@ -528,8 +536,11 @@ const Project& Studio::project() const {
 }
 
 Json Studio::status() const {
-  const Json running =
+  Json running =
       running_ ? Json{{"operation", running_operation_}, {"progress", progress_.load()}} : Json();
+  if (running_ && !running_preview_.is_null()) {
+    running["preview"] = running_preview_;
+  }
   if (!project_) {
     return {{"open", false}, {"running", running}};
   }
@@ -1056,6 +1067,53 @@ Json Studio::drawObjects(const Dataset& base, const ArtifactRef& base_ref,
   return shown;
 }
 
+Json Studio::importPreview(const Json& params) const {
+  if (!params.contains("step") && running_) {
+    if (running_preview_.is_null()) {
+      throw std::invalid_argument("'" + running_operation_ + "' has no preview yet");
+    }
+    Json json = running_preview_;
+    json["running"] = true;
+    json["image"] = {{"mime_type", "image/png"}, {"base64", base64(running_preview_png_)}};
+    return json;
+  }
+  const Project& open = project();
+  const auto has_preview = [&open](const Step& step) {
+    return std::filesystem::exists(open.stepDir(step) / "preview.json");
+  };
+  const Step* found = nullptr;
+  if (params.contains("step")) {
+    const int id = params.at("step").get<int>();
+    for (const Step& step : open.steps()) {
+      if (step.id == id) {
+        found = &step;
+      }
+    }
+    if (found == nullptr || !has_preview(*found)) {
+      throw std::invalid_argument("Step " + std::to_string(id) + " has no preview");
+    }
+  } else {
+    for (std::size_t i = open.cursor(); i-- > 0 && found == nullptr;) {
+      if (has_preview(open.steps()[i])) {
+        found = &open.steps()[i];
+      }
+    }
+    if (found == nullptr) {
+      throw std::invalid_argument("No import is running and no step has a preview");
+    }
+  }
+  const auto dir = open.stepDir(*found);
+  std::ifstream summary(dir / "preview.json");
+  Json json = Json::parse(summary);
+  std::ifstream in(dir / "preview.png", std::ios::binary);
+  const std::vector<std::uint8_t> png{std::istreambuf_iterator<char>(in),
+                                      std::istreambuf_iterator<char>()};
+  json["step"] = found->id;
+  json["running"] = false;
+  json["image"] = {{"mime_type", "image/png"}, {"base64", base64(png)}};
+  return json;
+}
+
 Json Studio::viewSlice(const Json& params) const {
   const ArtifactRef dataset_ref = artifactRef(params, artifact::kDataset);
   const auto dataset_dir = project().resolve(dataset_ref);
@@ -1250,6 +1308,8 @@ Json Studio::runOperation(const std::string& operation, Json params,
     working = project();
     running_ = true;
     running_operation_ = operation;
+    running_preview_ = nullptr;
+    running_preview_png_.clear();
     progress_ = 0.0;
     cancel_ = false;
   }
@@ -1266,9 +1326,17 @@ Json Studio::runOperation(const std::string& operation, Json params,
     project_ = std::move(working);
     running_ = false;
     running_operation_.clear();
+    running_preview_ = nullptr;
+    running_preview_png_.clear();
+  };
+  const auto preview = [this](const Json& summary, const std::vector<std::uint8_t>& png) {
+    const std::scoped_lock lock(mutex_);
+    running_preview_ = summary;
+    running_preview_png_ = png;
   };
   try {
-    const Step& step = working->run(registry_, operation, params, inputs, report, &cancel_, target);
+    const Step& step =
+        working->run(registry_, operation, params, inputs, report, &cancel_, target, preview);
     Json json = working->toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working->stepDir(step));
@@ -1501,6 +1569,9 @@ Json Studio::call(const std::string& method, const Json& arguments,
         views.push_back(savedViewJson(view));
       }
       return {{"views", views}};
+    }
+    if (method == "import_preview") {
+      return importPreview(checked);
     }
     if (method == "view_image") {
       const SavedView& view = project().savedView(checked.at("id").get<int>());

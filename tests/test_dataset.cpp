@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
@@ -7,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -202,6 +204,105 @@ TEST_F(DatasetTest, MappedRawSourceSkipsHeadersAndDecodesSamples) {
   EXPECT_THROW(MappedRawSource(footer, RawLayout{phantom.dims, 0.1, SampleType::kUInt16,
                                                  std::endian::little, 700}),
                std::runtime_error);
+}
+
+void expectSameDataset(const std::filesystem::path& a, const std::filesystem::path& b);
+
+/// Compresses `source` with zlib's gzip writer into `target`, as `members` gzip members one after
+/// another (as pigz and concatenated files have them).
+void gzipFile(const std::filesystem::path& source, const std::filesystem::path& target,
+              int members = 1) {
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<char> bytes{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+  std::filesystem::remove(target);
+  const std::size_t part =
+      (bytes.size() + static_cast<std::size_t>(members) - 1) / static_cast<std::size_t>(members);
+  for (std::size_t begin = 0; begin < bytes.size(); begin += part) {
+    gzFile file = gzopen(target.string().c_str(), "ab");
+    ASSERT_NE(file, nullptr);
+    const auto count = static_cast<unsigned>(std::min(part, bytes.size() - begin));
+    ASSERT_EQ(gzwrite(file, bytes.data() + begin, count), static_cast<int>(count));
+    gzclose(file);
+  }
+}
+
+TEST_F(DatasetTest, GzipRawSourceReadsLikeTheUncompressedFile) {
+  PhantomSpec phantom = spec();
+  phantom.dims = {20, 12, 10};
+  const Volume16 volume = generatePhantom(phantom);
+  std::filesystem::create_directories(dir_);
+  writeRawWithHeader(dir_ / "scan.raw", volume, 77, 0, SampleType::kUInt16, std::endian::big);
+  gzipFile(dir_ / "scan.raw", dir_ / "scan.raw.gz", 3);
+  EXPECT_TRUE(isGzipFile(dir_ / "scan.raw.gz"));
+  EXPECT_FALSE(isGzipFile(dir_ / "scan.raw"));
+  EXPECT_EQ(rawSidecarPath(dir_ / "scan.raw.gz"), dir_ / "scan.json");
+  EXPECT_EQ(rawSidecarPath(dir_ / "scan.raw"), dir_ / "scan.json");
+
+  const RawLayout layout{phantom.dims, 0.1, SampleType::kUInt16, std::endian::big, 77};
+  const GzipRawSource gzip(dir_ / "scan.raw.gz", layout);
+  EXPECT_TRUE(gzip.sequentialAccess());
+  EXPECT_TRUE(gzip.slowRandomAccess());
+  // Forward, backward (the stream starts again) and whole slices.
+  for (const Box& box : {Box{{1, 2, 3}, {19, 11, 9}}, Box{{0, 0, 0}, {20, 12, 2}},
+                         Box{{0, 0, 7}, {20, 12, 10}}, Box{{5, 5, 1}, {6, 6, 2}}}) {
+    std::vector<std::uint16_t> expected(static_cast<std::size_t>(box.voxelCount()));
+    MemorySource(volume).readRegion(box, expected);
+    std::vector<std::uint16_t> actual(expected.size());
+    gzip.readRegion(box, actual);
+    EXPECT_EQ(actual, expected);
+  }
+  std::uint64_t header = 0;
+  EXPECT_TRUE(openRawVolume(dir_ / "scan.raw.gz", layout, &header)->sequentialAccess());
+  EXPECT_EQ(header, 77U);
+  EXPECT_FALSE(openRawVolume(dir_ / "scan.raw", layout, &header)->sequentialAccess());
+
+  // Dimensions larger than the data: reading past the end fails.
+  RawLayout larger = layout;
+  larger.dims[2] = 11;
+  const GzipRawSource short_file(dir_ / "scan.raw.gz", larger);
+  std::vector<std::uint16_t> slice(std::size_t{20} * 12);
+  EXPECT_THROW(short_file.readRegion(Box{{0, 0, 10}, {20, 12, 11}}, slice), std::runtime_error);
+}
+
+TEST_F(DatasetTest, GzipRawImportsInOnePassWithItsPreview) {
+  const PhantomSpec phantom = spec();
+  std::filesystem::create_directories(dir_);
+  writeRaw(dir_ / "scan.raw", generatePhantom(phantom));
+  gzipFile(dir_ / "scan.raw", dir_ / "scan.raw.gz");
+  DatasetOptions options;
+  options.brick_size = 32;
+  const DatasetInfo reference =
+      writeDataset(MappedRawSource(dir_ / "scan.raw", phantom.dims, phantom.voxel_size),
+                   dir_ / "plain", options);
+
+  // Always staged, even with staging off; the preview comes once the copy has passed its slices.
+  options.stage_slow_sources = false;
+  options.preview_options.slices = 8;
+  std::vector<std::string> events;
+  ImportPreview preview;
+  options.preview = [&](const ImportPreview& p) {
+    events.emplace_back("preview");
+    preview = p;
+  };
+  options.progress = [&events](std::string_view stage, double) {
+    if (events.empty() || events.back() != stage) {
+      events.emplace_back(stage);
+    }
+  };
+  const GzipRawSource gzip(dir_ / "scan.raw.gz",
+                           RawLayout{phantom.dims, phantom.voxel_size, SampleType::kUInt16,
+                                     std::endian::little, std::nullopt});
+  const DatasetInfo info = writeDataset(gzip, dir_ / "gzip", options);
+  EXPECT_EQ(events,
+            (std::vector<std::string>{"staging", "preview", "histogram", "bricks", "levels"}));
+  expectSameDataset(dir_ / "plain", dir_ / "gzip");
+  EXPECT_EQ(info.active_voxel_count, reference.active_voxel_count);
+  const ImportPreview direct = readImportPreview(PhantomSource(phantom), options.preview_options);
+  EXPECT_EQ(preview.volume.data, direct.volume.data);
+  EXPECT_EQ(preview.histogram, direct.histogram);
+  // Read directly, the preview reads the stream once, in order.
+  EXPECT_EQ(readImportPreview(gzip, options.preview_options).volume.data, direct.volume.data);
 }
 
 TEST_F(DatasetTest, Level0MatchesInMemorySieve) {

@@ -112,13 +112,16 @@ class Project {
   /// Runs an operation as a new step. Inputs not given are taken from the latest active step
   /// with an output of the required type, of the target or active object first (see StepTarget).
   /// Undone steps are discarded first, with their outputs.
+  /// `preview` receives the preview of an import while it runs (OperationContext::preview).
   /// A failing operation is recorded as a failed step and its exception rethrown. The returned
   /// reference is valid until the next change of the project.
   const Step& run(const OperationRegistry& registry, const std::string& operation,
                   const nlohmann::json& params = nlohmann::json::object(),
                   const std::map<std::string, ArtifactRef>& inputs = {},
                   const std::function<void(double)>& progress = {},
-                  const std::atomic<bool>* cancel = nullptr, const StepTarget& target = {});
+                  const std::atomic<bool>* cancel = nullptr, const StepTarget& target = {},
+                  const std::function<void(const nlohmann::json&,
+                                           const std::vector<std::uint8_t>&)>& preview = {});
 
   bool undo();
   bool redo();

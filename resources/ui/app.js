@@ -403,13 +403,19 @@ async function runStep(operation, params) {
   const title = operationInfo(operation)?.title ?? operation;
   $('busy-text').textContent = title + ' running …';
   $('busy-progress').removeAttribute('value');
+  $('busy-preview').hidden = true;
   $('busy').hidden = false;
   render();
+  let previewShown = false;
   const poll = setInterval(async () => {
     try {
       const status = await api('project_status');
       if (status.running && status.running.progress > 0) {
         $('busy-progress').value = status.running.progress;
+      }
+      if (status.running?.preview && !previewShown) {
+        previewShown = true;
+        await showImportPreview();
       }
     } catch {
       // The next poll or the result will show the problem.
@@ -424,9 +430,32 @@ async function runStep(operation, params) {
     clearInterval(poll);
     state.busy = false;
     $('busy').hidden = true;
+    $('busy-preview').hidden = true;
   }
   await refresh();
   return step;
+}
+
+/// Shows the first look at a volume while its import runs: a few slices spread over the volume,
+/// read first, with their histogram and the estimated threshold (ADR 0020).
+async function showImportPreview() {
+  const preview = await api('import_preview');
+  if (!state.busy) return;
+  $('busy-preview-image').src = 'data:' + preview.image.mime_type + ';base64,' +
+    preview.image.base64;
+  const mapping = preview.value_mapping;
+  const threshold = mapping
+    ? (mapping.offset + mapping.scale * preview.threshold).toPrecision(4)
+    : Math.round(preview.threshold);
+  const stride = preview.pixel_stride > 1
+    ? ', averaged over ' + preview.pixel_stride + ' × ' + preview.pixel_stride + ' voxels'
+    : '';
+  $('busy-preview-text').textContent = 'First look after ' + preview.seconds.toFixed(1) +
+    ' s: ' + preview.slices_read + ' of ' + preview.slices + ' slices (' +
+    (100 * preview.fraction_read).toFixed(1) + ' % of the voxels' + stride +
+    '), sections normal to z, y and x. Estimated threshold ' + threshold +
+    ' (red line in the histogram). The import goes on and does not read these slices again.';
+  $('busy-preview').hidden = false;
 }
 
 // ---------------------------------------------------------------------------------------------
