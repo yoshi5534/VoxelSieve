@@ -71,3 +71,12 @@ const { cutsToScreen, insideWindow, layerPixels, slicePixels } = require(
   assert.deepEqual(pixel(2), [255, 255, 255, 255]);
   assert.deepEqual(pixel(3), [255, 255, 255, 255]);
 }
+
+// Materials in the colours of their segmentation or the ones chosen in the view.
+{
+  const data = new Float32Array([100, 100]);
+  const overlay = new Uint8Array([17, 18]);
+  const out = new Uint8ClampedArray(2 * 4);
+  slicePixels(data, overlay, [0, 100], [], out, [[0, 0, 255], [255, 0, 0]]);
+  assert.deepEqual([...out], [127, 127, 255, 255, 255, 127, 127, 255]);
+}

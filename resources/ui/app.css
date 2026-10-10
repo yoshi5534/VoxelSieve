@@ -150,6 +150,15 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .pores table.materials tbody tr { cursor: default; }
 .pores table.materials label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
 .material-legend { max-width: 520px; margin-top: 8px; }
+input[type=color].swatch-input { width: 18px; height: 16px; padding: 0; border: none; }
+.material-editor { margin-top: 8px; max-width: 720px; }
+.material-editor table { border-collapse: collapse; width: 100%; }
+.material-editor th { text-align: left; color: var(--muted); font-weight: normal; }
+.material-editor td, .material-editor th { padding: 2px 6px; }
+.material-editor tr.selected { background: var(--bg); outline: 1px solid var(--accent); }
+.material-editor input[type=text] { width: 140px; }
+.transfer-editor .material-editor input[type=number] { width: 76px; }
+.material-editor .icon { padding: 0 6px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 @media (max-width: 1000px) { .viewer { grid-template-columns: 1fr; } }
 .view-modes { margin-bottom: 10px; }

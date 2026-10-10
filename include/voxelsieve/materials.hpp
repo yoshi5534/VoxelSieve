@@ -49,6 +49,10 @@ struct SegmentationOptions {
   /// Thresholds between the material classes (materials - 1, ascending); default: multi-level
   /// Otsu over the grey values above the air threshold.
   std::vector<float> material_thresholds;
+  /// Names and colours of the classes in class order, for example as defined in the histogram
+  /// of the studio; a class without one is "Material <id>" in the default colour.
+  std::vector<std::string> names;
+  std::vector<std::array<std::uint8_t, 3>> colors;
 };
 
 struct MaterialVolumeInfo {
