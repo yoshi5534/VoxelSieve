@@ -4,8 +4,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const transfer = require(path.join(__dirname, '../../resources/ui/transfer.js'));
 
-const { applyColorMap, colorMapAt, hexColor, histogramPeaks, lookupTable, otsuThreshold,
-  parseHexColor, suggestTransfers, transferPreset } = transfer;
+const { applyColorMap, colorMapAt, hexColor, histogramPeaks, lookupTable, materialAt,
+  materialCounts, materialTable, multiOtsuBins, otsuThreshold, parseHexColor, snapToValley,
+  suggestMaterials, suggestTransfers, transferPreset } = transfer;
 
 // The table interpolates linearly between points and holds the end values outside them.
 {
@@ -113,5 +114,42 @@ const alphaAt = (points, bin) => lookupTable(points)[bin * 4 + 3];
   assert.equal(alphaAt(suggestions[2].points, 250), 255);
 }
 assert.deepEqual(suggestTransfers(new Array(256).fill(0)), []);
+
+// Materials in the histogram: multi-level Otsu finds the valleys between three material peaks
+// above the air threshold, and the classes count the voxels of their peak.
+{
+  const histogram = histogramOf([[30, 5, 5e5], [120, 6, 3e5], [180, 6, 2e5], [235, 4, 2e4]]);
+  const air = 75 / 255;
+  const thresholds = multiOtsuBins(histogram, air, 3);
+  assert.equal(thresholds.length, 2);
+  assert.ok(thresholds[0] * 255 > 135 && thresholds[0] * 255 < 165, `first ${thresholds[0] * 255}`);
+  assert.ok(thresholds[1] * 255 > 195 && thresholds[1] * 255 < 225, `second ${thresholds[1] * 255}`);
+  assert.deepEqual(multiOtsuBins(histogram, air, 1), []);
+
+  const materials = suggestMaterials(histogram, air, 3, [{ name: 'Aluminium', color: [1, 2, 3] }]);
+  assert.deepEqual(materials.map((m) => m.name), ['Aluminium', 'Material 2', 'Material 3']);
+  assert.deepEqual(materials[0].color, [1, 2, 3]);
+  assert.equal(materials[0].x, air);
+  // The largest material is faint in the 3D preview, so the others show through it.
+  assert.deepEqual(materials.map((m) => m.opacity), [0.1, 0.6, 0.6]);
+
+  assert.equal(materialAt(materials, 0.1), -1, 'air');
+  assert.equal(materialAt(materials, 120 / 255), 0);
+  assert.equal(materialAt(materials, 1), 2);
+  const counts = materialCounts(histogram, materials);
+  const total = histogram.reduce((a, b) => a + b, 0);
+  assert.equal(counts.reduce((a, b) => a + b, 0), total);
+  assert.ok(Math.abs(counts[1] - 3e5 * 6 * Math.sqrt(2 * Math.PI)) < 0.02 * counts[1],
+    `material 1 ${counts[1]}`);
+
+  const table = materialTable(materials);
+  assert.deepEqual(Array.from(table.slice(30 * 4, 31 * 4)), [0, 0, 0, 0], 'air transparent');
+  assert.deepEqual(Array.from(table.slice(120 * 4, 121 * 4)), [1, 2, 3, 26]);
+  assert.equal(table[240 * 4 + 3], 153);
+
+  // A boundary near a valley moves into it.
+  const valley = snapToValley(histogram, 140 / 255) * 255;
+  assert.ok(valley > 140 && valley < 165, `valley ${valley}`);
+}
 
 console.log('transfer.js ok');

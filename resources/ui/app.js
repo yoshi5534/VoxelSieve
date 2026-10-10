@@ -267,6 +267,9 @@ function applyViewState(view) {
   if (['slice', '3d', 'scene'].includes(view?.viewMode)) state.viewMode = view.viewMode;
   state.restore = { slice: view?.slice ?? null, volume: view?.volume ?? null,
     transfer: view?.transfer ?? null, scene: view?.scene ?? null };
+  // Both name the step they belong to, so they only apply to it.
+  state.materialDraft = view?.materialDraft ?? null;
+  state.materialColors = view?.materialColors ?? null;
 }
 
 function collectViewState() {
@@ -284,6 +287,8 @@ function collectViewState() {
       : pending.volume ?? previous.volume ?? null,
     scene: state.scene?.fit ? state.scene.getState() : pending.scene ?? previous.scene ?? null,
     transfer,
+    materialDraft: state.materialDraft ?? null,
+    materialColors: state.materialColors ?? null,
   };
 }
 
@@ -658,6 +663,23 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
       }
       read = () => (inputs.every((input) => input.value === '') ? undefined
         : inputs.map((input) => Number(input.value)));
+    } else if (property.type === 'array' &&
+               ['number', 'integer', 'string'].includes(property.items?.type)) {
+      // A list such as thresholds, names or colours: comma-separated.
+      const numbers = property.items.type !== 'string';
+      const input = el('input', { type: 'text', value: Array.isArray(value) ? value.join(', ') : '',
+        name, spellcheck: 'false', placeholder: numbers ? '1, 2, …' : 'a, b, …' });
+      field.append(input);
+      read = () => {
+        const items = input.value.split(',').map((item) => item.trim()).filter(Boolean);
+        if (!items.length) return undefined;
+        if (!numbers) return items;
+        const values = items.map(Number);
+        if (values.some(Number.isNaN)) {
+          throw new Error((LABELS[name] ?? name) + ': give numbers separated by commas');
+        }
+        return values;
+      };
     } else if (property.type === 'object') {
       const text = el('textarea', { rows: 6, name, placeholder: '{ }' });
       text.value = value ? JSON.stringify(value, null, 2) : '';
@@ -1025,13 +1047,34 @@ function hiddenMaterials(step) {
   return state.hiddenMaterials.ids;
 }
 
-/// Legend of a material segmentation: per class its colour, the grey value it starts at, its
-/// volume and share of all material, and a box that shows or hides it in the slice and 3D views.
-function materialLegend(materials, onChange) {
+/// Colours of the material classes of the segmentation step `materials` (material m at m - 1):
+/// the ones chosen in the view, else those of the segmentation, else the default ones.
+function materialColorsOf(materials) {
+  const list = materials?.summary?.materials ?? [];
+  const chosen = materials && state.materialColors?.step === materials.id
+    ? state.materialColors.colors : [];
+  return MATERIAL_COLORS.map((fallback, m) => chosen[m] ??
+    list.find((material) => material.id === m + 1)?.color ?? fallback);
+}
+
+/// Legend of a material segmentation: per class its colour (to change for the views), name,
+/// the grey value it starts at, its volume and share of all material, and a box that shows or
+/// hides it in the slice and 3D views.
+function materialLegend(materials, onChange, onColors) {
   const list = materials.summary?.materials ?? [];
   const total = list.reduce((sum, material) => sum + material.volume_mm3, 0);
   const hidden = hiddenMaterials(materials.id);
+  const colors = materialColorsOf(materials);
   const rows = list.map((material) => {
+    const color = el('input', { type: 'color', className: 'swatch-input',
+      value: hexColor(colors[material.id - 1]), title: 'Colour of this material in the views' });
+    color.addEventListener('input', () => {
+      const chosen = materialColorsOf(materials);
+      chosen[material.id - 1] = parseHexColor(color.value);
+      state.materialColors = { step: materials.id, colors: chosen };
+      onColors(chosen);
+      scheduleViewSave();
+    });
     const show = el('input', { type: 'checkbox', checked: !hidden.includes(material.id),
       title: 'Show this material' });
     show.addEventListener('change', () => {
@@ -1041,18 +1084,19 @@ function materialLegend(materials, onChange) {
       onChange(state.hiddenMaterials.ids);
     });
     return el('tr', {},
-      el('td', {}, el('label', {}, show, el('span', { className: 'swatch', style: 'background: rgb(' +
-        MATERIAL_COLORS[(material.id - 1) % 8].join(',') + ')' }), ' ' + material.id)),
-      el('td', {}, formatNumber(Math.round(material.from_grey_value))),
+      el('td', {}, el('label', {}, show, color, ' ' + (material.name ?? material.id))),
+      el('td', {}, material.from_grey_value === undefined ? '–'
+        : formatNumber(Math.round(material.from_grey_value))),
       el('td', {}, formatNumber(material.volume_mm3)),
       el('td', {}, total > 0 ? (100 * material.volume_mm3 / total).toFixed(1) : '–'));
   });
   return [el('h3', {}, 'Materials (step ' + materials.id + ')'),
-    el('table', { className: 'materials' }, el('thead', {}, el('tr', {}, el('th', {}, 'No.'),
+    el('table', { className: 'materials' }, el('thead', {}, el('tr', {}, el('th', {}, 'Material'),
       el('th', {}, 'from grey value'), el('th', {}, 'mm³'), el('th', { title: 'Share of all material' }, '%'))),
     el('tbody', {}, rows)),
     el('p', { className: 'hint' }, 'Untick a material to look past it, for instance the base ' +
-      'material to see the inclusions in it.')];
+      'material to see the inclusions in it. Define materials and their colours in the ' +
+      'histogram of the 3D view.')];
 }
 
 async function loadPores(step) {
@@ -1179,7 +1223,9 @@ function renderViewStage(panel) {
 
   if (materials !== null) {
     viewer.setHiddenMaterials(hiddenMaterials(materials.id));
-    side.append(...materialLegend(materials, (ids) => viewer.setHiddenMaterials(ids)));
+    viewer.setMaterialColors(materialColorsOf(materials));
+    side.append(...materialLegend(materials, (ids) => viewer.setHiddenMaterials(ids),
+      (colors) => viewer.setMaterialColors(colors)));
   }
   panel.append(el('div', { className: 'viewer' },
     el('div', {}, tools, canvas, status), side));
@@ -1244,6 +1290,10 @@ function sliceObjectsCard(viewer, dataset) {
   });
   return [el('h3', {}, 'Other objects'), ...rows];
 }
+
+/// Names offered for materials defined in the histogram.
+const MATERIAL_NAMES = ['Air inclusion', 'Aluminium', 'Steel', 'Cast iron', 'Titanium', 'Copper',
+  'Magnesium', 'Plastic', 'Fibre', 'Ceramic', 'Glass', 'Inclusion', 'Coating'];
 
 const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
   'Extracted surface', 'Nominal-actual deviation'];
@@ -1343,8 +1393,10 @@ function renderVolumeView(panel, dataset) {
       ? 'Run the operation "Material segmentation" first' : 'Colour the materials' });
   showMaterials.addEventListener('change', () => update({ materials: showMaterials.checked }));
   volume.hiddenMaterials = materials === null ? [] : [...hiddenMaterials(materials.id)];
+  volume.materialColors = materialColorsOf(materials);
   const materialPanel = materials === null ? null : el('div', { className: 'pores material-legend' },
-    ...materialLegend(materials, (ids) => update({ hiddenMaterials: [...ids] })));
+    ...materialLegend(materials, (ids) => update({ hiddenMaterials: [...ids] }),
+      (colors) => update({ materialColors: colors })));
   const poreColor = colorInput('Pore colour', () => volume.poreColor,
     (rgb) => update({ poreColor: rgb }));
   const zoneColor = colorInput('Colour of the loosened zones', () => volume.zoneColor,
@@ -1388,6 +1440,189 @@ function renderVolumeView(panel, dataset) {
     el('span', { className: 'sep' }), 'Point', pointColor, pointOpacity, '%', removePoint);
   const surfaceTools = el('label', { className: 'group' }, 'Colour', surface);
 
+  // Materials defined in the histogram for the material segmentation (ADR 0013): where each
+  // starts in grey values, its name and colour, and its opacity in the 3D preview.
+  if (state.materialDraft?.step !== dataset.step.id) {
+    state.materialDraft = { step: dataset.step.id, editing: false, preview: false, materials: null };
+  }
+  const draft = state.materialDraft;
+  const toX = (grey) => {
+    const w = volume.volume?.window;
+    return Math.min(Math.max(w ? (grey - w[0]) / (w[1] - w[0]) : grey / 255, 0), 1);
+  };
+  const editMaterials = el('button', { className: draft.editing ? 'on' : null,
+    title: 'Define materials in the histogram for the material segmentation' }, 'Materials');
+  const materialCount = el('select', { title: 'Number of materials for the automatic split' },
+    [1, 2, 3, 4, 5, 6, 7, 8].map((n) => el('option', { value: n }, n)));
+  const preview = el('input', { type: 'checkbox', checked: draft.preview });
+  const segmentButton = el('button', { className: 'primary',
+    title: 'Run the material segmentation with these materials' }, 'Segment');
+  const materialTools = el('div', { className: 'group' },
+    el('button', { onclick: () => autoMaterials(Number(materialCount.value)),
+      title: 'Split the grey values above the first boundary by multi-level Otsu' }, 'Auto split'),
+    materialCount,
+    el('button', { onclick: () => addMaterial(), title: 'Split the selected material in two' },
+      '+ Material'),
+    el('button', { onclick: () => snapAll(),
+      title: 'Move every boundary into the nearest valley of the histogram' }, 'Snap to valleys'),
+    el('label', { className: 'group', title: 'Show the grey values in the colours of their ' +
+      'material in 3D, before segmenting' }, preview, 'Preview in 3D'),
+    segmentButton);
+  const materialRows = el('div', { className: 'material-editor' });
+
+  /// The draft's materials in the editor, at the grey values of the loaded volume.
+  const syncEditor = () => {
+    editor.materials = (draft.materials ?? []).map((m) => ({ ...m, color: [...m.color],
+      x: toX(m.from) }));
+    if (editor.selectedMaterial >= editor.materials.length) editor.selectedMaterial = -1;
+  };
+  /// Back from the editor into the draft, in grey values.
+  const syncDraft = () => {
+    draft.materials = editor.materials.map((m) => ({ name: m.name, color: [...m.color],
+      opacity: m.opacity, from: Math.round(valueAt(m.x)) }));
+  };
+  const materialsChanged = () => {
+    syncDraft();
+    applyTransfer();
+    renderMaterialRows();
+    scheduleViewSave();
+  };
+  const autoMaterials = (count) => {
+    const air = editor.materials[0]?.x ?? editor.threshold;
+    editor.materials = suggestMaterials(volume.histogram, air, count, editor.materials);
+    editor.selectedMaterial = -1;
+    editor.changed();
+  };
+  const addMaterial = () => {
+    const list = editor.materials;
+    if (list.length >= 8) return;
+    const i = editor.selectedMaterial >= 0 ? editor.selectedMaterial : list.length - 1;
+    const low = list[i]?.x ?? editor.threshold;
+    const high = list[i + 1]?.x ?? 1;
+    if (high - low < 2 / 255) return;
+    const used = list.map((m) => hexColor(m.color));
+    const color = MATERIAL_PALETTE.find((c) => !used.includes(hexColor(c))) ?? MATERIAL_PALETTE[0];
+    list.splice(i + 1, 0, { name: 'Material ' + (list.length + 1), color: [...color],
+      x: snapToValley(volume.histogram, (low + high) / 2, Math.floor((high - low) * 255 / 3)),
+      opacity: 0.6 });
+    list.sort((a, b) => a.x - b.x);
+    editor.selectedMaterial = i + 1;
+    editor.changed();
+  };
+  const snapAll = () => {
+    editor.materials.forEach((m, i) => editor.moveBoundary(i, snapToValley(volume.histogram, m.x)));
+    editor.changed();
+  };
+  /// One row per material: colour, name, grey value it starts at, opacity in the preview, its
+  /// share of the material voxels of the overview, and a button that removes it.
+  const renderMaterialRows = () => {
+    const list = editor.materials;
+    const counts = materialCounts(volume.histogram, list).slice(1);
+    const total = counts.reduce((a, b) => a + b, 0);
+    materialRows.replaceChildren(el('table', { className: 'materials' },
+      el('thead', {}, el('tr', {}, el('th', {}, ''), el('th', {}, 'Name'),
+        el('th', {}, 'from grey value'), el('th', { title: 'Opacity in the 3D preview' }, 'Opacity %'),
+        el('th', { title: 'Share of the material voxels in the overview' }, '%'), el('th', {}, ''))),
+      el('tbody', {}, list.map((material, i) => {
+        const color = el('input', { type: 'color', value: hexColor(material.color),
+          title: 'Colour of the material' });
+        color.addEventListener('input', () => {
+          material.color = parseHexColor(color.value);
+          editor.draw();
+          syncDraft();
+          applyTransfer();
+          scheduleViewSave();
+        });
+        const name = el('input', { type: 'text', value: material.name, list: 'material-names',
+          spellcheck: 'false' });
+        name.addEventListener('change', () => {
+          material.name = name.value.trim() || 'Material ' + (i + 1);
+          editor.draw();
+          materialsChanged();
+        });
+        const from = el('input', { type: 'number', step: 'any', value: Math.round(valueAt(material.x)),
+          title: i === 0 ? 'Air threshold: below it is air' : 'Grey value the material starts at' });
+        from.addEventListener('change', () => {
+          editor.moveBoundary(i, toX(Number(from.value)));
+          editor.changed();
+        });
+        const opacity = el('input', { type: 'number', min: 0, max: 100, step: 1,
+          value: Math.round(material.opacity * 100) });
+        opacity.addEventListener('change', () => {
+          material.opacity = Math.min(Math.max(Number(opacity.value) / 100, 0), 1);
+          materialsChanged();
+        });
+        const remove = el('button', { className: 'icon', title: 'Remove this material',
+          disabled: list.length <= 1, onclick: () => {
+            editor.selectedMaterial = i;
+            editor.removeSelected();
+          } }, '×');
+        return el('tr', { className: i === editor.selectedMaterial ? 'selected' : null,
+          onclick: (event) => {
+            if (editor.selectedMaterial === i || event.target.tagName === 'BUTTON') return;
+            editor.selectedMaterial = i;
+            editor.draw();
+            editor.onSelect();
+          } },
+        el('td', {}, color), el('td', {}, name), el('td', {}, from), el('td', {}, opacity),
+        el('td', {}, total > 0 ? (100 * counts[i] / total).toFixed(1) : '–'), el('td', {}, remove));
+      }))),
+    el('datalist', { id: 'material-names' }, MATERIAL_NAMES.map((n) => el('option', { value: n }))),
+    el('p', { className: 'hint' }, 'Drag a boundary in the histogram, double click puts it into ' +
+      'the nearest valley. The first boundary is the air threshold. "Segment" runs the material ' +
+      'segmentation with these materials; the shares are estimated from the overview.'));
+  };
+  /// The transfer function: the materials' colours in the preview, else the curve.
+  const applyTransfer = () => {
+    volume.setTransfer(draft.editing && draft.preview && editor.materials.length
+      ? materialTable(editor.materials) : lookupTable(editor.points));
+  };
+  const setEditing = (editing) => {
+    draft.editing = editing;
+    editMaterials.classList.toggle('on', editing);
+    if (!editing) setPreview(false);
+    applyMode();
+    applyTransfer();
+    scheduleViewSave();
+  };
+  const setPreview = (on) => {
+    draft.preview = on;
+    preview.checked = on;
+    if (on && volume.mode !== 1) {
+      // The preview is a transfer function, and the colours of a segmentation would cover it.
+      mode.value = '1';
+      applyMode();
+    }
+    if (on && volume.materials) {
+      showMaterials.checked = false;
+      update({ materials: false });
+    }
+    applyTransfer();
+  };
+  editMaterials.addEventListener('click', () => setEditing(!draft.editing));
+  preview.addEventListener('change', () => {
+    setPreview(preview.checked);
+    scheduleViewSave();
+  });
+  segmentButton.addEventListener('click', async () => {
+    const list = draft.materials ?? [];
+    if (!list.length) return;
+    const step = await runStep('segment_materials', {
+      materials: list.length,
+      air_threshold: list[0].from,
+      material_thresholds: list.slice(1).map((m) => m.from),
+      material_names: list.map((m) => m.name),
+      material_colors: list.map((m) => hexColor(m.color)),
+    });
+    if (step?.status !== 'done') return;
+    // The result in its colours, as a lit surface.
+    draft.editing = false;
+    draft.preview = false;
+    volume.set({ materials: true, mode: 0 });
+    scheduleViewSave();
+    render();
+  });
+
   preset.addEventListener('change', () => {
     if (preset.value) {
       transfer.preset = preset.value;
@@ -1416,9 +1651,13 @@ function renderVolumeView(panel, dataset) {
   });
 
   editor.onChange = () => {
+    if (editor.mode === 'materials') {
+      materialsChanged();
+      return;
+    }
     transfer.points = editor.points;
     volume.set({ threshold: editor.threshold });
-    volume.setTransfer(lookupTable(editor.points));
+    applyTransfer();
     scheduleViewSave();
   };
   const valueAt = (x) => {
@@ -1428,6 +1667,10 @@ function renderVolumeView(panel, dataset) {
   const label = (x) => formatNumber(Math.round(valueAt(x)));
   editor.label = label;
   editor.onSelect = () => {
+    if (editor.mode === 'materials') {
+      materialRows.querySelectorAll('tbody tr').forEach((row, i) =>
+        row.classList.toggle('selected', i === editor.selectedMaterial));
+    }
     const point = editor.points[editor.selected];
     pointColor.disabled = !point;
     pointOpacity.disabled = !point;
@@ -1436,10 +1679,16 @@ function renderVolumeView(panel, dataset) {
       pointColor.value = hexColor(point.color);
       if (document.activeElement !== pointOpacity) pointOpacity.value = Math.round(point.a * 100);
     }
-    if (editor.hover !== null) {
+    if (editor.mode === 'materials' && editor.hover === null) {
+      hint.textContent = 'Materials: drag a boundary, click selects a material, double click ' +
+        'on a boundary snaps it into the valley';
+    } else if (editor.hover !== null) {
       const bin = Math.min(Math.round(editor.hover * 255), 255);
+      const material = editor.mode === 'materials'
+        ? editor.materials[materialAt(editor.materials, editor.hover)] : undefined;
       hint.textContent = 'Grey value ' + label(editor.hover) + ' · ' +
-        formatNumber(volume.histogram[bin]) + ' voxels';
+        formatNumber(volume.histogram[bin]) + ' voxels' + (editor.mode !== 'materials' ? ''
+        : ' · ' + (material ? material.name : 'air'));
     } else {
       hint.textContent = editor.mode === 'threshold'
         ? 'Air/material threshold: ' + label(editor.threshold) + ' · drag in the histogram'
@@ -1450,9 +1699,12 @@ function renderVolumeView(panel, dataset) {
   const applyMode = () => {
     update({ mode: Number(mode.value) });
     const surfaceMode = volume.mode === 0 || volume.mode >= 3;
-    editor.setMode(surfaceMode ? 'threshold' : 'curve');
-    curveTools.hidden = surfaceMode;
-    surfaceTools.hidden = !surfaceMode;
+    if (volume.mode !== 1 && draft.preview) setPreview(false);
+    editor.setMode(draft.editing ? 'materials' : surfaceMode ? 'threshold' : 'curve');
+    curveTools.hidden = draft.editing || surfaceMode;
+    surfaceTools.hidden = draft.editing || !surfaceMode;
+    materialTools.hidden = !draft.editing;
+    materialRows.hidden = !draft.editing;
     shading.parentElement.hidden = volume.mode !== 1;
     pores.parentElement.hidden = volume.mode >= 3;
     legend.hidden = volume.mode !== 4;
@@ -1525,8 +1777,28 @@ function renderVolumeView(panel, dataset) {
     }
     editor.threshold = volume.threshold;
     editor.points = transfer.points;
+    if (!draft.materials) {
+      // The materials of the latest segmentation, else a split of the histogram.
+      const segmented = (materials?.summary?.materials ?? [])
+        .filter((m) => m.from_grey_value !== undefined);
+      const colors = materialColorsOf(materials);
+      draft.materials = segmented.length ? segmented.map((m) => ({ name: m.name ?? 'Material ' +
+        m.id, color: colors[m.id - 1], from: Math.round(m.from_grey_value), opacity: 0.6 }))
+        : null;
+      if (draft.materials) {
+        syncEditor();
+        const counts = materialCounts(volume.histogram, editor.materials).slice(1);
+        if (counts.length > 1) draft.materials[counts.indexOf(Math.max(...counts))].opacity = 0.1;
+      } else {
+        editor.materials = suggestMaterials(volume.histogram, volume.threshold, 2);
+        syncDraft();
+      }
+    }
+    syncEditor();
+    materialCount.value = String(editor.materials.length);
     editor.setHistogram(volume.histogram);
-    volume.setTransfer(lookupTable(editor.points));
+    renderMaterialRows();
+    applyTransfer();
     editor.onSelect();
     renderSuggestions();
     showVolumeStatus();
@@ -1555,10 +1827,11 @@ function renderVolumeView(panel, dataset) {
     el('label', { className: 'group' }, pores, 'Pores', poreColor, zoneColor),
     el('label', { className: 'group' }, showMaterials, 'Materials'),
     el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
-  canvas, legend, materialPanel, status, suggestionRow,
+  canvas, legend, ...(materialPanel ? [materialPanel] : []), status, suggestionRow,
   el('div', { className: 'transfer-editor' },
-    el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogram'), curveTools, surfaceTools),
-    histogram, hint));
+    el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogram'), editMaterials, curveTools,
+      surfaceTools, materialTools),
+    histogram, hint, materialRows));
   applyMode();
   try {
     volume.attach(canvas);
