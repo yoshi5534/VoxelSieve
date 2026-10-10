@@ -23,6 +23,7 @@
 
 #include "detail/blocks.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -101,7 +102,7 @@ SieveResult sieve(const Volume16& volume, const SieveOptions& options) {
   if (options.margin_voxels < 0) {
     throw std::invalid_argument("margin_voxels must be >= 0");
   }
-  openvdb::initialize();
+  initializeVdb();
   SieveResult result;
   SieveStats& stats = result.stats;
 
@@ -186,7 +187,7 @@ class MemoryArchive final : public openvdb::io::Archive {
 }  // namespace
 
 void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grids) {
-  openvdb::initialize();
+  initializeVdb();
   MemoryArchive archive;
   archive.setCompression(openvdb::io::Archive::hasBloscCompression() ? openvdb::io::COMPRESS_BLOSC
                                                                      : openvdb::io::COMPRESS_ZIP);

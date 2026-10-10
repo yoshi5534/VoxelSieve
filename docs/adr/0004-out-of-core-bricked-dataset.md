@@ -43,14 +43,16 @@ part.vsieve/
   index.json            dims, voxel size, brick size, value type, threshold, air level,
                         list of non-empty bricks per level, statistics
   overview.vdb          the whole volume in one grid of at most 256³ voxels (configurable)
-  level0/x_y_z.vdb      full resolution, one FloatGrid per brick (default 256³ voxels)
+  level0/x_y_z.vdb      full resolution, one grid per brick (default 256³ voxels); FloatGrid,
+                        *amended:* uint16 or uint8 in the input's width (ADR 0021)
   level1/x_y_z.vdb      downsampled 2x
   level2/...            until the whole volume fits in one brick
 ```
 
 - Bricks do not overlap and are aligned to the 8³ leaf grid. Bricks that contain only outside air
   are not written at all.
-- Each brick is a normal VDB file: Blender or Houdini can open one directly, and OpenVDB's delayed
+- Each brick is a normal VDB file: Blender or Houdini can open one directly (*amended:* only
+  float datasets, `--value-type float`, since ADR 0021), and OpenVDB's delayed
   loading (memory-mapped, leaf data read on first access) keeps opening a brick cheap.
 - Grid index space is global: voxel (i, j, k) of the scan has VDB coordinate (i, j, k) in every
   level-0 brick, so bricks can be combined without offsets.

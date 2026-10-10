@@ -73,8 +73,9 @@ else()
 endif()
 
 if(WIN32)
-  # The library has no export macros: export everything, as on Linux and macOS. Programs, the
-  # library and vcpkg's DLLs share one directory, so the tools and tests find them.
+  # The library has no export macros: export everything, as on Linux and macOS (the library
+  # filters its own exports, see src/CMakeLists.txt). Programs, the library and vcpkg's DLLs share
+  # one directory, so the tools and tests find them.
   set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()

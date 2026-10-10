@@ -76,7 +76,10 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
   for private/protected members. `.clang-tidy` enforces this.
 - Volumes are x-fastest, then y, then z. Raw files are headerless little-endian `uint16` with a
   JSON sidecar (`<name>.json`) describing dims, voxel size and format.
-- Grey values are stored losslessly (`FloatGrid`, see ADR 0002). Never quantise silently.
+- Grey values are stored losslessly, in the input's width: `UInt16Grid` or `UInt8Grid`, or
+  `FloatGrid` on request (ADR 0021, `vdb.hpp`). Never quantise silently. Code that walks the grids
+  of a dataset visits a `GreyGrid` with a generic lambda (`Dataset::forEachGrid`); call
+  `initializeVdb()` instead of `openvdb::initialize()`.
 - Voxels need not be cubes: `VoxelSize` (`voxel_size.hpp`, ADR 0012) has a pitch per axis. Work
   in voxel indices and convert with `toMm`/`toVoxels` or `voxel_size[axis]`; never multiply by one
   scalar voxel size.

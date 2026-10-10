@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -136,8 +137,9 @@ struct Dataset::Impl {
 
     // Load outside the lock so other threads keep using the cache.
     const bool on_access = loading == BrickLoading::kOnAccess;
-    BrickPtr grid = readBrick(brickPath(dir, level_index, brick), on_access);
-    const auto bytes = static_cast<std::size_t>(grid->memUsage());
+    BrickPtr grid =
+        std::make_shared<const GreyGrid>(readBrick(brickPath(dir, level_index, brick), on_access));
+    const auto bytes = static_cast<std::size_t>(grid->base().memUsage());
     // Bricks loaded on access grow as their leaves are read: measure them again. memUsage runs
     // TBB tasks, so it must not run under the lock.
     std::vector<std::pair<Key, std::size_t>> measured;
@@ -150,7 +152,7 @@ struct Dataset::Impl {
         }
       }
       for (const auto& [cached_key, cached_grid] : cached) {
-        measured.emplace_back(cached_key, static_cast<std::size_t>(cached_grid->memUsage()));
+        measured.emplace_back(cached_key, static_cast<std::size_t>(cached_grid->base().memUsage()));
       }
     }
 
@@ -206,7 +208,7 @@ Dataset Dataset::open(const std::filesystem::path& dir, std::shared_ptr<BrickCac
   if (!cache) {
     throw std::invalid_argument("Dataset::open needs a brick cache");
   }
-  openvdb::initialize();
+  initializeVdb();
   auto impl = std::make_unique<Impl>();
   impl->dir = dir;
   impl->info = readDatasetInfo(dir);
@@ -248,7 +250,7 @@ std::optional<float> Dataset::sample(int level, const Index3& voxel) const {
     return std::nullopt;
   }
   float value = 0.0F;
-  if (!grid->tree().probeValue(toCoord(voxel), value)) {
+  if (!grid->probeValue(toCoord(voxel), value)) {
     return std::nullopt;
   }
   return value;
@@ -289,20 +291,22 @@ void Dataset::readRegion(int level, const Box& box, std::span<float> out, float 
           part.min[i] = std::max(box.min[i], brick_box.min[i]);
           part.max[i] = std::min(box.max[i], brick_box.max[i]);
         }
-        const auto accessor = grid->getConstAccessor();
-        float value = 0.0F;
-        for (std::int64_t z = part.min[2]; z < part.max[2]; ++z) {
-          for (std::int64_t y = part.min[1]; y < part.max[1]; ++y) {
-            auto index = static_cast<std::size_t>(
-                (part.min[0] - box.min[0]) +
-                box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])));
-            for (std::int64_t x = part.min[0]; x < part.max[0]; ++x, ++index) {
-              if (accessor.probeValue(toCoord({x, y, z}), value)) {
-                out[index] = value;
+        grid->visit([&](const auto& typed) {
+          const auto accessor = typed.getConstAccessor();
+          typename std::decay_t<decltype(typed)>::ValueType value{};
+          for (std::int64_t z = part.min[2]; z < part.max[2]; ++z) {
+            for (std::int64_t y = part.min[1]; y < part.max[1]; ++y) {
+              auto index = static_cast<std::size_t>(
+                  (part.min[0] - box.min[0]) +
+                  box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])));
+              for (std::int64_t x = part.min[0]; x < part.max[0]; ++x, ++index) {
+                if (accessor.probeValue(toCoord({x, y, z}), value)) {
+                  out[index] = static_cast<float>(value);
+                }
               }
             }
           }
-        }
+        });
       }
     }
   }

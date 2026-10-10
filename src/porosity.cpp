@@ -23,6 +23,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -108,7 +109,7 @@ Scan scanBricks(const Dataset& dataset) {
   // One accumulator per thread, merged at the end. No lock is held around OpenVDB calls, which may
   // run nested TBB tasks (a lock there can deadlock when the waiting thread steals another brick).
   tbb::combinable<Scan> partial_scans;
-  dataset.forEachBrick(0, [&](const Index3& brick, const openvdb::FloatGrid& grid) {
+  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
     const Box box = dataset.brickBox(0, brick);
     auto candidates = openvdb::BoolGrid::create(false);
     auto seeds = openvdb::BoolGrid::create(false);
@@ -486,7 +487,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
   }
   tbb::combinable<std::map<Coord, BlockSums>> partial_sums;
-  dataset.forEachBrick(0, [&](const Index3&, const openvdb::FloatGrid& grid) {
+  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
     auto& local = partial_sums.local();
     const auto band_in_brick = band->getConstAccessor();
     const auto shells_in_brick = all_shells->getConstAccessor();
@@ -711,7 +712,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   tbb::combinable<double> material_fractions(0.0);
   tbb::combinable<openvdb::FloatGrid::Ptr> material_grids(
       [] { return openvdb::FloatGrid::create(0.0F); });
-  dataset.forEachBrick(0, [&](const Index3&, const openvdb::FloatGrid& grid) {
+  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
     double sum = 0.0;
     auto material_acc = material_grids.local()->getAccessor();
     for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
@@ -884,7 +885,7 @@ void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
                                      Projection(2, dims, max_pixels)};
   };
   tbb::combinable<std::array<Projection, 3>> partial_projections(projections);
-  dataset.forEachBrick(0, [&](const Index3&, const openvdb::FloatGrid& grid) {
+  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
     auto& local = partial_projections.local();
     for (auto it = grid.cbeginValueOn(); it; ++it) {
       const double fraction = std::clamp((*it - air) / contrast, 0.0, 1.0);
@@ -1024,7 +1025,7 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     result.zones.push_back(zone);
   }
   if (std::filesystem::exists(dir / "analysis.vdb")) {
-    openvdb::initialize();
+    initializeVdb();
     openvdb::io::File file((dir / "analysis.vdb").string());
     file.open();
     const auto grids = file.getGrids();

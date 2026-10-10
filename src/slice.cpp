@@ -7,6 +7,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <variant>
 
 namespace voxelsieve {
 namespace {
@@ -196,7 +198,9 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
     // Neighbouring pixels mostly share a brick: keep it and its accessor between them.
     std::array<std::int64_t, 3> current{-1, -1, -1};
     Dataset::BrickPtr brick;
-    std::optional<openvdb::FloatGrid::ConstAccessor> accessor;
+    std::variant<std::monostate, openvdb::FloatGrid::ConstAccessor, UInt16Grid::ConstAccessor,
+                 UInt8Grid::ConstAccessor>
+        accessor;
     const auto probe = [&](const std::array<std::int64_t, 3>& voxel) -> std::optional<float> {
       for (std::size_t a = 0; a < 3; ++a) {
         if (voxel[a] < 0 || voxel[a] >= level.dims[a]) {
@@ -208,19 +212,26 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
       if (index != current) {
         current = index;
         brick = dataset.brick(request.level, index);
-        accessor.reset();
+        accessor = std::monostate{};
         if (brick) {
-          accessor.emplace(brick->getConstAccessor());
+          brick->visit([&](const auto& grid) { accessor = grid.getConstAccessor(); });
         }
       }
-      float value = 0.0F;
-      if (accessor && accessor->probeValue(
-                          openvdb::Coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
-                                         static_cast<int>(voxel[2])),
-                          value)) {
-        return value;
-      }
-      return std::nullopt;
+      const openvdb::Coord coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
+                                 static_cast<int>(voxel[2]));
+      return std::visit(
+          [&](const auto& typed) -> std::optional<float> {
+            if constexpr (std::is_same_v<std::decay_t<decltype(typed)>, std::monostate>) {
+              return std::nullopt;
+            } else {
+              typename std::decay_t<decltype(typed)>::ValueType value{};
+              if (typed.probeValue(coord, value)) {
+                return static_cast<float>(value);
+              }
+              return std::nullopt;
+            }
+          },
+          accessor);
     };
     for (std::int64_t x = 0; x < image.width; ++x) {
       // mm to the continuous level index, whose whole numbers are voxel centres: level voxel j

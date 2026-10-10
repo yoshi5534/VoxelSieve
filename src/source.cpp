@@ -315,6 +315,13 @@ ConcatSource::ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int
   starts_.push_back(dims_[a]);
 }
 
+SampleType ConcatSource::sampleType() const {
+  const bool all_8_bit = std::all_of(parts_.begin(), parts_.end(), [](const auto& part) {
+    return part->sampleType() == SampleType::kUInt8;
+  });
+  return all_8_bit ? SampleType::kUInt8 : SampleType::kUInt16;
+}
+
 bool ConcatSource::slowRandomAccess() const {
   return std::any_of(parts_.begin(), parts_.end(),
                      [](const auto& part) { return part->slowRandomAccess(); });

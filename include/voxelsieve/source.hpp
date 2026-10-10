@@ -37,6 +37,9 @@ struct ValueMapping {
   bool operator==(const ValueMapping&) const = default;
 };
 
+/// Width of the samples of a volume as stored in its files.
+enum class SampleType : std::uint8_t { kUInt8, kUInt16 };
+
 /// Read access to a volume that may be much larger than memory. Implementations must allow
 /// concurrent calls to `readRegion` from several threads.
 class VolumeSource {
@@ -52,6 +55,9 @@ class VolumeSource {
   [[nodiscard]] virtual VoxelSize voxelSize() const = 0;
   /// How the grey values of `readRegion` relate to the values of the scan.
   [[nodiscard]] virtual ValueMapping valueMapping() const { return {}; }
+  /// Width of the input's samples: 8 bit when every grey value of `readRegion` is at most 255.
+  /// A dataset stores the grey values in this width (ADR 0021).
+  [[nodiscard]] virtual SampleType sampleType() const { return SampleType::kUInt16; }
   /// Whether reading small regions in any order costs much more than reading the volume once,
   /// slice by slice: slices that are stored compressed or decoded as a whole, such as TIFF stacks
   /// in a ZIP archive, or files on a network share, where every small read is a request of its
@@ -83,8 +89,6 @@ class MemorySource final : public VolumeSource {
   const Volume16& volume_;
 };
 
-enum class SampleType : std::uint8_t { kUInt8, kUInt16 };
-
 /// Layout of a raw volume file: voxels x fastest, optionally preceded by a vendor header and
 /// followed by a footer, both of which are skipped.
 struct RawLayout {
@@ -109,6 +113,7 @@ class MappedRawSource final : public VolumeSource {
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
+  [[nodiscard]] SampleType sampleType() const override { return layout_.sample_type; }
   /// Header size in bytes, as given or detected.
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   /// True when the file lies on a network share (SMB, NFS, a mapped network drive): the import
@@ -139,6 +144,7 @@ class GzipRawSource final : public VolumeSource {
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
+  [[nodiscard]] SampleType sampleType() const override { return layout_.sample_type; }
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
   [[nodiscard]] bool sequentialAccess() const override { return true; }
@@ -188,6 +194,8 @@ class ConcatSource final : public VolumeSource {
   [[nodiscard]] ValueMapping valueMapping() const override {
     return parts_.front()->valueMapping();
   }
+  /// 8 bit when all parts are.
+  [[nodiscard]] SampleType sampleType() const override;
   [[nodiscard]] bool slowRandomAccess() const override;
   [[nodiscard]] bool sequentialAccess() const override;
   void releaseMemory() const override;

@@ -102,6 +102,7 @@ TEST_F(DicomTest, ReadsSignedSlicesInPositionOrder) {
   EXPECT_EQ(source.dims(), kDims);
   EXPECT_TRUE(source.isSigned());
   EXPECT_EQ(source.bitsStored(), 16);
+  EXPECT_EQ(source.sampleType(), SampleType::kUInt16);
   const VoxelSize size = source.voxelSize();
   EXPECT_DOUBLE_EQ(size[0], 0.25);  // between columns
   EXPECT_DOUBLE_EQ(size[1], 0.5);   // between rows
@@ -168,6 +169,7 @@ TEST_F(DicomTest, ReadsDataSetsWithoutMetaHeaderAndRleByInstanceNumber) {
   }
   const DicomStackSource source(dir_ / "plain");
   EXPECT_FALSE(source.isSigned());
+  EXPECT_EQ(source.sampleType(), SampleType::kUInt16);  // 12 bits do not fit into 8
   EXPECT_TRUE(source.valueMapping().isIdentity());
   EXPECT_NEAR(source.voxelSize()[2], 0.2, 1e-9);
   EXPECT_EQ(source.filePose().matrix(), RigidTransform{}.matrix());
@@ -179,6 +181,27 @@ TEST_F(DicomTest, ReadsDataSetsWithoutMetaHeaderAndRleByInstanceNumber) {
           << x << " " << z;
     }
   }
+}
+
+TEST_F(DicomTest, EightBitSlicesAreAnEightBitVolume) {
+  DicomSliceSpec spec;
+  spec.rows = static_cast<std::uint16_t>(kDims[1]);
+  spec.columns = static_cast<std::uint16_t>(kDims[0]);
+  spec.is_signed = false;
+  spec.bits_stored = 8;
+  const auto value = [](std::int64_t x, std::int64_t y, std::int64_t z) {
+    return static_cast<std::int32_t>((x * 31 + y * 7 + z * 3) % 256);
+  };
+  for (std::int64_t z = 0; z < kDims[2]; ++z) {
+    spec.instance = static_cast<int>(z + 1);
+    writeDicomSlice(dir_ / "eight" / ("slice_" + std::to_string(z) + ".dcm"), spec,
+                    sliceValues(z, value));
+  }
+  const DicomStackSource source(dir_ / "eight");
+  EXPECT_EQ(source.bitsStored(), 8);
+  EXPECT_EQ(source.sampleType(), SampleType::kUInt8);
+  const auto grey = readAll(source);
+  EXPECT_EQ(grey[static_cast<std::size_t>((2 * kDims[1] + 5) * kDims[0] + 3)], value(3, 5, 2));
 }
 
 TEST_F(DicomTest, ChoosesTheLargestSeriesAndRefusesGaps) {

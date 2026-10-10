@@ -36,12 +36,31 @@ namespace {
 
 using Json = nlohmann::json;
 
+/// The `value_type` parameter of the imports (ADR 0021).
+Json valueTypeParameter() {
+  return {{"type", "string"},
+          {"enum", {"native", "uint16", "float"}},
+          {"default", "native"},
+          {"description",
+           "Stored grey values: native keeps the input's 8 or 16 bits; float for viewers such as "
+           "Blender and Houdini, which cannot read VoxelSieve's integer grids"}};
+}
+
+std::optional<ValueType> valueTypeOption(const Json& params) {
+  const std::string name = params.value("value_type", std::string("native"));
+  if (name == "native") {
+    return std::nullopt;
+  }
+  return parseValueType(name);
+}
+
 Json datasetSummary(const DatasetInfo& info) {
   Json summary = {{"dims", info.dims}};
   writeVoxelSize(summary, info.voxel_size);
   summary.update({{"levels", info.levels.size()},
                   {"bricks", info.levels.empty() ? 0 : info.levels.front().bricks.size()},
                   {"active_voxels", info.active_voxel_count},
+                  {"value_type", std::string(valueTypeName(info.value_type))},
                   {"threshold", info.threshold}});
   if (!info.value_mapping.isIdentity()) {
     summary["value_mapping"] = {{"offset", info.value_mapping.offset},
@@ -217,7 +236,8 @@ class ImportRaw final : public Operation {
             {"description",
              "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
              "through the part (a pipe), so its inside is kept"}}},
-          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
+          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}},
+          {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
   }
@@ -269,6 +289,7 @@ class ImportRaw final : public Operation {
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
     options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+    options.value_type = valueTypeOption(p);
     options.progress = datasetProgress(context);
     options.preview = importPreview(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
@@ -334,7 +355,8 @@ class ImportTiff final : public Operation {
             {"description",
              "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
              "through the part (a pipe), so its inside is kept"}}},
-          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}}}},
+          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}},
+          {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
   }
@@ -377,6 +399,7 @@ class ImportTiff final : public Operation {
     options.brick_size = p.at("brick_size").get<std::int64_t>();
     options.min_material_voxels = p.at("min_material_voxels").get<int>();
     options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+    options.value_type = valueTypeOption(p);
     options.progress = datasetProgress(context);
     options.preview = importPreview(context);
     const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
@@ -422,6 +445,7 @@ void addSieveParameters(Json& properties) {
        "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
        "through the part (a pipe), so its inside is kept"}};
   properties["brick_size"] = {{"type", "integer"}, {"minimum", 8}, {"default", 256}};
+  properties["value_type"] = valueTypeParameter();
 }
 
 DatasetOptions sieveOptions(const OperationContext& context) {
@@ -434,6 +458,7 @@ DatasetOptions sieveOptions(const OperationContext& context) {
   options.brick_size = p.value("brick_size", std::int64_t{256});
   options.min_material_voxels = p.value("min_material_voxels", 1);
   options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
+  options.value_type = valueTypeOption(p);
   options.progress = datasetProgress(context);
   options.preview = importPreview(context);
   return options;

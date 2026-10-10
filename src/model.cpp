@@ -20,6 +20,7 @@
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -499,7 +500,7 @@ MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
   }
-  openvdb::initialize();
+  initializeVdb();
   const DatasetInfo& data = dataset.info();
   const ModelSpec& spec = model.spec();
   MaterialVolumeInfo info;

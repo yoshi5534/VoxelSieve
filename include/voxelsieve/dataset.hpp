@@ -16,6 +16,7 @@
 #include "voxelsieve/preview.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/vdb.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -24,10 +25,12 @@ namespace voxelsieve {
 ///
 ///   <dir>/index.json              metadata and the list of bricks per level
 ///   <dir>/overview.vdb            whole volume in one grid (coarsest level)
-///   <dir>/level<L>/<x>_<y>_<z>.vdb one FloatGrid "density" per brick
+///   <dir>/level<L>/<x>_<y>_<z>.vdb one grid "density" per brick
 ///
 /// Level-0 voxel (i, j, k) of the scan has VDB index (i, j, k) in every level-0 brick. A level-L
-/// voxel covers 2^L level-0 voxels per axis; its value is the mean of its active children.
+/// voxel covers 2^L level-0 voxels per axis; its value is the mean of its active children,
+/// rounded to the nearest integer in datasets of integer grey values. All grids of a dataset hold
+/// one value type (ADR 0021): the input's (`uint16`, or `uint8` for 8-bit input), or `float`.
 
 struct DatasetOptions {
   /// Air/material grey value; estimated from the full histogram when unset (the valley after
@@ -48,6 +51,11 @@ struct DatasetOptions {
   bool stage_slow_sources = true;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.
   std::filesystem::path staging_dir;
+  /// Type of the stored grey values; unset: the input's sample width (`VolumeSource::sampleType`),
+  /// so the grids hold exactly the input's values (ADR 0021). `kFloat` writes float grids for
+  /// viewers such as Blender and Houdini, which do not know VoxelSieve's integer grids. `kUInt8`
+  /// requires 8-bit input: grey values are never quantised.
+  std::optional<ValueType> value_type;
   /// Called once before the passes with a first look at the input (ADR 0020): a few whole slices
   /// spread over the volume (`preview_options`), their histogram and a threshold estimate. A
   /// staged source copies those slices first and the rest after the call, so every slice is read
@@ -72,6 +80,8 @@ struct DatasetInfo {
   std::array<std::int64_t, 3> dims{};
   VoxelSize voxel_size;
   std::int64_t brick_size = 0;
+  /// Type of the grey values in every grid; datasets written before ADR 0021 hold float.
+  ValueType value_type = ValueType::kFloat;
   float threshold = 0.0F;
   float air_level = 0.0F;
   int margin_voxels = 0;
@@ -94,10 +104,9 @@ DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path
 [[nodiscard]] std::filesystem::path brickPath(const std::filesystem::path& dir, int level,
                                               const std::array<std::int64_t, 3>& brick);
 
-/// Opens one brick. With `delay_load`, voxel values are read from the memory-mapped file on first
-/// access.
-[[nodiscard]] openvdb::FloatGrid::Ptr readBrick(const std::filesystem::path& file,
-                                                bool delay_load = true);
+/// Opens one brick, of any value type. With `delay_load`, voxel values are read from the
+/// memory-mapped file on first access.
+[[nodiscard]] GreyGrid readBrick(const std::filesystem::path& file, bool delay_load = true);
 
 /// Counters of the brick cache of a `Dataset`.
 struct CacheStats {
@@ -149,9 +158,9 @@ class BrickCache {
 /// [i * 2^L, (i + 1) * 2^L) on each axis. All methods may be called from several threads.
 class Dataset {
  public:
-  using BrickPtr = std::shared_ptr<const openvdb::FloatGrid>;
+  using BrickPtr = std::shared_ptr<const GreyGrid>;
   using BrickFunction =
-      std::function<void(const std::array<std::int64_t, 3>& brick, const openvdb::FloatGrid& grid)>;
+      std::function<void(const std::array<std::int64_t, 3>& brick, const GreyGrid& grid)>;
 
   static constexpr std::size_t kDefaultCacheBytes = std::size_t{1} << 30U;
 
@@ -192,6 +201,15 @@ class Dataset {
 
   /// Calls `function` for every stored brick of `level`, in parallel.
   void forEachBrick(int level, const BrickFunction& function) const;
+
+  /// Calls `function(brick, grid)` for every stored brick of `level`, in parallel, with the typed
+  /// grid (`openvdb::FloatGrid`, `UInt16Grid` or `UInt8Grid`): `function` is a generic lambda.
+  template <class Function>
+  void forEachGrid(int level, Function&& function) const {
+    forEachBrick(level, [&](const std::array<std::int64_t, 3>& brick, const GreyGrid& grid) {
+      grid.visit([&](const auto& typed) { function(brick, typed); });
+    });
+  }
 
   /// Hits and misses of this dataset; bricks and bytes of its cache, which may be shared.
   [[nodiscard]] CacheStats cacheStats() const;

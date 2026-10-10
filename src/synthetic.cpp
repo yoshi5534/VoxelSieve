@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "detail/noise.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -559,7 +560,7 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
     // The mesh distance fields (OpenVDB level sets) need cubic voxels.
     throw std::invalid_argument("Synthetic scans need cubic voxels");
   }
-  openvdb::initialize();
+  initializeVdb();
   Impl& impl = *impl_;
   impl.spec = spec;
   impl.bounds = meshBounds(mesh);
