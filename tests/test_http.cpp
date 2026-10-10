@@ -218,6 +218,17 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   ASSERT_EQ(deviation.status, 200U) << deviation.body;
   EXPECT_GT(deviation.body.size(), 1000U);
   EXPECT_EQ(deviation.body.size() % 4U, 0U);
+  // The displacement of a non-rigid registration, in place of the deviation.
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/deviation?displacement=1").status,
+            400U);  // a rigid comparison has none
+  ASSERT_EQ(
+      call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}, {"non_rigid", true}})
+          .status,
+      200U);
+  const Reply displacement =
+      request(server_->port(), http::verb::get, "/api/deviation?displacement=1");
+  ASSERT_EQ(displacement.status, 200U) << displacement.body;
+  EXPECT_GT(displacement.body.size(), 1000U);
 
   // Another object in the slice view: the CAD model as cut lines, a volume sampled in the plane.
   ASSERT_EQ(call("object_add", {{"path", (dir_ / "cad.stl").string()}}).status, 200U);

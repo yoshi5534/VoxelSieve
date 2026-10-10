@@ -569,15 +569,17 @@ class VolumeViewer {
     return this.loadMesh('surface', step);
   }
 
-  /// Loads the compared surface of a nominal-actual comparison step for mode 4.
-  loadDeviation(step) {
-    return this.loadMesh('deviation', step);
+  /// Loads the compared surface of a nominal-actual comparison step for mode 4, coloured by its
+  /// deviation or, with `displacement`, by how far its non-rigid registration moved it.
+  loadDeviation(step, displacement = false) {
+    return this.loadMesh('deviation', step, displacement ? { displacement: 1 } : {});
   }
 
-  async loadMesh(kind, step) {
-    const key = kind + ':' + step;
+  async loadMesh(kind, step, extra = {}) {
+    const query = new URLSearchParams({ step, ...extra });
+    const key = kind + ':' + query;
     if (this.surface?.key === key) return this.surface;
-    const response = await fetch('api/' + kind + '?' + new URLSearchParams({ step }));
+    const response = await fetch('api/' + kind + '?' + query);
     if (!response.ok) throw new Error((await response.json()).error);
     const vertices = Number(response.headers.get('X-Vertices'));
     const triangles = Number(response.headers.get('X-Triangles'));
@@ -590,6 +592,8 @@ class VolumeViewer {
       indices: new Uint32Array(buffer, vertices * 12 + deviations * 4, triangles * 3),
       tolerance: Number(response.headers.get('X-Tolerance') ?? 0),
       range: Number(response.headers.get('X-Range') ?? 0),
+      hasDisplacement: response.headers.get('X-Displacement') === '1',
+      displacement: 'displacement' in extra,
     };
     if (this.meshBuffers && this.gl) {
       this.meshBuffers.forEach((b) => this.gl.deleteBuffer(b));

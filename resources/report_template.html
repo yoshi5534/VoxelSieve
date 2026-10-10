@@ -161,11 +161,21 @@
   <tr><th>Smallest / largest deviation</th><td>{{min}} / {{max}}</td></tr>
   <tr><th>5 % / 95 % of the surface</th><td>below {{p5}} / below {{p95}}</td></tr>
   <tr><th>Compared surface</th><td>{{area}}, outer surface without {{dropped}} internal pore surfaces</td></tr>
+{{#non_rigid}}
+  <tr><th>Non-rigid registration</th><td>surface bent onto the nominal geometry before measuring: moved by up to {{max}} (mean {{mean}}), {{moved}} of the surface by more than the tolerance; control point spacing {{spacing}}, stiffness {{stiffness}}</td></tr>
+  <tr><th>Rigid alignment alone</th><td>{{rigid_within}} within tolerance, mean / standard deviation {{rigid_mean}} / {{rigid_std}}</td></tr>
+{{/non_rigid}}
 </table>
 <div class="renders">
   <figure><img src="{{{images.deviation_1}}}" alt="Deviation, view from above"><figcaption>Deviation, view from above</figcaption></figure>
   <figure><img src="{{{images.deviation_2}}}" alt="Deviation, view from below"><figcaption>Deviation, view from below</figcaption></figure>
 </div>
+{{#non_rigid}}
+<div class="renders">
+  <figure><img src="{{{images.displacement_1}}}" alt="Displacement of the non-rigid registration, view from above"><figcaption>Displacement of the non-rigid registration, view from above</figcaption></figure>
+  <figure><img src="{{{images.displacement_2}}}" alt="Displacement of the non-rigid registration, view from below"><figcaption>Displacement of the non-rigid registration, view from below</figcaption></figure>
+</div>
+{{/non_rigid}}
 <figure class="histogram">{{{images.deviation_histogram}}}<figcaption>Distribution of the deviation, tolerance band shaded</figcaption></figure>
 <p class="note">Positive deviation (yellow to red): more material than the nominal geometry. Negative deviation (turquoise to blue): material missing. Green: within tolerance. Colour scale saturates at {{range}}. Frequencies are weighted by surface area.</p>
 </section>

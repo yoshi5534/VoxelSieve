@@ -123,6 +123,10 @@ add_test(NAME vs_compare_cli
          COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare --tolerance 0.1 --aligned-stl)
 set_tests_properties(vs_compare_cli PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "% within")
+add_test(NAME vs_compare_cli_non_rigid
+         COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare_non_rigid --non-rigid)
+set_tests_properties(vs_compare_cli_non_rigid PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "non-rigid +moved up to")
 add_test(NAME vs_compare_cli_bad_initial
          COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare_bad --initial 1,2,3)

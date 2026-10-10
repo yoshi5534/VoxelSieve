@@ -729,6 +729,10 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
   view->deviation_mm = std::move(read.deviation_mm);
   view->tolerance_mm = info.at("tolerance_mm").get<double>();
   view->range_mm = info.at("deviation").at("range_mm").get<double>();
+  if (const auto deformation = info.find("deformation"); deformation != info.end()) {
+    view->displacement_mm = std::move(read.displacement_mm);
+    view->displacement_range_mm = deformation->at("displacement").at("range_mm").get<double>();
+  }
   const std::scoped_lock lock(surface_mutex_);
   deviation_meshes_.emplace_back(key, view);
   if (deviation_meshes_.size() > kOpenDatasets) {

@@ -1,6 +1,7 @@
 #include "voxelsieve/compare.hpp"
 
 #include <tbb/blocked_range.h>
+#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 #include <tinyply.h>
 
@@ -10,10 +11,12 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <numeric>
 #include <optional>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -540,6 +543,417 @@ std::array<double, 4> largestEigenvector4(std::array<double, 16> a) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Non-rigid registration: an elastic cubic B-spline deformation of the scanned surface (ADR 0022)
+
+/// A displacement field: cubic B-splines over a regular grid of control points that covers a box.
+class BSplineField {
+ public:
+  /// The weights of the 4x4x4 control points around a position, per axis, and their derivatives.
+  struct Stencil {
+    std::array<std::size_t, 3> first{};
+    std::array<std::array<double, 4>, 3> w{};
+    std::array<std::array<double, 4>, 3> dw{};  // d/dx in 1/mm
+  };
+
+  BSplineField(const Vec& lo, const Vec& hi, double spacing) : lo_(lo) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      const double extent = std::max(hi[k] - lo[k], 1e-9);
+      cells_[k] = static_cast<std::size_t>(std::max(1.0, std::ceil(extent / spacing - 1e-9)));
+      step_[k] = std::max(extent / static_cast<double>(cells_[k]), 1e-9);
+      nodes_[k] = cells_[k] + 3;
+    }
+  }
+
+  [[nodiscard]] std::size_t nodeCount() const { return nodes_[0] * nodes_[1] * nodes_[2]; }
+  [[nodiscard]] const std::array<std::size_t, 3>& nodes() const { return nodes_; }
+
+  [[nodiscard]] Stencil stencil(const Vec& p) const {
+    Stencil s;
+    for (std::size_t k = 0; k < 3; ++k) {
+      const double t = (p[k] - lo_[k]) / step_[k];
+      const double cell = std::clamp(std::floor(t), 0.0, static_cast<double>(cells_[k]) - 1.0);
+      s.first[k] = static_cast<std::size_t>(cell);
+      // Outside the box the polynomial of the outermost cell continues.
+      const double f = t - cell;
+      const double g = 1.0 - f;
+      s.w[k] = {g * g * g / 6.0, (3.0 * f * f * f - 6.0 * f * f + 4.0) / 6.0,
+                (-3.0 * f * f * f + 3.0 * f * f + 3.0 * f + 1.0) / 6.0, f * f * f / 6.0};
+      const double inv = 1.0 / step_[k];
+      s.dw[k] = {-0.5 * g * g * inv, (1.5 * f * f - 2.0 * f) * inv, (-1.5 * f * f + f + 0.5) * inv,
+                 0.5 * f * f * inv};
+    }
+    return s;
+  }
+
+  /// Calls visit(node, weight, gradient of the weight) for the 64 control points of a stencil.
+  template <typename Visit>
+  void forEach(const Stencil& s, Visit&& visit) const {
+    for (std::size_t c = 0; c < 4; ++c) {
+      for (std::size_t b = 0; b < 4; ++b) {
+        const std::size_t row = ((s.first[2] + c) * nodes_[1] + s.first[1] + b) * nodes_[0];
+        const double wbc = s.w[1][b] * s.w[2][c];
+        const Vec gbc{wbc, s.dw[1][b] * s.w[2][c], s.w[1][b] * s.dw[2][c]};
+        for (std::size_t a = 0; a < 4; ++a) {
+          const Vec grad{s.dw[0][a] * gbc[0], s.w[0][a] * gbc[1], s.w[0][a] * gbc[2]};
+          visit(row + s.first[0] + a, s.w[0][a] * wbc, grad);
+        }
+      }
+    }
+  }
+
+  [[nodiscard]] Vec displacement(const Stencil& s, const std::vector<double>& c) const {
+    Vec u{};
+    forEach(s, [&](std::size_t node, double w, const Vec&) {
+      for (std::size_t k = 0; k < 3; ++k) {
+        u[k] += w * c[3 * node + k];
+      }
+    });
+    return u;
+  }
+
+ private:
+  Vec lo_;
+  std::array<std::size_t, 3> cells_{};
+  std::array<double, 3> step_{};
+  std::array<std::size_t, 3> nodes_{};
+};
+
+/// The quadratic problem of one step of the registration: point-to-plane distances of the data
+/// points, the elastic (strain) energy at the regularisation points and a small ridge, as a
+/// matrix-free operator on the control point displacements. Each strain point has a weight.
+class DeformationSystem {
+ public:
+  DeformationSystem(const BSplineField& field, const std::vector<BSplineField::Stencil>& data,
+                    const std::vector<BSplineField::Stencil>& strain,
+                    const std::vector<double>& strain_weights)
+      : field_(field), data_(data), strain_(strain), strain_weights_(strain_weights) {}
+
+  /// Sets the planes of the data points: normal and weight (summing to one).
+  void setPlanes(std::vector<Vec> normals, std::vector<double> weights) {
+    normals_ = std::move(normals);
+    weights_ = std::move(weights);
+    const std::size_t n = 3 * field_.nodeCount();
+    diagonal_.assign(n, 0.0);
+    for (std::size_t i = 0; i < data_.size(); ++i) {
+      field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
+        for (std::size_t k = 0; k < 3; ++k) {
+          diagonal_[3 * node + k] += weights_[i] * w * w * normals_[i][k] * normals_[i][k];
+        }
+      });
+    }
+    for (std::size_t j = 0; j < strain_.size(); ++j) {
+      field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& g) {
+        const double g2 = dot(g, g);
+        for (std::size_t k = 0; k < 3; ++k) {
+          diagonal_[3 * node + k] += strain_weights_[j] * 0.5 * (g2 + g[k] * g[k]);
+        }
+      });
+    }
+    double mean = 0.0;
+    std::size_t used = 0;
+    for (const double d : diagonal_) {
+      if (d > 0.0) {
+        mean += d;
+        ++used;
+      }
+    }
+    ridge_ = 1e-6 * (used > 0 ? mean / static_cast<double>(used) : 1.0) + 1e-300;
+    for (double& d : diagonal_) {
+      d += ridge_;
+    }
+  }
+
+  /// Right-hand side for the plane targets: n_i . u(x_i) should become `targets[i]`.
+  [[nodiscard]] std::vector<double> rhs(const std::vector<double>& targets) const {
+    std::vector<double> b(3 * field_.nodeCount(), 0.0);
+    for (std::size_t i = 0; i < data_.size(); ++i) {
+      const double f = weights_[i] * targets[i];
+      field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
+        for (std::size_t k = 0; k < 3; ++k) {
+          b[3 * node + k] += f * w * normals_[i][k];
+        }
+      });
+    }
+    return b;
+  }
+
+  void apply(const std::vector<double>& c, std::vector<double>& out) const {
+    const std::size_t n = c.size();
+    tbb::enumerable_thread_specific<std::vector<double>> partial(
+        [n] { return std::vector<double>(n, 0.0); });
+    tbb::parallel_for(
+        tbb::blocked_range<std::size_t>(0, data_.size(), 512),
+        [&](const tbb::blocked_range<std::size_t>& range) {
+          auto& o = partial.local();
+          for (std::size_t i = range.begin(); i != range.end(); ++i) {
+            const Vec& nrm = normals_[i];
+            double s = 0.0;
+            field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
+              s += w * (nrm[0] * c[3 * node] + nrm[1] * c[3 * node + 1] + nrm[2] * c[3 * node + 2]);
+            });
+            s *= weights_[i];
+            field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
+              for (std::size_t k = 0; k < 3; ++k) {
+                o[3 * node + k] += s * w * nrm[k];
+              }
+            });
+          }
+        });
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, strain_.size(), 256),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                        auto& o = partial.local();
+                        for (std::size_t j = range.begin(); j != range.end(); ++j) {
+                          // Displacement gradient G[a][b] = d u_b / d x_a, its symmetric part.
+                          Mat g{};
+                          field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& d) {
+                            for (std::size_t a = 0; a < 3; ++a) {
+                              for (std::size_t b = 0; b < 3; ++b) {
+                                g[3 * a + b] += d[a] * c[3 * node + b];
+                              }
+                            }
+                          });
+                          Mat e{};
+                          for (std::size_t a = 0; a < 3; ++a) {
+                            for (std::size_t b = 0; b < 3; ++b) {
+                              e[3 * a + b] =
+                                  0.5 * strain_weights_[j] * (g[3 * a + b] + g[3 * b + a]);
+                            }
+                          }
+                          field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& d) {
+                            for (std::size_t b = 0; b < 3; ++b) {
+                              o[3 * node + b] += d[0] * e[b] + d[1] * e[3 + b] + d[2] * e[6 + b];
+                            }
+                          });
+                        }
+                      });
+    out.assign(n, 0.0);
+    for (const auto& o : partial) {
+      for (std::size_t k = 0; k < n; ++k) {
+        out[k] += o[k];
+      }
+    }
+    for (std::size_t k = 0; k < n; ++k) {
+      out[k] += ridge_ * c[k];
+    }
+  }
+
+  /// Conjugate gradients with the diagonal as preconditioner, from `x`.
+  void solve(const std::vector<double>& b, std::vector<double>& x, int max_iterations) const {
+    const std::size_t n = b.size();
+    std::vector<double> r(n);
+    std::vector<double> z(n);
+    std::vector<double> p(n);
+    std::vector<double> ap(n);
+    apply(x, ap);
+    double bb = 0.0;
+    for (std::size_t k = 0; k < n; ++k) {
+      r[k] = b[k] - ap[k];
+      z[k] = r[k] / diagonal_[k];
+      bb += b[k] * b[k];
+    }
+    p = z;
+    double rz = std::inner_product(r.begin(), r.end(), z.begin(), 0.0);
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+      const double rr = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
+      if (rr <= 1e-10 * bb || rr == 0.0) {
+        break;
+      }
+      apply(p, ap);
+      const double pap = std::inner_product(p.begin(), p.end(), ap.begin(), 0.0);
+      if (!(pap > 0.0)) {
+        break;
+      }
+      const double alpha = rz / pap;
+      for (std::size_t k = 0; k < n; ++k) {
+        x[k] += alpha * p[k];
+        r[k] -= alpha * ap[k];
+        z[k] = r[k] / diagonal_[k];
+      }
+      const double rz_next = std::inner_product(r.begin(), r.end(), z.begin(), 0.0);
+      const double beta = rz_next / rz;
+      rz = rz_next;
+      for (std::size_t k = 0; k < n; ++k) {
+        p[k] = z[k] + beta * p[k];
+      }
+    }
+  }
+
+ private:
+  const BSplineField& field_;
+  const std::vector<BSplineField::Stencil>& data_;
+  const std::vector<BSplineField::Stencil>& strain_;
+  const std::vector<double>& strain_weights_;
+  std::vector<Vec> normals_;
+  std::vector<double> weights_;
+  std::vector<double> diagonal_;
+  double ridge_ = 0.0;
+};
+
+/// Bends `points` (CAD coordinates, sampled uniformly on `area_mm2`) onto the CAD surface. Returns
+/// the displacement of every vertex of `vertices` (CAD coordinates) and fills the fit figures of
+/// `out`.
+std::vector<Vec> deformOntoCad(const MeshDistance& cad, std::span<const Vec> points,
+                               double area_mm2, std::span<const Vec> vertices,
+                               const CompareOptions::Deformation& options, double floor_mm,
+                               DeformationResult& out) {
+  Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+         std::numeric_limits<double>::max()};
+  Vec hi = -1.0 * lo;
+  for (const Vec& p : vertices) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], p[k]);
+      hi[k] = std::max(hi[k], p[k]);
+    }
+  }
+  const double largest = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9});
+  const double diagonal = std::max(norm(hi - lo), 1e-9);
+  // At most 40 cells along the longest axis, and none smaller than two voxels.
+  double spacing = options.spacing_mm > 0.0 ? options.spacing_mm : largest / 8.0;
+  spacing = std::max({spacing, largest / 40.0, 4.0 * floor_mm});
+  const BSplineField field(lo, hi, spacing);
+  out.applied = true;
+  out.spacing_mm = spacing;
+  out.stiffness = options.stiffness;
+  out.control_points = field.nodes();
+
+  std::vector<BSplineField::Stencil> data(points.size());
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    data[i] = field.stencil(points[i]);
+  }
+  // The elastic energy is the strain integrated over the material of the part, normalised by its
+  // volume: points on a grid inside the CAD model, and the surface points for a skin half a grid
+  // step thick that the grid misses (and walls thinner than a grid step). On a part of size D,
+  // stiffness 1 makes a uniform strain e cost as much as a distance of D * e. Bending strains a
+  // thin wall little, so thin sections bend easily and thick ones hardly.
+  std::vector<BSplineField::Stencil> strain;
+  std::vector<double> strain_weights;
+  {
+    const double box = std::max((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]), 1e-27);
+    const double h = std::max({std::cbrt(box / 30000.0), floor_mm, 1e-9});
+    std::array<std::size_t, 3> steps{};
+    for (std::size_t k = 0; k < 3; ++k) {
+      steps[k] = static_cast<std::size_t>(std::floor((hi[k] - lo[k]) / h)) + 1;
+    }
+    std::vector<Vec> grid;
+    grid.reserve(steps[0] * steps[1] * steps[2]);
+    for (std::size_t z = 0; z < steps[2]; ++z) {
+      for (std::size_t y = 0; y < steps[1]; ++y) {
+        for (std::size_t x = 0; x < steps[0]; ++x) {
+          grid.push_back({lo[0] + (static_cast<double>(x) + 0.5) * h,
+                          lo[1] + (static_cast<double>(y) + 0.5) * h,
+                          lo[2] + (static_cast<double>(z) + 0.5) * h});
+        }
+      }
+    }
+    std::vector<char> inside(grid.size());
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, grid.size(), 256),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                          inside[i] = cad.query(grid[i]).distance < -0.5 * h ? 1 : 0;
+                        }
+                      });
+    for (std::size_t i = 0; i < grid.size(); ++i) {
+      if (inside[i] != 0) {
+        strain.push_back(field.stencil(grid[i]));
+        strain_weights.push_back(h * h * h);
+      }
+    }
+    const double skin = area_mm2 / static_cast<double>(points.size()) * 0.5 * h;
+    for (const auto& s : data) {
+      strain.push_back(s);
+      strain_weights.push_back(skin);
+    }
+    const double volume = std::accumulate(strain_weights.begin(), strain_weights.end(), 0.0);
+    for (double& w : strain_weights) {
+      w *= options.stiffness * diagonal * diagonal / volume;
+    }
+  }
+  DeformationSystem system(field, data, strain, strain_weights);
+
+  std::vector<double> coefficients(3 * field.nodeCount(), 0.0);
+  std::vector<Vec> u(points.size(), Vec{});
+  std::vector<double> distance(points.size());
+  std::vector<Vec> normals(points.size());
+  const auto measure = [&] {
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, points.size(), 256),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                          const MeshDistance::Hit hit = cad.query(points[i] + u[i]);
+                          distance[i] = hit.distance;
+                          normals[i] = hit.normal;
+                        }
+                      });
+  };
+  const auto robust_sigma = [&] {
+    std::vector<double> a(distance.size());
+    std::transform(distance.begin(), distance.end(), a.begin(),
+                   [](double d) { return std::abs(d); });
+    const auto mid = a.begin() + static_cast<std::ptrdiff_t>(a.size() / 2);
+    std::nth_element(a.begin(), mid, a.end());
+    return 1.4826 * *mid;
+  };
+  for (int iteration = 0; iteration < 60; ++iteration) {
+    measure();
+    const double sigma = robust_sigma();
+    const double huber = std::max(2.0 * sigma, floor_mm);
+    const double reject = std::max(5.0 * sigma, 3.0 * floor_mm);
+    std::vector<double> weights(points.size(), 0.0);
+    std::vector<double> targets(points.size(), 0.0);
+    double total = 0.0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      const double a = std::abs(distance[i]);
+      if (a <= reject) {
+        weights[i] = a <= huber ? 1.0 : huber / a;
+        total += weights[i];
+      }
+      // The point should move onto the tangent plane of its closest CAD point.
+      targets[i] = dot(normals[i], u[i]) - distance[i];
+    }
+    if (!(total > 0.0)) {
+      break;
+    }
+    for (double& w : weights) {
+      w /= total;
+    }
+    system.setPlanes(normals, std::move(weights));
+    system.solve(system.rhs(targets), coefficients, 200);
+    double moved = 0.0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      const Vec next = field.displacement(data[i], coefficients);
+      moved = std::max(moved, norm(next - u[i]));
+      u[i] = next;
+    }
+    out.iterations = iteration + 1;
+    if (moved < 1e-2 * floor_mm) {
+      break;
+    }
+  }
+  measure();
+  const double cut = std::max(3.0 * robust_sigma(), floor_mm);
+  double sum = 0.0;
+  std::size_t count = 0;
+  for (const double d : distance) {
+    if (std::abs(d) <= cut) {
+      sum += d * d;
+      ++count;
+    }
+  }
+  out.fit_rms_mm = count > 0 ? std::sqrt(sum / static_cast<double>(count)) : 0.0;
+  out.fit_inliers =
+      distance.empty() ? 0.0 : static_cast<double>(count) / static_cast<double>(distance.size());
+
+  std::vector<Vec> displacement(vertices.size());
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, vertices.size(), 1024),
+                    [&](const tbb::blocked_range<std::size_t>& range) {
+                      for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                        displacement[i] =
+                            field.displacement(field.stencil(vertices[i]), coefficients);
+                      }
+                    });
+  return displacement;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Statistics
 
 double niceCeil(double value) {
@@ -665,11 +1079,17 @@ void writePly(const std::filesystem::path& file, const CompareResult& result) {
   tinyply::PlyFile ply;
   ply.get_comments().emplace_back(
       "VoxelSieve nominal-actual comparison: scanned surface in mm, deviation from the CAD "
-      "surface in mm (positive: more material)");
+      "surface in mm (positive: more material); with a non-rigid registration, the deviation "
+      "of the bent surface and the displacement of every point in mm");
   ply.add_properties_to_element("vertex", {"x", "y", "z"}, tinyply::Type::FLOAT32, n,
                                 bytes(result.mesh.points.data()), tinyply::Type::INVALID, 0);
   ply.add_properties_to_element("vertex", {"deviation"}, tinyply::Type::FLOAT32, n,
                                 bytes(result.deviation_mm.data()), tinyply::Type::INVALID, 0);
+  if (result.deformation.applied) {
+    ply.add_properties_to_element("vertex", {"displacement"}, tinyply::Type::FLOAT32, n,
+                                  bytes(result.deformation.displacement_mm.data()),
+                                  tinyply::Type::INVALID, 0);
+  }
   ply.add_properties_to_element("vertex", {"red", "green", "blue"}, tinyply::Type::UINT8, n,
                                 colors.data(), tinyply::Type::INVALID, 0);
   ply.add_properties_to_element(
@@ -692,17 +1112,25 @@ void writeImages(const CompareResult& result, const std::filesystem::path& dir) 
   if (result.mesh.points.empty()) {
     return;
   }
-  RenderScene scene;
-  scene.mesh = &result.mesh;
-  scene.vertex_colors.reserve(result.deviation_mm.size());
-  for (const float d : result.deviation_mm) {
-    scene.vertex_colors.push_back(deviationColor(d, result.tolerance_mm, result.stats.range_mm));
-  }
-  for (std::size_t k = 0; k < kDeviationViews.size(); ++k) {
-    RenderView view;
-    view.azimuth_degrees = kDeviationViews[k][0];
-    view.elevation_degrees = kDeviationViews[k][1];
-    writePng(render(scene, view), dir / ("deviation_view_" + std::to_string(k + 1) + ".png"));
+  const auto views = [&](const std::vector<float>& values, double range, const std::string& name) {
+    RenderScene scene;
+    scene.mesh = &result.mesh;
+    scene.vertex_colors.reserve(values.size());
+    for (const float d : values) {
+      scene.vertex_colors.push_back(deviationColor(d, result.tolerance_mm, range));
+    }
+    for (std::size_t k = 0; k < kDeviationViews.size(); ++k) {
+      RenderView view;
+      view.azimuth_degrees = kDeviationViews[k][0];
+      view.elevation_degrees = kDeviationViews[k][1];
+      writePng(render(scene, view), dir / (name + "_view_" + std::to_string(k + 1) + ".png"));
+    }
+  };
+  views(result.deviation_mm, result.stats.range_mm, "deviation");
+  if (result.deformation.applied) {
+    // Moved by less than the tolerance: green; more: yellow to red.
+    views(result.deformation.displacement_mm, result.deformation.displacement.range_mm,
+          "displacement");
   }
 }
 
@@ -1244,6 +1672,11 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   if (options.fit_points < 100) {
     throw std::invalid_argument("At least 100 fit points are needed");
   }
+  if (options.deformation.enabled &&
+      (!(options.deformation.stiffness > 0.0) || !(options.deformation.spacing_mm >= 0.0))) {
+    throw std::invalid_argument(
+        "The deformation needs a positive stiffness and a spacing of zero or more");
+  }
   CompareResult result;
   result.alignment = options.alignment;
   result.tolerance_mm = options.tolerance_mm;
@@ -1297,44 +1730,88 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
                       }
                     });
   result.stats = deviationStats(result.mesh, result.deviation_mm, options.tolerance_mm);
+  if (!options.deformation.enabled) {
+    return result;
+  }
+
+  // Non-rigid registration: bend the scanned surface onto the CAD model and measure again.
+  phase.reset();
+  phase.emplace("non-rigid registration");
+  std::vector<Vec> points(samples.size());
+  std::transform(samples.begin(), samples.end(), points.begin(),
+                 [&](const Vec& p) { return scan_to_cad.apply(p); });
+  std::vector<Vec> vertices(result.mesh.points.size());
+  std::transform(result.mesh.points.begin(), result.mesh.points.end(), vertices.begin(),
+                 [&](const auto& p) { return scan_to_cad.apply({p[0], p[1], p[2]}); });
+  DeformationResult& deformation = result.deformation;
+  const std::vector<Vec> displacement = deformOntoCad(
+      nominal, points, result.stats.area_mm2, vertices, options.deformation, floor_mm, deformation);
+  phase.reset();
+  phase.emplace("deviation");
+  deformation.rigid = result.stats;
+  deformation.displacement_mm.resize(vertices.size());
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, vertices.size(), 1024),
+                    [&](const tbb::blocked_range<std::size_t>& range) {
+                      for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                        result.deviation_mm[i] = static_cast<float>(
+                            nominal.query(vertices[i] + displacement[i]).distance);
+                        deformation.displacement_mm[i] = static_cast<float>(norm(displacement[i]));
+                      }
+                    });
+  result.stats = deviationStats(result.mesh, result.deviation_mm, options.tolerance_mm);
+  deformation.displacement =
+      deviationStats(result.mesh, deformation.displacement_mm, options.tolerance_mm);
   return result;
 }
 
 nlohmann::json toJson(const CompareResult& result) {
-  const DeviationStats& s = result.stats;
-  Json percentiles = Json::object();
-  for (std::size_t i = 0; i < kDeviationPercentiles.size(); ++i) {
-    percentiles[std::to_string(static_cast<int>(kDeviationPercentiles[i]))] = s.percentiles_mm[i];
+  const auto stats = [](const DeviationStats& s) {
+    Json percentiles = Json::object();
+    for (std::size_t i = 0; i < kDeviationPercentiles.size(); ++i) {
+      percentiles[std::to_string(static_cast<int>(kDeviationPercentiles[i]))] = s.percentiles_mm[i];
+    }
+    return Json{{"vertices", s.vertices},
+                {"area_mm2", s.area_mm2},
+                {"mean_mm", s.mean_mm},
+                {"rms_mm", s.rms_mm},
+                {"std_mm", s.std_mm},
+                {"min_mm", s.min_mm},
+                {"max_mm", s.max_mm},
+                {"percentiles_mm", percentiles},
+                {"within_tolerance", s.within_tolerance},
+                {"above_tolerance", s.above_tolerance},
+                {"below_tolerance", s.below_tolerance},
+                {"range_mm", s.range_mm},
+                {"histogram", s.histogram}};
+  };
+  Json json = {{"alignment", toString(result.alignment)},
+               {"cad_to_scan", result.cad_to_scan.matrix()},
+               {"scan_to_cad", result.cad_to_scan.inverse().matrix()},
+               {"rotation_deg", result.cad_to_scan.angleDegrees()},
+               {"translation_mm", result.cad_to_scan.translation},
+               {"fit",
+                {{"rms_mm", result.fit_rms_mm},
+                 {"inliers", result.fit_inliers},
+                 {"iterations", result.fit_iterations}}},
+               {"tolerance_mm", result.tolerance_mm},
+               {"voxel_size_mm", result.voxel_size},
+               {"cad_triangles", result.cad_triangles},
+               {"components", result.components},
+               {"dropped_components", result.dropped_components},
+               {"dropped_area_mm2", result.dropped_area_mm2},
+               {"deviation", stats(result.stats)}};
+  const DeformationResult& d = result.deformation;
+  if (d.applied) {
+    json["deformation"] = {
+        {"spacing_mm", d.spacing_mm},
+        {"stiffness", d.stiffness},
+        {"control_points", d.control_points},
+        {"fit",
+         {{"rms_mm", d.fit_rms_mm}, {"inliers", d.fit_inliers}, {"iterations", d.iterations}}},
+        {"displacement", stats(d.displacement)},
+        {"rigid_deviation", stats(d.rigid)}};
   }
-  return {{"alignment", toString(result.alignment)},
-          {"cad_to_scan", result.cad_to_scan.matrix()},
-          {"scan_to_cad", result.cad_to_scan.inverse().matrix()},
-          {"rotation_deg", result.cad_to_scan.angleDegrees()},
-          {"translation_mm", result.cad_to_scan.translation},
-          {"fit",
-           {{"rms_mm", result.fit_rms_mm},
-            {"inliers", result.fit_inliers},
-            {"iterations", result.fit_iterations}}},
-          {"tolerance_mm", result.tolerance_mm},
-          {"voxel_size_mm", result.voxel_size},
-          {"cad_triangles", result.cad_triangles},
-          {"components", result.components},
-          {"dropped_components", result.dropped_components},
-          {"dropped_area_mm2", result.dropped_area_mm2},
-          {"deviation",
-           {{"vertices", s.vertices},
-            {"area_mm2", s.area_mm2},
-            {"mean_mm", s.mean_mm},
-            {"rms_mm", s.rms_mm},
-            {"std_mm", s.std_mm},
-            {"min_mm", s.min_mm},
-            {"max_mm", s.max_mm},
-            {"percentiles_mm", percentiles},
-            {"within_tolerance", s.within_tolerance},
-            {"above_tolerance", s.above_tolerance},
-            {"below_tolerance", s.below_tolerance},
-            {"range_mm", s.range_mm},
-            {"histogram", s.histogram}}}};
+  return json;
 }
 
 void writeComparison(const CompareResult& result, const std::filesystem::path& dir) {
@@ -1372,7 +1849,23 @@ DeviationMesh readDeviationPly(const std::filesystem::path& file) {
     const auto points = ply.request_properties_from_element("vertex", {"x", "y", "z"});
     const auto deviation = ply.request_properties_from_element("vertex", {"deviation"});
     const auto faces = ply.request_properties_from_element("face", {"vertex_indices"}, 3);
+    std::shared_ptr<tinyply::PlyData> displacement;
+    for (const auto& element : ply.get_elements()) {
+      if (element.name == "vertex" &&
+          std::any_of(element.properties.begin(), element.properties.end(),
+                      [](const tinyply::PlyProperty& p) { return p.name == "displacement"; })) {
+        displacement = ply.request_properties_from_element("vertex", {"displacement"});
+      }
+    }
     ply.read(in);
+    if (displacement) {
+      if (displacement->t != tinyply::Type::FLOAT32 || displacement->count != points->count) {
+        throw std::runtime_error("unexpected displacement");
+      }
+      out.displacement_mm.resize(displacement->count);
+      std::memcpy(out.displacement_mm.data(), displacement->buffer.get(),
+                  displacement->buffer.size_bytes());
+    }
     if (points->t != tinyply::Type::FLOAT32 || deviation->t != tinyply::Type::FLOAT32 ||
         (faces->t != tinyply::Type::INT32 && faces->t != tinyply::Type::UINT32) ||
         deviation->count != points->count) {

@@ -789,6 +789,51 @@ class Surface final : public Operation {
   OperationInfo info_;
 };
 
+/// Parameters of the optional non-rigid registration of the comparisons (ADR 0022).
+void addDeformationParameters(Json& parameters) {
+  Json& properties = parameters["properties"];
+  properties["non_rigid"] = {
+      {"type", "boolean"},
+      {"default", false},
+      {"description",
+       "Non-rigid registration for flexible parts: after the rigid alignment, bend the scanned "
+       "surface onto the nominal one with a smooth, elastic deformation and measure the "
+       "deviation on the bent surface. The displacement of every point is reported beside it."}};
+  properties["non_rigid_spacing_mm"] = {
+      {"type", "number"},
+      {"minimum", 0},
+      {"default", 0},
+      {"description",
+       "Spacing of the control points of the deformation in mm; features smaller than this stay "
+       "deviations. 0: an eighth of the largest extent of the part"}};
+  properties["non_rigid_stiffness"] = {
+      {"type", "number"},
+      {"minimum", 0.01},
+      {"maximum", 10000},
+      {"default", 1},
+      {"description",
+       "Resistance against stretching: high values let only thin sections bend and keep the "
+       "size of the part, low values follow almost any smooth deviation"}};
+}
+
+void readDeformationParameters(const Json& p, CompareOptions& options) {
+  options.deformation.enabled = p.at("non_rigid").get<bool>();
+  options.deformation.spacing_mm = p.at("non_rigid_spacing_mm").get<double>();
+  options.deformation.stiffness = p.at("non_rigid_stiffness").get<double>();
+}
+
+/// Summary figures of the non-rigid registration, when there was one.
+void addDeformationSummary(const CompareResult& compared, Json& summary) {
+  const DeformationResult& d = compared.deformation;
+  if (!d.applied) {
+    return;
+  }
+  summary["displacement_max_mm"] = d.displacement.max_mm;
+  summary["displacement_mean_mm"] = d.displacement.mean_mm;
+  summary["rigid_deviation_rms_mm"] = d.rigid.rms_mm;
+  summary["rigid_within_tolerance_percent"] = 100.0 * d.rigid.within_tolerance;
+}
+
 class CompareCad final : public Operation {
  public:
   CompareCad() {
@@ -821,6 +866,7 @@ class CompareCad final : public Operation {
             {"description", "Leave the surfaces of closed internal voids (pores) out"}}},
           {"aligned_stl", {{"type", "boolean"}, {"default", false}}}}},
         {"required", {"cad_path"}}};
+    addDeformationParameters(info_.parameters);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -832,6 +878,7 @@ class CompareCad final : public Operation {
     options.alignment = alignmentFromString(p.at("alignment").get<std::string>());
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
     options.outer_surface_only = p.at("outer_surface_only").get<bool>();
+    readDeformationParameters(p, options);
     const Mesh cad = readStl(cad_path);
     context.progress(0.1);
     const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
@@ -860,6 +907,7 @@ class CompareCad final : public Operation {
                       {"fit_rms_mm", compared.fit_rms_mm},
                       {"rotation_deg", compared.cad_to_scan.angleDegrees()},
                       {"dropped_components", compared.dropped_components}};
+    addDeformationSummary(compared, result.summary);
     return result;
   }
 
@@ -1465,6 +1513,7 @@ class CompareObjects final : public Operation {
             {"description", "Leave the surfaces of closed internal voids (pores) out"}}},
           {"refine", {{"type", "boolean"}, {"default", false}}}}},
         {"required", {"nominal"}}};
+    addDeformationParameters(info_.parameters);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1484,6 +1533,7 @@ class CompareObjects final : public Operation {
                                                    : CompareOptions::Alignment::kNone;
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
     options.outer_surface_only = p.at("outer_surface_only").get<bool>();
+    readDeformationParameters(p, options);
     // Nominal object coordinates to those of the scanned object.
     options.initial = entryPose(actual).inverse().after(entryPose(nominal_object));
     double resolution_mm = 0.0;
@@ -1514,6 +1564,7 @@ class CompareObjects final : public Operation {
                       {"tolerance_mm", compared.tolerance_mm},
                       {"fit_rms_mm", compared.fit_rms_mm},
                       {"dropped_components", compared.dropped_components}};
+    addDeformationSummary(compared, result.summary);
     return result;
   }
 

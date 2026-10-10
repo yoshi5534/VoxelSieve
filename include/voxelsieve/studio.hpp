@@ -95,6 +95,10 @@ class Studio {
     std::vector<float> deviation_mm;
     double tolerance_mm = 0.0;
     double range_mm = 0.0;
+    /// With a non-rigid registration (ADR 0022): how far every vertex was moved, and the colour
+    /// range of that; empty and 0 without one.
+    std::vector<float> displacement_mm;
+    double displacement_range_mm = 0.0;
   };
   [[nodiscard]] std::shared_ptr<const DeviationView> deviationMesh(
       std::optional<int> comparison_step) const;
