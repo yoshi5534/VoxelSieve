@@ -99,7 +99,7 @@ const auto dataset = voxelsieve::Dataset::open("scan.vsieve", /*cache_bytes=*/4U
 std::optional<float> value = dataset.sample(0, {512, 400, 300});  // nullopt for removed air
 std::vector<float> slab(512 * 512 * 16);
 dataset.readRegion(0, {{0, 0, 300}, {512, 512, 316}}, slab);      // across brick boundaries
-dataset.forEachBrick(1, [](const auto& brick, const openvdb::FloatGrid& grid) { /* parallel */ });
+dataset.forEachGrid(1, [](const auto& brick, const auto& grid) { /* parallel, uint16/uint8/float */ });
 ```
 
 ### TIFF stacks
@@ -179,7 +179,9 @@ edge along x, y and z, and `--slice-thickness 0.4` records slices thinner than t
 axis. The air/material threshold is estimated from the histogram unless `--threshold` is set:
 the valley between the air peak and the next material, so light materials in a scan of several
 count as material (Otsu's split when there is only one); `--margin` controls how many voxels of air stay around the part. `--dense` writes every
-voxel without sieving, as a baseline. The resulting `.vdb` opens directly in Blender or Houdini.
+voxel without sieving, as a baseline. Grey values keep the input's 16 or 8 bits (ADR 0021); with
+`--value-type float` the `.vdb` and every brick of a dataset open directly in Blender or Houdini,
+which read only OpenVDB's standard grid types.
 
 Phantom benchmark (hollow box with pores filling about a quarter of the volume, noise σ = 500,
 4 cores):
@@ -189,8 +191,9 @@ Phantom benchmark (hollow box with pores filling about a quarter of the volume, 
 | 256³ | 32 MB | 43.6 MB | 11.8 MB | 27 % | 0.03 s |
 | 512³ | 256 MB | 348.9 MB | 85.9 MB | 26 % | 0.23 s |
 
-Sieved files store grey values as 32-bit float (lossless, see ADR 0002), which is why the dense
-baseline is larger than the raw file.
+The table was measured with grey values stored as 32-bit float (ADR 0002), which is why the dense
+baseline is larger than the raw file. Since ADR 0021 grids keep the input's 16 bits: a dense VDB
+of the 256³ phantom takes 115 % of the raw file instead of 140 %.
 
 Design decisions are recorded in [docs/adr](docs/adr).
 

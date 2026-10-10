@@ -495,6 +495,10 @@ const std::vector<std::pair<std::string, std::size_t>>& DicomStackSource::otherS
   return impl_->other_series;
 }
 
+SampleType DicomStackSource::sampleType() const {
+  return bitsStored() <= 8 && !isSigned() ? SampleType::kUInt8 : SampleType::kUInt16;
+}
+
 int DicomStackSource::bitsStored() const { return impl_->slices.front().bits_stored; }
 
 bool DicomStackSource::isSigned() const { return impl_->slices.front().pixel_representation == 1; }

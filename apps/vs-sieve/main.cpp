@@ -59,6 +59,9 @@ Also reads DICOM stacks, a directory of slice files sorted by their position, an
 volume of a VGStudio project (.vgl) from the DICOM files it refers to (docs/adr/0019). Signed
 samples and the rescale slope and intercept are recorded as the value mapping.
 
+Grey values are stored in the input's width, 8 or 16 bit, unchanged (docs/adr/0021). Use
+--value-type float for viewers such as Blender and Houdini, which cannot read these grids.
+
 Several inputs are joined one after another along --join (default z) into one volume, for scans
 reconstructed in parts. Their other dimensions and voxel sizes must match.
 
@@ -95,6 +98,8 @@ Options:
                           (default: the output directory)
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
+  --value-type <type>     Stored grey values: native (default: the input's 8 or 16 bit), uint16
+                          or float
   --dense                 .vdb only: write every voxel without sieving (baseline)
   --preview <file.png>    Datasets: write a first look at the input as soon as it is read: a
                           few slices spread over the volume, its sections and histogram with
@@ -120,6 +125,7 @@ struct Options {
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
   bool dense = false;
+  std::optional<voxelsieve::ValueType> value_type;  // unset: the input's
   std::filesystem::path preview;
   std::filesystem::path telemetry;
 
@@ -196,6 +202,12 @@ std::optional<Options> parse(int argc, char** argv) {
       options.preview = next();
     } else if (arg == "--dense") {
       options.dense = true;
+    } else if (arg == "--value-type") {
+      const std::string type = next();
+      if (type != "native") {
+        options.value_type = voxelsieve::parseValueType(type);
+      }
+      options.dataset.value_type = options.value_type;
     } else if (arg == "--join") {
       const std::string axis = next();
       if (axis != "x" && axis != "y" && axis != "z") {
@@ -428,8 +440,16 @@ void runSingleGrid(const Options& options) {
     grid->insertMeta("value_offset", openvdb::DoubleMetadata(mapping.offset));
     grid->insertMeta("value_scale", openvdb::DoubleMetadata(mapping.scale));
   }
+  // The input's width unless asked otherwise (docs/adr/0021).
+  const voxelsieve::ValueType type = options.value_type.value_or(
+      source->sampleType() == voxelsieve::SampleType::kUInt8 ? voxelsieve::ValueType::kUInt8
+                                                             : voxelsieve::ValueType::kUInt16);
+  const voxelsieve::GreyGrid stored = type == voxelsieve::ValueType::kFloat
+                                          ? voxelsieve::GreyGrid(grid)
+                                          : voxelsieve::convertGrid(*grid, type);
+  std::cout << "values             " << voxelsieve::valueTypeName(type) << "\n";
   const auto converted = std::chrono::steady_clock::now();
-  voxelsieve::writeVdb(options.out, {grid});
+  voxelsieve::writeVdb(options.out, {stored.basePtr()});
   const auto written = std::chrono::steady_clock::now();
 
   const auto active = grid->activeVoxelCount();
@@ -552,7 +572,8 @@ void runDataset(const Options& options) {
       static_cast<double>(dims[0]) * static_cast<double>(dims[1]) * static_cast<double>(dims[2]);
   const double raw_mb = voxels * 2.0 / (1024.0 * 1024.0);
   std::cout << std::fixed << std::setprecision(2) << "threshold          " << info.threshold
-            << " (air level " << info.air_level << ")\n";
+            << " (air level " << info.air_level << ")\n"
+            << "values             " << voxelsieve::valueTypeName(info.value_type) << "\n";
   for (const auto& level : info.levels) {
     std::cout << "level " << level.level << "            " << level.bricks.size() << " bricks, "
               << level.dims[0] << "x" << level.dims[1] << "x" << level.dims[2] << " voxels\n";

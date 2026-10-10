@@ -343,6 +343,8 @@ TEST_F(TiffTest, ReadsAllEncodings) {
     const auto folder = writeStack(c.spec, c.name);
     const TiffStackSource source(folder);
     EXPECT_EQ(source.bitsPerSample(), c.spec.bits);
+    // A dataset keeps 8-bit slices in 8 bits (ADR 0021).
+    EXPECT_EQ(source.sampleType(), c.spec.bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16);
     expectGreyValues(source, c.spec.bits);
   }
 }

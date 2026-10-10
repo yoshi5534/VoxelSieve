@@ -18,6 +18,8 @@
 #include <string>
 #include <utility>
 
+#include "voxelsieve/vdb.hpp"
+
 namespace voxelsieve {
 namespace {
 
@@ -283,7 +285,7 @@ Mesh samplePartMesh(std::string_view name, const SamplePartOptions& options) {
   if (options.scale <= 0.0 || options.resolution_mm < 0.0) {
     throw std::invalid_argument("scale must be > 0 and resolution >= 0");
   }
-  openvdb::initialize();
+  initializeVdb();
   const double scale = options.scale;
   const Bounds& bounds = entry.info.bounds;
   double longest = 0.0;

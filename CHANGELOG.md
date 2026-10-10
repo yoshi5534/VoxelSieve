@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Grey values in the input's 16 or 8 bits instead of float**: datasets and `.vdb` files store
+  `uint16` grids, or `uint8` for 8-bit raw files, TIFF and DICOM stacks, with exactly the input's
+  values. Bricks take half (a quarter) of the memory in the cache, datasets are 11 to 17 %
+  smaller and pass 2 is about a third faster. Coarse levels hold the rounded mean. Blender and
+  Houdini read only float grids: `vs-sieve --value-type float` and the imports' `value_type`
+  write them as before. Datasets of the old format still open. Plugin API version 4: bricks come
+  as `GreyGrid`, walked with `Dataset::forEachGrid` (ADR 0021).
+
 - **A first look at large scans right away, also from a network share**: every import first
   reads 64 slices spread over the volume and shows their sections, histogram and the estimated
   threshold while the import goes on, in the studio under the progress bar, through the new API

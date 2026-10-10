@@ -45,7 +45,13 @@ gtest_discover_tests(voxelsieve_tests)
 add_test(NAME vs_phantom_cli COMMAND vs-phantom --out ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom --dims 32)
 add_test(NAME vs_sieve_cli COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom.raw
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom.vdb)
-set_tests_properties(vs_sieve_cli PROPERTIES DEPENDS vs_phantom_cli)
+set_tests_properties(vs_sieve_cli PROPERTIES DEPENDS vs_phantom_cli
+                     PASS_REGULAR_EXPRESSION "values +uint16")
+# Float grids on request, for viewers that read only float (ADR 0021).
+add_test(NAME vs_sieve_float_cli COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom.raw
+         --value-type float --out ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom_float.vdb)
+set_tests_properties(vs_sieve_float_cli PROPERTIES DEPENDS vs_phantom_cli
+                     PASS_REGULAR_EXPRESSION "values +float")
 # The dataset writer refuses non-empty output directories, so clear the previous run first.
 add_test(NAME vs_sieve_dataset_cli_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_dataset)

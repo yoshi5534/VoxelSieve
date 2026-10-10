@@ -489,6 +489,10 @@ std::optional<VoxelSize> TiffStackSource::fileVoxelSize() const {
 
 int TiffStackSource::bitsPerSample() const { return impl_->first.bits; }
 
+SampleType TiffStackSource::sampleType() const {
+  return impl_->first.bits == 8 && !impl_->is_float ? SampleType::kUInt8 : SampleType::kUInt16;
+}
+
 bool TiffStackSource::isFloat() const { return impl_->is_float; }
 
 ValueMapping TiffStackSource::valueMapping() const { return impl_->mapping; }

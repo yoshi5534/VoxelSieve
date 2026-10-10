@@ -1,6 +1,6 @@
 # 0002: Lossless float voxels
 
-Status: accepted (2026-09-27)
+Status: accepted (2026-09-27); native 16-bit and 8-bit grids proposed in ADR 0021
 
 ## Context
 

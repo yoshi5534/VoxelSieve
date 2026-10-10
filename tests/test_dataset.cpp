@@ -11,6 +11,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -23,6 +24,7 @@
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -327,7 +329,7 @@ TEST_F(DatasetTest, Level0MatchesInMemorySieve) {
 
   std::map<Index3, openvdb::FloatGrid::Ptr> bricks;
   for (const Index3& brick : level0.bricks) {
-    bricks[brick] = readBrick(brickPath(dir_, 0, brick));
+    bricks[brick] = toFloatGrid(readBrick(brickPath(dir_, 0, brick)));
   }
   for (auto it = reference.grid->cbeginValueOn(); it; ++it) {
     const openvdb::Coord c = it.getCoord();
@@ -392,7 +394,7 @@ TEST_F(DatasetTest, WritesLevelsOverviewAndIndex) {
   EXPECT_EQ(read.levels[0].bricks, written.levels[0].bricks);
 
   // The overview maps world positions correctly: the wall is material, the far corner is gone.
-  const auto overview = readBrick(dir_ / "overview.vdb", false);
+  const auto overview = toFloatGrid(readBrick(dir_ / "overview.vdb", false));
   EXPECT_DOUBLE_EQ(overview->voxelSize()[0], 4 * phantom.voxel_size[0]);
   const auto accessor = overview->getConstAccessor();
   const auto at_world_mm = [&](double x, double y, double z) {
@@ -481,7 +483,7 @@ TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
   const DatasetInfo info = writeDataset(PhantomSource(phantom), dir_, options);
   EXPECT_DOUBLE_EQ(levels_done, 1.0);  // no coarser level: done at once
   ASSERT_EQ(info.levels.size(), 1U);
-  EXPECT_EQ(readBrick(dir_ / "overview.vdb", false)->activeVoxelCount(),
+  EXPECT_EQ(readBrick(dir_ / "overview.vdb", false).base().activeVoxelCount(),
             static_cast<openvdb::Index64>(info.active_voxel_count));
 }
 
@@ -513,8 +515,10 @@ void expectSameDataset(const std::filesystem::path& a, const std::filesystem::pa
   for (std::size_t level = 0; level < info_a.levels.size(); ++level) {
     ASSERT_EQ(info_a.levels[level].bricks, info_b.levels[level].bricks);
     for (const Index3& brick : info_a.levels[level].bricks) {
-      const auto grid_a = readBrick(brickPath(a, static_cast<int>(level), brick), false);
-      const auto grid_b = readBrick(brickPath(b, static_cast<int>(level), brick), false);
+      const auto grid_a =
+          toFloatGrid(readBrick(brickPath(a, static_cast<int>(level), brick), false));
+      const auto grid_b =
+          toFloatGrid(readBrick(brickPath(b, static_cast<int>(level), brick), false));
       ASSERT_EQ(grid_a->activeVoxelCount(), grid_b->activeVoxelCount());
       const auto accessor = grid_b->getConstAccessor();
       for (auto it = grid_a->cbeginValueOn(); it; ++it) {
@@ -589,6 +593,171 @@ TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   options.min_material_voxels = 1;
   (void)writeDataset(source, dir_, options);
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+}
+
+// Value types (ADR 0021).
+
+/// Voxels of the stored level-0 grids whose value differs from `volume`, and checks that every
+/// brick holds `type`.
+std::int64_t level0Mismatches(const std::filesystem::path& dir, const Volume16& volume,
+                              ValueType type) {
+  std::int64_t mismatches = 0;
+  const DatasetInfo info = readDatasetInfo(dir);
+  for (const Index3& brick : info.levels.at(0).bricks) {
+    const GreyGrid grid = readBrick(brickPath(dir, 0, brick), false);
+    EXPECT_EQ(grid.valueType(), type);
+    grid.visit([&](const auto& typed) {
+      for (auto it = typed.cbeginValueOn(); it; ++it) {
+        const openvdb::Coord c = it.getCoord();
+        mismatches +=
+            static_cast<float>(*it) == static_cast<float>(volume.at(c.x(), c.y(), c.z())) ? 0 : 1;
+      }
+    });
+  }
+  return mismatches;
+}
+
+nlohmann::json readIndex(const std::filesystem::path& dir) {
+  std::ifstream in(dir / "index.json");
+  return nlohmann::json::parse(in);
+}
+
+TEST_F(DatasetTest, StoresSixteenBitInputExactlyAsUInt16) {
+  const Volume16 volume = generatePhantom(spec());
+  DatasetOptions options;
+  options.brick_size = 32;
+  const DatasetInfo info = writeDataset(MemorySource(volume), dir_, options);
+  EXPECT_EQ(info.value_type, ValueType::kUInt16);
+  EXPECT_EQ(readDatasetInfo(dir_).value_type, ValueType::kUInt16);
+  EXPECT_EQ(readIndex(dir_).at("value_type"), "uint16");
+  EXPECT_EQ(readIndex(dir_).at("coarse_levels"), "rounded mean");
+  EXPECT_EQ(level0Mismatches(dir_, volume, ValueType::kUInt16), 0);
+  EXPECT_EQ(readBrick(dir_ / "overview.vdb").valueType(), ValueType::kUInt16);
+}
+
+TEST_F(DatasetTest, CoarseLevelsOfIntegerDatasetsHoldTheRoundedMean) {
+  DatasetOptions options;
+  options.brick_size = 32;
+  (void)writeDataset(PhantomSource(spec()), dir_, options);
+  const Dataset dataset = Dataset::open(dir_);
+  std::int64_t checked = 0;
+  for (const Index3& brick : dataset.level(1).bricks) {
+    dataset.brick(1, brick)->visit([&](const auto& grid) {
+      std::int64_t n = 0;
+      for (auto it = grid.cbeginValueOn(); it; ++it) {
+        if (n++ % 17 != 0) {
+          continue;  // a sample of the voxels keeps the test fast
+        }
+        const openvdb::Coord c = it.getCoord();
+        double sum = 0.0;
+        int count = 0;
+        for (int child = 0; child < 8; ++child) {
+          const auto value =
+              dataset.sample(0, {2 * c.x() + (child & 1), 2 * c.y() + ((child >> 1) & 1),
+                                 2 * c.z() + ((child >> 2) & 1)});
+          if (value) {
+            sum += *value;
+            ++count;
+          }
+        }
+        ASSERT_GT(count, 0);
+        // The exact mean is a multiple of 1/8; rounding moves it by at most half a grey value.
+        const double mean = sum / count;
+        ASSERT_LE(std::abs(static_cast<double>(*it) - mean), 0.5) << c;
+        ++checked;
+      }
+    });
+  }
+  EXPECT_GT(checked, 1000);
+}
+
+TEST_F(DatasetTest, FloatOnRequestHoldsTheSameValues) {
+  const Volume16 volume = generatePhantom(spec());
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.value_type = ValueType::kFloat;
+  const DatasetInfo info = writeDataset(MemorySource(volume), dir_, options);
+  EXPECT_EQ(info.value_type, ValueType::kFloat);
+  EXPECT_EQ(readIndex(dir_).at("value_type"), "float");
+  EXPECT_FALSE(readIndex(dir_).contains("coarse_levels"));
+  EXPECT_EQ(level0Mismatches(dir_, volume, ValueType::kFloat), 0);
+
+  const auto native = dir_.string() + "_native";
+  options.value_type.reset();
+  const DatasetInfo native_info = writeDataset(MemorySource(volume), native, options);
+  EXPECT_EQ(native_info.active_voxel_count, info.active_voxel_count);
+  EXPECT_EQ(native_info.levels.at(0).bricks, info.levels.at(0).bricks);
+  std::filesystem::remove_all(native);
+}
+
+TEST_F(DatasetTest, StoresEightBitInputExactlyAsUInt8) {
+  PhantomSpec phantom = spec();
+  phantom.dims = {64, 64, 64};
+  phantom.voxel_size = 0.2;  // the same part at half the resolution
+  Volume16 volume = generatePhantom(phantom);
+  for (auto& value : volume.data) {
+    value = static_cast<std::uint16_t>(value >> 8U);  // the phantom with 8-bit grey values
+  }
+  std::filesystem::create_directories(dir_);
+  const auto raw = dir_ / "eight.raw";
+  writeRawWithHeader(raw, volume, 0, 0, SampleType::kUInt8, std::endian::little);
+  const MappedRawSource source(
+      raw, RawLayout{phantom.dims, phantom.voxel_size, SampleType::kUInt8, std::endian::little, 0});
+  EXPECT_EQ(source.sampleType(), SampleType::kUInt8);
+
+  DatasetOptions options;
+  options.brick_size = 32;
+  const DatasetInfo info = writeDataset(source, dir_ / "eight.vsieve", options);
+  EXPECT_EQ(info.value_type, ValueType::kUInt8);
+  EXPECT_GT(info.active_voxel_count, 0);
+  EXPECT_LT(info.active_voxel_count, volume.voxelCount());  // the outside air is gone
+  EXPECT_EQ(level0Mismatches(dir_ / "eight.vsieve", volume, ValueType::kUInt8), 0);
+  const Dataset dataset = Dataset::open(dir_ / "eight.vsieve");
+  const Box box{{8, 24, 24}, {56, 40, 40}};
+  std::vector<float> region(static_cast<std::size_t>(box.voxelCount()));
+  dataset.readRegion(0, box, region, -1.0F);
+  std::int64_t active = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+        const float read = region[static_cast<std::size_t>(
+            (x - box.min[0]) + box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])))];
+        if (read >= 0.0F) {
+          ASSERT_EQ(read, static_cast<float>(volume.at(x, y, z)));
+          ++active;
+        }
+      }
+    }
+  }
+  EXPECT_GT(active, 0);
+
+  // Wider on request, never narrower.
+  options.value_type = ValueType::kUInt16;
+  EXPECT_EQ(writeDataset(source, dir_ / "sixteen.vsieve", options).value_type, ValueType::kUInt16);
+  EXPECT_EQ(level0Mismatches(dir_ / "sixteen.vsieve", volume, ValueType::kUInt16), 0);
+  options.value_type = ValueType::kUInt8;
+  EXPECT_THROW(writeDataset(PhantomSource(phantom), dir_ / "narrow.vsieve", options),
+               std::invalid_argument);
+}
+
+TEST_F(DatasetTest, ReadsFloatDatasetsOfFormatVersionOne) {
+  const Volume16 volume = generatePhantom(spec());
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.value_type = ValueType::kFloat;
+  (void)writeDataset(MemorySource(volume), dir_, options);
+  // As written before ADR 0021: version 1, float grids.
+  nlohmann::json index = readIndex(dir_);
+  index["version"] = 1;
+  std::ofstream(dir_ / "index.json") << index.dump(2);
+
+  const Dataset dataset = Dataset::open(dir_);
+  EXPECT_EQ(dataset.info().value_type, ValueType::kFloat);
+  EXPECT_EQ(dataset.sample(0, {64, 64, 64}), static_cast<float>(volume.at(64, 64, 64)));
+
+  index["version"] = 3;
+  std::ofstream(dir_ / "index.json") << index.dump(2);
+  EXPECT_THROW((void)readDatasetInfo(dir_), std::runtime_error);
 }
 
 class DatasetReaderTest : public DatasetTest {
@@ -669,7 +838,8 @@ TEST_F(DatasetReaderTest, CacheStaysWithinBudget) {
   (void)writeReference();
   const auto one_brick = static_cast<std::size_t>(
       readBrick(brickPath(dir_, 0, readDatasetInfo(dir_).levels[0].bricks.front()), false)
-          ->memUsage());
+          .base()
+          .memUsage());
   const std::size_t budget = 3 * one_brick;
   const Dataset dataset = Dataset::open(dir_, budget);
 
@@ -690,14 +860,15 @@ TEST_F(DatasetReaderTest, CacheStaysWithinBudget) {
   for (const Index3& brick : bricks) {
     (void)dataset.brick(0, brick);
   }
-  EXPECT_GT(held->activeVoxelCount(), 0U);
+  EXPECT_GT(held->base().activeVoxelCount(), 0U);
 }
 
 TEST_F(DatasetReaderTest, DatasetsShareOneCacheBudget) {
   (void)writeReference();
   const auto one_brick = static_cast<std::size_t>(
       readBrick(brickPath(dir_, 0, readDatasetInfo(dir_).levels[0].bricks.front()), false)
-          ->memUsage());
+          .base()
+          .memUsage());
   const auto cache = std::make_shared<BrickCache>(4 * one_brick);
   const Dataset first = Dataset::open(dir_, cache);
   auto second = std::make_optional(Dataset::open(dir_, cache));
@@ -732,7 +903,7 @@ TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
   for (int level = 0; level < static_cast<int>(dataset.info().levels.size()); ++level) {
     std::atomic<std::int64_t> active{0};
     std::atomic<std::size_t> visited{0};
-    dataset.forEachBrick(level, [&](const Index3& brick, const openvdb::FloatGrid& grid) {
+    dataset.forEachGrid(level, [&](const Index3& brick, const auto& grid) {
       const Box box = dataset.brickBox(level, brick);
       const openvdb::CoordBBox bounds = grid.evalActiveVoxelBoundingBox();
       EXPECT_GE(bounds.min().x(), box.min[0]);

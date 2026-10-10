@@ -125,7 +125,7 @@ inline constexpr const char* kPluginExtension = ".so";
 #endif
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 3;
+inline constexpr int kPluginApiVersion = 4;
 
 }  // namespace voxelsieve
 
