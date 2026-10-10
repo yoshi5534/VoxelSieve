@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -618,36 +619,79 @@ class BSplineField {
   std::array<std::size_t, 3> nodes_{};
 };
 
+/// The 64 control points of a set of positions, their weights and the gradients of the weights,
+/// in flat arrays: the solver visits them hundreds of times.
+struct Stencils {
+  static constexpr std::size_t kNodes = 64;
+  std::vector<std::size_t> node;
+  std::vector<double> weight;
+  std::vector<double> gradient;  // 3 per node, only with `gradients`
+
+  Stencils(const BSplineField& field, std::span<const Vec> positions, bool gradients) {
+    node.resize(kNodes * positions.size());
+    weight.resize(kNodes * positions.size());
+    if (gradients) {
+      gradient.resize(3 * kNodes * positions.size());
+    }
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, positions.size(), 256),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                          std::size_t k = kNodes * i;
+                          field.forEach(field.stencil(positions[i]),
+                                        [&](std::size_t n, double w, const Vec& g) {
+                                          node[k] = n;
+                                          weight[k] = w;
+                                          if (gradients) {
+                                            std::copy(g.begin(), g.end(), &gradient[3 * k]);
+                                          }
+                                          ++k;
+                                        });
+                        }
+                      });
+  }
+  [[nodiscard]] std::size_t size() const { return node.size() / kNodes; }
+};
+
 /// The quadratic problem of one step of the registration: point-to-plane distances of the data
 /// points, the elastic (strain) energy at the regularisation points and a small ridge, as a
 /// matrix-free operator on the control point displacements. Each strain point has a weight.
 class DeformationSystem {
  public:
-  DeformationSystem(const BSplineField& field, const std::vector<BSplineField::Stencil>& data,
-                    const std::vector<BSplineField::Stencil>& strain,
-                    const std::vector<double>& strain_weights)
-      : field_(field), data_(data), strain_(strain), strain_weights_(strain_weights) {}
+  DeformationSystem(std::size_t unknowns, const Stencils& data, const Stencils& strain,
+                    std::vector<double> strain_weights)
+      : unknowns_(unknowns),
+        data_(data),
+        strain_(strain),
+        strain_weights_(std::move(strain_weights)),
+        strain_diagonal_(unknowns, 0.0) {
+    constexpr std::size_t kNodes = Stencils::kNodes;
+    for (std::size_t j = 0; j < strain_.size(); ++j) {
+      for (std::size_t k = kNodes * j; k < kNodes * (j + 1); ++k) {
+        const double* g = &strain_.gradient[3 * k];
+        const double g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+        double* d = &strain_diagonal_[3 * strain_.node[k]];
+        for (std::size_t a = 0; a < 3; ++a) {
+          d[a] += strain_weights_[j] * 0.5 * (g2 + g[a] * g[a]);
+        }
+      }
+    }
+  }
 
   /// Sets the planes of the data points: normal and weight (summing to one).
   void setPlanes(std::vector<Vec> normals, std::vector<double> weights) {
+    constexpr std::size_t kNodes = Stencils::kNodes;
     normals_ = std::move(normals);
     weights_ = std::move(weights);
-    const std::size_t n = 3 * field_.nodeCount();
-    diagonal_.assign(n, 0.0);
+    diagonal_ = strain_diagonal_;
     for (std::size_t i = 0; i < data_.size(); ++i) {
-      field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
-        for (std::size_t k = 0; k < 3; ++k) {
-          diagonal_[3 * node + k] += weights_[i] * w * w * normals_[i][k] * normals_[i][k];
+      const Vec& n = normals_[i];
+      for (std::size_t k = kNodes * i; k < kNodes * (i + 1); ++k) {
+        const double ww = weights_[i] * data_.weight[k] * data_.weight[k];
+        double* d = &diagonal_[3 * data_.node[k]];
+        for (std::size_t a = 0; a < 3; ++a) {
+          d[a] += ww * n[a] * n[a];
         }
-      });
-    }
-    for (std::size_t j = 0; j < strain_.size(); ++j) {
-      field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& g) {
-        const double g2 = dot(g, g);
-        for (std::size_t k = 0; k < 3; ++k) {
-          diagonal_[3 * node + k] += strain_weights_[j] * 0.5 * (g2 + g[k] * g[k]);
-        }
-      });
+      }
     }
     double mean = 0.0;
     std::size_t used = 0;
@@ -665,65 +709,82 @@ class DeformationSystem {
 
   /// Right-hand side for the plane targets: n_i . u(x_i) should become `targets[i]`.
   [[nodiscard]] std::vector<double> rhs(const std::vector<double>& targets) const {
-    std::vector<double> b(3 * field_.nodeCount(), 0.0);
+    constexpr std::size_t kNodes = Stencils::kNodes;
+    std::vector<double> b(unknowns_, 0.0);
     for (std::size_t i = 0; i < data_.size(); ++i) {
       const double f = weights_[i] * targets[i];
-      field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
-        for (std::size_t k = 0; k < 3; ++k) {
-          b[3 * node + k] += f * w * normals_[i][k];
+      const Vec& n = normals_[i];
+      for (std::size_t k = kNodes * i; k < kNodes * (i + 1); ++k) {
+        double* o = &b[3 * data_.node[k]];
+        for (std::size_t a = 0; a < 3; ++a) {
+          o[a] += f * data_.weight[k] * n[a];
         }
-      });
+      }
     }
     return b;
   }
 
   void apply(const std::vector<double>& c, std::vector<double>& out) const {
+    constexpr std::size_t kNodes = Stencils::kNodes;
     const std::size_t n = c.size();
+    const double* cp = c.data();
     tbb::enumerable_thread_specific<std::vector<double>> partial(
         [n] { return std::vector<double>(n, 0.0); });
-    tbb::parallel_for(
-        tbb::blocked_range<std::size_t>(0, data_.size(), 512),
-        [&](const tbb::blocked_range<std::size_t>& range) {
-          auto& o = partial.local();
-          for (std::size_t i = range.begin(); i != range.end(); ++i) {
-            const Vec& nrm = normals_[i];
-            double s = 0.0;
-            field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
-              s += w * (nrm[0] * c[3 * node] + nrm[1] * c[3 * node + 1] + nrm[2] * c[3 * node + 2]);
-            });
-            s *= weights_[i];
-            field_.forEach(data_[i], [&](std::size_t node, double w, const Vec&) {
-              for (std::size_t k = 0; k < 3; ++k) {
-                o[3 * node + k] += s * w * nrm[k];
-              }
-            });
-          }
-        });
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, data_.size(), 512),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                        double* o = partial.local().data();
+                        const std::size_t* node = data_.node.data();
+                        const double* weight = data_.weight.data();
+                        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                          const double n0 = normals_[i][0];
+                          const double n1 = normals_[i][1];
+                          const double n2 = normals_[i][2];
+                          double s = 0.0;
+                          for (std::size_t k = kNodes * i; k < kNodes * (i + 1); ++k) {
+                            const double* ck = cp + 3 * node[k];
+                            s += weight[k] * (n0 * ck[0] + n1 * ck[1] + n2 * ck[2]);
+                          }
+                          s *= weights_[i];
+                          for (std::size_t k = kNodes * i; k < kNodes * (i + 1); ++k) {
+                            double* ok = o + 3 * node[k];
+                            const double f = s * weight[k];
+                            ok[0] += f * n0;
+                            ok[1] += f * n1;
+                            ok[2] += f * n2;
+                          }
+                        }
+                      });
     tbb::parallel_for(tbb::blocked_range<std::size_t>(0, strain_.size(), 256),
                       [&](const tbb::blocked_range<std::size_t>& range) {
-                        auto& o = partial.local();
+                        double* o = partial.local().data();
+                        const std::size_t* node = strain_.node.data();
+                        const double* gradient = strain_.gradient.data();
                         for (std::size_t j = range.begin(); j != range.end(); ++j) {
-                          // Displacement gradient G[a][b] = d u_b / d x_a, its symmetric part.
+                          // Displacement gradient G[a][b] = d u_b / d x_a, and its symmetric part.
                           Mat g{};
-                          field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& d) {
+                          for (std::size_t k = kNodes * j; k < kNodes * (j + 1); ++k) {
+                            const double* ck = cp + 3 * node[k];
+                            const double* d = gradient + 3 * k;
                             for (std::size_t a = 0; a < 3; ++a) {
-                              for (std::size_t b = 0; b < 3; ++b) {
-                                g[3 * a + b] += d[a] * c[3 * node + b];
-                              }
-                            }
-                          });
-                          Mat e{};
-                          for (std::size_t a = 0; a < 3; ++a) {
-                            for (std::size_t b = 0; b < 3; ++b) {
-                              e[3 * a + b] =
-                                  0.5 * strain_weights_[j] * (g[3 * a + b] + g[3 * b + a]);
+                              g[3 * a] += d[a] * ck[0];
+                              g[3 * a + 1] += d[a] * ck[1];
+                              g[3 * a + 2] += d[a] * ck[2];
                             }
                           }
-                          field_.forEach(strain_[j], [&](std::size_t node, double, const Vec& d) {
+                          Mat e{};
+                          const double half = 0.5 * strain_weights_[j];
+                          for (std::size_t a = 0; a < 3; ++a) {
                             for (std::size_t b = 0; b < 3; ++b) {
-                              o[3 * node + b] += d[0] * e[b] + d[1] * e[3 + b] + d[2] * e[6 + b];
+                              e[3 * a + b] = half * (g[3 * a + b] + g[3 * b + a]);
                             }
-                          });
+                          }
+                          for (std::size_t k = kNodes * j; k < kNodes * (j + 1); ++k) {
+                            double* ok = o + 3 * node[k];
+                            const double* d = gradient + 3 * k;
+                            for (std::size_t b = 0; b < 3; ++b) {
+                              ok[b] += d[0] * e[b] + d[1] * e[3 + b] + d[2] * e[6 + b];
+                            }
+                          }
                         }
                       });
     out.assign(n, 0.0);
@@ -779,10 +840,11 @@ class DeformationSystem {
   }
 
  private:
-  const BSplineField& field_;
-  const std::vector<BSplineField::Stencil>& data_;
-  const std::vector<BSplineField::Stencil>& strain_;
-  const std::vector<double>& strain_weights_;
+  std::size_t unknowns_;
+  const Stencils& data_;
+  const Stencils& strain_;
+  std::vector<double> strain_weights_;
+  std::vector<double> strain_diagonal_;
   std::vector<Vec> normals_;
   std::vector<double> weights_;
   std::vector<double> diagonal_;
@@ -816,20 +878,19 @@ std::vector<Vec> deformOntoCad(const MeshDistance& cad, std::span<const Vec> poi
   out.stiffness = options.stiffness;
   out.control_points = field.nodes();
 
-  std::vector<BSplineField::Stencil> data(points.size());
-  for (std::size_t i = 0; i < points.size(); ++i) {
-    data[i] = field.stencil(points[i]);
-  }
+  // The fit takes at most 10 000 of the points; they are in random order.
+  points = points.first(std::min<std::size_t>(points.size(), 10000));
+  const Stencils data(field, points, false);
   // The elastic energy is the strain integrated over the material of the part, normalised by its
   // volume: points on a grid inside the CAD model, and the surface points for a skin half a grid
   // step thick that the grid misses (and walls thinner than a grid step). On a part of size D,
   // stiffness 1 makes a uniform strain e cost as much as a distance of D * e. Bending strains a
   // thin wall little, so thin sections bend easily and thick ones hardly.
-  std::vector<BSplineField::Stencil> strain;
+  std::vector<Vec> strain_points;
   std::vector<double> strain_weights;
   {
     const double box = std::max((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]), 1e-27);
-    const double h = std::max({std::cbrt(box / 30000.0), floor_mm, 1e-9});
+    const double h = std::max({std::cbrt(box / 10000.0), floor_mm, 1e-9});
     std::array<std::size_t, 3> steps{};
     for (std::size_t k = 0; k < 3; ++k) {
       steps[k] = static_cast<std::size_t>(std::floor((hi[k] - lo[k]) / h)) + 1;
@@ -854,21 +915,22 @@ std::vector<Vec> deformOntoCad(const MeshDistance& cad, std::span<const Vec> poi
                       });
     for (std::size_t i = 0; i < grid.size(); ++i) {
       if (inside[i] != 0) {
-        strain.push_back(field.stencil(grid[i]));
+        strain_points.push_back(grid[i]);
         strain_weights.push_back(h * h * h);
       }
     }
-    const double skin = area_mm2 / static_cast<double>(points.size()) * 0.5 * h;
-    for (const auto& s : data) {
-      strain.push_back(s);
-      strain_weights.push_back(skin);
-    }
+    const std::size_t skin_count = std::min<std::size_t>(points.size(), 5000);
+    const double skin = area_mm2 / static_cast<double>(skin_count) * 0.5 * h;
+    strain_points.insert(strain_points.end(), points.begin(),
+                         points.begin() + static_cast<std::ptrdiff_t>(skin_count));
+    strain_weights.resize(strain_points.size(), skin);
     const double volume = std::accumulate(strain_weights.begin(), strain_weights.end(), 0.0);
     for (double& w : strain_weights) {
       w *= options.stiffness * diagonal * diagonal / volume;
     }
   }
-  DeformationSystem system(field, data, strain, strain_weights);
+  const Stencils strain(field, strain_points, true);
+  DeformationSystem system(3 * field.nodeCount(), data, strain, std::move(strain_weights));
 
   std::vector<double> coefficients(3 * field.nodeCount(), 0.0);
   std::vector<Vec> u(points.size(), Vec{});
@@ -916,10 +978,16 @@ std::vector<Vec> deformOntoCad(const MeshDistance& cad, std::span<const Vec> poi
       w /= total;
     }
     system.setPlanes(normals, std::move(weights));
-    system.solve(system.rhs(targets), coefficients, 200);
+    system.solve(system.rhs(targets), coefficients, 30);
     double moved = 0.0;
     for (std::size_t i = 0; i < points.size(); ++i) {
-      const Vec next = field.displacement(data[i], coefficients);
+      Vec next{};
+      for (std::size_t k = Stencils::kNodes * i; k < Stencils::kNodes * (i + 1); ++k) {
+        const double* ck = &coefficients[3 * data.node[k]];
+        for (std::size_t a = 0; a < 3; ++a) {
+          next[a] += data.weight[k] * ck[a];
+        }
+      }
       moved = std::max(moved, norm(next - u[i]));
       u[i] = next;
     }

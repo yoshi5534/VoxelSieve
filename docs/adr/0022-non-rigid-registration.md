@@ -32,7 +32,8 @@ alignment stays exactly as it is; the deformation only adds to it.
   (C²) and changes over no less than the control point spacing. The spacing defaults to an
   eighth of the largest extent of the part, at most 40 cells along the longest axis and no less
   than two voxels. Features smaller than the spacing cannot be bent away.
-- **Fit:** the scanned surface points, moved by the field, should lie on the CAD surface:
+- **Fit:** up to 10 000 of the scanned surface points, moved by the field, should lie on the
+  CAD surface:
   point-to-plane distances to the closest CAD point, re-linearised in each iteration as in the
   rigid ICP, with the same Huber weights (twice the robust sigma, at least half a voxel) and
   rejection beyond five sigma. Once the bend is taken up, the sigma is that of the noise, so local
@@ -40,8 +41,8 @@ alignment stays exactly as it is; the deformation only adds to it.
   hundredth of half a voxel.
 - **Regularisation: elastic energy.** The field pays for the strain it causes, the symmetric part
   of its gradient, integrated over the material of the part: points on a grid inside the CAD
-  model (about 30 000 over the bounding box), plus the surface points for a skin half a grid step
-  thick, which covers walls thinner than the grid. It is normalised by the volume and weighted by
+  model (about 10 000 over the bounding box), plus up to 5000 surface points for a skin half a
+  grid step thick, which covers walls thinner than the grid. It is normalised by the volume and weighted by
   `stiffness × D²` (D the diagonal of the part), so that stiffness 1 makes a uniform strain e cost
   as much as a distance of D·e. A small ridge pins control points without material to zero.
 
@@ -55,8 +56,12 @@ the surface was rejected, because the field can then hide a gradient below the s
 shrink a thick part almost unnoticed (a third of a 1 % oversize in the test below).
 
 Each iteration solves the linear least-squares problem for all control point displacements at
-once with conjugate gradients (Jacobi preconditioner, matrix-free, warm-started from the last
-iteration). The strain is linear in the field, so large rotations of parts of the part (more than
+once with conjugate gradients (Jacobi preconditioner, matrix-free, at most 30 steps,
+warm-started from the last iteration). The strain makes the system stiff, so the steps of one
+iteration rarely solve it fully; the next iteration goes on from there, and capping the steps
+costs no accuracy (same result on the plate below). The 64 control points of every point and
+their weights are computed once and kept in flat arrays, since the solver visits them hundreds
+of times. The strain is linear in the field, so large rotations of parts of the part (more than
 about 10°) count as strain; such parts need a better rigid start, or a later geometrically
 non-linear version.
 
@@ -87,8 +92,8 @@ Synthetic scans at 0.2 mm voxels, noise, cupping and unsharpness of half a voxel
 | block 20 × 14 × 10 mm, 1 % oversize | mean +0.072 mm | mean +0.070 mm, moved up to 0.004 mm | 98 % of the oversize |
 | sample hub (0.2 mm voxels), nominal shape | RMS 0.030 mm | moved up to 0.0004 mm | everything |
 
-On the full-size housing (972 592 surface points), the registration takes 1.3 s and the second
-deviation pass 0.9 s on 4 cores, next to 1.8 s for the rigid alignment.
+On the full-size housing (972 592 surface points), the registration takes 0.2 s and the second
+deviation pass 0.8 s on 4 cores, next to 1.6 s for the rigid alignment.
 
 ## Consequences
 
