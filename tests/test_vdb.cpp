@@ -45,7 +45,7 @@ TEST(Vdb, ConvertsGreyValuesExactlyOrRefuses) {
   float value = 0.0F;
   ASSERT_TRUE(uint16.probeValue(openvdb::Coord(3, 4, 5), value));
   EXPECT_EQ(value, static_cast<float>(volume.at(3, 4, 5)));
-  EXPECT_EQ(toFloatGrid(GreyGrid(grid)), grid);  // float stays as it is
+  EXPECT_EQ(toFloatGrid(GreyGrid(grid)).get(), grid.get());  // float stays as it is
 
   // Never quantised: fractions, and values beyond the type.
   auto fraction = openvdb::FloatGrid::create(0.0F);
