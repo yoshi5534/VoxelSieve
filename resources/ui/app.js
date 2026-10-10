@@ -114,6 +114,10 @@ const SUMMARY_LABELS = {
   resolution_mm: 'Resolution of the fit (mm)',
   nominal: 'Nominal object',
   dropped_components: 'Omitted internal surfaces',
+  displacement_max_mm: 'Non-rigid: largest displacement (mm)',
+  displacement_mean_mm: 'Non-rigid: mean displacement (mm)',
+  rigid_deviation_rms_mm: 'Rigid alignment alone: RMS of the deviation (mm)',
+  rigid_within_tolerance_percent: 'Rigid alignment alone: within tolerance (% of area)',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1346,6 +1350,27 @@ function deviationLegend(tolerance, range) {
       'Blue: material missing · green: within tolerance · red: excess material'));
 }
 
+/// Colour bar of the displacement of a non-rigid registration: green up to the tolerance, then
+/// yellow to red.
+function displacementLegend(tolerance, range) {
+  const edge = (100 * Math.min(tolerance / range, 1)).toFixed(2);
+  const bar = el('div', { className: 'legend-bar' });
+  bar.style.background = 'linear-gradient(to right, rgb(60,190,90) 0%, rgb(60,190,90) ' + edge +
+    '%, rgb(240,225,40) ' + edge + '%, rgb(215,30,30) 100%)';
+  const label = (text, percent, align) => {
+    const span = el('span', {}, text);
+    span.style.left = percent + '%';
+    span.style.transform = 'translateX(' + align + '%)';
+    return span;
+  };
+  return el('div', { className: 'deviation-legend' }, bar,
+    el('div', { className: 'legend-labels' }, label('0', 0, 0),
+      label(formatNumber(tolerance) + ' mm', edge, -50),
+      label('≥ ' + formatNumber(range) + ' mm', 100, -100)),
+    el('div', { className: 'legend-note' },
+      'How far the non-rigid registration moved the surface to fit the nominal geometry'));
+}
+
 function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
   // The transfer function outlives re-rendering; it is reset when another volume is loaded.
@@ -1730,13 +1755,21 @@ function renderVolumeView(panel, dataset) {
       status.textContent = error.message;
     });
   };
-  /// Loads the compared surface of the latest nominal-actual comparison of this dataset.
-  const showDeviation = () => {
+  /// Loads the compared surface of the latest nominal-actual comparison of this dataset, coloured
+  /// by its deviation or by the displacement of its non-rigid registration.
+  const showDeviation = (displacement = false) => {
     status.textContent = 'Loading nominal-actual comparison of step ' + comparisonStep + ' …';
-    volume.loadDeviation(comparisonStep).then((mesh) => {
+    volume.loadDeviation(comparisonStep, displacement).then((mesh) => {
       if (volume.mode !== 4) return;
-      legend.replaceChildren(deviationLegend(mesh.tolerance, mesh.range));
-      status.textContent = 'Nominal-actual deviation of step ' + comparisonStep + ' · ' +
+      const toggle = mesh.hasDisplacement ? el('label', {},
+        el('input', { type: 'checkbox', checked: mesh.displacement,
+          onchange: (event) => showDeviation(event.target.checked) }),
+        ' Show how far the non-rigid registration moved the surface') : [];
+      legend.replaceChildren(mesh.displacement ? displacementLegend(mesh.tolerance, mesh.range)
+        : deviationLegend(mesh.tolerance, mesh.range), toggle);
+      status.textContent = (mesh.displacement ? 'Non-rigid displacement' :
+        mesh.hasDisplacement ? 'Nominal-actual deviation after non-rigid registration' :
+          'Nominal-actual deviation') + ' of step ' + comparisonStep + ' · ' +
         formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
     }).catch((error) => {
       status.textContent = error.message;
@@ -2174,13 +2207,18 @@ function renderSceneView(panel) {
         render();
       }, (o) => o.id !== align.actual)),
       el('label', {}, 'Tolerance (± mm) ', tolerance),
+      el('label', { title: 'For flexible parts: bend the scanned surface onto the nominal one ' +
+        'before measuring; how far it was moved is shown beside the deviation' },
+      el('input', { type: 'checkbox', checked: Boolean(align.nonRigid),
+        onchange: (event) => { align.nonRigid = event.target.checked; } }),
+      ' Non-rigid registration (flexible part)'),
       el('div', { className: 'row' }, el('button', {
         className: 'primary',
         disabled: state.busy,
         onclick: async () => {
           if (!(await ensureSurfaces([align.actual]))) return;
           await runStep('compare_objects', { object: align.actual, nominal: align.nominal,
-            tolerance_mm: align.tolerance });
+            tolerance_mm: align.tolerance, non_rigid: Boolean(align.nonRigid) });
         },
       }, 'Compare')),
       lastStepCard('compare_objects', 'Last comparison')]

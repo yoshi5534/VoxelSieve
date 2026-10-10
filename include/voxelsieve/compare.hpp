@@ -63,6 +63,23 @@ struct CompareOptions {
   std::size_t fit_points = 20000;
   /// Triangle budget of the scanned surface mesh (surfaceDisplayMesh).
   std::size_t max_triangles = 2000000;
+  /// Non-rigid registration (ADR 0022) for parts that do not keep their nominal shape in the
+  /// scanner, such as thin, flexible parts: after the rigid alignment, the scanned surface is
+  /// bent onto the CAD model by a smooth, elastic deformation, and the deviation is measured on
+  /// the bent surface. How far every point was moved is reported beside its deviation.
+  struct Deformation {
+    bool enabled = false;
+    /// Spacing of the control points, mm: the shortest stretch over which the deformation can
+    /// change. Features smaller than that stay deviations. 0: an eighth of the largest extent of
+    /// the part.
+    double spacing_mm = 0.0;
+    /// Resistance against stretching and compressing, relative to the fit, without unit. Bending
+    /// strains thin sections little and thick ones much, so a high value lets thin sections bend
+    /// and keeps thick ones and the size of the part; a low value lets the deformation follow
+    /// almost any smooth deviation.
+    double stiffness = 1.0;
+  };
+  Deformation deformation;
 };
 
 [[nodiscard]] const char* toString(CompareOptions::Alignment alignment);
@@ -91,6 +108,26 @@ struct DeviationStats {
 
 inline constexpr std::array<double, 5> kDeviationPercentiles{1.0, 5.0, 50.0, 95.0, 99.0};
 
+/// The non-rigid registration of a comparison, when it was asked for.
+struct DeformationResult {
+  bool applied = false;
+  double spacing_mm = 0.0;
+  double stiffness = 0.0;
+  /// Control points per axis of the cubic B-spline deformation.
+  std::array<std::size_t, 3> control_points{};
+  /// Fit of the bent surface: RMS distance of the inlier points and their fraction.
+  double fit_rms_mm = 0.0;
+  double fit_inliers = 0.0;
+  int iterations = 0;
+  /// How far every vertex of the compared surface was moved, mm, and the statistics of that
+  /// (area-weighted, as the deviation; the tolerance bands count the area moved by more than the
+  /// tolerance).
+  std::vector<float> displacement_mm;
+  DeviationStats displacement;
+  /// The deviation after the rigid alignment alone, for comparison.
+  DeviationStats rigid;
+};
+
 struct CompareResult {
   RigidTransform cad_to_scan;
   CompareOptions::Alignment alignment = CompareOptions::Alignment::kAuto;
@@ -106,9 +143,11 @@ struct CompareResult {
   double dropped_area_mm2 = 0.0;
   std::size_t cad_triangles = 0;
   DeviationStats stats;
-  /// Compared surface of the scan in mm (dataset world space) and the deviation per vertex.
+  /// Compared surface of the scan in mm (dataset world space) and the deviation per vertex,
+  /// measured after the deformation when there is one.
   IndexedMesh mesh;
   std::vector<float> deviation_mm;
+  DeformationResult deformation;
 };
 
 /// The surface of a scan in mm, in the scan's own coordinates (voxel index times voxel size): the
@@ -178,7 +217,9 @@ inline constexpr std::array<std::array<double, 2>, 2> kDeviationViews{
     {{-60.0, 25.0}, {120.0, -25.0}}};
 
 /// Writes compare.json, deviation.ply (binary PLY with a float `deviation` and colours per
-/// vertex) and deviation_view_[12].png (shaded views, see kDeviationViews) into `dir`.
+/// vertex) and deviation_view_[12].png (shaded views, see kDeviationViews) into `dir`. With a
+/// deformation, deviation.ply also has a float `displacement` per vertex, and
+/// displacement_view_[12].png show it.
 void writeComparison(const CompareResult& result, const std::filesystem::path& dir);
 
 /// Writes the CAD model moved into scan coordinates as STL.
@@ -189,6 +230,8 @@ void writeAlignedCad(const CompareResult& result, const Mesh& cad,
 struct DeviationMesh {
   IndexedMesh mesh;  // mm
   std::vector<float> deviation_mm;
+  /// Empty without a deformation.
+  std::vector<float> displacement_mm;
 };
 [[nodiscard]] DeviationMesh readDeviationPly(const std::filesystem::path& file);
 

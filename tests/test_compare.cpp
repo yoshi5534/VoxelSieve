@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <numbers>
 #include <random>
 #include <string>
 #include <vector>
@@ -56,6 +57,43 @@ TEST(RigidTransformTest, InverseAndCompositionAreConsistent) {
   EXPECT_THROW((void)RigidTransform::fromMatrix(mirror), std::invalid_argument);
   EXPECT_THROW((void)RigidTransform::fromMatrix(std::vector<double>(5, 0.0)),
                std::invalid_argument);
+}
+
+/// Every triangle split into four, `levels` times.
+Mesh subdivided(Mesh mesh, int levels) {
+  for (int level = 0; level < levels; ++level) {
+    Mesh finer;
+    finer.triangles.reserve(4 * mesh.triangles.size());
+    for (const auto& t : mesh.triangles) {
+      const auto mid = [&t](std::size_t a, std::size_t b) {
+        return std::array<float, 3>{0.5F * (t[a][0] + t[b][0]), 0.5F * (t[a][1] + t[b][1]),
+                                    0.5F * (t[a][2] + t[b][2])};
+      };
+      const auto ab = mid(0, 1);
+      const auto bc = mid(1, 2);
+      const auto ca = mid(2, 0);
+      finer.triangles.push_back({t[0], ab, ca});
+      finer.triangles.push_back({ab, t[1], bc});
+      finer.triangles.push_back({ca, bc, t[2]});
+      finer.triangles.push_back({ab, bc, ca});
+    }
+    mesh = std::move(finer);
+  }
+  return mesh;
+}
+
+/// Bends a mesh about the y axis onto a cylinder of radius `radius` (mm) without stretching the
+/// plane z = 0: the plate sags by x^2 / (2 radius) at x.
+Mesh bent(Mesh mesh, double radius) {
+  for (auto& t : mesh.triangles) {
+    for (auto& p : t) {
+      const double angle = p[0] / radius;
+      const double r = radius - p[2];
+      p = {static_cast<float>(r * std::sin(angle)), p[1],
+           static_cast<float>(radius - r * std::cos(angle))};
+    }
+  }
+  return mesh;
 }
 
 /// Signed distance to an axis-aligned box centred on the origin with half sizes `h`.
@@ -169,13 +207,9 @@ class CompareTest : public ::testing::Test {
     return t;
   }
 
-  std::filesystem::path dir_;
-};
-
-TEST_F(CompareTest, AlignsARotatedAndShiftedCadModel) {
-  // The bracket is shaped much like the housing. The hub is symmetric but for the keyway in its
-  // bore, which has to decide between five positions of the bolt circle.
-  for (const std::string part : {"housing", "hub"}) {  // NOLINT(performance-for-range-copy)
+  /// Scans the sample part, moves its CAD model far away and checks that the comparison brings
+  /// it back onto the scan.
+  void alignsARotatedAndShiftedCadModel(const std::string& part) {
     SamplePartOptions options;
     options.scale = 0.3;
     options.resolution_mm = 0.15;
@@ -209,7 +243,18 @@ TEST_F(CompareTest, AlignsARotatedAndShiftedCadModel) {
     EXPECT_EQ(result.dropped_components, 0U) << part;
     EXPECT_EQ(result.deviation_mm.size(), result.mesh.points.size());
   }
+
+  std::filesystem::path dir_;
+};
+
+// The bracket is shaped much like the housing. The hub is symmetric but for the keyway in its
+// bore, which has to decide between five positions of the bolt circle. One test per part, so
+// the slow sanitizer build runs them in parallel.
+TEST_F(CompareTest, AlignsARotatedAndShiftedHousing) {
+  alignsARotatedAndShiftedCadModel("housing");
 }
+
+TEST_F(CompareTest, AlignsARotatedAndShiftedHub) { alignsARotatedAndShiftedCadModel("hub"); }
 
 TEST_F(CompareTest, MeasuresMaterialThatIsNotInTheCadModel) {
   // The scanned block is 0.4 mm higher than nominal at the top.
@@ -257,6 +302,77 @@ TEST_F(CompareTest, MeasuresMaterialThatIsNotInTheCadModel) {
   EXPECT_LT(refined.fit_rms_mm, 0.05);
 }
 
+TEST_F(CompareTest, BendsAFlexiblePlateOntoItsCadModel) {
+  // A plate 60 x 20 x 2.4 mm, scanned bent by 1 mm at its ends, against its flat CAD model. A
+  // bump 0.4 mm high on its top face is a real deviation that must stay.
+  const Mesh flat = subdivided(boxMesh({60.0, 20.0, 2.4}), 6);
+  Mesh actual = bent(flat, 450.0);
+  for (auto& t : actual.triangles) {
+    for (auto& p : t) {
+      const double r = std::hypot(p[0] - 10.0, p[1]);
+      if (p[2] > 1.0 && r < 3.0) {
+        const double c = std::cos(0.5 * std::numbers::pi * r / 3.0);
+        p[2] += static_cast<float>(0.4 * c * c);
+      }
+    }
+  }
+  const SyntheticScan scan(actual, spec(0.2));
+  const SurfaceMask mask = surfaceOf(scan);
+  CompareOptions options;
+  options.alignment = CompareOptions::Alignment::kRefine;
+  options.initial = meshToScan(scan);
+  options.deformation.enabled = true;
+  const CompareResult result = compareToCad(mask, flat, options);
+  const auto bump = [&](const CompareResult& r) {
+    const RigidTransform to_cad = r.cad_to_scan.inverse();
+    double top = 0.0;
+    for (std::size_t i = 0; i < r.mesh.points.size(); ++i) {
+      const auto& p = r.mesh.points[i];
+      const Vec c = to_cad.apply({p[0], p[1], p[2]});
+      if (std::hypot(c[0] - 10.0, c[1]) < 1.0) {
+        top = std::max(top, static_cast<double>(r.deviation_mm[i]));
+      }
+    }
+    return top;
+  };
+  // Rigidly, the bend dominates: most of the plate lies outside the tolerance.
+  const DeformationResult& d = result.deformation;
+  ASSERT_TRUE(d.applied);
+  EXPECT_GT(d.rigid.rms_mm, 0.2);
+  EXPECT_LT(d.rigid.within_tolerance, 0.4);
+  // Bent onto the CAD model, the plate fits but for its bump, which keeps nine tenths of its
+  // height (the unsharpness of half a voxel rounds its top).
+  EXPECT_LT(result.stats.rms_mm, 0.06);
+  EXPECT_GT(result.stats.within_tolerance, 0.94);
+  EXPECT_GT(bump(result), 0.34);
+  EXPECT_LT(result.stats.max_mm, 0.45);
+  EXPECT_LT(d.fit_rms_mm, 0.05);
+  // The best rigid fit splits the sag of 1 mm between the middle and the ends.
+  EXPECT_GT(d.displacement.max_mm, 0.4);
+  EXPECT_LT(d.displacement.max_mm, 0.8);
+  EXPECT_EQ(d.displacement_mm.size(), result.mesh.points.size());
+  EXPECT_NEAR(d.spacing_mm, 60.0 / 8.0, 0.2);
+}
+
+TEST_F(CompareTest, KeepsTheSizeOfAThickPartWhenItBends) {
+  // A block 1 % larger than nominal in every direction: the deformation must not shrink it.
+  const Mesh cad = boxMesh({20.0, 14.0, 10.0});
+  const Mesh actual = boxMesh({20.2, 14.14, 10.1});
+  const SyntheticScan scan(actual, spec(0.2));
+  const SurfaceMask mask = surfaceOf(scan);
+  CompareOptions options;
+  options.alignment = CompareOptions::Alignment::kRefine;
+  options.initial = meshToScan(scan);
+  options.deformation.enabled = true;
+  const CompareResult result = compareToCad(mask, cad, options);
+  const DeviationStats& rigid = result.deformation.rigid;
+  // The block is 0.1 mm larger in x, 0.07 in y and 0.05 in z on each side: nearly all of that
+  // stays a deviation, since stretching a thick part costs much more than it fits.
+  EXPECT_GT(rigid.mean_mm, 0.06);
+  EXPECT_GT(result.stats.mean_mm, 0.95 * rigid.mean_mm);
+  EXPECT_LT(result.deformation.displacement.max_mm, 0.02);
+}
+
 TEST_F(CompareTest, LeavesInternalPoresOutOfTheComparison) {
   const Mesh block = boxMesh({16.0, 12.0, 10.0});
   SyntheticSpec with_pores = spec(0.2);
@@ -291,6 +407,7 @@ TEST_F(CompareTest, WritesAndReadsItsFiles) {
     EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / name)) << name;
   }
   const DeviationMesh read = readDeviationPly(dir_ / "out" / "deviation.ply");
+  EXPECT_TRUE(read.displacement_mm.empty());
   EXPECT_EQ(read.mesh.points, result.mesh.points);
   EXPECT_EQ(read.mesh.triangles, result.mesh.triangles);
   EXPECT_EQ(read.deviation_mm, result.deviation_mm);
@@ -303,6 +420,27 @@ TEST_F(CompareTest, WritesAndReadsItsFiles) {
   const Mesh aligned = readStl(dir_ / "out" / "cad_aligned.stl");
   EXPECT_EQ(aligned.triangles.size(), block.triangles.size());
   EXPECT_NEAR(meshVolumeMm3(aligned), meshVolumeMm3(block), 1e-3);
+
+  EXPECT_FALSE(json.contains("deformation"));
+
+  // With a non-rigid registration, the displacement is written beside the deviation.
+  CompareOptions options;
+  options.deformation.enabled = true;
+  const CompareResult deformed = compareToCad(mask, block, options);
+  writeComparison(deformed, dir_ / "deformed");
+  for (const char* name : {"displacement_view_1.png", "displacement_view_2.png"}) {
+    EXPECT_TRUE(std::filesystem::exists(dir_ / "deformed" / name)) << name;
+  }
+  const DeviationMesh read_deformed = readDeviationPly(dir_ / "deformed" / "deviation.ply");
+  EXPECT_EQ(read_deformed.deviation_mm, deformed.deviation_mm);
+  EXPECT_EQ(read_deformed.displacement_mm, deformed.deformation.displacement_mm);
+  std::ifstream deformed_in(dir_ / "deformed" / "compare.json");
+  const auto deformed_json = nlohmann::json::parse(deformed_in);
+  const auto& deformation = deformed_json.at("deformation");
+  EXPECT_EQ(deformation.at("control_points").size(), 3U);
+  EXPECT_NEAR(deformation.at("displacement").at("max_mm").get<double>(),
+              deformed.deformation.displacement.max_mm, 1e-12);
+  EXPECT_EQ(deformation.at("rigid_deviation").at("histogram").size(), 40U);
 
   std::ofstream(dir_ / "bad.ply") << "ply\nformat ascii 1.0\nend_header\n";
   EXPECT_THROW((void)readDeviationPly(dir_ / "bad.ply"), std::runtime_error);
@@ -319,6 +457,13 @@ TEST_F(CompareTest, RejectsInvalidOptions) {
   options.fit_points = 10;
   EXPECT_THROW((void)compareToCad(mask, block, options), std::invalid_argument);
   EXPECT_THROW((void)compareToCad(mask, Mesh{}), std::invalid_argument);
+  options = {};
+  options.deformation.enabled = true;
+  options.deformation.stiffness = 0.0;
+  EXPECT_THROW((void)compareToCad(mask, block, options), std::invalid_argument);
+  options.deformation.stiffness = 1.0;
+  options.deformation.spacing_mm = -1.0;
+  EXPECT_THROW((void)compareToCad(mask, block, options), std::invalid_argument);
   EXPECT_THROW((void)alignmentFromString("magic"), std::invalid_argument);
   EXPECT_EQ(alignmentFromString("refine"), CompareOptions::Alignment::kRefine);
 }

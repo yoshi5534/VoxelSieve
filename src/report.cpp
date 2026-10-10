@@ -583,6 +583,25 @@ void addComparison(Json& data, const std::filesystem::path& dir, const std::stri
       {"area", formatNumber(d.at("area_mm2").get<double>(), 0) + " mm²"},
       {"dropped", compare.value("dropped_components", 0)},
       {"range", "± " + formatNumber(range, 3) + " mm"}};
+  if (const auto deformation = compare.find("deformation"); deformation != compare.end()) {
+    // The deviation was measured on the surface bent onto the CAD model (ADR 0022).
+    const Json& moved = deformation->at("displacement");
+    const Json& rigid = deformation->at("rigid_deviation");
+    data["comparison"]["alignment"] =
+        data["comparison"]["alignment"].get<std::string>() + ", then non-rigid registration";
+    data["comparison"]["non_rigid"] = {
+        {"max", formatNumber(moved.at("max_mm").get<double>(), 3) + " mm"},
+        {"mean", formatNumber(moved.at("mean_mm").get<double>(), 3) + " mm"},
+        {"moved", formatNumber(100.0 * moved.at("above_tolerance").get<double>(), 1) + " %"},
+        {"spacing", formatNumber(deformation->at("spacing_mm").get<double>(), 3) + " mm"},
+        {"stiffness", formatNumber(deformation->at("stiffness").get<double>(), 3)},
+        {"rigid_within",
+         formatNumber(100.0 * rigid.at("within_tolerance").get<double>(), 1) + " %"},
+        {"rigid_mean", mm(rigid.at("mean_mm").get<double>())},
+        {"rigid_std", formatNumber(rigid.at("std_mm").get<double>(), 3) + " mm"}};
+    data["images"]["displacement_1"] = dataUri(dir / "displacement_view_1.png");
+    data["images"]["displacement_2"] = dataUri(dir / "displacement_view_2.png");
+  }
   data["images"]["deviation_1"] = dataUri(dir / "deviation_view_1.png");
   data["images"]["deviation_2"] = dataUri(dir / "deviation_view_2.png");
   data["images"]["deviation_histogram"] =
