@@ -7,7 +7,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-// windows.h first: psapi.h needs its types.
+// windows.h first: psapi.h and pdh.h need its types.
+#include <pdh.h>
 #include <psapi.h>
 #elif defined(__APPLE__)
 #include <libproc.h>
@@ -77,8 +78,75 @@ double fileTimeSeconds(const FILETIME& time) {
   return static_cast<double>(ticks) * 1e-7;  // 100 ns ticks
 }
 
+/// Windows counts no device reads or hard page faults per process; reads of a memory-mapped
+/// file (a ZIP, the staged copy) appear in none of the process's counters. The system-wide
+/// performance counters of the disks and of the memory manager stand in for them, read raw, so
+/// they are cumulative like the others. They include other processes; during an import those are
+/// usually quiet. Counter names are the English ones, which work in every display language.
+class DiskCounters {
+ public:
+  DiskCounters() {
+    if (PdhOpenQueryW(nullptr, 0, &query_) != ERROR_SUCCESS) {
+      query_ = nullptr;
+      return;
+    }
+    const bool added = add(L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", read_) &&
+                       add(L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", write_) &&
+                       add(L"\\Memory\\Page Reads/sec", faults_);
+    if (!added) {
+      PdhCloseQuery(query_);
+      query_ = nullptr;
+    }
+  }
+  DiskCounters(const DiskCounters&) = delete;
+  DiskCounters& operator=(const DiskCounters&) = delete;
+  DiskCounters(DiskCounters&&) = delete;
+  DiskCounters& operator=(DiskCounters&&) = delete;
+  ~DiskCounters() {
+    if (query_ != nullptr) {
+      PdhCloseQuery(query_);
+    }
+  }
+
+  /// Adds the cumulative device reads and writes and hard page fault reads to `c`.
+  void read(Counters& c) {
+    const std::scoped_lock lock(mutex_);
+    if (query_ == nullptr || PdhCollectQueryData(query_) != ERROR_SUCCESS) {
+      return;
+    }
+    c.disk_read_mb = static_cast<double>(raw(read_)) / kMb;
+    c.disk_write_mb = static_cast<double>(raw(write_)) / kMb;
+    c.major_faults = raw(faults_);
+  }
+
+ private:
+  bool add(const wchar_t* path, PDH_HCOUNTER& counter) {
+    return PdhAddEnglishCounterW(query_, path, 0, &counter) == ERROR_SUCCESS;
+  }
+  static std::int64_t raw(PDH_HCOUNTER counter) {
+    PDH_RAW_COUNTER value{};
+    DWORD type = 0;
+    if (PdhGetRawCounterValue(counter, &type, &value) != ERROR_SUCCESS) {
+      return 0;
+    }
+    return value.FirstValue;
+  }
+
+  std::mutex mutex_;
+  PDH_HQUERY query_ = nullptr;
+  PDH_HCOUNTER read_ = nullptr;
+  PDH_HCOUNTER write_ = nullptr;
+  PDH_HCOUNTER faults_ = nullptr;
+};
+
+void readDiskCounters(Counters& c) {
+  static DiskCounters counters;
+  counters.read(c);
+}
+
 /// Windows has no split of resident memory into own and file pages without walking the working
-/// set, so all of it counts as the process's own; page faults are not split into major and minor.
+/// set, so all of it counts as the process's own. Its page fault count holds soft faults too, so
+/// it counts as minor; the major ones come from the system-wide counters (DiskCounters).
 void readProcessCounters(Counters& c) {
   const HANDLE process = GetCurrentProcess();
   FILETIME created{};
@@ -100,6 +168,7 @@ void readProcessCounters(Counters& c) {
     c.read_mb = static_cast<double>(io.ReadTransferCount) / kMb;
     c.write_mb = static_cast<double>(io.WriteTransferCount) / kMb;
   }
+  readDiskCounters(c);
 }
 
 /// Total and available physical memory in MB.

@@ -28,6 +28,12 @@ faster and leaner we need the same numbers from every operation, per phase, kept
   `GetProcessMemoryInfo` (the whole working set counts as own pages, all page faults as minor)
   and `GetProcessIoCounters` (bytes read and written, no device counters). On both the peaks
   count from process start.
+- Amendment (2026-10-10): on Windows the device reads and writes and the major page faults come
+  from the system-wide performance counters (PDH, part of Windows: `PhysicalDisk(_Total)` read
+  and write bytes, `Memory\Page Reads/sec` for hard faults), read raw so they are cumulative.
+  Reads of memory-mapped files appear in no per-process counter there, so without them every
+  import read zero bytes from disk and the hints blamed too few parallel parts where the work
+  waited for the disk. They include other processes.
 - Library code marks its phases with `TelemetryPhase`, which goes to the calling thread's current
   recorder (`TelemetryScope`) and does nothing without one. So `writeDataset`,
   `analyzePorosity`, `segmentMaterials` and `compareToCad` report the same phases in the studio

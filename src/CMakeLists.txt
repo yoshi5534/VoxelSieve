@@ -79,6 +79,8 @@ if(WIN32)
             -P ${PROJECT_SOURCE_DIR}/cmake/FilterExports.cmake
     VERBATIM)
   target_link_options(voxelsieve PRIVATE /DEF:${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def)
+  # Performance counters for the disk reads in the telemetry (ADR 0017), part of Windows.
+  target_link_libraries(voxelsieve PRIVATE pdh)
 endif()
 
 target_include_directories(voxelsieve PUBLIC

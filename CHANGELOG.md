@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Disk reads in the telemetry on Windows**: device reads and writes and hard page faults now come
+  from the system-wide performance counters (ADR 0017 amendment). Windows counts reads of
+  memory-mapped files in no per-process counter, so every import showed 0 B read and the hints
+  blamed too few parallel parts where the work waited for the disk.
+
 - **The import preview gets sharper as the import goes on**: after the first look, a staged
   import (stacks, ZIP archives, DICOM, files on a share) copies the rest of the preview's slices
   coarse to fine and shows a sharper preview after each round, three times as many slices each
