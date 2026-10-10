@@ -11,6 +11,7 @@
 #include <atomic>
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <functional>
@@ -19,6 +20,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include "detail/blocks.hpp"
 #include "detail/pages.hpp"
@@ -37,7 +39,8 @@ using detail::Histogram;
 using detail::kHistogramBins;
 using Index3 = std::array<std::int64_t, 3>;
 
-constexpr int kFormatVersion = 1;
+/// 2: grids of any value type (ADR 0021); 1: float grids only, still read.
+constexpr int kFormatVersion = 2;
 
 openvdb::Coord toCoord(const Index3& index) {
   return {static_cast<openvdb::Int32>(index[0]), static_cast<openvdb::Int32>(index[1]),
@@ -345,7 +348,7 @@ BlockGrid classifyBlocks(const BlockStatistics& stats, float threshold,
 // ---------------------------------------------------------------------------------------------
 // Pass 2: level-0 bricks.
 
-void setGridProperties(openvdb::FloatGrid& grid, int level, const VoxelSize& voxel_size) {
+void setGridProperties(openvdb::GridBase& grid, int level, const VoxelSize& voxel_size) {
   grid.setTransform(detail::voxelTransform(voxel_size, level));
   grid.setGridClass(openvdb::GRID_FOG_VOLUME);
   grid.setName("density");
@@ -353,14 +356,16 @@ void setGridProperties(openvdb::FloatGrid& grid, int level, const VoxelSize& vox
 }
 
 /// Builds one level-0 brick, or returns nullptr when the sieve keeps nothing inside it.
-openvdb::FloatGrid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& blocks,
-                                   const Index3& brick, const DatasetOptions& options) {
+template <class Grid>
+typename Grid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& blocks,
+                              const Index3& brick, const DatasetOptions& options) {
+  using Value = typename Grid::ValueType;
   const Index3 dims = source.dims();
   const std::int64_t blocks_per_brick = options.brick_size / kBlockSize;
   const std::int64_t halo = ceilDiv(options.margin_voxels, kBlockSize);
 
   // Kept blocks in the brick plus a halo, so the margin can grow in from neighbouring bricks.
-  auto grid = openvdb::FloatGrid::create(0.0F);
+  auto grid = Grid::create(Value{0});
   auto& tree = grid->tree();
   bool any_kept = false;
   Index3 lo{};
@@ -380,7 +385,7 @@ openvdb::FloatGrid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& 
         const openvdb::Coord min = toCoord({bx * kBlockSize, by * kBlockSize, bz * kBlockSize});
         const openvdb::Coord max = openvdb::Coord::minComponent(
             min.offsetBy(static_cast<openvdb::Int32>(kBlockSize - 1)), volume_max);
-        tree.fill(openvdb::CoordBBox(min, max), 0.0F, /*active=*/true);
+        tree.fill(openvdb::CoordBBox(min, max), Value{0}, /*active=*/true);
       }
     }
   }
@@ -406,50 +411,87 @@ openvdb::FloatGrid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& 
 
   std::vector<std::uint16_t> values(static_cast<std::size_t>(box.voxelCount()));
   source.readRegion(box, values);
-  openvdb::tree::LeafManager<openvdb::FloatTree> leaves(tree);
+  if constexpr (std::is_same_v<Value, std::uint8_t>) {
+    // 8-bit grids hold 8-bit input only (writeDataset checks the source's sample type).
+    if (const auto it =
+            std::find_if(values.begin(), values.end(), [](std::uint16_t v) { return v > 255; });
+        it != values.end()) {
+      throw std::runtime_error("Grey value " + std::to_string(*it) +
+                               " of an 8-bit input does not fit into 8 bits");
+    }
+  }
+  openvdb::tree::LeafManager<typename Grid::TreeType> leaves(tree);
   leaves.foreach (
-      [&](openvdb::FloatTree::LeafNodeType& leaf, std::size_t) {
+      [&](typename Grid::TreeType::LeafNodeType& leaf, std::size_t) {
         for (auto it = leaf.beginValueOn(); it; ++it) {
           const openvdb::Coord c = it.getCoord();
           const auto index = static_cast<std::size_t>(
               (c.x() - box.min[0]) +
               box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])));
-          it.setValue(static_cast<float>(values[index]));
+          it.setValue(static_cast<Value>(values[index]));
         }
       },
       /*threaded=*/false);
   return grid;
 }
 
+GreyGrid buildBrick(ValueType type, const VolumeSource& source, const BlockGrid& blocks,
+                    const Index3& brick, const DatasetOptions& options) {
+  switch (type) {
+    case ValueType::kUInt16:
+      return buildBrick<UInt16Grid>(source, blocks, brick, options);
+    case ValueType::kUInt8:
+      return buildBrick<UInt8Grid>(source, blocks, brick, options);
+    case ValueType::kFloat:
+      break;
+  }
+  return buildBrick<openvdb::FloatGrid>(source, blocks, brick, options);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Coarser levels.
 
+/// Integer grid with the topology of `mean` and its values rounded to the nearest integer.
+template <class Grid>
+GreyGrid roundedGrid(const openvdb::FloatGrid& mean) {
+  using Value = typename Grid::ValueType;
+  auto grid = Grid::create(
+      std::make_shared<typename Grid::TreeType>(mean.tree(), Value{0}, openvdb::TopologyCopy()));
+  auto accessor = grid->getAccessor();
+  for (auto it = mean.cbeginValueOn(); it; ++it) {
+    accessor.setValueOnly(it.getCoord(), static_cast<Value>(std::lround(*it)));
+  }
+  return grid;
+}
+
 /// Mean of the active children of each voxel, from up to 2x2x2 bricks of the finer level.
-/// Children are loaded one at a time to bound memory.
-openvdb::FloatGrid::Ptr downsample(const std::vector<std::filesystem::path>& children) {
+/// Children are loaded one at a time to bound memory. Integer types store the mean rounded to
+/// the nearest integer (ADR 0021).
+GreyGrid downsample(const std::vector<std::filesystem::path>& children, ValueType type) {
   using Leaf = openvdb::FloatTree::LeafNodeType;
   auto sum = openvdb::FloatGrid::create(0.0F);
   auto count = openvdb::FloatGrid::create(0.0F);
   auto sum_acc = sum->getAccessor();
   auto count_acc = count->getAccessor();
   for (const auto& path : children) {
-    const auto child = readBrick(path, /*delay_load=*/false);
-    child->tree().voxelizeActiveTiles();
-    // A leaf of 8^3 voxels falls into one octant of a parent leaf, so each child leaf looks up
-    // its two parent leaves once and then adds voxel by voxel, in the same order as before.
-    for (auto leaf = child->tree().cbeginLeaf(); leaf; ++leaf) {
-      const openvdb::Coord origin = leaf->origin();
-      const openvdb::Coord parent_origin(origin.x() >> 1, origin.y() >> 1, origin.z() >> 1);
-      Leaf* sum_leaf = sum_acc.touchLeaf(parent_origin);
-      Leaf* count_leaf = count_acc.touchLeaf(parent_origin);
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const openvdb::Coord c = it.getCoord();
-        const openvdb::Index n =
-            Leaf::coordToOffset(openvdb::Coord(c.x() >> 1, c.y() >> 1, c.z() >> 1));
-        sum_leaf->setValueOn(n, sum_leaf->getValue(n) + *it);
-        count_leaf->setValueOn(n, count_leaf->getValue(n) + 1.0F);
+    readBrick(path, /*delay_load=*/false).visit([&](auto& child) {
+      child.tree().voxelizeActiveTiles();
+      // A leaf of 8^3 voxels falls into one octant of a parent leaf, so each child leaf looks up
+      // its two parent leaves once and then adds voxel by voxel, in the same order as before.
+      for (auto leaf = child.tree().cbeginLeaf(); leaf; ++leaf) {
+        const openvdb::Coord origin = leaf->origin();
+        const openvdb::Coord parent_origin(origin.x() >> 1, origin.y() >> 1, origin.z() >> 1);
+        Leaf* sum_leaf = sum_acc.touchLeaf(parent_origin);
+        Leaf* count_leaf = count_acc.touchLeaf(parent_origin);
+        for (auto it = leaf->cbeginValueOn(); it; ++it) {
+          const openvdb::Coord c = it.getCoord();
+          const openvdb::Index n =
+              Leaf::coordToOffset(openvdb::Coord(c.x() >> 1, c.y() >> 1, c.z() >> 1));
+          sum_leaf->setValueOn(n, sum_leaf->getValue(n) + static_cast<float>(*it));
+          count_leaf->setValueOn(n, count_leaf->getValue(n) + 1.0F);
+        }
       }
-    }
+    });
   }
   for (auto leaf = sum->tree().beginLeaf(); leaf; ++leaf) {
     const Leaf* count_leaf = count_acc.probeConstLeaf(leaf->origin());
@@ -457,11 +499,19 @@ openvdb::FloatGrid::Ptr downsample(const std::vector<std::filesystem::path>& chi
       it.setValue(*it / count_leaf->getValue(it.pos()));
     }
   }
+  switch (type) {
+    case ValueType::kUInt16:
+      return roundedGrid<UInt16Grid>(*sum);
+    case ValueType::kUInt8:
+      return roundedGrid<UInt8Grid>(*sum);
+    case ValueType::kFloat:
+      break;
+  }
   return sum;
 }
 
-void writeBrick(const std::filesystem::path& path, const openvdb::FloatGrid::Ptr& grid) {
-  writeVdb(path, {grid});
+void writeBrick(const std::filesystem::path& path, const GreyGrid& grid) {
+  writeVdb(path, {grid.basePtr()});
 }
 
 nlohmann::json toJson(const DatasetInfo& info) {
@@ -474,7 +524,7 @@ nlohmann::json toJson(const DatasetInfo& info) {
   }
   nlohmann::json json = {{"format", "voxelsieve-dataset"},
                          {"version", kFormatVersion},
-                         {"value_type", "float"},
+                         {"value_type", std::string(valueTypeName(info.value_type))},
                          {"dims", info.dims}};
   writeVoxelSize(json, info.voxel_size);
   json.update({{"brick_size", info.brick_size},
@@ -487,6 +537,9 @@ nlohmann::json toJson(const DatasetInfo& info) {
                {"levels", levels}});
   if (info.outside_air_axes != kAllAxes) {
     json["outside_air_axes"] = airAxesName(info.outside_air_axes);
+  }
+  if (info.value_type != ValueType::kFloat) {
+    json["coarse_levels"] = "rounded mean";
   }
   if (!info.value_mapping.isIdentity()) {
     json["value_mapping"] = {{"offset", info.value_mapping.offset},
@@ -503,14 +556,14 @@ std::filesystem::path brickPath(const std::filesystem::path& dir, int level, con
           std::to_string(brick[2]) + ".vdb");
 }
 
-openvdb::FloatGrid::Ptr readBrick(const std::filesystem::path& file, bool delay_load) {
-  openvdb::initialize();
+GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
+  initializeVdb();
   openvdb::io::File vdb(file.string());
   vdb.open(delay_load);
-  auto grid = openvdb::gridPtrCast<openvdb::FloatGrid>(vdb.readGrid("density"));
+  GreyGrid grid = GreyGrid::fromBase(vdb.readGrid("density"));
   vdb.close();
   if (!grid) {
-    throw std::runtime_error("No float grid 'density' in " + file.string());
+    throw std::runtime_error("No grey-value grid 'density' in " + file.string());
   }
   return grid;
 }
@@ -530,7 +583,13 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
   }
-  openvdb::initialize();
+  const ValueType native =
+      input.sampleType() == SampleType::kUInt8 ? ValueType::kUInt8 : ValueType::kUInt16;
+  if (options.value_type == ValueType::kUInt8 && native != ValueType::kUInt8) {
+    throw std::invalid_argument(
+        "8-bit grids need 8-bit input; 16-bit grey values would be quantised");
+  }
+  initializeVdb();
 
   DatasetInfo info;
   info.dims = input.dims();
@@ -538,6 +597,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   info.voxel_size.validate();
   info.value_mapping = input.valueMapping();
   info.brick_size = options.brick_size;
+  info.value_type = options.value_type.value_or(native);
   info.margin_voxels = options.margin_voxels;
   info.min_material_voxels = options.min_material_voxels;
   info.outside_air_axes = options.outside_air_axes;
@@ -602,18 +662,18 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   PageRelease bricks_release(staged ? &source : nullptr, 16);
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
-    auto grid = buildBrick(source, blocks, brick, options);
+    const GreyGrid grid = buildBrick(info.value_type, source, blocks, brick, options);
     bricks_release.step();
     brick_progress.step();
     if (!grid) {
       return;
     }
-    setGridProperties(*grid, 0, info.voxel_size);
-    grid->insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
+    setGridProperties(grid.base(), 0, info.voxel_size);
+    grid.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
     writeBrick(brickPath(dir, 0, brick), grid);
     // Counted outside the lock: OpenVDB counts with TBB tasks, and a thread waiting for them may
     // run another brick of this loop, which would then block on the lock it holds.
-    const auto active = static_cast<std::int64_t>(grid->activeVoxelCount());
+    const auto active = static_cast<std::int64_t>(grid.base().activeVoxelCount());
     const std::scoped_lock lock(mutex);
     level0.bricks.push_back(brick);
     info.active_voxel_count += active;
@@ -651,8 +711,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
       if (children.empty()) {
         return;
       }
-      auto grid = downsample(children);
-      setGridProperties(*grid, coarser.level, info.voxel_size);
+      const GreyGrid grid = downsample(children, info.value_type);
+      setGridProperties(grid.base(), coarser.level, info.voxel_size);
       writeBrick(brickPath(dir, coarser.level, brick), grid);
       const std::scoped_lock lock(mutex);
       coarser.bricks.push_back(brick);
@@ -665,8 +725,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   // Overview: the single brick of the coarsest level, or an empty grid for an empty dataset.
   const LevelInfo& top = info.levels.back();
   if (top.bricks.empty()) {
-    auto empty = openvdb::FloatGrid::create(0.0F);
-    setGridProperties(*empty, top.level, info.voxel_size);
+    const GreyGrid empty = GreyGrid::create(info.value_type);
+    setGridProperties(empty.base(), top.level, info.voxel_size);
     writeBrick(dir / "overview.vdb", empty);
   } else {
     std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
@@ -686,13 +746,15 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
     throw std::runtime_error("No index.json in " + dir.string());
   }
   const auto json = nlohmann::json::parse(in);
-  if (json.at("format") != "voxelsieve-dataset" || json.at("version") != kFormatVersion) {
+  if (json.at("format") != "voxelsieve-dataset" || json.at("version") < 1 ||
+      json.at("version") > kFormatVersion) {
     throw std::runtime_error("Unsupported dataset format in " + dir.string());
   }
   DatasetInfo info;
   info.dims = json.at("dims").get<Index3>();
   info.voxel_size = readVoxelSize(json);
   info.brick_size = json.at("brick_size").get<std::int64_t>();
+  info.value_type = parseValueType(json.value("value_type", "float"));
   info.threshold = json.at("threshold").get<float>();
   info.air_level = json.at("air_level").get<float>();
   info.margin_voxels = json.at("margin_voxels").get<int>();

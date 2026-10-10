@@ -176,11 +176,14 @@ float estimateMaterialLevel(const Dataset& dataset) {
     if (!brick) {
       continue;
     }
-    for (auto it = brick->cbeginValueOn(); it; ++it) {
-      if (*it > threshold) {
-        values.push_back(*it);
+    brick->visit([&](const auto& grid) {
+      for (auto it = grid.cbeginValueOn(); it; ++it) {
+        const auto value = static_cast<float>(*it);
+        if (value > threshold) {
+          values.push_back(value);
+        }
       }
-    }
+    });
     if (values.size() > kMaxValues) {
       break;
     }

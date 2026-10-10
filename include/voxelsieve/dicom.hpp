@@ -47,6 +47,8 @@ class DicomStackSource final : public VolumeSource {
   /// value = intercept + slope * (grey - 32768) for signed samples, intercept + slope * grey for
   /// unsigned ones.
   [[nodiscard]] ValueMapping valueMapping() const override;
+  /// 8 bit for unsigned samples of at most 8 bits stored.
+  [[nodiscard]] SampleType sampleType() const override;
   /// True: every slice is a file that is parsed as a whole.
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
   void releaseMemory() const override;

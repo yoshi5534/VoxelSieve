@@ -39,12 +39,14 @@ class Histogram final : public voxelsieve::Operation {
     std::uint64_t total = 0;
     const double scale = static_cast<double>(bins) / 65536.0;
     for (const auto& brick : dataset.level(level).bricks) {
-      const auto grid = dataset.brick(level, brick);
-      for (auto it = grid->cbeginValueOn(); it; ++it) {
-        const double value = std::clamp(static_cast<double>(*it), 0.0, 65535.0);
-        ++counts[static_cast<std::size_t>(value * scale)];
-        ++total;
-      }
+      // Bricks hold float, 16 or 8-bit grey values (ADR 0021): visit compiles the loop for each.
+      dataset.brick(level, brick)->visit([&](const auto& grid) {
+        for (auto it = grid.cbeginValueOn(); it; ++it) {
+          const double value = std::clamp(static_cast<double>(*it), 0.0, 65535.0);
+          ++counts[static_cast<std::size_t>(value * scale)];
+          ++total;
+        }
+      });
     }
     voxelsieve::writeJson(context.output_dir / "histogram.json",
                           {{"level", level}, {"bins", bins}, {"counts", counts}});

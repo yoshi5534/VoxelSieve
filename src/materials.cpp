@@ -24,6 +24,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
+#include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -133,11 +134,12 @@ std::vector<float> estimateMaterialThresholds(const Dataset& dataset, float air_
   const int level = 0;
   tbb::combinable<std::vector<std::uint64_t>> histograms(
       [] { return std::vector<std::uint64_t>(65536, 0); });
-  dataset.forEachBrick(level, [&](const Index3& /*brick*/, const openvdb::FloatGrid& grid) {
+  dataset.forEachGrid(level, [&](const Index3& /*brick*/, const auto& grid) {
     auto& histogram = histograms.local();
     for (auto it = grid.cbeginValueOn(); it; ++it) {
-      if (*it > air_threshold) {
-        ++histogram[static_cast<std::size_t>(std::clamp(*it, 0.0F, 65535.0F))];
+      const auto value = static_cast<float>(*it);
+      if (value > air_threshold) {
+        ++histogram[static_cast<std::size_t>(std::clamp(value, 0.0F, 65535.0F))];
       }
     }
   });
@@ -241,7 +243,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
   }
-  openvdb::initialize();
+  initializeVdb();
   const DatasetInfo& data = dataset.info();
 
   MaterialVolumeInfo info;
@@ -463,7 +465,7 @@ MaterialVolume& MaterialVolume::operator=(MaterialVolume&&) noexcept = default;
 MaterialVolume::~MaterialVolume() = default;
 
 MaterialVolume MaterialVolume::open(const std::filesystem::path& dir) {
-  openvdb::initialize();
+  initializeVdb();
   auto impl = std::make_unique<Impl>();
   impl->dir = dir;
   impl->info = readMaterialVolumeInfo(dir);

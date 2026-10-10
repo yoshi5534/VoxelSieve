@@ -45,6 +45,8 @@ class TiffStackSource final : public VolumeSource {
   [[nodiscard]] VoxelSize voxelSize() const override;
   /// Identity for integer slices; for float slices value = offset + scale * grey.
   [[nodiscard]] ValueMapping valueMapping() const override;
+  /// 8 bit for 8-bit integer slices.
+  [[nodiscard]] SampleType sampleType() const override;
   /// True: slices are decoded strip by strip, and a slice in a ZIP archive as a whole.
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
   /// Empties the cache of decoded strips and tiles and drops the pages of a ZIP archive.

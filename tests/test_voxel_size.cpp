@@ -109,7 +109,7 @@ TEST_F(VoxelSizeTest, DatasetKeepsThePitchPerAxis) {
 
   // Bricks and overview carry the scale per axis, so VDB tools (Blender, Houdini) show the part
   // in its true proportions: the outer wall is material at +-3.25 mm along every axis.
-  const auto overview = readBrick(dir_ / "d.vsieve" / "overview.vdb", false);
+  const auto overview = toFloatGrid(readBrick(dir_ / "d.vsieve" / "overview.vdb", false));
   const int top = written.levels.back().level;
   const double scale = std::pow(2.0, top);
   EXPECT_NEAR(overview->voxelSize()[0], 0.1 * scale, 1e-12);

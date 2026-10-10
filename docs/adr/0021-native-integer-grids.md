@@ -1,6 +1,6 @@
 # 0021: Native 16-bit and 8-bit unsigned grids
 
-Status: proposed (2026-10-10)
+Status: accepted (2026-10-10)
 
 Supersedes ADR 0002 in part: float stays available, but it is no longer the only value type.
 
@@ -66,29 +66,40 @@ register only the standard types, so they cannot open a `uint16` brick.
 5. **Reading.** `Dataset::sample` and `Dataset::readRegion` keep returning float, which is exact
    for every integer value. Algorithms that read regions therefore stay as they are. The brick
    cache holds bricks in their stored type, so twice (16 bit) or four times (8 bit) as many fit.
-   `Dataset::brick` and `forEachBrick` hand out a brick that can hold any of the three grid
-   types. Code that walks leaves (porosity, surface, materials, slices) dispatches once per
-   brick to a template over the grid type. This changes the dataset API that plugins use, so
-   `kPluginApiVersion` goes up.
-6. **Viewers.** An export to a float `.vdb` (operation and `vs-sieve --value-type float`) stays
-   available for Blender and Houdini. Our own results are unchanged: they are written in their
-   own types (pore labels, materials, the `.vss` surface).
+   `Dataset::brick`, `forEachBrick` and `readBrick` hand out a `GreyGrid`, which holds any of
+   the three grid types. Code that walks leaves (porosity, surface, materials, slices) calls
+   `GreyGrid::visit` or `Dataset::forEachGrid` with a generic lambda, once per brick, which is
+   compiled for each grid type. This changes the dataset API that plugins use, so
+   `kPluginApiVersion` goes from 3 to 4.
+6. **Viewers.** Float grids stay available for Blender and Houdini: the imports take
+   `value_type: "float"`, `vs-sieve` takes `--value-type float`, and `toFloatGrid` converts a
+   single brick. Our own results are unchanged: they are written in their own types (pore
+   labels, materials, the `.vss` surface).
 
 ## Consequences
 
 - An integer dataset takes half (16 bit) or a quarter (8 bit) of the memory of a float one, in
   the brick cache and while bricks are built. On disk it is 20 % smaller for the measured 16-bit
   scan, and smaller still for 8-bit scans or scans with less noise.
-- Pass 2 and the levels spend less time compressing and writing. How much the whole import
-  gains is measured per phase with telemetry (ADR 0017) once this is built, against the numbers
-  above.
+- Pass 2 and the levels spend less time building, compressing and writing bricks. Measured
+  with telemetry (ADR 0017), input and output in memory, so the disk does not count, 4 cores,
+  two runs each:
+
+  | input | value type | pass 2 | levels | import | dataset |
+  |---|---|---|---|---|---|
+  | phantom 640³, 500 MB | float | 1.0 s | 1.2–1.3 s | 2.25–2.40 s | 195.7 MB |
+  | | uint16 | 0.6–0.7 s | 1.0–1.1 s | 1.77–1.93 s | 174.3 MB |
+  | Me 163, 7 ZIP archives, 1.8 GB | float | 1.5–1.8 s | 0.9 s | 8.0–11.0 s | 235.5 MB |
+  | | uint16 | 1.0–1.2 s | 0.7 s | 7.5–7.6 s | 196.0 MB |
+
+  The Me 163 import is mostly the decoding of its TIFF slices (staging, 5 s), which this does
+  not change.
 - Bricks are no longer plain VDB files for every program: Blender and Houdini need the float
   export. ADR 0004 promised that each brick opens directly in them; that now holds only for
   float datasets.
 - Code that touches grids becomes templated over three types. Where only values are needed,
   `readRegion` keeps it out of the algorithms.
-- Tests: a lossless round trip of the phantom (ADR conventions) as `uint16` and as `uint8`
-  (an 8-bit raw phantom), version-1 datasets still open, the rounded coarse levels against the
-  analytic means, and `--value-type float` producing the old format.
-- CLAUDE.md ("Grey values are stored losslessly (`FloatGrid`, see ADR 0002)") is updated when
-  this is implemented.
+- Tests: the phantom is stored exactly as `uint16` and, as an 8-bit raw file, as `uint8`;
+  `float` on request holds the same values; version-1 datasets still open; the coarse levels lie
+  within half a grey value of the exact mean of their children; conversions refuse fractions and
+  values beyond the type; 8-bit TIFF and DICOM stacks report 8 bit.
