@@ -119,11 +119,12 @@ Scan scanBricks(const Dataset& dataset) {
     std::map<Coord, BlockStats> blocks;
     std::set<Coord> solid;
     std::map<Coord, int> partial;
+    Dataset::Sampler neighbours(dataset, 0);  // voxels of the bricks around this one
 
     const auto is_active = [&](const Coord& c) {
       const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] &&
                                 c.y() < box.max[1] && c.z() >= box.min[2] && c.z() < box.max[2];
-      return inside_brick ? acc.isValueOn(c) : dataset.sample(0, {c.x(), c.y(), c.z()}).has_value();
+      return inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
     };
 
     for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
@@ -549,6 +550,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   const MaterialReference reference(scan, outside, material_blocks, result.material_level);
 
   // Pore volumes from the grey values of the pore and its shell.
+  Dataset::Sampler grey(dataset, 0);
   for (std::size_t i = 0; i < result.pores.size(); ++i) {
     DetectedPore& pore = result.pores[i];
     double void_sum = 0.0;
@@ -560,7 +562,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
       const Coord c = it.getCoord();
       const auto p = toArray(c);
       const double material = reference.at(c);
-      const auto value = dataset.sample(0, {c.x(), c.y(), c.z()});
+      const auto value = grey({c.x(), c.y(), c.z()});
       // Voxels outside the kept region are air.
       const double fraction = value ? (material - *value) / (material - air) : 1.0;
       void_sum += fraction;
@@ -947,9 +949,10 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
   auto pores = openvdb::FloatGrid::create(0.0F);
   auto pore_acc = pores->getAccessor();
   if (result.pore_labels) {
+    Dataset::Sampler grey(dataset, 0);
     for (auto it = result.pore_labels->cbeginValueOn(); it; ++it) {
       const Coord c = it.getCoord();
-      const auto value = dataset.sample(0, {c.x(), c.y(), c.z()});
+      const auto value = grey({c.x(), c.y(), c.z()});
       const double fraction = value ? (result.material_level - *value) / contrast : 1.0;
       pore_acc.setValue(c, static_cast<float>(std::clamp(fraction, 0.0, 1.0)));
     }

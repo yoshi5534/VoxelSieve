@@ -30,21 +30,23 @@ namespace {
 
 using Json = nlohmann::json;
 
-/// CPU time of the process so far. std::clock measures wall time on Windows, so it asks the
-/// system there.
+/// CPU time of the calling thread so far. Not the process: other threads of the test process
+/// (TBB workers winding down) would end `busy` before the thread has spent its time.
 double cpuSeconds() {
 #ifdef _WIN32
   FILETIME created{};
   FILETIME exited{};
   FILETIME kernel{};
   FILETIME user{};
-  GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+  GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user);
   const auto ticks = [](const FILETIME& t) {
     return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32U) | t.dwLowDateTime;
   };
   return static_cast<double>(ticks(kernel) + ticks(user)) * 1e-7;  // 100 ns units
 #else
-  return static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+  timespec now{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+  return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) * 1e-9;
 #endif
 }
 

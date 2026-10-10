@@ -803,6 +803,37 @@ TEST_F(DatasetReaderTest, SamplesMatchInMemorySieve) {
   EXPECT_THROW((void)dataset.sample(7, {0, 0, 0}), std::out_of_range);
 }
 
+TEST_F(DatasetReaderTest, SamplerMatchesSample) {
+  (void)writeReference();
+  // A cache of one brick: the sampler's brick is evicted while it still reads from it.
+  const Dataset dataset = Dataset::open(dir_, 1);
+  for (const int level : {0, 1}) {
+    const Index3 dims = dataset.level(level).dims;
+    Dataset::Sampler sampler(dataset, level);
+    std::int64_t active = 0;
+    // One voxel beyond the volume on each side, x fastest, so the sampler crosses every brick.
+    for (std::int64_t z = -1; z <= dims[2]; ++z) {
+      for (std::int64_t y = -1; y <= dims[1]; ++y) {
+        for (std::int64_t x = -1; x <= dims[0]; ++x) {
+          const auto value = sampler({x, y, z});
+          ASSERT_EQ(value, dataset.sample(level, {x, y, z})) << x << " " << y << " " << z;
+          active += value ? 1 : 0;
+        }
+      }
+    }
+    if (level == 0) {
+      EXPECT_EQ(active, dataset.info().active_voxel_count);
+    }
+  }
+  // Jumping back and forth between bricks.
+  Dataset::Sampler sampler(dataset, 0);
+  for (const Index3& voxel : {Index3{64, 64, 0}, Index3{0, 0, 0}, Index3{64, 64, 0},
+                              Index3{127, 64, 64}, Index3{64, 64, 0}}) {
+    EXPECT_EQ(sampler(voxel), dataset.sample(0, voxel));
+  }
+  EXPECT_THROW(Dataset::Sampler(dataset, 7), std::out_of_range);
+}
+
 TEST_F(DatasetReaderTest, RegionAcrossBricksMatchesInMemorySieve) {
   const SieveResult reference = writeReference();
   const Dataset dataset = Dataset::open(dir_);
