@@ -27,6 +27,10 @@ signed deviation of every surface point from it: positive where the part has mor
 nominal, negative where material is missing. Writes compare.json, deviation.ply (the surface with
 the deviation and a colour per vertex) and deviation_view_[12].png.
 
+Flexible parts that do not keep their nominal shape in the scanner can be bent onto the CAD model
+after the rigid alignment (--non-rigid); the deviation is then measured on the bent surface, and
+how far each point was moved is written beside it (displacement_view_[12].png).
+
 Options:
   --out <dir>             Output directory (required)
   --align <mode>          auto: principal axes, then best fit (default); refine: best fit from
@@ -36,6 +40,13 @@ Options:
   --tolerance <mm>        Deviations within +-tolerance are in tolerance (default 0.1)
   --all-surfaces          Also compare the surfaces of closed internal voids (pores)
   --aligned-stl           Also write the CAD model in scan coordinates (cad_aligned.stl)
+  --non-rigid             Bend the surface onto the CAD model after the rigid alignment
+  --non-rigid-spacing <mm>
+                          Control point spacing of the deformation; smaller features stay
+                          deviations (default: an eighth of the part's largest extent)
+  --non-rigid-stiffness <s>
+                          Resistance against stretching (default 1): high values let only thin
+                          sections bend, low values follow almost any smooth deviation
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -83,6 +94,12 @@ std::optional<Options> parse(int argc, char** argv) {
       options.compare.tolerance_mm = std::stod(next());
     } else if (arg == "--all-surfaces") {
       options.compare.outer_surface_only = false;
+    } else if (arg == "--non-rigid") {
+      options.compare.deformation.enabled = true;
+    } else if (arg == "--non-rigid-spacing") {
+      options.compare.deformation.spacing_mm = std::stod(next());
+    } else if (arg == "--non-rigid-stiffness") {
+      options.compare.deformation.stiffness = std::stod(next());
     } else if (arg == "--aligned-stl") {
       options.aligned_stl = true;
     } else if (!arg.starts_with("-") && options.surface.empty()) {
@@ -138,6 +155,13 @@ int main(int argc, char** argv) {
               << "surface            " << s.vertices << " points, " << s.area_mm2 << " mm^2; "
               << result.dropped_components << " internal surfaces left out ("
               << result.dropped_area_mm2 << " mm^2)\n";
+    if (const auto& d = result.deformation; d.applied) {
+      std::cout << std::setprecision(4) << "non-rigid          moved up to "
+                << d.displacement.max_mm << " mm (mean " << d.displacement.mean_mm
+                << " mm), spacing " << d.spacing_mm << " mm, fit rms " << d.fit_rms_mm
+                << " mm; rigid alone: rms " << d.rigid.rms_mm << " mm, " << std::setprecision(1)
+                << 100.0 * d.rigid.within_tolerance << " % within\n";
+    }
     voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
   } catch (const std::exception& error) {

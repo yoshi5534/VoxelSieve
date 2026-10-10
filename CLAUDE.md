@@ -21,7 +21,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `parts.hpp` sample castings (housing, bracket, hub) with an analytic surface
   - `surface.hpp` the surface as a few-bit distance mask (`.vss`, ADR 0009); `compare.hpp` the
     nominal-actual comparison of that surface with a CAD model (ADR 0010) and the fits that
-    align objects (`fitRigid`, `alignSurfaces`, ADR 0018); `render.hpp` a CPU
+    align objects (`fitRigid`, `alignSurfaces`, ADR 0018) and the optional non-rigid registration
+    for flexible parts (`CompareOptions::deformation`, ADR 0022); `render.hpp` a CPU
     renderer for shaded report and documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `materials.hpp` segmentation into material classes, the material volume and scoring against

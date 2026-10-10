@@ -344,29 +344,39 @@ struct HttpServer::Impl {
                    {"X-Triangles", std::to_string(mesh->triangles.size())}});
   }
 
-  /// GET /api/deviation[?step=5]
+  /// GET /api/deviation[?step=5][&displacement=1]
   /// Body: the compared surface of a nominal-actual comparison step (Studio::deviationMesh): three
   /// float32 per vertex in level-0 voxel coordinates, one float32 deviation in mm per vertex, then
-  /// three uint32 indices per triangle.
+  /// three uint32 indices per triangle. With displacement=1, the displacement of the non-rigid
+  /// registration in mm per vertex instead of the deviation, and X-Range is its range;
+  /// X-Displacement says whether the comparison has one.
   http::message_generator deviation(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const std::optional<int> step = values.contains("step")
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
     const auto view = studio.deviationMesh(step);
+    const bool displacement = values.contains("displacement") && values.at("displacement") != 0;
+    if (displacement && view->displacement_mm.empty()) {
+      throw std::invalid_argument("The comparison has no non-rigid registration");
+    }
     const auto& mesh = view->mesh;
+    const std::vector<float>& per_vertex =
+        displacement ? view->displacement_mm : view->deviation_mm;
     const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
-    const std::size_t deviation_bytes = view->deviation_mm.size() * sizeof(float);
+    const std::size_t deviation_bytes = per_vertex.size() * sizeof(float);
     const std::size_t triangle_bytes = mesh.triangles.size() * sizeof(mesh.triangles[0]);
     std::string body(point_bytes + deviation_bytes + triangle_bytes, '\0');
     std::memcpy(body.data(), mesh.points.data(), point_bytes);
-    std::memcpy(body.data() + point_bytes, view->deviation_mm.data(), deviation_bytes);
+    std::memcpy(body.data() + point_bytes, per_vertex.data(), deviation_bytes);
     std::memcpy(body.data() + point_bytes + deviation_bytes, mesh.triangles.data(), triangle_bytes);
-    return binary(request, std::move(body),
-                  {{"X-Vertices", std::to_string(mesh.points.size())},
-                   {"X-Triangles", std::to_string(mesh.triangles.size())},
-                   {"X-Tolerance", std::to_string(view->tolerance_mm)},
-                   {"X-Range", std::to_string(view->range_mm)}});
+    return binary(
+        request, std::move(body),
+        {{"X-Vertices", std::to_string(mesh.points.size())},
+         {"X-Triangles", std::to_string(mesh.triangles.size())},
+         {"X-Tolerance", std::to_string(view->tolerance_mm)},
+         {"X-Range", std::to_string(displacement ? view->displacement_range_mm : view->range_mm)},
+         {"X-Displacement", view->displacement_mm.empty() ? "0" : "1"}});
   }
 
   /// GET /api/object_mesh?object=2[&max_triangles=1500000]

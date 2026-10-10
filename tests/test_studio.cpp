@@ -282,6 +282,18 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_EQ(deviation->deviation_mm.size(), deviation->mesh.points.size());
   EXPECT_DOUBLE_EQ(deviation->tolerance_mm, 0.1);
   EXPECT_EQ(studio.deviationMesh(std::nullopt), deviation);  // cached
+  EXPECT_TRUE(deviation->displacement_mm.empty());
+  EXPECT_FALSE(compared.at("summary").contains("displacement_max_mm"));
+
+  // The same with a non-rigid registration: the box keeps its shape, so it hardly moves.
+  const Json bent = studio.call("run_compare_cad",
+                                {{"cad_path", (dir_ / "cad.stl").string()}, {"non_rigid", true}});
+  EXPECT_EQ(bent.at("status"), "done");
+  EXPECT_LT(bent.at("summary").at("displacement_max_mm").get<double>(), 0.05);
+  EXPECT_GT(bent.at("summary").at("within_tolerance_percent").get<double>(), 90.0);
+  const auto bent_view = studio.deviationMesh(std::nullopt);
+  EXPECT_EQ(bent_view->displacement_mm.size(), bent_view->mesh.points.size());
+  EXPECT_GT(bent_view->displacement_range_mm, 0.0);
   EXPECT_THROW((void)studio.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
                std::exception);
 
@@ -289,13 +301,15 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   const Json reported = studio.call("run_report", {});
   EXPECT_EQ(reported.at("status"), "done");
   EXPECT_EQ(reported.at("inputs").at("surface").at("step"), surface.at("id"));
-  EXPECT_EQ(reported.at("inputs").at("comparison").at("step"), compared.at("id"));
+  EXPECT_EQ(reported.at("inputs").at("comparison").at("step"), bent.at("id"));
   std::ifstream report_file(dir_ / "p" / "steps" /
                             (std::to_string(reported.at("id").get<int>()) + "-report") / "report" /
                             "report.html");
   const std::string html{std::istreambuf_iterator<char>(report_file),
                          std::istreambuf_iterator<char>()};
   EXPECT_NE(html.find("Nominal-actual comparison"), std::string::npos);
+  EXPECT_NE(html.find("then non-rigid registration"), std::string::npos);
+  EXPECT_NE(html.find("Displacement of the non-rigid registration"), std::string::npos);
   EXPECT_NE(html.find("Pores (red)"), std::string::npos);
 
   // Explicit inputs by step id.
@@ -312,7 +326,7 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Studio other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 7U);
+  EXPECT_EQ(reopened.at("steps").size(), 8U);
 
   EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);

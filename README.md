@@ -275,6 +275,15 @@ the part has more material than nominal, negative where material is missing.
   - `cad_aligned.stl` with `--aligned-stl`: the CAD model moved into scan coordinates.
 - **Internal voids:** surfaces of closed internal voids (pores) are left out by default; they
   belong to the porosity analysis.
+- **Flexible parts:** `--non-rigid` bends the scanned surface onto the CAD model after the rigid
+  alignment, for parts that do not keep their nominal shape in the scanner (thin sheet metal,
+  plastic, rubber). The bending is elastic and smooth: thin sections bend easily, thick ones and
+  the size of the part hardly, and nothing shorter than the control point spacing
+  (`--non-rigid-spacing`) is bent away, so dents, bumps and wrong wall thicknesses stay
+  deviations. The deviation is then measured on the bent surface; `deviation.ply` and
+  `displacement_view_[12].png` show how far every point was moved, and `compare.json` keeps the
+  figures of the rigid alignment alone for comparison
+  (`docs/adr/0022-non-rigid-registration.md`).
 
 On synthetic castings the fit finds the pose of the CAD model to 0.15 voxels, and it measures a
 0.4 mm dent to 0.02 mm. The studio runs the comparison as the operation "Nominal-actual comparison"
