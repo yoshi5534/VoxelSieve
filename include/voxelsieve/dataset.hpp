@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "voxelsieve/preview.hpp"
@@ -196,6 +197,29 @@ class Dataset {
   /// Grey value of an active voxel; nullopt for removed air and positions outside the volume.
   [[nodiscard]] std::optional<float> sample(int level,
                                             const std::array<std::int64_t, 3>& voxel) const;
+
+  /// Reads single voxels of one level like `sample`, but keeps the brick of the last voxel and an
+  /// accessor to it, so that neighbouring voxels skip the cache lookup, which otherwise costs
+  /// more than reading the voxel. For one thread at a time; it holds that brick until it moves to
+  /// another one. The dataset must outlive it.
+  class Sampler {
+   public:
+    Sampler(const Dataset& dataset, int level);
+
+    /// Grey value of an active voxel; nullopt for removed air and positions outside the volume.
+    [[nodiscard]] std::optional<float> operator()(const std::array<std::int64_t, 3>& voxel);
+
+   private:
+    const Dataset* dataset_;
+    int level_;
+    std::array<std::int64_t, 3> dims_;
+    std::int64_t brick_size_;
+    std::array<std::int64_t, 3> current_{-1, -1, -1};
+    BrickPtr brick_;
+    std::variant<std::monostate, openvdb::FloatGrid::ConstAccessor, UInt16Grid::ConstAccessor,
+                 UInt8Grid::ConstAccessor>
+        accessor_;
+  };
 
   /// Copies the voxels of `box` into `out`, x fastest, writing `fill` where no voxel is active.
   /// `box` must lie inside the level and `out.size()` must equal `box.voxelCount()`.

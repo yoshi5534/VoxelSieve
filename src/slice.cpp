@@ -7,8 +7,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
-#include <variant>
 
 namespace voxelsieve {
 namespace {
@@ -191,48 +189,10 @@ PlaneImage samplePlane(const Dataset& dataset, const PlaneRequest& request) {
   image.inside.assign(pixels, kPlaneOutside);
   const float threshold = info.threshold;
   image.threshold = threshold;
-  const LevelInfo& level = dataset.level(request.level);
   const double scale = std::ldexp(1.0, request.level);
-  const std::int64_t brick_size = info.brick_size;
   tbb::parallel_for(std::int64_t{0}, image.height, [&](std::int64_t y) {
-    // Neighbouring pixels mostly share a brick: keep it and its accessor between them.
-    std::array<std::int64_t, 3> current{-1, -1, -1};
-    Dataset::BrickPtr brick;
-    std::variant<std::monostate, openvdb::FloatGrid::ConstAccessor, UInt16Grid::ConstAccessor,
-                 UInt8Grid::ConstAccessor>
-        accessor;
-    const auto probe = [&](const std::array<std::int64_t, 3>& voxel) -> std::optional<float> {
-      for (std::size_t a = 0; a < 3; ++a) {
-        if (voxel[a] < 0 || voxel[a] >= level.dims[a]) {
-          return std::nullopt;
-        }
-      }
-      const std::array<std::int64_t, 3> index{voxel[0] / brick_size, voxel[1] / brick_size,
-                                              voxel[2] / brick_size};
-      if (index != current) {
-        current = index;
-        brick = dataset.brick(request.level, index);
-        accessor = std::monostate{};
-        if (brick) {
-          brick->visit([&](const auto& grid) { accessor = grid.getConstAccessor(); });
-        }
-      }
-      const openvdb::Coord coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
-                                 static_cast<int>(voxel[2]));
-      return std::visit(
-          [&](const auto& typed) -> std::optional<float> {
-            if constexpr (std::is_same_v<std::decay_t<decltype(typed)>, std::monostate>) {
-              return std::nullopt;
-            } else {
-              typename std::decay_t<decltype(typed)>::ValueType value{};
-              if (typed.probeValue(coord, value)) {
-                return static_cast<float>(value);
-              }
-              return std::nullopt;
-            }
-          },
-          accessor);
-    };
+    // Neighbouring pixels mostly share a brick, which the sampler keeps between them.
+    Dataset::Sampler probe(dataset, request.level);
     for (std::int64_t x = 0; x < image.width; ++x) {
       // mm to the continuous level index, whose whole numbers are voxel centres: level voxel j
       // is centred on level-0 index (j + 0.5) * 2^level - 0.5.
