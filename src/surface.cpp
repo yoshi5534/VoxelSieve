@@ -1,8 +1,8 @@
 #include "voxelsieve/surface.hpp"
 
+#include <openvdb/math/Proximity.h>
 #include <openvdb/tools/Dense.h>
 #include <openvdb/tools/GridTransformer.h>
-#include <openvdb/tools/LevelSetRebuild.h>
 #include <openvdb/tools/SignedFloodFill.h>
 #include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/blocked_range.h>
@@ -196,6 +196,94 @@ float estimateMaterialLevel(const Dataset& dataset) {
   return *middle;
 }
 
+/// Distance of every voxel of `box` to the iso-surface of `field` at `iso`, in voxels, where it is
+/// below `band`; `band` or more elsewhere. The surface is triangulated with OpenVDB's marching
+/// cubes and every voxel takes the nearest triangle that comes within `band`, with the arithmetic
+/// of OpenVDB's meshToVolume. levelSetRebuild did this in a tree, which took most of the writer's
+/// time, and its sign cleanup dropped a few band voxels next to small closed surfaces (noise,
+/// pores at the surface); a dense array of the chunk is several times faster and exact.
+std::vector<float> surfaceDistances(const openvdb::FloatGrid& field, float iso, const Box& box,
+                                    double band) {
+  openvdb::tools::VolumeToMesh mesher(iso);
+  mesher(field);
+  const openvdb::tools::PointList& points = mesher.pointList();
+  const auto point = [&](openvdb::Index index) { return openvdb::Vec3d(points[index]); };
+  // Triangles as meshToVolume voxelises them: quad (0, 1, 2, 3) as (0, 1, 2) and (0, 3, 2).
+  struct Triangle {
+    openvdb::Vec3d a, b, c;
+  };
+  std::vector<Triangle> triangles;
+  const openvdb::tools::PolygonPoolList& pools = mesher.polygonPoolList();
+  for (std::size_t n = 0; n < mesher.polygonPoolListSize(); ++n) {
+    const openvdb::tools::PolygonPool& pool = pools[n];
+    for (std::size_t q = 0; q < pool.numQuads(); ++q) {
+      const openvdb::Vec4I& quad = pool.quad(q);
+      triangles.push_back({point(quad[0]), point(quad[1]), point(quad[2])});
+      triangles.push_back({point(quad[0]), point(quad[3]), point(quad[2])});
+    }
+    for (std::size_t t = 0; t < pool.numTriangles(); ++t) {
+      const openvdb::Vec3I& triangle = pool.triangle(t);
+      triangles.push_back({point(triangle[0]), point(triangle[1]), point(triangle[2])});
+    }
+  }
+
+  // Squared distances, x fastest. Slabs of z planes run in parallel, each with the triangles
+  // that come within `band` of it.
+  const auto beyond = static_cast<float>((band + 1.0) * (band + 1.0));
+  std::vector<float> squared(static_cast<std::size_t>(box.voxelCount()), beyond);
+  constexpr std::int64_t kSlab = kBlock;
+  const std::int64_t slabs = (box.size(2) + kSlab - 1) / kSlab;
+  std::vector<std::vector<std::uint32_t>> per_slab(static_cast<std::size_t>(slabs));
+  const auto voxel_range = [&](const Triangle& t, std::size_t axis) {
+    const double low = std::min({t.a[axis], t.b[axis], t.c[axis]}) - band;
+    const double high = std::max({t.a[axis], t.b[axis], t.c[axis]}) + band;
+    return std::pair<std::int64_t, std::int64_t>{
+        std::max(box.min[axis], static_cast<std::int64_t>(std::ceil(low))),
+        std::min(box.max[axis] - 1, static_cast<std::int64_t>(std::floor(high)))};
+  };
+  for (std::size_t i = 0; i < triangles.size(); ++i) {
+    const auto [z0, z1] = voxel_range(triangles[i], 2);
+    for (std::int64_t s = (z0 - box.min[2]) / kSlab; z0 <= z1 && s <= (z1 - box.min[2]) / kSlab;
+         ++s) {
+      per_slab[static_cast<std::size_t>(s)].push_back(static_cast<std::uint32_t>(i));
+    }
+  }
+  tbb::parallel_for(std::int64_t{0}, slabs, [&](std::int64_t s) {
+    const std::int64_t slab_min = box.min[2] + s * kSlab;
+    const std::int64_t slab_max = std::min(box.max[2], slab_min + kSlab) - 1;
+    openvdb::Vec3d uvw;
+    for (const std::uint32_t i : per_slab[static_cast<std::size_t>(s)]) {
+      const Triangle& t = triangles[i];
+      const auto [x0, x1] = voxel_range(t, 0);
+      const auto [y0, y1] = voxel_range(t, 1);
+      auto [z0, z1] = voxel_range(t, 2);
+      z0 = std::max(z0, slab_min);
+      z1 = std::min(z1, slab_max);
+      for (std::int64_t z = z0; z <= z1; ++z) {
+        for (std::int64_t y = y0; y <= y1; ++y) {
+          for (std::int64_t x = x0; x <= x1; ++x) {
+            const openvdb::Vec3d centre(static_cast<double>(x), static_cast<double>(y),
+                                        static_cast<double>(z));
+            // The argument order of meshToVolume, which matters for rounding.
+            const auto d = static_cast<float>(
+                (centre - openvdb::math::closestPointOnTriangleToPoint(t.a, t.c, t.b, centre, uvw))
+                    .lengthSqr());
+            float& best = squared[static_cast<std::size_t>(
+                (x - box.min[0]) +
+                box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])))];
+            if (d < best) {
+              best = d;
+            }
+          }
+        }
+      }
+    }
+  });
+  std::transform(squared.begin(), squared.end(), squared.begin(),
+                 [](float d) { return std::sqrt(d); });
+  return squared;
+}
+
 class SurfaceWriter {
  public:
   SurfaceWriter(const Dataset& dataset, const SurfaceInfo& info, const SurfaceOptions& options)
@@ -231,7 +319,7 @@ class SurfaceWriter {
     }
 
     // Distances to the triangulated iso-surface. Material is inside, so mesh -grey at -iso.
-    openvdb::FloatGrid::Ptr distance;
+    std::vector<float> distance;
     {
       std::vector<float> negated(grey.size());
       std::transform(grey.begin(), grey.end(), negated.begin(), [](float g) { return -g; });
@@ -243,8 +331,7 @@ class SurfaceWriter {
       const openvdb::tools::Dense<float, openvdb::tools::LayoutXYZ> dense(bbox, negated.data());
       openvdb::FloatGrid field(-info_.air_level);
       openvdb::tools::copyFromDense(dense, field, -1.0F);  // negative tolerance: all active
-      const auto width = static_cast<float>(info_.band_voxels + 1.5);
-      distance = openvdb::tools::levelSetRebuild(field, -iso, width, width);
+      distance = surfaceDistances(field, -iso, geometry.box, info_.band_voxels);
     }
 
     const std::int64_t block_count = geometry.blockCount();
@@ -257,7 +344,6 @@ class SurfaceWriter {
     };
     tbb::combinable<Counts> counts;
     tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, block_count), [&](const auto& range) {
-      auto accessor = distance->getConstAccessor();
       Counts& local = counts.local();
       for (std::int64_t b = range.begin(); b < range.end(); ++b) {
         const Index3 block{b % geometry.blocks[0], (b / geometry.blocks[0]) % geometry.blocks[1],
@@ -275,10 +361,11 @@ class SurfaceWriter {
                 (voxel[0] - region.min[0]) +
                 size[0] * ((voxel[1] - region.min[1]) + size[1] * (voxel[2] - region.min[2])));
             const bool inside = grey[offset] > iso;
-            const float d = accessor.getValue(openvdb::Coord(static_cast<int>(voxel[0]),
-                                                             static_cast<int>(voxel[1]),
-                                                             static_cast<int>(voxel[2])));
-            code = encodeSurfaceDistance(std::abs(d), inside, info_.bits, info_.band_voxels);
+            const float d = distance[static_cast<std::size_t>(
+                (voxel[0] - geometry.box.min[0]) +
+                geometry.box.size(0) * ((voxel[1] - geometry.box.min[1]) +
+                                        geometry.box.size(1) * (voxel[2] - geometry.box.min[2])))];
+            code = encodeSurfaceDistance(d, inside, info_.bits, info_.band_voxels);
             local.material +=
                 fractionOf(decodeSurfaceDistance(code, info_.bits, info_.band_voxels));
             if (code != 0 && code != max_code) {

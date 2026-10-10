@@ -69,6 +69,14 @@ run in a TBB pipeline with four chunks in flight, and are written in order; memo
 whatever the scan size. Chunks without a stored brick are air; chunks whose halo lies entirely
 above or below the iso value cost one table entry.
 
+*Amended (2026-10-10):* the distances are no longer taken with `levelSetRebuild` but with
+OpenVDB's marching cubes (`VolumeToMesh`) and a dense array of the chunk, in which every voxel
+keeps the nearest triangle that comes within the band. The narrow band in a tree took most of
+the time: a 1024³ phantom went from 89 s to 19 s on 4 cores, with an identical file. On the
+sample castings 0.3 to 0.6 % of the band voxels change: the sign cleanup of `levelSetRebuild`
+had dropped them (code "beyond the band") next to small closed surfaces such as noise and pores
+at the surface, although a triangle lies within the band. No voxel gets farther or changes side.
+
 The default iso value is ISO 50 %: half way between the air level of the dataset and the material
 level, the median of voxels above the dataset threshold in up to 16 bricks. A fixed value can be
 given.
