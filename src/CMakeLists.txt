@@ -64,6 +64,23 @@ add_library(voxelsieve SHARED
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)
 
+if(WIN32)
+  # A DLL exports at most 65535 symbols. Exporting all symbols of the objects passes that, because
+  # most are instantiations of OpenVDB, TBB and standard templates for three grid types (ADR 0021),
+  # which every user of the library instantiates itself. Export only VoxelSieve's own symbols.
+  set_target_properties(voxelsieve PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
+  set(_vs_objects ${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_objects.txt)
+  file(GENERATE OUTPUT ${_vs_objects} CONTENT "$<JOIN:$<TARGET_OBJECTS:voxelsieve>,\n>\n")
+  add_custom_command(TARGET voxelsieve PRE_LINK
+    COMMAND ${CMAKE_COMMAND} -E __create_def ${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_all.def
+            ${_vs_objects}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_all.def
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def
+            -P ${PROJECT_SOURCE_DIR}/cmake/FilterExports.cmake
+    VERBATIM)
+  target_link_options(voxelsieve PRIVATE /DEF:${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def)
+endif()
+
 target_include_directories(voxelsieve PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>

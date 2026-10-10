@@ -97,6 +97,10 @@ register only the standard types, so they cannot open a `uint16` brick.
 - Bricks are no longer plain VDB files for every program: Blender and Houdini need the float
   export. ADR 0004 promised that each brick opens directly in them; that now holds only for
   float datasets.
+- The templates for three grid types pushed the Windows DLL past its limit of 65535 exported
+  symbols when it exported every symbol. It now exports only symbols of the `voxelsieve`
+  namespace (`cmake/FilterExports.cmake`); the instantiations of OpenVDB, TBB and standard
+  templates are compiled by every user of the library anyway.
 - Code that touches grids becomes templated over three types. Where only values are needed,
   `readRegion` keeps it out of the algorithms.
 - Tests: the phantom is stored exactly as `uint16` and, as an 8-bit raw file, as `uint8`;
