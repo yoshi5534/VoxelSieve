@@ -207,13 +207,9 @@ class CompareTest : public ::testing::Test {
     return t;
   }
 
-  std::filesystem::path dir_;
-};
-
-TEST_F(CompareTest, AlignsARotatedAndShiftedCadModel) {
-  // The bracket is shaped much like the housing. The hub is symmetric but for the keyway in its
-  // bore, which has to decide between five positions of the bolt circle.
-  for (const std::string part : {"housing", "hub"}) {  // NOLINT(performance-for-range-copy)
+  /// Scans the sample part, moves its CAD model far away and checks that the comparison brings
+  /// it back onto the scan.
+  void alignsARotatedAndShiftedCadModel(const std::string& part) {
     SamplePartOptions options;
     options.scale = 0.3;
     options.resolution_mm = 0.15;
@@ -247,7 +243,18 @@ TEST_F(CompareTest, AlignsARotatedAndShiftedCadModel) {
     EXPECT_EQ(result.dropped_components, 0U) << part;
     EXPECT_EQ(result.deviation_mm.size(), result.mesh.points.size());
   }
+
+  std::filesystem::path dir_;
+};
+
+// The bracket is shaped much like the housing. The hub is symmetric but for the keyway in its
+// bore, which has to decide between five positions of the bolt circle. One test per part, so
+// the slow sanitizer build runs them in parallel.
+TEST_F(CompareTest, AlignsARotatedAndShiftedHousing) {
+  alignsARotatedAndShiftedCadModel("housing");
 }
+
+TEST_F(CompareTest, AlignsARotatedAndShiftedHub) { alignsARotatedAndShiftedCadModel("hub"); }
 
 TEST_F(CompareTest, MeasuresMaterialThatIsNotInTheCadModel) {
   // The scanned block is 0.4 mm higher than nominal at the top.
