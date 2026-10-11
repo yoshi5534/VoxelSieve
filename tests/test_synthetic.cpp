@@ -261,7 +261,7 @@ TEST(Synthetic, CorrelatedNoiseKeepsItsSigma) {
   for (std::int64_t z = 3; z < dims[2] - 3; ++z) {
     for (std::int64_t y = 3; y < dims[1] - 3; ++y) {
       for (std::int64_t x = 3; x < 8; ++x) {
-        const std::size_t i = static_cast<std::size_t>(x + dims[0] * (y + dims[1] * z));
+        const auto i = static_cast<std::size_t>(x + dims[0] * (y + dims[1] * z));
         const double a = static_cast<double>(voxels[i]) - spec.air_value;
         const double b = static_cast<double>(voxels[i + 1]) - spec.air_value;
         sum += a;

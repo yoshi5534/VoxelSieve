@@ -59,6 +59,8 @@ Options:
   --reference <raw>       Noise-free volume of the same size (headerless little-endian uint16)
                           to score the result against
   --json <file>           Also write the result as JSON
+  --slices <png>          Also write a z slice of the input and the result side by side
+  --slice-z <z>           The slice to write (default: the middle)
   --cache <MB>            Brick cache size (default 1024)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
@@ -75,6 +77,8 @@ struct Options {
   std::filesystem::path model;
   std::filesystem::path reference;
   std::filesystem::path json;
+  std::filesystem::path slices;
+  std::optional<std::int64_t> slice_z;
   std::filesystem::path benchmark;
   double bench_noise = 1000.0;
   double bench_voxel = 0.25;
@@ -125,6 +129,10 @@ std::optional<Options> parse(int argc, char** argv) {
       options.reference = next();
     } else if (arg == "--json") {
       options.json = next();
+    } else if (arg == "--slices") {
+      options.slices = next();
+    } else if (arg == "--slice-z") {
+      options.slice_z = std::stoll(next());
     } else if (arg == "--cache") {
       options.cache_mb = std::stoull(next());
     } else if (arg == "--telemetry") {
@@ -302,43 +310,48 @@ Json scoreLunkerContrast(const voxelsieve::SyntheticScan& scan,
            small > 0 && rmse_material > 0.0 ? small_deficit_sum / small / rmse_material : 0.0}};
 }
 
-/// A z slice of each variant next to each other, the noise-free scan first, grey values from air
-/// (black) to material (white).
-void writeSlices(const std::filesystem::path& file, const voxelsieve::VolumeSource& clean,
-                 const std::vector<voxelsieve::Dataset>& datasets, std::int64_t z, float air,
+/// A z slice of each variant next to each other, the noise-free scan first if given, grey values
+/// from air (black) to material (white).
+void writeSlices(const std::filesystem::path& file, const voxelsieve::VolumeSource* clean,
+                 const std::vector<const voxelsieve::Dataset*>& datasets, std::int64_t z, float air,
                  float material) {
-  const auto dims = clean.dims();
+  const auto dims = datasets.front()->info().dims;
   const auto width = static_cast<int>(dims[0]);
   const auto height = static_cast<int>(dims[1]);
   constexpr int kGap = 6;
-  const int panels = static_cast<int>(datasets.size()) + 1;
+  const int first = clean != nullptr ? 1 : 0;
+  const int panels = static_cast<int>(datasets.size()) + first;
   voxelsieve::RenderImage image;
   image.width = panels * width + (panels - 1) * kGap;
   image.height = height;
-  image.pixels.assign(static_cast<std::size_t>(image.width) * image.height * 3, 255);
+  image.pixels.assign(
+      static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height) * 3, 255);
   const auto put = [&](int panel, std::int64_t x, std::int64_t y, float value) {
     const float t = std::clamp((value - air) / (material - air), 0.0F, 1.0F);
     const auto grey = static_cast<std::uint8_t>(std::lround(255.0F * t));
     // Image rows run downwards; y up.
-    const std::size_t pixel = (static_cast<std::size_t>(height - 1 - y) * image.width +
-                               static_cast<std::size_t>(std::int64_t{panel} * (width + kGap) + x)) *
-                              3;
+    const std::size_t pixel =
+        (static_cast<std::size_t>(height - 1 - y) * static_cast<std::size_t>(image.width) +
+         static_cast<std::size_t>(std::int64_t{panel} * (width + kGap) + x)) *
+        3;
     image.pixels[pixel] = image.pixels[pixel + 1] = image.pixels[pixel + 2] = grey;
   };
   const voxelsieve::Box plane{{0, 0, z}, {dims[0], dims[1], z + 1}};
-  std::vector<std::uint16_t> truth(static_cast<std::size_t>(plane.voxelCount()));
-  clean.readRegion(plane, truth);
-  std::vector<float> values(truth.size());
-  for (std::int64_t y = 0; y < dims[1]; ++y) {
-    for (std::int64_t x = 0; x < dims[0]; ++x) {
-      put(0, x, y, truth[static_cast<std::size_t>(x + dims[0] * y)]);
+  std::vector<float> values(static_cast<std::size_t>(plane.voxelCount()));
+  if (clean != nullptr) {
+    std::vector<std::uint16_t> truth(values.size());
+    clean->readRegion(plane, truth);
+    for (std::int64_t y = 0; y < dims[1]; ++y) {
+      for (std::int64_t x = 0; x < dims[0]; ++x) {
+        put(0, x, y, truth[static_cast<std::size_t>(x + dims[0] * y)]);
+      }
     }
   }
   for (std::size_t d = 0; d < datasets.size(); ++d) {
-    datasets[d].readRegion(0, plane, values, air);
+    datasets[d]->readRegion(0, plane, values, air);
     for (std::int64_t y = 0; y < dims[1]; ++y) {
       for (std::int64_t x = 0; x < dims[0]; ++x) {
-        put(static_cast<int>(d) + 1, x, y, values[static_cast<std::size_t>(x + dims[0] * y)]);
+        put(static_cast<int>(d) + first, x, y, values[static_cast<std::size_t>(x + dims[0] * y)]);
       }
     }
   }
@@ -457,8 +470,11 @@ int runBenchmark(const Options& options) {
         std::llround((smallest->center_mm[2] - noisy.originMm()[2]) / spec.voxel_size[2]), 0,
         dims[2] - 1);
   }
-  datasets.erase(datasets.begin());  // the first panel shows the noise-free scan itself
-  writeSlices(dir / "slices.png", clean, datasets, z, spec.air_value, spec.material_value);
+  std::vector<const voxelsieve::Dataset*> panels;
+  for (std::size_t d = 1; d < datasets.size(); ++d) {  // the noise-free scan itself comes first
+    panels.push_back(&datasets[d]);
+  }
+  writeSlices(dir / "slices.png", &clean, panels, z, spec.air_value, spec.material_value);
 
   const Json report = {{"scan", noisy.toJson()},
                        {"noise_sigma_estimate", nlm_info.noise.sigma},
@@ -540,6 +556,26 @@ int main(int argc, char** argv) {
     }
     if (!options->json.empty()) {
       voxelsieve::writeJson(options->json, json);
+    }
+    if (!options->slices.empty()) {
+      const auto& input = dataset.info();
+      const std::int64_t z = options->slice_z.value_or(input.dims[2] / 2);
+      if (z < 0 || z >= input.dims[2]) {
+        throw std::invalid_argument("--slice-z is outside the volume");
+      }
+      // Grey values from the 1st to the 99th percentile of the kept voxels of the input slice.
+      std::vector<float> plane(static_cast<std::size_t>(input.dims[0] * input.dims[1]));
+      dataset.readRegion(0, {{0, 0, z}, {input.dims[0], input.dims[1], z + 1}}, plane, -1.0F);
+      std::erase_if(plane, [](float value) { return value < 0.0F; });
+      float low = input.air_level;
+      float high = 2.0F * input.threshold - input.air_level;
+      if (plane.size() > 100) {
+        std::ranges::sort(plane);
+        low = plane[plane.size() / 100];
+        high = plane[plane.size() - 1 - plane.size() / 100];
+      }
+      writeSlices(options->slices, nullptr, {&dataset, &output}, z, low,
+                  std::max(high, low + 1.0F));
     }
     voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;

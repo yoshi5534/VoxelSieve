@@ -101,7 +101,7 @@ void checkOptions(const NonLocalMeansOptions& options, double noise_sigma) {
 
 /// Index of offset (dx, dy, dz) in a NoiseModel's pair variances, dx fastest.
 std::size_t offsetIndex(int dx, int dy, int dz, int radius) {
-  const auto edge = static_cast<std::size_t>(2 * radius) + 1;
+  const auto edge = 2 * static_cast<std::size_t>(radius) + 1;
   return static_cast<std::size_t>(dx + radius) +
          edge *
              (static_cast<std::size_t>(dy + radius) + edge * static_cast<std::size_t>(dz + radius));
@@ -221,7 +221,7 @@ NoiseModel NoiseModel::white(double sigma, int radius) {
   if (sigma < 0.0 || radius < 0) {
     throw std::invalid_argument("The noise sigma and radius must not be negative");
   }
-  const auto edge = static_cast<std::size_t>(2 * radius + 1);
+  const auto edge = 2 * static_cast<std::size_t>(radius) + 1;
   NoiseModel noise{sigma, radius, std::vector<double>(edge * edge * edge, 2.0 * sigma * sigma)};
   noise.pair_variance[noise.pair_variance.size() / 2] = 0.0;  // a voxel and itself
   return noise;
@@ -269,7 +269,7 @@ NoiseModel estimateNoise(const Dataset& dataset, int radius) {
   const auto inner = [&](const auto& tree, const auto& leaf) {
     const openvdb::Coord origin = leaf.origin();
     const Index3 brick{origin.x() / brick_size, origin.y() / brick_size, origin.z() / brick_size};
-    for (int axis = 0; axis < 3; ++axis) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
       for (const int step : {-8, 8}) {
         openvdb::Coord next = origin;
         next[axis] += step;
