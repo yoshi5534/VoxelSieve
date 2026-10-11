@@ -44,6 +44,7 @@ add_library(voxelsieve SHARED
   ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp
   dataset.cpp
   dataset_reader.cpp
+  diconde.cpp
   dicom.cpp
   detail/blocks.cpp
   detail/network.cpp
