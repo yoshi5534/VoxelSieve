@@ -23,6 +23,7 @@ inline constexpr const char* kComparison = "comparison";  // nominal-actual comp
 inline constexpr const char* kMaterials = "materials";    // material volume (ADR 0013)
 inline constexpr const char* kMesh = "mesh";              // triangle mesh as STL in mm (ADR 0018)
 inline constexpr const char* kPose = "pose";  // directory with pose.json: objects moved (ADR 0018)
+inline constexpr const char* kDiconde = "diconde";  // DICONDE series of a scan (ADR 0024)
 }  // namespace artifact
 
 struct PortInfo {

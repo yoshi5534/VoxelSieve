@@ -1055,6 +1055,7 @@ const RESULT_TYPES = {
     keys: ['deviation_rms_mm', 'within_tolerance_percent', 'tolerance_mm',
       'displacement_max_mm'] },
   report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
+  diconde: { label: 'DICONDE export', keys: ['slices', 'indications', 'series', 'path'] },
 };
 
 /// The summary figures that sum up a result of `type`: its key figures when it has them, else
@@ -1150,7 +1151,7 @@ function resultLabel(result) {
 
 function showButton(result) {
   const info = RESULT_TYPES[result.type];
-  if (!info) return null;
+  if (!info || (!info.opens && !info.view)) return null;
   if (info.opens) {
     return el('a', { href: fileUrl(result.step, result.output, 'report.html'), target: '_blank' },
       'Open the report');
