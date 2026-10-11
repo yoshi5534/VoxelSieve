@@ -23,6 +23,7 @@ const state = {
   capture: null,        // returns the picture of the current view as a PNG data URL
   scene: null,          // 3D view of all objects (scene.js)
   align: null,          // alignment form of the scene: moving, target, picking, picked points
+  shownResults: {},     // result step shown in the views, by result type (ADR 0023)
 };
 
 // Labels of known parameters; forms show them in this order.
@@ -266,7 +267,7 @@ function projectOpened() {
 
 /// Shows a view state: stage and view mode now, viewer settings once their data is loaded.
 function applyViewState(view) {
-  const stages = ['dataset', 'analysis', 'report', 'view'];
+  const stages = ['dataset', 'analysis', 'results', 'report', 'view'];
   state.stage = stages.includes(view?.stage) ? view.stage : defaultStage();
   if (['slice', '3d', 'scene'].includes(view?.viewMode)) state.viewMode = view.viewMode;
   state.restore = { slice: view?.slice ?? null, volume: view?.volume ?? null,
@@ -274,6 +275,7 @@ function applyViewState(view) {
   // Both name the step they belong to, so they only apply to it.
   state.materialDraft = view?.materialDraft ?? null;
   state.materialColors = view?.materialColors ?? null;
+  state.shownResults = view?.shownResults ?? {};
 }
 
 function collectViewState() {
@@ -293,6 +295,7 @@ function collectViewState() {
     transfer,
     materialDraft: state.materialDraft ?? null,
     materialColors: state.materialColors ?? null,
+    shownResults: state.shownResults ?? {},
   };
 }
 
@@ -865,6 +868,7 @@ function renderStages() {
   const complete = {
     dataset: Boolean(latestOutput('dataset')),
     analysis: Boolean(latestOutput('porosity')),
+    results: (state.status.results ?? []).length > 0,
     report: Boolean(latestOutput('report')),
   };
   for (const button of document.querySelectorAll('.stages button')) {
@@ -992,15 +996,16 @@ function renderAnalysisStage(panel) {
       el('details', {}, el('summary', {}, 'Parameters'), form.element),
       el('div', { className: 'row' }, runButton('Run', operation.id, () => form.values())));
     if (last) {
-      const result = el('div', {}, el('h3', {}, 'Result (step ' + last.id + ')'),
-        summaryTable(last.summary));
-      appendImages(result, last);
-      card.append(result);
+      card.append(el('div', {}, el('h3', {}, 'Result (step ' + last.id + ')'),
+        summaryTable(keyFigures(last.summary, Object.values(last.outputs)[0]?.type)),
+        el('div', { className: 'row' }, el('button', {
+          onclick: () => { state.focusResult = last.id; state.stage = 'results'; render(); },
+        }, 'In the results →'))));
     }
     panel.append(card);
   }
-  if (latestOutput('porosity')) {
-    panel.append(el('div', { className: 'row' }, nextButton('Check in the view', 'view'),
+  if ((state.status.results ?? []).length) {
+    panel.append(el('div', { className: 'row' }, nextButton('To the results', 'results'),
       nextButton('On to the report', 'report')));
   }
 }
@@ -1035,21 +1040,230 @@ function renderReportStage(panel) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Results: every analysis result of the project per scanned object (ADR 0023)
+
+/// Result types the studio knows: a name, the summary keys that sum a result up, and where it is
+/// shown (a view mode, with the rendering of the 3D view; reports open on their own). Plugin
+/// results have none.
+const RESULT_TYPES = {
+  porosity: { label: 'Pores and loosened zones', view: 'slice',
+    keys: ['pores', 'porosity', 'pore_volume_mm3', 'zones'] },
+  materials: { label: 'Materials', view: 'slice', keys: ['materials'] },
+  surface: { label: 'Surface', view: '3d', volumeMode: 3,
+    keys: ['surface_volume_mm3', 'compression_vs_raw'] },
+  comparison: { label: 'Nominal-actual comparison', view: '3d', volumeMode: 4,
+    keys: ['deviation_rms_mm', 'within_tolerance_percent', 'tolerance_mm',
+      'displacement_max_mm'] },
+  report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
+};
+
+/// The summary figures that sum up a result of `type`: its key figures when it has them, else
+/// all; lists of materials by their names.
+function keyFigures(summary, type) {
+  const all = summary ?? {};
+  const keys = (RESULT_TYPES[type]?.keys ?? []).filter((key) => key in all);
+  const figures = {};
+  for (const key of keys.length ? keys : Object.keys(all)) {
+    const value = all[key];
+    figures[key] = key === 'materials' && Array.isArray(value)
+      ? value.map((material) => material.name ?? material.id).join(', ') : value;
+  }
+  return figures;
+}
+
+/// The step of a result, or undefined when it is not among the active steps.
+function resultStep(result) {
+  return activeSteps().find((step) => step.id === result.step);
+}
+
+/// Whether the views show `result` for its dataset.
+function isShown(result) {
+  const source = result.source?.step;
+  if (source === undefined) return false;
+  if (result.type === 'porosity') return porosityOf(source) === result.step;
+  if (result.type === 'materials') return materialsOf(source)?.id === result.step;
+  if (result.type === 'surface') return surfaceOf(source) === result.step;
+  if (result.type === 'comparison') return comparisonOf(source) === result.step;
+  return false;
+}
+
+/// Shows a result in the slice or 3D view of its object.
+async function showResult(result) {
+  const info = RESULT_TYPES[result.type];
+  if (!info?.view) return;
+  state.shownResults = { ...state.shownResults, [result.type]: result.step };
+  if (result.object && result.object !== state.status.active_object &&
+      (state.status.objects ?? []).some((object) => object.id === result.object)) {
+    await action(() => api('object_select', { id: result.object }));
+  }
+  state.viewMode = info.view;
+  if (info.volumeMode !== undefined) {
+    (state.volume ?? (state.volume = new VolumeViewer())).mode = info.volumeMode;
+  }
+  state.stage = 'view';
+  render();
+}
+
+/// Pictures of a result output, as links to the full size.
+function resultImages(result) {
+  const container = el('div', { className: 'images' });
+  api('list_files', { step: result.step, output: result.output }).then((listing) => {
+    for (const file of listing.files.filter((entry) => entry.file.endsWith('.png'))) {
+      const url = fileUrl(result.step, result.output, file.file);
+      container.append(el('a', { href: url, target: '_blank' },
+        el('img', { src: url, alt: file.file, title: file.file })));
+    }
+  }).catch(() => {});
+  return container;
+}
+
+/// All figures of a result and its files to download, loaded when opened.
+function resultDetails(result) {
+  const files = el('ul', { className: 'result-files' });
+  const details = el('details', {}, el('summary', {}, 'All figures and files'),
+    summaryTable(result.summary), files);
+  details.addEventListener('toggle', () => {
+    if (!details.open || files.childElementCount) return;
+    api('list_files', { step: result.step, output: result.output }).then((listing) => {
+      files.replaceChildren(...listing.files.map((file) => el('li', {},
+        el('a', { href: fileUrl(result.step, result.output, file.file), target: '_blank' },
+          file.file), ' ', el('span', { className: 'hint' }, formatBytes(file.size_bytes)))));
+    }).catch(showError);
+  });
+  return details;
+}
+
+/// Where a result comes from: the step, when, the dataset and the results it builds on.
+function resultOrigin(result) {
+  const step = resultStep(result);
+  const parts = ['Step ' + result.step, step?.title ?? result.title, formatTime(result.finished)];
+  if (result.source) parts.push('from the dataset of step ' + result.source.step);
+  if (result.based_on.length) {
+    parts.push('builds on step ' + result.based_on.map((ref) => ref.step).join(', '));
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+
+function resultLabel(result) {
+  return RESULT_TYPES[result.type]?.label ?? result.title;
+}
+
+function showButton(result) {
+  const info = RESULT_TYPES[result.type];
+  if (!info) return null;
+  if (info.opens) {
+    return el('a', { href: fileUrl(result.step, result.output, 'report.html'), target: '_blank' },
+      'Open the report');
+  }
+  return el('button', { disabled: state.busy, onclick: () => showResult(result),
+    title: 'Show this result in the ' + (info.view === 'slice' ? 'slice' : '3D') + ' view' },
+  'Show in the view');
+}
+
+function resultCard(result) {
+  const shown = isShown(result);
+  const card = el('div', { className: 'card result' + (state.focusResult === result.step
+    ? ' focus' : '') },
+  el('h3', {}, resultLabel(result),
+    shown ? el('span', { className: 'badge', title: 'The slice and 3D views show this result' },
+      'shown') : null),
+  el('p', {}, resultOrigin(result)),
+  summaryTable(keyFigures(result.summary, result.type)),
+  resultImages(result),
+  resultDetails(result),
+  el('div', { className: 'row' }, showButton(result)));
+  return card;
+}
+
+/// A replaced result in one line, to show or open it again.
+function earlierResultRow(result) {
+  const figures = Object.entries(keyFigures(result.summary, result.type)).slice(0, 2)
+    .map(([key, value]) => (SUMMARY_LABELS[key] ?? key) + ' ' + formatValue(key, value));
+  return el('tr', {},
+    el('td', {}, resultLabel(result)),
+    el('td', {}, 'Step ' + result.step),
+    el('td', {}, formatTime(result.finished)),
+    el('td', { className: 'hint' }, figures.join(' · ')),
+    el('td', {}, showButton(result)));
+}
+
+function renderResultsStage(panel) {
+  panel.append(el('h1', {}, 'Results'));
+  const results = state.status.results ?? [];
+  if (!results.length) {
+    panel.append(el('p', { className: 'hint' }, 'No results yet. Every analysis, segmentation, ' +
+      'surface, comparison and report appears here, sorted by the scanned object.'),
+    nextButton('To the analysis', 'analysis'));
+    return;
+  }
+  panel.append(el('p', { className: 'hint' }, 'All results of the project by object. The views ' +
+    'show the current result of each kind unless you choose an earlier one here.'));
+  const objects = state.status.objects ?? [];
+  const groups = objects.map((object, index) => ({ object, index,
+    results: results.filter((result) => result.object === object.id) }));
+  const loose = results.filter((result) =>
+    !objects.some((object) => object.id === result.object));
+  if (loose.length) groups.push({ object: null, index: -1, results: loose });
+  for (const group of groups.filter((candidate) => candidate.results.length)) {
+    const current = group.results.filter((result) => result.current).reverse();
+    const earlier = group.results.filter((result) => !result.current).reverse();
+    const active = group.object && group.object.id === state.status.active_object;
+    const section = el('section', { className: 'result-group' },
+      el('h2', {}, group.object ? [objectSwatch(group.index), ' ', group.object.name] : 'Project',
+        active ? el('span', { className: 'badge' }, 'active') : null,
+        el('span', { className: 'hint' }, ' · ' + group.results.length +
+          (group.results.length === 1 ? ' result' : ' results'))),
+      current.map(resultCard));
+    if (earlier.length) {
+      section.append(el('details', { className: 'card' },
+        el('summary', {}, 'Earlier results (' + earlier.length + ')'),
+        el('table', { className: 'summary earlier' }, earlier.map(earlierResultRow))));
+    }
+    panel.append(section);
+  }
+  if (state.focusResult) {
+    panel.querySelector('.result.focus')?.scrollIntoView({ block: 'nearest' });
+    state.focusResult = null;
+  }
+}
+
+/// One line above the views naming the results they show, with the way to choose others.
+function shownResultsLine(dataset) {
+  const shown = (state.status.results ?? []).filter((result) =>
+    result.source?.step === dataset.step.id && isShown(result));
+  return el('p', { className: 'hint shown-results' },
+    shown.length ? 'Shown: ' + shown.map((result) => resultLabel(result) + ' (step ' +
+      result.step + ')').join(', ') + ' · ' : 'No results of this dataset yet · ',
+    el('a', { href: '#', onclick: (event) => {
+      event.preventDefault();
+      state.stage = 'results';
+      render();
+    } }, 'All results'));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Slice view
 
-/// Latest porosity step computed from the dataset of `datasetStep`.
+/// The step of `steps` (in order) the views show for results of `type`: the one chosen in the
+/// results, else the latest.
+function shownStep(type, steps) {
+  const chosen = state.shownResults?.[type];
+  return steps.find((step) => step.id === chosen) ?? steps[steps.length - 1] ?? null;
+}
+
+/// Porosity step computed from the dataset of `datasetStep` that the views show.
 function porosityOf(datasetStep) {
   const steps = activeSteps().filter((step) => step.operation === 'porosity' &&
     step.inputs.dataset?.step === datasetStep);
-  return steps.length ? steps[steps.length - 1].id : null;
+  return shownStep('porosity', steps)?.id ?? null;
 }
 
-/// Latest material segmentation computed from the dataset of `datasetStep`.
+/// Material segmentation computed from the dataset of `datasetStep` that the views show.
 function materialsOf(datasetStep) {
   const steps = activeSteps().filter((step) =>
     ['segment_materials', 'segment_model'].includes(step.operation) &&
     step.inputs.dataset?.step === datasetStep);
-  return steps.length ? steps[steps.length - 1] : null;
+  return shownStep('materials', steps);
 }
 
 /// Material classes left out of the views, for the material segmentation step `step`; a new
@@ -1145,6 +1359,7 @@ function renderViewStage(panel) {
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
   renderViewBar(panel, modes);
+  if (dataset && state.viewMode !== 'scene') panel.append(shownResultsLine(dataset));
   if (state.viewMode === 'scene') {
     renderSceneView(panel);
     return;
@@ -1310,21 +1525,21 @@ const MATERIAL_NAMES = ['Air inclusion', 'Aluminium', 'Steel', 'Cast iron', 'Tit
 const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
   'Extracted surface', 'Nominal-actual deviation'];
 
-/// Latest surface step computed from the dataset of `datasetStep`.
+/// Surface step computed from the dataset of `datasetStep` that the views show.
 function surfaceOf(datasetStep) {
   const steps = activeSteps().filter((step) => step.operation === 'surface' &&
     step.inputs.dataset?.step === datasetStep);
-  return steps.length ? steps[steps.length - 1].id : null;
+  return shownStep('surface', steps)?.id ?? null;
 }
 
-/// Latest nominal-actual comparison of a surface of the dataset of `datasetStep`.
+/// Nominal-actual comparison of a surface of the dataset of `datasetStep` that the views show.
 function comparisonOf(datasetStep) {
   const surfaces = activeSteps().filter((step) => step.operation === 'surface' &&
     step.inputs.dataset?.step === datasetStep).map((step) => step.id);
   const steps = activeSteps().filter((step) =>
     ['compare_cad', 'compare_objects'].includes(step.operation) &&
     surfaces.includes(step.inputs.surface?.step));
-  return steps.length ? steps[steps.length - 1].id : null;
+  return shownStep('comparison', steps)?.id ?? null;
 }
 
 /// Colour bar of the deviation colours (deviationColor in compare.cpp) with its limits.
@@ -2254,6 +2469,7 @@ function render() {
   state.capture = null;
   if (state.stage === 'dataset') renderDatasetStage(panel);
   else if (state.stage === 'analysis') renderAnalysisStage(panel);
+  else if (state.stage === 'results') renderResultsStage(panel);
   else if (state.stage === 'view') renderViewStage(panel);
   else renderReportStage(panel);
   scheduleViewSave();
