@@ -81,6 +81,30 @@ struct StepTarget {
 inline constexpr const char* kMovedObjectsKey = "moved_objects";
 inline constexpr const char* kMotionKey = "motion";
 
+/// An analysis result (ADR 0023): an output of an active step that is neither an object's data
+/// (dataset, mesh) nor a motion (pose), such as pores, materials, a surface, a comparison, a
+/// report or a plugin's table. Results are derived from the steps like the objects, so undo and
+/// redo need nothing extra; they are what the UI lists per scan and what exports write.
+struct AnalysisResult {
+  /// The step output holding the result.
+  ArtifactRef ref;
+  /// Output type (artifact::kPorosity, ...), or a plugin's own type.
+  std::string type;
+  std::string operation;
+  std::string title;
+  /// The object the result belongs to; empty for results of no object.
+  std::string object;
+  /// The object data the result was computed from, followed through the results it builds on:
+  /// a dataset or mesh output. Empty (step 0) when there is none.
+  ArtifactRef source;
+  /// Inputs of the step that are results themselves, such as the porosity of a report.
+  std::vector<ArtifactRef> based_on;
+  /// False when a newer result of the same type belongs to the same object.
+  bool current = true;
+  std::string finished;
+  nlohmann::json summary = nlohmann::json::object();
+};
+
 /// A view saved under a name: the view state of the UI and a picture of it (views/<id>.png).
 struct SavedView {
   int id = 0;
@@ -156,6 +180,9 @@ class Project {
   [[nodiscard]] std::vector<ProjectObject> objects() const;
   /// An active object; throws for unknown ids.
   [[nodiscard]] ProjectObject object(const std::string& id) const;
+  /// The analysis results of the active steps in the order they were made, of one object when
+  /// `object` is not empty.
+  [[nodiscard]] std::vector<AnalysisResult> results(const std::string& object = {}) const;
   /// The object the user works on: its outputs are the default inputs of new steps. Empty when
   /// none is chosen or the chosen one was undone. Choosing is not a step.
   [[nodiscard]] std::string activeObject() const;
@@ -186,5 +213,9 @@ class Project {
 /// An object as JSON: id, name, kind, source {step, output}, created_by, pose (row-major 4x4) and
 /// moved_by.
 [[nodiscard]] nlohmann::json toJson(const ProjectObject& object);
+
+/// A result as JSON: step, output, type, operation, title, object, source {step, output} or null,
+/// based_on [{step, output}], current, finished and summary.
+[[nodiscard]] nlohmann::json toJson(const AnalysisResult& result);
 
 }  // namespace voxelsieve
