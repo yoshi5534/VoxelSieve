@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **All results of a scan in one place**: the studio has a new stage *Results* that lists every
+  analysis per scanned object (pores, materials, surface, nominal-actual comparison, report,
+  plugin outputs) with key figures, pictures and files. Replaced results stay reachable below
+  the current ones, and *Show in the view* chooses which result the slice and 3D views show; the
+  views name it above the picture. The API method `results` and `project_status` give the same
+  list to MCP clients and exports (ADR 0023).
+
 - **Disk reads in the telemetry on Windows**: device reads and writes and hard page faults now come
   from the system-wide performance counters (ADR 0017 amendment). Windows counts reads of
   memory-mapped files in no per-process counter, so every import showed 0 B read and the hints

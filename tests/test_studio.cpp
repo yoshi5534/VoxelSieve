@@ -317,6 +317,27 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
       "run_histogram", {{"bins", 8}, {"inputs", {{"dataset", {{"step", imported.at("id")}}}}}});
   EXPECT_EQ(histogram.at("inputs").at("dataset").at("step"), imported.at("id"));
 
+  // Every analysis is a result of the scanned object, with its files; the newer comparison
+  // replaces the older one, and the report names what it builds on.
+  const Json results = studio.call("results", {}).at("results");
+  ASSERT_EQ(results.size(), 6U);
+  std::vector<std::string> types;
+  for (const Json& result : results) {
+    types.push_back(result.at("type").get<std::string>());
+    EXPECT_EQ(result.at("object"), imported.at("object"));
+    EXPECT_EQ(result.at("source").at("step"), imported.at("id"));
+    EXPECT_FALSE(result.at("files").empty());
+  }
+  EXPECT_EQ(types, (std::vector<std::string>{"porosity", "surface", "comparison", "comparison",
+                                             "report", "table"}));
+  EXPECT_EQ(results[0].at("summary").at("pores"), 2);
+  EXPECT_FALSE(results[2].at("current"));
+  EXPECT_TRUE(results[3].at("current"));
+  EXPECT_EQ(results[4].at("based_on").size(), 3U);
+  EXPECT_EQ(studio.call("results", {{"current_only", true}}).at("results").size(), 5U);
+  EXPECT_TRUE(studio.call("results", {{"object", "o9"}}).at("results").empty());
+  EXPECT_EQ(studio.call("project_status", {}).at("results").size(), 6U);
+
   const Json undone = studio.call("undo", {});
   EXPECT_TRUE(undone.at("changed"));
   EXPECT_FALSE(undone.at("steps").back().at("active"));

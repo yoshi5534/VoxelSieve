@@ -44,6 +44,30 @@ const Json& artifactProperties() {
   return properties;
 }
 
+/// The files of a step output (a directory or a single file) with their sizes, at most
+/// kMaxListedFiles; empty when the output is gone.
+Json outputFiles(const std::filesystem::path& root) {
+  Json files = Json::array();
+  std::error_code error;
+  if (!std::filesystem::is_directory(root, error)) {
+    const std::uintmax_t size = std::filesystem::file_size(root, error);
+    if (!error) {
+      files.push_back({{"file", root.filename().string()}, {"size_bytes", size}});
+    }
+    return files;
+  }
+  for (auto it = std::filesystem::recursive_directory_iterator(root, error);
+       !error && it != std::filesystem::recursive_directory_iterator() &&
+       files.size() < kMaxListedFiles;
+       it.increment(error)) {
+    if (it->is_regular_file(error)) {
+      files.push_back({{"file", it->path().lexically_relative(root).generic_string()},
+                       {"size_bytes", it->file_size(error)}});
+    }
+  }
+  return files;
+}
+
 std::uintmax_t directorySize(const std::filesystem::path& path) {
   std::error_code error;
   if (!std::filesystem::is_directory(path, error)) {
@@ -325,7 +349,8 @@ std::vector<StudioMethod> Studio::methods() const {
       {"project_open", "Opens an existing project.", objectSchema({{"path", path}}, {"path"})},
       {"project_status",
        "The open project: name, directory, cursor and the step protocol with parameters, inputs, "
-       "outputs, messages and summaries. Steps with active=false are undone.",
+       "outputs, messages and summaries, the objects and the analysis results (see results, "
+       "without files). Steps with active=false are undone.",
        objectSchema(Json::object())},
       {"project_save_as", "Copies the project to a new directory and continues there.",
        objectSchema({{"path", path}}, {"path"})},
@@ -339,6 +364,20 @@ std::vector<StudioMethod> Studio::methods() const {
        "4x4 matrix from object to global coordinates in mm). Also the active object, whose "
        "outputs are the default inputs of new steps.",
        objectSchema(Json::object())},
+      {"results",
+       "The analysis results of the project per object (ADR 0023), in the order they were made: "
+       "every output of an active step that is not an object's data or a motion, such as pores "
+       "(porosity), materials, surfaces, comparisons with CAD, reports and plugin outputs. Each "
+       "names its step and output, type, operation, object, the dataset or mesh it was computed "
+       "from (source), the results it builds on, its summary and files, and whether it is the "
+       "current one of its type for its object or replaced by a newer one.",
+       objectSchema({{"object",
+                      {{"type", "string"},
+                       {"description", "Object id; default: the results of all objects"}}},
+                     {"current_only",
+                      {{"type", "boolean"},
+                       {"default", false},
+                       {"description", "Leave out results replaced by newer ones"}}}})},
       {"object_add",
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
        "object, as a step. Raw volumes, TIFF stacks, DICOM stacks and VGStudio projects become "
@@ -558,6 +597,10 @@ Json Studio::status() const {
   json["objects"] = Json::array();
   for (const ProjectObject& object : project_->objects()) {
     json["objects"].push_back(toJson(object));
+  }
+  json["results"] = Json::array();
+  for (const AnalysisResult& result : project_->results()) {
+    json["results"].push_back(toJson(result));
   }
   json["active_object"] = project_->activeObject();
   json["open"] = true;
@@ -1478,6 +1521,19 @@ Json Studio::call(const std::string& method, const Json& arguments,
       }
       return {{"objects", objects}, {"active_object", project().activeObject()}};
     }
+    if (method == "results") {
+      Json results = Json::array();
+      const bool current_only = checked.value("current_only", false);
+      for (const AnalysisResult& result : project().results(checked.value("object", ""))) {
+        if (current_only && !result.current) {
+          continue;
+        }
+        Json json = toJson(result);
+        json["files"] = outputFiles(project().resolve(result.ref));
+        results.push_back(std::move(json));
+      }
+      return {{"results", results}};
+    }
     if (method == "object_select") {
       project().selectObject(checked.at("id").get<std::string>());
       return {{"active_object", project().activeObject()}};
@@ -1535,23 +1591,7 @@ Json Studio::call(const std::string& method, const Json& arguments,
     }
     if (method == "list_files") {
       const auto root = artifactPath(checked);
-      Json files = Json::array();
-      if (std::filesystem::is_directory(root)) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-          if (!entry.is_regular_file()) {
-            continue;
-          }
-          if (files.size() == kMaxListedFiles) {
-            break;
-          }
-          files.push_back({{"file", entry.path().lexically_relative(root).string()},
-                           {"size_bytes", entry.file_size()}});
-        }
-      } else {
-        files.push_back(
-            {{"file", root.filename().string()}, {"size_bytes", std::filesystem::file_size(root)}});
-      }
-      return {{"path", root.string()}, {"files", files}};
+      return {{"path", root.string()}, {"files", outputFiles(root)}};
     }
     if (method == "view_slice") {
       return viewSlice(checked);
