@@ -243,6 +243,55 @@ TEST(Synthetic, BlurWidensEdgesAndKeepsTheVolume) {
   EXPECT_THROW(SyntheticScan(boxMesh(kBoxSize), spec), std::invalid_argument);
 }
 
+TEST(Synthetic, CorrelatedNoiseKeepsItsSigma) {
+  SyntheticSpec spec;
+  spec.noise_sigma = 400.0;
+  spec.noise_correlation_mm = 0.07;  // 0.7 voxels
+  spec.air_value = 5000;             // no clamping at 0
+  const SyntheticScan scan(boxMesh(kBoxSize), spec);
+  const auto voxels = render(scan);
+  const auto dims = scan.dims();
+  // Statistics of the air in front of the part (x < 9), away from the volume border where the
+  // repeated border voxels correlate more: standard deviation and the correlation of neighbours
+  // along x, which a Gaussian of 0.7 voxels makes exp(-1 / (4 * 0.49)) = 0.60.
+  double sum = 0.0;
+  double sum_sq = 0.0;
+  double sum_xy = 0.0;
+  std::int64_t n = 0;
+  for (std::int64_t z = 3; z < dims[2] - 3; ++z) {
+    for (std::int64_t y = 3; y < dims[1] - 3; ++y) {
+      for (std::int64_t x = 3; x < 8; ++x) {
+        const std::size_t i = static_cast<std::size_t>(x + dims[0] * (y + dims[1] * z));
+        const double a = static_cast<double>(voxels[i]) - spec.air_value;
+        const double b = static_cast<double>(voxels[i + 1]) - spec.air_value;
+        sum += a;
+        sum_sq += a * a;
+        sum_xy += a * b;
+        ++n;
+      }
+    }
+  }
+  const double mean = sum / static_cast<double>(n);
+  const double variance = sum_sq / static_cast<double>(n) - mean * mean;
+  EXPECT_NEAR(std::sqrt(variance), 400.0, 20.0);
+  EXPECT_NEAR(sum_xy / static_cast<double>(n) / variance, 0.60, 0.05);
+
+  // Regions get the same values as the whole volume, also at the volume border.
+  const Box box{{0, 3, 20}, {17, 9, 23}};
+  std::vector<std::uint16_t> part(static_cast<std::size_t>(box.voxelCount()));
+  scan.readRegion(box, part);
+  std::size_t i = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++i) {
+        ASSERT_EQ(part[i], voxels[static_cast<std::size_t>(x + dims[0] * (y + dims[1] * z))]);
+      }
+    }
+  }
+  spec.noise_correlation_mm = -0.1;
+  EXPECT_THROW(SyntheticScan(boxMesh(kBoxSize), spec), std::invalid_argument);
+}
+
 TEST(Synthetic, SieveKeepsDefects) {
   SyntheticSpec spec = defectSpec();
   spec.noise_sigma = 300.0;

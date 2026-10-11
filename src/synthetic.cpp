@@ -22,7 +22,8 @@ namespace {
 /// Separable Gaussian blur of `values` (the voxels of `region`, x fastest) with `sigma` voxels,
 /// truncated at `radius`. Outside the volume the border voxel is repeated; inside it, the region
 /// must reach `radius` beyond the voxels whose result is used.
-void blurRegion(std::vector<double>& values, const Box& region, double sigma, std::int64_t radius) {
+/// Normalised weights of a Gaussian kernel with `sigma`, truncated at `radius`.
+std::vector<double> gaussianWeights(double sigma, std::int64_t radius) {
   std::vector<double> weights(static_cast<std::size_t>(2 * radius + 1));
   double total = 0.0;
   for (std::int64_t i = -radius; i <= radius; ++i) {
@@ -33,6 +34,11 @@ void blurRegion(std::vector<double>& values, const Box& region, double sigma, st
   for (double& w : weights) {
     w /= total;
   }
+  return weights;
+}
+
+void blurRegion(std::vector<double>& values, const Box& region, double sigma, std::int64_t radius) {
+  const std::vector<double> weights = gaussianWeights(sigma, radius);
   const std::array<std::int64_t, 3> size{region.size(0), region.size(1), region.size(2)};
   const std::array<std::int64_t, 3> stride{1, size[0], size[0] * size[1]};
   std::vector<double> line;
@@ -550,8 +556,9 @@ SyntheticScan::SyntheticScan(const Mesh& mesh, const SyntheticSpec& spec)
   if (mesh.triangles.empty()) {
     throw std::invalid_argument("Mesh has no triangles");
   }
-  if (spec.voxel_size[0] <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0) {
-    throw std::invalid_argument("voxel size must be > 0, padding and blur >= 0");
+  if (spec.voxel_size[0] <= 0.0 || spec.padding_mm < 0.0 || spec.blur_sigma_mm < 0.0 ||
+      spec.noise_correlation_mm < 0.0) {
+    throw std::invalid_argument("voxel size must be > 0, padding, blur and noise correlation >= 0");
   }
   if (spec.lunker_size_spread < 0.0 || spec.lunker_size_spread >= 1.0) {
     throw std::invalid_argument("lunker size spread must be in [0, 1)");
@@ -650,6 +657,39 @@ void SyntheticScan::readRegion(const Box& box, std::span<std::uint16_t> out) con
   if (halo > 0) {
     blurRegion(sharp, region, sigma, halo);
   }
+  // Correlated noise: white noise around the box, smoothed and scaled back to noise_sigma. Like
+  // the blur, every voxel gets the same value however the volume is split into regions.
+  const double correlation = spec.noise_correlation_mm / spec.voxel_size[0];
+  const auto noise_halo =
+      correlation > 0.0 ? static_cast<std::int64_t>(std::ceil(3.0 * correlation)) : 0;
+  Box noise_region = box;
+  std::vector<double> noise;
+  if (spec.noise_sigma > 0.0 && noise_halo > 0) {
+    for (std::size_t i = 0; i < 3; ++i) {
+      noise_region.min[i] = std::max<std::int64_t>(0, box.min[i] - noise_halo);
+      noise_region.max[i] = std::min(impl.dims[i], box.max[i] + noise_halo);
+    }
+    noise.resize(static_cast<std::size_t>(noise_region.voxelCount()));
+    offset = 0;
+    for (std::int64_t z = noise_region.min[2]; z < noise_region.max[2]; ++z) {
+      for (std::int64_t y = noise_region.min[1]; y < noise_region.max[1]; ++y) {
+        for (std::int64_t x = noise_region.min[0]; x < noise_region.max[0]; ++x) {
+          const auto index = static_cast<std::uint64_t>(x + impl.dims[0] * (y + impl.dims[1] * z));
+          noise[offset++] = detail::gaussianNoise(spec.seed, index);
+        }
+      }
+    }
+    blurRegion(noise, noise_region, correlation, noise_halo);
+    // Smoothing white noise of variance 1 leaves the sum of the squared weights per axis.
+    double gain = 0.0;
+    for (const double w : gaussianWeights(correlation, noise_halo)) {
+      gain += w * w;
+    }
+    const double scale = spec.noise_sigma / std::sqrt(gain * gain * gain);
+    for (double& n : noise) {
+      n *= scale;
+    }
+  }
   offset = 0;
   for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
     for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
@@ -658,7 +698,12 @@ void SyntheticScan::readRegion(const Box& box, std::span<std::uint16_t> out) con
             (x - region.min[0]) +
             region.size(0) * ((y - region.min[1]) + region.size(1) * (z - region.min[2])))];
         value += impl.ringOffset(x, y);
-        if (spec.noise_sigma > 0.0) {
+        if (!noise.empty()) {
+          value += noise[static_cast<std::size_t>(
+              (x - noise_region.min[0]) +
+              noise_region.size(0) *
+                  ((y - noise_region.min[1]) + noise_region.size(1) * (z - noise_region.min[2])))];
+        } else if (spec.noise_sigma > 0.0) {
           const auto index = static_cast<std::uint64_t>(x + impl.dims[0] * (y + impl.dims[1] * z));
           value += spec.noise_sigma * detail::gaussianNoise(spec.seed, index);
         }
@@ -703,6 +748,7 @@ nlohmann::json SyntheticScan::toJson() const {
         {"material_value", s.material_value},
         {"seed", s.seed},
         {"noise_sigma", s.noise_sigma},
+        {"noise_correlation_mm", s.noise_correlation_mm},
         {"cupping", s.cupping},
         {"blur_sigma_mm", s.blur_sigma_mm},
         {"lunker_size_spread", s.lunker_size_spread},

@@ -25,9 +25,13 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     for flexible parts (`CompareOptions::deformation`, ADR 0022); `render.hpp` a CPU
     renderer for shaded report and documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
+  - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
+    its correlation, or a learned model (ADR 0023); `writeDerivedDataset` (`dataset.hpp`) writes
+    any per-voxel processing that keeps the part
   - `materials.hpp` segmentation into material classes, the material volume and scoring against
     labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
-    trained with the PyTorch scripts in `tools/models/`
+    trained with the PyTorch scripts in `tools/models/` (segmentation, and denoising from the noisy
+    scan alone)
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
     the built-in template is `resources/report_template.html`, compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
@@ -43,7 +47,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New studio
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-surface`, `vs-compare`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
   and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats

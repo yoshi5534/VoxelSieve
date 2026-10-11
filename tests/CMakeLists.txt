@@ -2,6 +2,7 @@ find_package(GTest REQUIRED)
 
 add_executable(voxelsieve_tests
   test_dataset.cpp
+  test_denoise.cpp
   test_dicom.cpp
   test_io.cpp
   test_materials.cpp
@@ -95,6 +96,18 @@ add_test(NAME vs_porosity_cli COMMAND vs-porosity ${CMAKE_CURRENT_BINARY_DIR}/cl
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity
          --telemetry ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity_telemetry.json)
 set_tests_properties(vs_porosity_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
+add_test(NAME vs_denoise_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_denoised.vsieve)
+add_test(NAME vs_denoise_cli COMMAND vs-denoise ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_denoised.vsieve --search 2)
+set_tests_properties(vs_denoise_cli PROPERTIES DEPENDS "vs_porosity_cli_sieve;vs_denoise_cli_clean"
+                     PASS_REGULAR_EXPRESSION "noise after")
+# The benchmark on a coarse scan of the housing: non-local means against the noise-free scan.
+add_test(NAME vs_denoise_benchmark_cli
+         COMMAND vs-denoise --benchmark ${CMAKE_CURRENT_BINARY_DIR}/cli_denoise_benchmark
+                 --bench-voxel 0.5)
+set_tests_properties(vs_denoise_benchmark_cli PROPERTIES
+                     PASS_REGULAR_EXPRESSION "\\| non-local means \\|")
 add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
          --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report)

@@ -1,4 +1,4 @@
-"""Small 3D U-Net for material segmentation and its export to a VoxelSieve model (.vsm).
+"""Small 3D U-Net for segmentation and denoising and its export to a VoxelSieve model (.vsm).
 
 The network matches the layer types VoxelSieve runs itself (model.hpp, ADR 0014): 3x3x3
 convolutions with ReLU, 2x2x2 max pooling, nearest-neighbour upsampling and concatenation.
@@ -57,8 +57,10 @@ class UNet(nn.Module):
         return out
 
 
-def export_vsm(path, net, name, materials, input_offset, input_scale, halo=16, description=""):
-    """Writes `net` as a .vsm file. `materials`: [{"id", "name", "color", "lower"}], id 1, 2, ..."""
+def export_vsm(path, net, name, materials, input_offset, input_scale, halo=16, description="",
+               task="segmentation"):
+    """Writes `net` as a .vsm file. `materials`: [{"id", "name", "color", "lower"}], id 1, 2, ...
+    for segmentation; empty for task "denoising", whose network gives one channel."""
     layers, blobs = [], []
     for entry, conv in net.layers():
         entry = dict(entry)
@@ -68,7 +70,8 @@ def export_vsm(path, net, name, materials, input_offset, input_scale, halo=16, d
             blobs += [w.flatten(), conv.bias.detach().float()]
         layers.append(entry)
     header = json.dumps({
-        "format": "voxelsieve-model", "version": 1, "name": name, "description": description,
+        "format": "voxelsieve-model", "version": 1, "task": task, "name": name,
+        "description": description,
         "input": {"offset": input_offset, "scale": input_scale}, "divisor": 4, "halo": halo,
         "materials": materials, "layers": layers}).encode()
     with open(path, "wb") as f:

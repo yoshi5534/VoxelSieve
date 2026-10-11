@@ -17,6 +17,7 @@
 
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/denoise.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
@@ -1174,6 +1175,124 @@ class SegmentWithModel final : public Operation {
   OperationInfo info_;
 };
 
+class Denoise final : public Operation {
+ public:
+  Denoise() {
+    info_.id = "denoise";
+    info_.title = "Denoise";
+    info_.description =
+        "Reduces the noise of a dataset and writes a new dataset with the same part; the input "
+        "stays in the project. Non-local means averages voxels whose neighbourhoods look alike, "
+        "measured against the noise of the scan including the correlation of neighbouring "
+        "voxels, and leaves out neighbourhoods that differ more than noise explains, so edges, "
+        "thin walls and pores of a few voxels keep their contrast. A learned denoising model "
+        "(.vsm, trained on the noisy scan itself with tools/models/train_denoiser.py) can run "
+        "instead. Later steps of the object use the denoised dataset.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to denoise"}};
+    info_.outputs = {{"dataset", artifact::kDataset, "Denoised dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"method",
+           {{"type", "string"},
+            {"enum", {"non_local_means", "model"}},
+            {"default", "non_local_means"}}},
+          {"strength",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"default", 1.0},
+            {"description", "Non-local means: larger values smooth more"}}},
+          {"similarity_limit",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"default", 1.3},
+            {"description",
+             "Non-local means: neighbourhoods that differ by more than this multiple of the "
+             "noise get no weight; larger values smooth small details more"}}},
+          {"search_radius",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 7},
+            {"default", 3},
+            {"description", "Non-local means: half edge of the search window in voxels"}}},
+          {"patch_radius",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"maximum", 3},
+            {"default", 1},
+            {"description", "Non-local means: half edge of the compared patches in voxels"}}},
+          {"noise_sigma",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description",
+             "Non-local means: noise in grey values, taken as uncorrelated; default: measured "
+             "from the dataset, correlation included"}}},
+          {"model_path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description", "Method model: the learned denoising model (.vsm)"}}},
+          {"tile",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description", "Tile edge in voxels; 0: 64 for non-local means, 128 for a model"}}},
+          {"value_type", valueTypeParameter()}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    DenoiseOptions options;
+    std::optional<Model> model;
+    if (p.at("method").get<std::string>() == "model") {
+      if (!p.contains("model_path")) {
+        throw std::invalid_argument("Denoising with a model needs model_path");
+      }
+      model.emplace(Model::load(std::filesystem::absolute(p.at("model_path").get<std::string>())));
+      options.method = DenoiseMethod::kModel;
+      options.model = &*model;
+    }
+    options.non_local_means.strength = p.at("strength").get<double>();
+    options.non_local_means.similarity_limit = p.at("similarity_limit").get<double>();
+    options.non_local_means.search_radius = p.at("search_radius").get<int>();
+    options.non_local_means.patch_radius = p.at("patch_radius").get<int>();
+    if (p.contains("noise_sigma")) {
+      options.noise_sigma = p.at("noise_sigma").get<double>();
+    }
+    options.tile = p.at("tile").get<std::int64_t>();
+    options.output.value_type = valueTypeOption(p);
+    options.output.progress = [&context](std::string_view stage, double fraction) {
+      context.progress(stage == "bricks" ? 0.95 * fraction : 0.95 + 0.05 * fraction);
+    };
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const DenoiseInfo info = denoiseDataset(dataset, context.output_dir / "dataset", options);
+    const NoiseModel& noise = info.noise;
+    const double after = estimateNoise(Dataset::open(context.output_dir / "dataset"), 1).sigma;
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(0) << "Noise " << noise.sigma << " -> " << after
+         << " grey values (correlation of neighbours " << std::setprecision(2)
+         << noise.correlation(1, 0, 0) << ", " << noise.correlation(0, 1, 0) << ", "
+         << noise.correlation(0, 0, 1) << ")";
+    context.log(text.str());
+    OperationResult result;
+    result.outputs["dataset"] = "dataset";
+    result.summary = datasetSummary(info.dataset);
+    result.summary.update(
+        {{"method", std::string(denoiseMethodName(info.method))},
+         {"noise_sigma", noise.sigma},
+         {"noise_sigma_after", after},
+         {"noise_correlation",
+          {noise.correlation(1, 0, 0), noise.correlation(0, 1, 0), noise.correlation(0, 0, 1)}}});
+    if (!info.model.empty()) {
+      result.summary["model"] = info.model;
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class AddMesh final : public Operation {
  public:
   AddMesh() {
@@ -1583,6 +1702,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
+  registry.add(std::make_shared<Denoise>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());

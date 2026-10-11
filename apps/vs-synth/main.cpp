@@ -52,6 +52,7 @@ Grey values and artefacts:
   --air <value>               Grey value of air (default 1000)
   --material <value>          Grey value of material (default 20000)
   --noise <sigma>             Gaussian noise in grey values (default 500, 0 disables)
+  --noise-correlation <mm>    Correlation length of the noise, e.g. 0.7 voxels (default 0: white)
   --cupping <f>               Beam-hardening darkening inside the part, e.g. 0.1 (default 0)
   --cupping-depth <mm>        Depth at which cupping reaches 63 % (default 20 % of smallest extent)
   --blur <mm>                 Unsharpness: sigma of a Gaussian point spread function (default 0)
@@ -133,6 +134,8 @@ std::optional<Options> parse(int argc, char** argv) {
       spec.material_value = static_cast<std::uint16_t>(std::stoul(next()));
     } else if (arg == "--noise") {
       spec.noise_sigma = std::stod(next());
+    } else if (arg == "--noise-correlation") {
+      spec.noise_correlation_mm = std::stod(next());
     } else if (arg == "--cupping") {
       spec.cupping = std::stod(next());
     } else if (arg == "--cupping-depth") {
