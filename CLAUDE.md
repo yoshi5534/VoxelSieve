@@ -11,7 +11,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `source.hpp` read access to volumes larger than RAM (`MappedRawSource`, `PhantomSource`, ...)
     and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011); float
     input is mapped onto 16 bit with a recorded `ValueMapping` (ADR 0015); `dicom.hpp` DICOM
-    stacks (`DicomStackSource`, DCMTK, ADR 0019)
+    stacks (`DicomStackSource`, DCMTK, ADR 0019); `diconde.hpp` DICONDE metadata and
+    export of volumes, material labels and pores as indications (ADR 0024)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
     and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
     `preview.hpp` the first look at a volume that every import shows before its passes, from
@@ -44,7 +45,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New studio
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-surface`, `vs-compare`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
+  `vs-porosity`, `vs-segment`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
   and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
