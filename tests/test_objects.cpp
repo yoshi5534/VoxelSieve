@@ -63,6 +63,25 @@ class Analyse final : public Operation {
   OperationInfo info_;
 };
 
+/// Builds on a result, as a report builds on the pores.
+class Summarise final : public Operation {
+ public:
+  Summarise() {
+    info_.id = "summarise";
+    info_.title = "Summarise";
+    info_.inputs = {{"result", "result", ""}};
+    info_.outputs = {{"summary", artifact::kReport, ""}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    std::ofstream(context.output_dir / "s") << "summary";
+    return {{{"summary", "s"}}, {}};
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 void expectNear(const Vec& actual, const Vec& expected) {
   for (std::size_t i = 0; i < 3; ++i) {
     EXPECT_NEAR(actual[i], expected[i], 1e-9) << "axis " << i;
@@ -80,6 +99,7 @@ class ObjectsTest : public ::testing::Test {
     registerBuiltinOperations(registry_);
     registry_.add(std::make_shared<FakeImport>());
     registry_.add(std::make_shared<Analyse>());
+    registry_.add(std::make_shared<Summarise>());
     writeStl(dir_ / "nominal.stl", boxMesh({4.0, 2.0, 1.0}));
   }
   void TearDown() override { std::filesystem::remove_all(dir_); }
@@ -242,6 +262,58 @@ TEST_F(ObjectsTest, ProjectsWithoutObjectsAreMigrated) {
   EXPECT_EQ(project.steps()[2].object, "o2");
   std::ifstream saved(p / "project.json");
   EXPECT_EQ(Json::parse(saved).at("format"), 2);
+}
+
+TEST_F(ObjectsTest, ResultsBelongToTheirObjectAndNewerOnesReplaceOlder) {
+  auto project = Project::create(dir_ / "p", "Objects");
+  project.run(registry_, "fake_import", {{"path", "a.raw"}});
+  project.run(registry_, "fake_import", {{"path", "b.raw"}});
+  project.run(registry_, "move", {{"objects", {"o1"}}, {"translation_mm", {1.0, 0.0, 0.0}}});
+  const StepTarget on_a{.object = "o1", .name = {}};
+  const StepTarget on_b{.object = "o2", .name = {}};
+  project.run(registry_, "analyse", {}, {}, {}, nullptr, on_a);
+  project.run(registry_, "analyse", {}, {}, {}, nullptr, on_b);
+  project.run(registry_, "analyse", {}, {}, {}, nullptr, on_a);
+  project.run(registry_, "summarise", {}, {}, {}, nullptr, on_a);
+
+  // Datasets and motions are no results; the others are, in the order they were made.
+  auto results = project.results();
+  ASSERT_EQ(results.size(), 4U);
+  EXPECT_EQ(results[0].ref.step, 4);
+  EXPECT_EQ(results[0].type, "result");
+  EXPECT_EQ(results[0].operation, "analyse");
+  EXPECT_EQ(results[0].object, "o1");
+  EXPECT_EQ(results[0].source.step, 1);
+  EXPECT_EQ(results[0].source.output, "dataset");
+  EXPECT_TRUE(results[0].based_on.empty());
+  // The newer analysis of o1 replaces the older; the one of o2 stays current.
+  EXPECT_FALSE(results[0].current);
+  EXPECT_TRUE(results[1].current);
+  EXPECT_EQ(results[1].object, "o2");
+  EXPECT_EQ(results[1].source.step, 2);
+  EXPECT_TRUE(results[2].current);
+  // A result built on another one names it and is traced back to the same dataset.
+  EXPECT_EQ(results[3].type, artifact::kReport);
+  ASSERT_EQ(results[3].based_on.size(), 1U);
+  EXPECT_EQ(results[3].based_on[0].step, 6);
+  EXPECT_EQ(results[3].source.step, 1);
+  EXPECT_TRUE(results[3].current);
+
+  const auto of_b = project.results("o2");
+  ASSERT_EQ(of_b.size(), 1U);
+  EXPECT_EQ(of_b[0].ref.step, 5);
+  const Json json = toJson(results[3]);
+  EXPECT_EQ(json.at("source").at("step"), 1);
+  EXPECT_EQ(json.at("based_on")[0].at("step"), 6);
+  EXPECT_TRUE(toJson(of_b[0]).at("based_on").empty());
+
+  // Undo takes results back, and the older one is current again.
+  project.undo();
+  project.undo();
+  results = project.results("o1");
+  ASSERT_EQ(results.size(), 1U);
+  EXPECT_TRUE(results[0].current);
+  EXPECT_EQ(Project::open(dir_ / "p").results().size(), 2U);
 }
 
 }  // namespace

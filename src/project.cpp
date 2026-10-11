@@ -108,6 +108,13 @@ std::string defaultObjectName(const Json& params, int number) {
   return "Object " + std::to_string(number);
 }
 
+/// Whether an output of this type is an analysis result (ADR 0023): anything but an object's data
+/// and the motions of objects.
+bool isResultType(const std::string& output_type) {
+  return objectKind(output_type) == nullptr && output_type != artifact::kPose &&
+         output_type != artifact::kRaw;
+}
+
 std::string directoryName(const Step& step) {
   return std::to_string(step.id) + "-" + step.operation;
 }
@@ -306,6 +313,62 @@ ProjectObject Project::object(const std::string& id) const {
   throw std::invalid_argument("No object '" + id + "'");
 }
 
+std::vector<AnalysisResult> Project::results(const std::string& object) const {
+  std::vector<AnalysisResult> results;
+  // The object data each active output was computed from, by step and output.
+  std::map<std::pair<int, std::string>, ArtifactRef> source_of;
+  for (std::size_t i = 0; i < cursor_; ++i) {
+    const Step& step = steps_[i];
+    if (step.status != "done") {
+      continue;
+    }
+    ArtifactRef source;
+    std::vector<ArtifactRef> based_on;
+    for (const auto& [name, ref] : step.inputs) {
+      const auto it = source_of.find({ref.step, ref.output});
+      if (it == source_of.end()) {
+        continue;
+      }
+      if (it->second.step == ref.step && it->second.output == ref.output) {
+        source = source.step == 0 ? ref : source;  // object data itself
+      } else {
+        based_on.push_back(ref);
+        source = source.step == 0 ? it->second : source;
+      }
+    }
+    for (const auto& [name, type] : step.output_types) {
+      if (objectKind(type) != nullptr) {
+        source_of[{step.id, name}] = {step.id, name};
+        continue;
+      }
+      if (!isResultType(type)) {
+        continue;
+      }
+      source_of[{step.id, name}] = source;
+      for (AnalysisResult& earlier : results) {
+        if (earlier.object == step.object && earlier.type == type) {
+          earlier.current = false;
+        }
+      }
+      results.push_back({.ref = {step.id, name},
+                         .type = type,
+                         .operation = step.operation,
+                         .title = step.title,
+                         .object = step.object,
+                         .source = source,
+                         .based_on = based_on,
+                         .current = true,
+                         .finished = step.finished,
+                         .summary = step.summary});
+    }
+  }
+  if (!object.empty()) {
+    std::erase_if(results,
+                  [&object](const AnalysisResult& result) { return result.object != object; });
+  }
+  return results;
+}
+
 std::string Project::activeObject() const {
   if (active_object_.empty()) {
     return {};
@@ -331,6 +394,26 @@ Json toJson(const ProjectObject& object) {
           {"created_by", object.created_by},
           {"pose", object.pose.matrix()},
           {"moved_by", object.moved_by}};
+}
+
+Json toJson(const AnalysisResult& result) {
+  Json based_on = Json::array();
+  for (const ArtifactRef& ref : result.based_on) {
+    based_on.push_back({{"step", ref.step}, {"output", ref.output}});
+  }
+  return {{"step", result.ref.step},
+          {"output", result.ref.output},
+          {"type", result.type},
+          {"operation", result.operation},
+          {"title", result.title},
+          {"object", result.object},
+          {"source", result.source.step == 0
+                         ? Json()
+                         : Json{{"step", result.source.step}, {"output", result.source.output}}},
+          {"based_on", based_on},
+          {"current", result.current},
+          {"finished", result.finished},
+          {"summary", result.summary}};
 }
 
 const Step& Project::run(
