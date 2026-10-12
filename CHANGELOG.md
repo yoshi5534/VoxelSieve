@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **3D view of large scans with materials**: with a material segmentation, the 3D view of a large
+  scan could stay black at "Loading overview …" or end the program. The materials of the overview
+  are now read brick by brick, each brick once.
+
 - **New program name `vs-gui`**: the program with the browser UI and the MCP server has a new
   name; its options are unchanged. MCP configurations need the new path.
 
