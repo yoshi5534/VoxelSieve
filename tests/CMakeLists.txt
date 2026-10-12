@@ -168,10 +168,10 @@ add_test(NAME vs_report_cli_images
                  --comparison ${CMAKE_CURRENT_BINARY_DIR}/cli_compare)
 set_tests_properties(vs_report_cli_images PROPERTIES DEPENDS vs_compare_cli PASS_REGULAR_EXPRESSION "report.html")
 
-add_test(NAME vs_studio_mcp_cli
-  COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:vs-studio> -DARGS=--mcp
+add_test(NAME vs_gui_mcp_cli
+  COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:vs-gui> -DARGS=--mcp
           -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/mcp_tools_list.jsonl -P ${CMAKE_CURRENT_SOURCE_DIR}/run_with_input.cmake)
-set_tests_properties(vs_studio_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity"
+set_tests_properties(vs_gui_mcp_cli PROPERTIES PASS_REGULAR_EXPRESSION "run_porosity"
                      FAIL_REGULAR_EXPRESSION "\"view_set\"")
 # The sample data of a release (docs/quickstart.md), written with the vs-synth just built.
 add_test(NAME sample_data
@@ -179,8 +179,8 @@ add_test(NAME sample_data
           -DORDER=${PROJECT_SOURCE_DIR}/examples/inspection_order.json
           -DOUT=${CMAKE_CURRENT_BINARY_DIR}/samples/voxelsieve-samples.zip
           -P ${PROJECT_SOURCE_DIR}/packaging/make-samples.cmake)
-add_test(NAME vs_studio_rejects_arguments COMMAND vs-studio --bogus)
-set_tests_properties(vs_studio_rejects_arguments PROPERTIES WILL_FAIL TRUE)
+add_test(NAME vs_gui_rejects_arguments COMMAND vs-gui --bogus)
+set_tests_properties(vs_gui_rejects_arguments PROPERTIES WILL_FAIL TRUE)
 
 # The browser UI has no build step; at least make sure the script parses.
 find_program(NODE_EXECUTABLE node)

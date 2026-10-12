@@ -13,9 +13,9 @@
   "keywords": ["ct", "computed tomography", "porosity", "inspection", "openvdb"],
   "server": {
     "type": "binary",
-    "entry_point": "bin/vs-studio@EXE@",
+    "entry_point": "bin/vs-gui@EXE@",
     "mcp_config": {
-      "command": "${__dirname}/bin/vs-studio@EXE@",
+      "command": "${__dirname}/bin/vs-gui@EXE@",
       "args": ["--mcp", "${user_config.directories}"]
     }
   },

@@ -20,6 +20,7 @@
 #include "voxelsieve/denoise.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
+#include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -33,7 +34,6 @@
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
-#include "voxelsieve/gzipped_xml.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -599,7 +599,7 @@ class ImportGzippedXml final : public Operation {
     info_.id = "import_gzipped_xml";
     info_.title = "Import gzipped XML project";
     info_.description =
-        "Imports a volume of a gzipped XML project (.gzxml) from the files it was imported from, "
+        "Imports a volume of a gzipped XML project from the files it was imported from, "
         "found where the project names them or next to the project, and places it as in the "
         "project. Removes the outside air and writes a bricked dataset. DICOM stacks are read; "
         "other inputs and further files of the project, such as masks, are reported.";
@@ -608,7 +608,7 @@ class ImportGzippedXml final : public Operation {
         {"type", "object"},
         {"properties",
          {{"path",
-           {{"type", "string"}, {"format", "path"}, {"description", "gzipped XML project (.gzxml)"}}},
+           {{"type", "string"}, {"format", "path"}, {"description", "gzipped XML project"}}},
           {"volume",
            {{"type", "integer"},
             {"minimum", 0},

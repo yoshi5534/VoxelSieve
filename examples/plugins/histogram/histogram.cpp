@@ -1,7 +1,7 @@
 // Example plugin: a grey value histogram of a dataset, written as histogram.json.
 //
 // Build it against libvoxelsieve as a shared library and put the .so into the directory given to
-// vs-studio --plugins (or VOXELSIEVE_PLUGIN_PATH); see examples/plugins/histogram/CMakeLists.txt.
+// vs-gui --plugins (or VOXELSIEVE_PLUGIN_PATH); see examples/plugins/histogram/CMakeLists.txt.
 
 #include <algorithm>
 #include <cstdint>

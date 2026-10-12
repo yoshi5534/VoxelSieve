@@ -26,5 +26,5 @@ ENV PATH=/opt/voxelsieve/bin:$PATH
 WORKDIR /data
 VOLUME /data
 EXPOSE 8410
-ENTRYPOINT ["vs-studio"]
+ENTRYPOINT ["vs-gui"]
 CMD ["--host", "0.0.0.0", "/data"]

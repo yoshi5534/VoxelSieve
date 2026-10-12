@@ -12,10 +12,10 @@
 
 namespace voxelsieve {
 
-/// Gzipped XML projects (.gzxml) as input (ADR 0019). A project does not hold the volumes; it refers
+/// Gzipped XML projects as input (ADR 0019). A project does not hold the volumes; it refers
 /// to the files they were imported from, with the import settings, the grid and where the volume
-/// lies in the scene. `readGzippedXmlProject` reads those references so that the volumes can be imported
-/// from their original files. VoxelSieve does not write .gzxml files.
+/// lies in the scene. `readGzippedXmlProject` reads those references so that the volumes can be
+/// imported from their original files. VoxelSieve does not write such projects.
 
 /// A file a project refers to, as written in it, and where it was found.
 struct GzippedXmlFile {
@@ -65,7 +65,8 @@ struct GzippedXmlProject {
 /// Reads a gzipped XML project: gzip-compressed or plain XML. Throws if it is neither.
 [[nodiscard]] GzippedXmlProject readGzippedXmlProject(const std::filesystem::path& file);
 
-/// Whether `path` names a gzipped XML project (.gzxml).
+/// Whether `path` is a gzipped XML project: a file, gzip-compressed or not, whose XML has a
+/// <Project> root. Reads only the start of the file, whatever its extension.
 [[nodiscard]] bool isGzippedXmlFile(const std::filesystem::path& path);
 
 }  // namespace voxelsieve

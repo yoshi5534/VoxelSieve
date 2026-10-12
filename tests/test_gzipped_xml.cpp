@@ -11,8 +11,8 @@
 
 #include "dicom_writer.hpp"
 #include "voxelsieve/dicom.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/studio.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -20,8 +20,8 @@ namespace {
 using testing::DicomSliceSpec;
 using testing::writeDicomSlice;
 
-// A synthetic gzipped XML project: the elements and classes of the format as the application writes them,
-// with made-up names and paths. The project was saved in D:/archive/part on another machine.
+// A synthetic gzipped XML project: the elements and classes of the format as the application writes
+// them, with made-up names and paths. The project was saved in D:/archive/part on another machine.
 constexpr const char* kSavedDir = "D:/archive/part";
 constexpr std::array<std::int64_t, 3> kDims{16, 12, 8};
 constexpr std::array<double, 3> kPitch{0.3, 0.3, 0.5};
@@ -74,7 +74,7 @@ std::string volume(const std::string& name, const std::string& import_class,
   const std::string transform =
       R"(<object class="Transform" id="T)" + std::to_string(first_id) + R"(">)" +
       property("matrix4", "TransformMatrix", "<matrix4>" + matrix + "</matrix4>") + "</object>";
-  return link(R"(<object class="VolumeRenderObject" id="V)" + std::to_string(first_id) +
+  return link(R"(<object class="AppVolumeRenderObject" id="V)" + std::to_string(first_id) +
                   R"(">)" + property("string", "Name", "<string>" + name + "</string>") +
                   property("objectlink", "SampleGrid", link(grid, "SampleGrid", transform)) +
                   "</object>",
@@ -83,9 +83,9 @@ std::string volume(const std::string& name, const std::string& import_class,
 
 std::string projectXml(const std::vector<std::string>& files) {
   const std::string mask =
-      R"(<object class="SampleMaskIORLE" id="M1">)" +
+      R"(<object class="AppSampleMaskIORLE" id="M1">)" +
       property("string", "FileName",
-               std::string("<string>") + kSavedDir + "/part.data/mask.mask</string>") +
+               std::string("<string>") + kSavedDir + "/part.data/mask.rle</string>") +
       "</object>";
   return std::string(R"(<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE Project [
 <!ELEMENT Project (version, units, scene)>
@@ -94,12 +94,12 @@ std::string projectXml(const std::vector<std::string>& files) {
 <Project>
 <version identifier="1.0" appname="CT Application" appversion="9.9.0">
   <file_location><filename>)") +
-         kSavedDir + R"(/part.gzxml</filename></file_location>
+         kSavedDir + R"(/part.xml.gz</filename></file_location>
 </version>
 <units/>
 <scene><object class="Scene" id="SC">
 <property minIndex="0" maxIndex="1" type="objectlinkarray" name="VolumeRenderObjectList">)" +
-         volume("Test part", "DicomImportSettings", files, 100) +
+         volume("Test part", "AppDicomImportSettings", files, 100) +
          volume("Raw part", "SomeOtherImportSettings", {"E:/elsewhere/raw.vol"}, 200) +
          "</property>" + property("objectlink", "SampleMaskIO", link(mask, "SampleMaskIO")) +
          "</object></scene></Project>\n";
@@ -158,7 +158,7 @@ class GzippedXmlTest : public ::testing::Test {
   void TearDown() override { std::filesystem::remove_all(dir_); }
 
   std::filesystem::path writeProject(bool compressed = true) {
-    const auto path = dir_ / "part" / "part.gzxml";
+    const auto path = dir_ / "part" / "part.xml.gz";
     const std::string xml = projectXml(files_);
     std::ofstream(path, std::ios::binary) << (compressed ? gzip(xml) : xml);
     return path;
@@ -186,7 +186,7 @@ TEST_F(GzippedXmlTest, ReadsTheVolumesAndFindsTheirFiles) {
     const GzippedXmlVolume& volume = project.volumes[0];
     EXPECT_EQ(volume.name, "Test part");
     EXPECT_EQ(volume.format, "dicom");
-    EXPECT_EQ(volume.import_class, "DicomImportSettings");
+    EXPECT_EQ(volume.import_class, "AppDicomImportSettings");
     EXPECT_EQ(volume.dims, kDims);
     EXPECT_EQ(volume.voxel_size, VoxelSize(kPitch[0], kPitch[1], kPitch[2]));
     EXPECT_EQ(volume.sample_type, "Int16");
@@ -211,14 +211,22 @@ TEST_F(GzippedXmlTest, ReadsTheVolumesAndFindsTheirFiles) {
     EXPECT_FALSE(project.volumes[1].files.front().path);
 
     ASSERT_EQ(project.other_files.size(), 1U);
-    EXPECT_EQ(project.other_files.front().owner_class, "SampleMaskIORLE");
-    EXPECT_NE(project.other_files.front().description.find(".mask"), std::string::npos);
+    EXPECT_EQ(project.other_files.front().owner_class, "AppSampleMaskIORLE");
+    EXPECT_NE(project.other_files.front().description.find("mask"), std::string::npos);
     EXPECT_FALSE(project.other_files.front().file.path);
   }
-  std::ofstream(dir_ / "broken.gzxml", std::ios::binary) << gzip("<Project>").substr(0, 12);
-  EXPECT_ANY_THROW((void)readGzippedXmlProject(dir_ / "broken.gzxml"));
-  std::ofstream(dir_ / "other.gzxml") << "<NotAProject/>";
-  EXPECT_ANY_THROW((void)readGzippedXmlProject(dir_ / "other.gzxml"));
+  std::ofstream(dir_ / "broken.xml.gz", std::ios::binary) << gzip("<Project>").substr(0, 12);
+  EXPECT_ANY_THROW((void)readGzippedXmlProject(dir_ / "broken.xml.gz"));
+  std::ofstream(dir_ / "other.xml.gz") << "<NotAProject/>";
+  EXPECT_ANY_THROW((void)readGzippedXmlProject(dir_ / "other.xml.gz"));
+
+  // Projects are recognised by their content, whatever the file is called.
+  EXPECT_FALSE(isGzippedXmlFile(dir_ / "other.xml.gz"));
+  EXPECT_FALSE(isGzippedXmlFile(dir_ / "missing"));
+  const auto plain = writeProject(false);
+  EXPECT_TRUE(isGzippedXmlFile(plain));
+  std::filesystem::rename(writeProject(true), dir_ / "part" / "part.project");
+  EXPECT_TRUE(isGzippedXmlFile(dir_ / "part" / "part.project"));
 }
 
 TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
@@ -229,7 +237,7 @@ TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
   for (const auto& entry : listing.at("entries")) {
     kinds[entry.at("name")] = entry.at("kind");
   }
-  EXPECT_EQ(kinds["part.gzxml"], "gzipped_xml");
+  EXPECT_EQ(kinds["part.xml.gz"], "gzipped_xml");
   EXPECT_EQ(kinds["slices"], "dicom");
 
   studio.call("project_create", {{"path", (dir_ / "project").string()}});
