@@ -29,17 +29,17 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
-#include "voxelsieve/gzipped_xml.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
        vs-sieve <slices/ | stack.tif | slices.zip> --out <output> [options]
-       vs-sieve <dicom-slices/ | project.gzxml> --out <output> [options]
+       vs-sieve <dicom-slices/ | project.xml.gz> --out <output> [options]
        vs-sieve <part1> <part2> ... --join <x|y|z> --out <output> [options]
        vs-sieve --phantom <n> --out <output> [options]
 
@@ -56,7 +56,7 @@ values over --value-range (default: estimated from a few slices); the mapping is
 dataset (docs/adr/0015).
 
 Also reads DICOM stacks, a directory of slice files sorted by their position, and the first
-volume of a gzipped XML project (.gzxml) from the DICOM files it refers to (docs/adr/0019). Signed
+volume of a gzipped XML project from the DICOM files it refers to (docs/adr/0019). Signed
 samples and the rescale slope and intercept are recorded as the value mapping.
 
 Grey values are stored in the input's width, 8 or 16 bit, unchanged (docs/adr/0021). Use
@@ -302,8 +302,8 @@ std::unique_ptr<voxelsieve::VolumeSource> openDicom(const Options& options) {
       }
       files.push_back(*file.path);
     }
-    std::cout << "gzipped xml project   volume '" << volume.name << "' of " << project.volumes.size()
-              << "\n";
+    std::cout << "gzipped xml project   volume '" << volume.name << "' of "
+              << project.volumes.size() << "\n";
     dicom.voxel_size = dicom.voxel_size.value_or(volume.voxel_size);
     source = std::make_unique<voxelsieve::DicomStackSource>(files, dicom);
   } else {

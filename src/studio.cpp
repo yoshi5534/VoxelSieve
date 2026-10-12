@@ -15,9 +15,9 @@
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
-#include "voxelsieve/gzipped_xml.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -285,7 +285,7 @@ Json browse(const std::filesystem::path& requested) {
     } else {
       const auto sidecar = rawSidecarPath(path);
       entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
-                      : isGzippedXmlFile(path)                                  ? "gzipped_xml"
+                      : isGzippedXmlFile(path)                           ? "gzipped_xml"
                       : isDicomFile(path)                                ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
@@ -381,8 +381,8 @@ std::vector<StudioMethod> Studio::methods() const {
       {"object_add",
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
        "object, as a step. Raw volumes, TIFF stacks, DICOM stacks and gzipped XML projects become "
-       "objects through run_import_raw, run_import_tiff, run_import_dicom and run_import_gzipped_xml. "
-       "Objects are placed with run_move.",
+       "objects through run_import_raw, run_import_tiff, run_import_dicom and "
+       "run_import_gzipped_xml. Objects are placed with run_move.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
@@ -507,8 +507,8 @@ std::vector<StudioMethod> Studio::methods() const {
        "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar, also "
        "name.raw.gz with name.json), tiff (a "
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
-       "DICOM file or a directory with DICOM slices, for import_dicom), gzipped_xml (a gzipped XML project, "
-       "for import_gzipped_xml) or file; directories carry directory: true.",
+       "DICOM file or a directory with DICOM slices, for import_dicom), gzipped_xml (a gzipped XML "
+       "project, for import_gzipped_xml) or file; directories carry directory: true.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
