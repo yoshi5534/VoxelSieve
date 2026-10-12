@@ -19,25 +19,25 @@
 
 namespace voxelsieve {
 
-/// One method of the studio API: name, description and JSON schema of its parameters. MCP lists
+/// One method of the GUI API: name, description and JSON schema of its parameters. MCP lists
 /// each method as a tool; the browser UI calls them over HTTP.
-struct StudioMethod {
+struct GuiMethod {
   std::string name;
   std::string description;
   nlohmann::json parameters;
 };
 
-/// The studio engine (ADR 0008): one open project and the registered operations, driven through
+/// The GUI engine (ADR 0008): one open project and the registered operations, driven through
 /// a JSON API. Thread-safe: one operation runs at a time on the calling thread, while other
 /// threads can still query the project; changes to the project wait until the operation is done.
 ///
 /// Methods that read a step output take the latest output of that type by default: of the active
 /// object when it has one, else of the whole project.
-class Studio {
+class Gui {
  public:
   /// Registers the built-in operations and loads plugins from `plugin_dirs`; the load messages are
   /// available through `pluginMessages()`.
-  explicit Studio(const std::vector<std::filesystem::path>& plugin_dirs = {});
+  explicit Gui(const std::vector<std::filesystem::path>& plugin_dirs = {});
 
   [[nodiscard]] const OperationRegistry& registry() const { return registry_; }
   /// For adding operations in-process; not while calls are running.
@@ -53,7 +53,7 @@ class Studio {
   }
 
   /// All API methods: the fixed ones plus `run_<operation>` for every operation.
-  [[nodiscard]] std::vector<StudioMethod> methods() const;
+  [[nodiscard]] std::vector<GuiMethod> methods() const;
 
   /// Calls a method. Throws std::invalid_argument for unknown methods or bad parameters and
   /// rethrows failures of operations. `progress` receives fractions while an operation runs.

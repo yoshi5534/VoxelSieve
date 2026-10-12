@@ -8,11 +8,11 @@
 #include <string>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
@@ -202,7 +202,7 @@ TEST_F(VoxelSizeTest, SurfaceMeshHasTheTrueShape) {
               0.02 * phantomMaterialVolumeMm3(spec));
 }
 
-TEST_F(VoxelSizeTest, StudioImportsVoxelSizesPerAxis) {
+TEST_F(VoxelSizeTest, GuiImportsVoxelSizesPerAxis) {
   PhantomSpec spec = anisotropicPhantom();
   spec.dims = {64, 64, 32};
   spec.outer_size_mm = {4.0, 4.0, 4.0};
@@ -211,23 +211,23 @@ TEST_F(VoxelSizeTest, StudioImportsVoxelSizesPerAxis) {
   const Volume16 volume = generatePhantom(spec);
   writeRaw(dir_ / "scan.raw", volume);
   // No sidecar: the voxel size comes from the parameters, with the slice thickness.
-  Studio studio({});
-  studio.call("project_create", {{"path", (dir_ / "p").string()}});
-  const Json imported = studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
-                                                       {"dims", spec.dims},
-                                                       {"voxel_size_mm", {0.1, 0.1, 0.2}},
-                                                       {"slice_thickness_mm", 0.12},
-                                                       {"brick_size", 32}});
+  Gui gui({});
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported = gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
+                                                    {"dims", spec.dims},
+                                                    {"voxel_size_mm", {0.1, 0.1, 0.2}},
+                                                    {"slice_thickness_mm", 0.12},
+                                                    {"brick_size", 32}});
   EXPECT_EQ(imported.at("status"), "done");
   EXPECT_EQ(imported.at("summary").at("voxel_size_mm"), Json::array({0.1, 0.1, 0.2}));
-  const Json info = studio.call("dataset_info", {});
+  const Json info = gui.call("dataset_info", {});
   EXPECT_EQ(info.at("voxel_size_mm"), Json::array({0.1, 0.1, 0.2}));
   EXPECT_EQ(info.at("slice_thickness_mm"), 0.12);
-  const Json slice = studio.call("view_slice", {{"axis", "x"}});
+  const Json slice = gui.call("view_slice", {{"axis", "x"}});
   EXPECT_EQ(slice.at("pixel_size_mm"), Json::array({0.1, 0.2}));
-  EXPECT_THROW(studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
-                                              {"dims", spec.dims},
-                                              {"voxel_size_mm", {0.1, 0.2}}}),
+  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
+                                           {"dims", spec.dims},
+                                           {"voxel_size_mm", {0.1, 0.2}}}),
                std::invalid_argument);
 }
 

@@ -7,7 +7,7 @@ Status: accepted (2026-09-29)
 The threshold segmentation (ADR 0013) decides every voxel from grey values around it. On the
 Me 163 scan it leaves a rim of one voxel around thin sheets (the labels are tighter than any
 threshold) and misses weld and rivet lines. A network trained on the labels learns these
-boundaries. It has to run on datasets larger than RAM, in the studio and through MCP like every
+boundaries. It has to run on datasets larger than RAM, in the GUI and through MCP like every
 other operation, and the core should stay free of new dependencies (CLAUDE.md). ONNX Runtime is
 not packaged for Ubuntu 24.04 and would be a large dependency for a few convolutions.
 
@@ -34,7 +34,7 @@ not packaged for Ubuntu 24.04 and would be a large dependency for a few convolut
   `tools/models/train_unet.py` trains it on a grey volume and a class volume with PyTorch on the
   CPU and leaves slabs out (`--holdout`) for honest scoring. Neither is needed to build or run
   VoxelSieve.
-- **Tools:** `vs-segment --model <file.vsm>` and the studio operation `segment_model`
+- **Tools:** `vs-segment --model <file.vsm>` and the GUI operation `segment_model`
   ("Learned segmentation"); `vs-segment --region` and `scoreMaterials(..., region)` score only
   a box, such as the held-out part of a scan.
 

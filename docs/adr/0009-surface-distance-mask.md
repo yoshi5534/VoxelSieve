@@ -115,7 +115,7 @@ Alternatives measured on smaller scans of the housing and the hub, and rejected:
 ## Consequences
 
 - `voxelsieve/surface.hpp`: `writeSurface`, `SurfaceMask` (codes, distances, regions, level set,
-  mesh), `writeSurfaceImages`; the CLI `vs-surface`; the studio operation `surface`.
+  mesh), `writeSurfaceImages`; the CLI `vs-surface`; the GUI operation `surface`.
 - The ISO 50 % surface follows the unsharpness of the scan: sharp edges are rounded by about the
   width of the point spread function. A local, gradient-based surface determination can replace
   the extraction later without changing the format.

@@ -1,4 +1,4 @@
-// Simple 3D view of VoxelSieve Studio (ADR 0008): ray casting of a coarse level of the dataset
+// Simple 3D view of VoxelSieve (ADR 0008): ray casting of a coarse level of the dataset
 // (at most 256 voxels per axis) in WebGL2. When the camera comes close, the part of the volume in
 // front of it is loaded again at a finer level and drawn from that detail texture wherever it
 // covers the ray, fading in at its border. "Surface" shades the part surface at a threshold,
@@ -19,8 +19,8 @@ void main() {
 
 /// Background styles: colours are top/centre and bottom/edge.
 const BACKGROUNDS = {
-  studio: { name: 'Studio light', style: 2, colors: [[232, 234, 237], [150, 157, 166]] },
-  studioDunkel: { name: 'Studio dark', style: 2, colors: [[70, 76, 86], [14, 16, 19]] },
+  soft: { name: 'Soft light', style: 2, colors: [[232, 234, 237], [150, 157, 166]] },
+  softDark: { name: 'Soft dark', style: 2, colors: [[70, 76, 86], [14, 16, 19]] },
   verlauf: { name: 'Gradient blue', style: 1, colors: [[58, 72, 96], [10, 12, 18]] },
   verlaufGrau: { name: 'Gradient grey', style: 1, colors: [[96, 100, 106], [26, 28, 31]] },
   schwarz: { name: 'Black', style: 0, colors: [[18, 18, 18], [18, 18, 18]] },
@@ -121,7 +121,7 @@ uniform vec3 poreColor;
 uniform vec3 zoneColor;
 uniform vec3 background;   // top or centre colour
 uniform vec3 background2;  // bottom or edge colour
-uniform int backgroundStyle; // 0 plain, 1 vertical gradient, 2 studio
+uniform int backgroundStyle; // 0 plain, 1 vertical gradient, 2 soft light
 
 // Opacities of the transfer function hold for this path length (1/128 of the largest axis), so
 // the picture does not depend on the level shown.
@@ -227,7 +227,7 @@ float stepOpacity(float opacity, float stepSize) {
 vec3 backgroundAt() {
   if (backgroundStyle == 1) return mix(background2, background, ndc.y * 0.5 + 0.5);
   if (backgroundStyle == 2) {
-    // Studio: a soft light in the middle falling off to the edges, the lower part a little darker
+    // Soft light: in the middle falling off to the edges, the lower part a little darker
     // like a floor.
     float r = length(vec2(ndc.x * aspect * 0.55, ndc.y * 0.8 - 0.1));
     vec3 c = mix(background, background2, smoothstep(0.05, 1.05, r));
@@ -345,7 +345,7 @@ class VolumeViewer {
     this.surfaceColor = [209, 214, 219];
     this.poreColor = [230, 38, 31];
     this.zoneColor = [242, 204, 77];
-    this.background = { preset: 'studioDunkel', ...BACKGROUNDS.studioDunkel };
+    this.background = { preset: 'softDark', ...BACKGROUNDS.softDark };
     this.histogram = new Array(256).fill(0);
     this.transfer = null;       // lookup table of 256 RGBA bytes
     this.surface = null;        // {key, points, triangles} of the mesh of a surface step

@@ -57,8 +57,8 @@ the result in its binary cache for later builds. A build directory configured be
 vcpkg does not pick up its toolchain; configure it again with `--fresh`
 (`cmake --preset release --fresh`).
 
-On Windows (x64, Visual Studio 2022 with the C++ workload, from a Developer PowerShell with Git
-Bash on the PATH) and macOS (Apple silicon, Xcode command line tools plus
+On Windows (x64, the MSVC 2022 build tools with the C++ workload, from a Developer PowerShell
+with Git Bash on the PATH) and macOS (Apple silicon, Xcode command line tools plus
 `brew install ninja autoconf autoconf-archive automake libtool pkg-config`), use the preset
 `windows` or `macos` instead of `release`. On Windows the programs land in `build/windows/bin`.
 
@@ -128,7 +128,7 @@ xy` lets outside air in only from the sides, so the inside of the part is kept (
 the input holds several folders of slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
 comes from a centimetre resolution or a key=value image description (including its slice `spacing`),
-otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the studio this is the operation `import_tiff`.
+otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the GUI this is the operation `import_tiff`.
 For a dataset, the slices are first decoded once, on all cores, into a temporary raw file of 2
 bytes per voxel in the output directory (elsewhere with `--staging-dir`), which is removed at the
 end; `--no-staging` reads the slices directly, which is much slower for large stacks.
@@ -143,7 +143,7 @@ A directory of DICOM slices is read with DCMTK (`voxelsieve::DicomStackSource`, 
 uncompressed or RLE, with or without preamble, sorted along the slice normal by their position.
 Voxel size and pose come from the files. Signed samples are shifted by 32768 and, with the
 rescale slope and intercept, recorded as the value mapping, so no value is lost. When a directory
-holds several series, the largest is read and the others are printed. In the studio this is the
+holds several series, the largest is read and the others are printed. In the GUI this is the
 operation `import_dicom`.
 
 ### DICONDE
@@ -162,7 +162,7 @@ customer, report and order number, inspector, the evaluation against the accepta
 the scan settings. Pores and loosened zones become indications with their position, volume and
 size, and a material segmentation a second, derived series of labels in the same coordinates.
 DICONDE files are read like other DICOM slices (`vs-sieve`, `import_dicom`), and the import
-reports their component and indications. In the studio this is the operation `export_diconde`.
+reports their component and indications. In the GUI this is the operation `export_diconde`.
 
 ### First look while importing, also from a network share
 
@@ -181,12 +181,12 @@ request per slice, also over SMB. The import goes on without reading them again:
 files on a network share are copied once, slice by slice, to a local staging file, and the
 preview's slices are copied first. Local raw files are read directly and get only the first
 look; their import is limited by the passes, not by reading. Raw files on SMB or NFS shares and mapped network drives are
-detected and staged too, instead of being read twice in small pieces. In the studio the preview
+detected and staged too, instead of being read twice in small pieces. In the GUI the preview
 appears in the progress bar of every import and stays with the step (`preview.png`); AI
 assistants get it with `import_preview`.
 
 gzip-compressed raw files (`scan.raw.gz` next to `scan.json`) are read too, with `vs-sieve`,
-`import_raw` and the studio's file browser. gzip can only be read forward, so such a file is
+`import_raw` and the GUI's file browser. gzip can only be read forward, so such a file is
 decompressed once, in slice order, into the staging file; its preview comes at the end of that
 pass. Give `--header` when the uncompressed data has a header.
 
@@ -266,11 +266,11 @@ are stored, zstd-compressed per brick, so the file grows with the surface area, 
 The housing above (520 × 400 × 220 voxels) gives a 156 kB file, 588 : 1 against the 16-bit raw
 volume, and its triangulated surface lies 0.033 voxels (RMS) from the analytic surface.
 `voxelsieve::SurfaceMask` reads codes and distances of single voxels or regions, and converts to a
-VDB level set or a mesh; `--vdb` exports the level set for Blender or Houdini. The studio runs it
+VDB level set or a mesh; `--vdb` exports the level set for Blender or Houdini. The GUI runs it
 as the operation "Surface" and shows the middle slices of the mask. Format and measurements:
 `docs/adr/0009-surface-distance-mask.md`.
 
-![Surface operation in the studio](docs/images/surface-operation.png)
+![Surface operation in the GUI](docs/images/surface-operation.png)
 
 ## Nominal-actual comparison
 
@@ -306,7 +306,7 @@ the part has more material than nominal, negative where material is missing.
   (`docs/adr/0022-non-rigid-registration.md`).
 
 On synthetic castings the fit finds the pose of the CAD model to 0.15 voxels, and it measures a
-0.4 mm dent to 0.02 mm. The studio runs the comparison as the operation "Nominal-actual comparison"
+0.4 mm dent to 0.02 mm. The GUI runs the comparison as the operation "Nominal-actual comparison"
 and shows the coloured surface in the 3D view as "Nominal-actual deviation". Method and decisions:
 `docs/adr/0010-nominal-actual-comparison.md`.
 
@@ -366,7 +366,7 @@ With `--surface part.vss` (from `vs-surface`) the report shows the part and its 
 part as glass with pores in red and loosened zones in amber, true to scale. With
 `--comparison part.compare` (from `vs-compare`) it adds the nominal-actual comparison: the key
 figures, the coloured deviation from above and from below, and the histogram of the deviation.
-In the studio, the report step takes the latest surface and comparison of the project when there
+In the GUI, the report step takes the latest surface and comparison of the project when there
 are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
 
 ![3D views of the part and of its pores in the inspection report](docs/images/report-part-views.png)
@@ -398,17 +398,17 @@ project.undo();
 
 A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
 `voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
-`docs/adr/0008-studio-projects-operations-ui.md`.
+`docs/adr/0008-gui-projects-operations-ui.md`.
 
-## Studio
+## GUI
 
-`vs-gui` starts the studio and prints its address, by default http://localhost:8410. The browser
+`vs-gui` starts the GUI and prints its address, by default http://localhost:8410. The browser
 UI leads through three steps: choose a dataset (or import a raw file), run operations such as the
 porosity analysis, create the inspection report. Every step appears in the protocol with its
 parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
 step. Plugins appear next to the built-in operations.
 
-![Studio with protocol and porosity result](docs/images/studio.png)
+![GUI with protocol and porosity result](docs/images/gui.png)
 
 The view shows slices along x, y or z. It loads only the tiles on screen, from the
 resolution level that matches the zoom, so it stays fast on scans of hundreds of GB. Wheel zooms,
@@ -424,7 +424,7 @@ along each ray. The transfer function is edited on the histogram: click adds a c
 drag moves it, double click removes it; each point has its own colour, colour maps (Steel,
 Viridis, Ember, Copper, Grey) recolour all points, and presets start from typical settings. Pores
 and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
-part. The background can be a studio light, a gradient or a plain colour. Drag turns the part,
+part. The background can be a soft light, a gradient or a plain colour. Drag turns the part,
 right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
 camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
 the coarse volume, so the resolution grows where you look.
@@ -472,7 +472,7 @@ The server listens on 127.0.0.1 only and has no authentication; do not expose it
 
 ## AI systems: MCP
 
-`vs-gui --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
+`vs-gui --mcp` serves the GUI over the Model Context Protocol (stdio), so an AI assistant can
 drive VoxelSieve: create or open a project, run operations, undo and redo, and read results. It
 runs on your machine: scans stay where they are, and the assistant only receives results such as
 pore lists, measurements, slice images and reports.

@@ -13,8 +13,8 @@
 #include "dicom_writer.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/studio.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -247,27 +247,27 @@ TEST_F(DicomTest, RefusesSlicesThatDoNotFit) {
       DicomStackSource(std::vector<std::filesystem::path>{dir_ / "a" / "0.dcm", dir_ / "b.dcm"}));
 }
 
-TEST_F(DicomTest, StudioImportsAndPlacesTheStack) {
+TEST_F(DicomTest, GuiImportsAndPlacesTheStack) {
   const auto folder = writeTiltedStack("input");
-  Studio studio({});
-  const auto listing = studio.call("browse", {{"path", dir_.string()}});
+  Gui gui({});
+  const auto listing = gui.call("browse", {{"path", dir_.string()}});
   std::map<std::string, std::string> kinds;
   for (const auto& entry : listing.at("entries")) {
     kinds[entry.at("name")] = entry.at("kind");
   }
   EXPECT_EQ(kinds["input"], "dicom");
-  EXPECT_EQ(studio.call("browse", {{"path", folder.string()}}).at("entries").front().at("kind"),
+  EXPECT_EQ(gui.call("browse", {{"path", folder.string()}}).at("entries").front().at("kind"),
             "dicom");
 
-  studio.call("project_create", {{"path", (dir_ / "project").string()}});
+  gui.call("project_create", {{"path", (dir_ / "project").string()}});
   const auto imported =
-      studio.call("run_import_dicom", {{"path", folder.string()}, {"brick_size", 16}});
+      gui.call("run_import_dicom", {{"path", folder.string()}, {"brick_size", 16}});
   ASSERT_EQ(imported.at("status"), "done") << imported.dump();
   EXPECT_EQ(imported.at("summary").at("slices"), kDims[2]);
   EXPECT_EQ(imported.at("summary").at("signed"), true);
   EXPECT_DOUBLE_EQ(imported.at("summary").at("value_mapping").at("scale").get<double>(), 2.0);
 
-  const auto objects = studio.call("objects", {}).at("objects");
+  const auto objects = gui.call("objects", {}).at("objects");
   ASSERT_EQ(objects.size(), 1U);
   const auto pose = objects.front().at("pose").get<std::vector<double>>();
   const auto expected = DicomStackSource(folder).filePose().matrix();

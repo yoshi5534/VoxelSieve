@@ -75,7 +75,7 @@ to the CAD surface. Besides it:
   tolerance), and `rigid_deviation`, the statistics of the rigid alignment alone.
 - `deviation.ply` gets a float `displacement` per vertex; `displacement_view_[12].png` show it,
   green within the tolerance, yellow to red above.
-- The studio summary has the largest and mean displacement and the RMS and in-tolerance share of
+- The GUI summary has the largest and mean displacement and the RMS and in-tolerance share of
   the rigid alignment alone. The 3D view colours the compared surface by its deviation or, on
   request, by its displacement (`GET /api/deviation?displacement=1`). The report states that the
   surface was bent, how far, with which spacing and stiffness, gives the rigid figures beside it

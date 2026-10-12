@@ -15,13 +15,13 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/studio.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -260,25 +260,25 @@ TEST_F(DicondeTest, LongTextIsCutToTheLimitsOfItsAttributes) {
   EXPECT_EQ(info.indications[0].type, "PORE_ GAS");
 }
 
-TEST_F(DicondeTest, StudioExportsAndImportsAgain) {
+TEST_F(DicondeTest, GuiExportsAndImportsAgain) {
   PhantomSpec spec = defaultPhantomSpec();
   spec.dims = {96, 96, 96};
   writeRaw(dir_ / "scan.raw", generatePhantom(spec));
   writeJson(dir_ / "scan.json", phantomToJson(spec));
   writeJson(dir_ / "order.json", exampleOrder());
-  Studio studio({});
-  studio.call("project_create", {{"path", (dir_ / "project").string()}});
-  const Json imported = studio.call(
+  Gui gui({});
+  gui.call("project_create", {{"path", (dir_ / "project").string()}});
+  const Json imported = gui.call(
       "run_import_raw",
       {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}, {"object_name", "Housing"}});
   ASSERT_EQ(imported.at("status"), "done") << imported.dump();
-  ASSERT_EQ(studio.call("run_move", {{"objects", {"o1"}}, {"translation_mm", {5.0, 0.0, -2.0}}})
+  ASSERT_EQ(gui.call("run_move", {{"objects", {"o1"}}, {"translation_mm", {5.0, 0.0, -2.0}}})
                 .at("status"),
             "done");
-  ASSERT_EQ(studio.call("run_porosity", {}).at("status"), "done");
-  ASSERT_EQ(studio.call("run_segment_materials", {{"materials", 1}}).at("status"), "done");
+  ASSERT_EQ(gui.call("run_porosity", {}).at("status"), "done");
+  ASSERT_EQ(gui.call("run_segment_materials", {{"materials", 1}}).at("status"), "done");
 
-  const Json exported = studio.call(
+  const Json exported = gui.call(
       "run_export_diconde",
       {{"order_path", (dir_ / "order.json").string()}, {"path", (dir_ / "copy").string()}});
   ASSERT_EQ(exported.at("status"), "done") << exported.dump();
@@ -295,8 +295,8 @@ TEST_F(DicondeTest, StudioExportsAndImportsAgain) {
   EXPECT_EQ(readDicondeInfo(written).series_description, "Housing");
 
   // Importing it again gives the same grey values and tells what the files say.
-  const Json again = studio.call(
-      "run_import_dicom", {{"path", (dir_ / "copy" / "volume").string()}, {"brick_size", 32}});
+  const Json again = gui.call("run_import_dicom",
+                              {{"path", (dir_ / "copy" / "volume").string()}, {"brick_size", 32}});
   ASSERT_EQ(again.at("status"), "done") << again.dump();
   EXPECT_EQ(again.at("summary").at("component"), "Gearbox housing");
   EXPECT_EQ(again.at("summary").at("study_id"), "TR-2026-0001");
@@ -310,7 +310,7 @@ TEST_F(DicondeTest, StudioExportsAndImportsAgain) {
        {std::array<std::int64_t, 3>{48, 48, 8}, {48, 10, 48}, {20, 30, 40}}) {
     EXPECT_EQ(first.sample(0, voxel), second.sample(0, voxel));
   }
-  const Json objects = studio.call("objects", {}).at("objects");
+  const Json objects = gui.call("objects", {}).at("objects");
   ASSERT_EQ(objects.size(), 2U);
   const auto moved = objects[0].at("pose").get<std::vector<double>>();
   const auto placed = objects[1].at("pose").get<std::vector<double>>();

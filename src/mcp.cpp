@@ -44,7 +44,7 @@ constexpr const char* kInstructions =
 constexpr std::array<std::string_view, 6> kViewStateMethods = {
     "view_set", "view_save", "view_list", "view_image", "view_rename", "view_delete"};
 
-/// Methods that change nothing: no project, no file, no state of the studio.
+/// Methods that change nothing: no project, no file, no state of the GUI.
 constexpr std::array<std::string_view, 14> kReadOnlyMethods = {
     "project_status", "objects",    "results",    "step_telemetry", "list_operations",
     "dataset_info",   "list_files", "view_slice", "view_objects",   "view_list",
@@ -220,8 +220,8 @@ Json toolResult(Json value, bool is_error) {
 
 }  // namespace
 
-McpServer::McpServer(Studio& studio, std::function<void(const Json&)> send, McpTools tools)
-    : studio_(studio), send_(std::move(send)), tools_(tools) {}
+McpServer::McpServer(Gui& gui, std::function<void(const Json&)> send, McpTools tools)
+    : gui_(gui), send_(std::move(send)), tools_(tools) {}
 
 bool McpServer::offered(const std::string& tool) const {
   return tools_ == McpTools::kAll || !contains(kViewStateMethods, tool);
@@ -231,7 +231,7 @@ Json McpServer::listResources() const {
   Json resources = Json::array();
   Json status;
   try {
-    status = studio_.call("project_status", Json::object());
+    status = gui_.call("project_status", Json::object());
   } catch (const std::invalid_argument&) {
     return resources;  // no project open
   }
@@ -244,7 +244,7 @@ Json McpServer::listResources() const {
       if (!contains(kResourceOutputTypes, info.at("type").get<std::string>())) {
         continue;
       }
-      const Json files = studio_.call("list_files", {{"step", id}, {"output", output}});
+      const Json files = gui_.call("list_files", {{"step", id}, {"output", output}});
       for (const Json& entry : files.at("files")) {
         std::string file = entry.at("file").get<std::string>();
         std::replace(file.begin(), file.end(), '\\', '/');
@@ -299,9 +299,9 @@ Json McpServer::readResource(const Json& params) const {
   }
   Json read;
   try {
-    read = studio_.call("read_file", {{"step", step},
-                                      {"output", rest.substr(id_end + 1, output_end - id_end - 1)},
-                                      {"file", file}});
+    read = gui_.call("read_file", {{"step", step},
+                                   {"output", rest.substr(id_end + 1, output_end - id_end - 1)},
+                                   {"file", file}});
   } catch (const std::invalid_argument& error) {
     throw std::out_of_range(std::string(error.what()));
   }
@@ -357,7 +357,7 @@ Json McpServer::callTool(const Json& id, const Json& params) {
     }
   } const done{*this, id.dump()};
   try {
-    return toolResult(studio_.call(name, arguments, progress), false);
+    return toolResult(gui_.call(name, arguments, progress), false);
   } catch (const std::exception& error) {
     // Failures are tool results, so the model sees the message and can react.
     return toolResult(Json{{"error", error.what()}}, true);
@@ -381,7 +381,7 @@ std::optional<Json> McpServer::handle(const Json& message) {
       const std::scoped_lock lock(mutex_);
       if (running_.contains(id)) {
         cancelled_.insert(id);
-        studio_.cancel();  // one operation runs at a time: the one of this call
+        gui_.cancel();  // one operation runs at a time: the one of this call
       }
     }
     return std::nullopt;  // other notifications: initialized, ...
@@ -410,7 +410,7 @@ std::optional<Json> McpServer::handle(const Json& message) {
     }
     if (method == "tools/list") {
       Json tools = Json::array();
-      for (const StudioMethod& tool : studio_.methods()) {
+      for (const GuiMethod& tool : gui_.methods()) {
         if (offered(tool.name)) {
           tools.push_back({{"name", tool.name},
                            {"description", tool.description},
@@ -465,14 +465,14 @@ std::optional<Json> McpServer::handle(const Json& message) {
   }
 }
 
-void McpServer::serve(Studio& studio, std::istream& in, std::ostream& out, McpTools tools) {
+void McpServer::serve(Gui& gui, std::istream& in, std::ostream& out, McpTools tools) {
   std::mutex out_mutex;
   const auto send = [&out, &out_mutex](const Json& message) {
     const std::string text = message.dump(-1, ' ', false, Json::error_handler_t::replace);
     const std::scoped_lock lock(out_mutex);
     out << text << '\n' << std::flush;
   };
-  McpServer server(studio, send, tools);
+  McpServer server(gui, send, tools);
   std::list<std::future<void>> calls;
   std::string line;
   while (std::getline(in, line)) {
@@ -505,7 +505,7 @@ void McpServer::serve(Studio& studio, std::istream& in, std::ostream& out, McpTo
   }
   // The client is gone: stop what still runs.
   if (!calls.empty()) {
-    studio.cancel();
+    gui.cancel();
   }
   calls.clear();  // waits for each call
 }

@@ -13,12 +13,12 @@
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mcp.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/slice.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/synthetic.hpp"
 
 namespace voxelsieve {
@@ -26,11 +26,11 @@ namespace {
 
 using Json = nlohmann::json;
 
-class StudioTest : public ::testing::Test {
+class GuiTest : public ::testing::Test {
  protected:
   void SetUp() override {
     dir_ = std::filesystem::temp_directory_path() /
-           ("voxelsieve_studio_" +
+           ("voxelsieve_gui_" +
             std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()));
     std::filesystem::remove_all(dir_);
     std::filesystem::create_directories(dir_);
@@ -46,25 +46,25 @@ class StudioTest : public ::testing::Test {
   std::filesystem::path dir_;
 };
 
-TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
-  Studio studio;
-  studio.call("project_create", {{"path", (dir_ / "p").string()}});
+TEST_F(GuiTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
+  Gui gui;
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
   writeStl(dir_ / "nominal.stl", boxMesh({6.0, 5.0, 4.0}));
 
-  const Json imported = studio.call(
+  const Json imported = gui.call(
       "run_import_raw",
       {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}, {"object_name", "Scan"}});
   EXPECT_EQ(imported.at("object"), "o1");
-  const Json dataset = studio.call(
+  const Json dataset = gui.call(
       "object_add", {{"path", (dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve").string()},
                      {"name", "Again"}});
   EXPECT_EQ(dataset.at("operation"), "open_dataset");
-  const Json mesh = studio.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
+  const Json mesh = gui.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
   EXPECT_EQ(mesh.at("operation"), "add_mesh");
-  EXPECT_THROW(studio.call("object_add", {{"path", (dir_ / "scan.json").string()}}),
+  EXPECT_THROW(gui.call("object_add", {{"path", (dir_ / "scan.json").string()}}),
                std::invalid_argument);
 
-  Json objects = studio.call("objects", {});
+  Json objects = gui.call("objects", {});
   ASSERT_EQ(objects.at("objects").size(), 3U);
   EXPECT_EQ(objects.at("objects")[0].at("name"), "Scan");
   EXPECT_EQ(objects.at("objects")[1].at("name"), "Again");
@@ -73,34 +73,34 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   EXPECT_EQ(objects.at("active_object"), "");
 
   // Steps take their inputs from the chosen object; a mesh has no dataset.
-  EXPECT_EQ(studio.call("object_select", {{"id", "o1"}}).at("active_object"), "o1");
-  const Json porosity = studio.call("run_porosity", {});
+  EXPECT_EQ(gui.call("object_select", {{"id", "o1"}}).at("active_object"), "o1");
+  const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), imported.at("id"));
   EXPECT_EQ(porosity.at("object"), "o1");
-  EXPECT_THROW(studio.call("run_porosity", {{"object", "o3"}}), std::invalid_argument);
-  EXPECT_THROW(studio.call("object_select", {{"id", "o9"}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("run_porosity", {{"object", "o3"}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("object_select", {{"id", "o9"}}), std::invalid_argument);
 
   const Json moved =
-      studio.call("run_move", {{"objects", {"o2", "o3"}}, {"translation_mm", {10.0, 0.0, -2.5}}});
+      gui.call("run_move", {{"objects", {"o2", "o3"}}, {"translation_mm", {10.0, 0.0, -2.5}}});
   EXPECT_EQ(moved.at("summary").at("moved_objects"), Json({"o2", "o3"}));
-  objects = studio.call("project_status", {}).at("objects");
+  objects = gui.call("project_status", {}).at("objects");
   EXPECT_EQ(objects[0].at("pose")[3], 0.0);
   EXPECT_EQ(objects[2].at("pose")[3], 10.0);
   EXPECT_EQ(objects[2].at("pose")[11], -2.5);
   EXPECT_EQ(objects[2].at("moved_by"), Json::array({moved.at("id")}));
-  studio.call("undo", {});
-  EXPECT_EQ(studio.call("objects", {}).at("objects")[2].at("pose")[3], 0.0);
+  gui.call("undo", {});
+  EXPECT_EQ(gui.call("objects", {}).at("objects")[2].at("pose")[3], 0.0);
 
   // What the 3D view draws: the box a volume fills until it has a surface, a mesh as it is.
-  Studio::ObjectShape shape = studio.objectShape("o1", 100000);
+  Gui::ObjectShape shape = gui.objectShape("o1", 100000);
   EXPECT_EQ(shape.shape, "box");
   EXPECT_EQ(shape.mesh->triangles.size(), 12U);
   EXPECT_NEAR(shape.scale[2], 0.1, 1e-12);
-  EXPECT_EQ(studio.objectShape("o3", 100000).shape, "mesh");
-  studio.call("run_surface", {{"object", "o1"}});
-  shape = studio.objectShape("o1", 100000);
+  EXPECT_EQ(gui.objectShape("o3", 100000).shape, "mesh");
+  gui.call("run_surface", {{"object", "o1"}});
+  shape = gui.objectShape("o1", 100000);
   EXPECT_EQ(shape.shape, "surface");
-  EXPECT_EQ(studio.objectShape("o2", 100000).shape, "box");  // the surface is o1's
+  EXPECT_EQ(gui.objectShape("o2", 100000).shape, "box");  // the surface is o1's
   float low = 1e9F;
   float high = -1e9F;
   for (const auto& p : shape.mesh->points) {
@@ -109,7 +109,7 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   }
   EXPECT_NEAR((high - low) * shape.scale[0], 6.0, 0.2);  // the 6 mm of the part along x
 
-  const Json view = studio.call("view_objects", {{"width", 200}, {"height", 150}});
+  const Json view = gui.call("view_objects", {{"width", 200}, {"height", 150}});
   ASSERT_EQ(view.at("objects").size(), 3U);
   EXPECT_EQ(view.at("objects")[0].at("shape"), "surface");
   EXPECT_EQ(view.at("objects")[2].at("shape"), "mesh");
@@ -117,11 +117,11 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   EXPECT_NEAR(view.at("bounds_min_mm")[0].get<double>(), -3.0, 1e-6);  // the mesh, centred
   EXPECT_EQ(view.at("width"), 200);
   EXPECT_EQ(view.at("image").at("mime_type"), "image/png");
-  EXPECT_THROW(studio.call("view_objects", {{"objects", {"o9"}}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("view_objects", {{"objects", {"o9"}}}), std::invalid_argument);
 
-  const auto names = [&studio] {
+  const auto names = [&gui] {
     std::vector<std::string> list;
-    for (const StudioMethod& method : studio.methods()) {
+    for (const GuiMethod& method : gui.methods()) {
       list.push_back(method.name);
     }
     return list;
@@ -133,29 +133,29 @@ TEST_F(StudioTest, ObjectsAreAddedSelectedAndMovedThroughTheApi) {
   }
 }
 
-TEST_F(StudioTest, SliceViewShowsOtherObjectsInThePlane) {
-  Studio studio;
-  studio.call("project_create", {{"path", (dir_ / "p").string()}});
+TEST_F(GuiTest, SliceViewShowsOtherObjectsInThePlane) {
+  Gui gui;
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
   writeStl(dir_ / "nominal.stl", boxMesh({6.0, 5.0, 4.0}));
   const Json imported =
-      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
   const int step = imported.at("id").get<int>();
-  studio.call("object_add",
-              {{"path", (dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve").string()}});
-  studio.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
+  gui.call("object_add",
+           {{"path", (dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve").string()}});
+  gui.call("object_add", {{"path", (dir_ / "nominal.stl").string()}});
   // The copy three voxels further along x.
   constexpr std::int64_t kShift = 3;
   const Dataset dataset = Dataset::open(dir_ / "p" / "steps" / "1-import_raw" / "dataset.vsieve");
   const double pitch = dataset.info().voxel_size[0];
-  studio.call("run_move", {{"objects", {"o2"}},
-                           {"translation_mm", {static_cast<double>(kShift) * pitch, 0.0, 0.0}}});
+  gui.call("run_move", {{"objects", {"o2"}},
+                        {"translation_mm", {static_cast<double>(kShift) * pitch, 0.0, 0.0}}});
 
   SliceRequest request;
   request.axis = 2;
   request.index = dataset.info().dims[2] / 2;
   request.size = {dataset.info().dims[0], dataset.info().dims[1]};
   const SliceImage base = readSlice(dataset, request);
-  const PlaneImage copy = studio.objectSliceTile(step, request, "o2");
+  const PlaneImage copy = gui.objectSliceTile(step, request, "o2");
   ASSERT_EQ(copy.width, base.width);
   ASSERT_EQ(copy.height, base.height);
   int compared = 0;
@@ -172,11 +172,11 @@ TEST_F(StudioTest, SliceViewShowsOtherObjectsInThePlane) {
     }
   }
   EXPECT_GT(compared, 0);
-  EXPECT_THROW((void)studio.objectSliceTile(step, request, "o3"), std::invalid_argument);
+  EXPECT_THROW((void)gui.objectSliceTile(step, request, "o3"), std::invalid_argument);
 
   // The CAD box is centred on the origin of the project, where the scan starts: in voxels of the
   // scan its outline runs from -30 to 30 along x and -25 to 25 along y.
-  const std::vector<float> cuts = studio.objectCutLines(step, 2, 0, "o3");
+  const std::vector<float> cuts = gui.objectCutLines(step, 2, 0, "o3");
   ASSERT_FALSE(cuts.empty());
   double length = 0.0;
   for (std::size_t s = 0; s + 3 < cuts.size(); s += 4) {
@@ -187,11 +187,11 @@ TEST_F(StudioTest, SliceViewShowsOtherObjectsInThePlane) {
     }
   }
   EXPECT_NEAR(length, 2.0 * (60.0 + 50.0), 1e-2);
-  EXPECT_TRUE(studio.objectCutLines(step, 2, 100, "o3").empty());  // 10 mm above the box
-  EXPECT_THROW((void)studio.objectCutLines(step, 2, 0, "o9"), std::invalid_argument);
+  EXPECT_TRUE(gui.objectCutLines(step, 2, 100, "o3").empty());  // 10 mm above the box
+  EXPECT_THROW((void)gui.objectCutLines(step, 2, 0, "o9"), std::invalid_argument);
 
   // At z = 1 mm both show: the copy blended in its colour and the box as lines.
-  const Json slice = studio.call(
+  const Json slice = gui.call(
       "view_slice", {{"step", step}, {"axis", "z"}, {"index", 10}, {"objects", {"o2", "o3"}}});
   ASSERT_EQ(slice.at("objects").size(), 2U);
   EXPECT_EQ(slice.at("objects")[0].at("id"), "o2");
@@ -201,37 +201,37 @@ TEST_F(StudioTest, SliceViewShowsOtherObjectsInThePlane) {
   EXPECT_NE(slice.at("objects")[0].at("color"), slice.at("objects")[1].at("color"));
 
   // Without a step, the views show the data of the active object, else the latest.
-  EXPECT_NE(studio.call("view_slice", {{"axis", "z"}}).at("step"), step);
-  studio.call("object_select", {{"id", "o1"}});
-  EXPECT_EQ(studio.call("view_slice", {{"axis", "z"}}).at("step"), step);
+  EXPECT_NE(gui.call("view_slice", {{"axis", "z"}}).at("step"), step);
+  gui.call("object_select", {{"id", "o1"}});
+  EXPECT_EQ(gui.call("view_slice", {{"axis", "z"}}).at("step"), step);
 }
 
-TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
-  Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
-  EXPECT_FALSE(studio.call("project_status", {}).at("open"));
-  EXPECT_THROW(studio.call("run_porosity", {}), std::invalid_argument);  // no project yet
+TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
+  Gui gui({VOXELSIEVE_TEST_PLUGIN_DIR});
+  EXPECT_FALSE(gui.call("project_status", {}).at("open"));
+  EXPECT_THROW(gui.call("run_porosity", {}), std::invalid_argument);  // no project yet
 
-  const Json created = studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json created = gui.call("project_create", {{"path", (dir_ / "p").string()}});
   EXPECT_EQ(created.at("name"), "p");
   EXPECT_FALSE(created.at("can_undo"));
 
   const Json imported =
-      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
   EXPECT_EQ(imported.at("status"), "done");
   EXPECT_GT(imported.at("size_bytes").get<std::uint64_t>(), 0U);
 
-  const Json info = studio.call("dataset_info", {});
+  const Json info = gui.call("dataset_info", {});
   EXPECT_EQ(info.at("step"), imported.at("id"));
   EXPECT_FALSE(info.at("levels").empty());
 
   std::vector<double> progress;
   const Json porosity =
-      studio.call("run_porosity", {}, [&progress](double value) { progress.push_back(value); });
+      gui.call("run_porosity", {}, [&progress](double value) { progress.push_back(value); });
   EXPECT_EQ(porosity.at("summary").at("pores"), 2);
   EXPECT_FALSE(progress.empty());
 
   // A slice as PNG with the overlay of the porosity step, at a level that fits max_pixels.
-  const Json slice = studio.call("view_slice", {{"axis", "x"}, {"max_pixels", 64}});
+  const Json slice = gui.call("view_slice", {{"axis", "x"}, {"max_pixels", 64}});
   EXPECT_EQ(slice.at("porosity_step"), porosity.at("id"));
   EXPECT_EQ(slice.at("right"), "y");
   EXPECT_EQ(slice.at("down"), "z");
@@ -239,30 +239,29 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_GT(slice.at("level").get<int>(), 0);
   EXPECT_TRUE(slice.at("image").at("base64").get<std::string>().starts_with("iVBORw0KGgo"));
   EXPECT_TRUE(
-      studio.call("view_slice", {{"overlay", false}, {"index", 3}}).at("porosity_step").is_null());
-  EXPECT_THROW(studio.call("view_slice", {{"index", 100000}}), std::invalid_argument);
+      gui.call("view_slice", {{"overlay", false}, {"index", 3}}).at("porosity_step").is_null());
+  EXPECT_THROW(gui.call("view_slice", {{"index", 100000}}), std::invalid_argument);
 
-  const Json files = studio.call("list_files", {});
+  const Json files = gui.call("list_files", {});
   bool has_json = false;
   for (const Json& file : files.at("files")) {
     has_json = has_json || file.at("file") == "porosity.json";
   }
   EXPECT_TRUE(has_json);
-  const Json text = studio.call("read_file", {{"file", "porosity.json"}});
+  const Json text = gui.call("read_file", {{"file", "porosity.json"}});
   EXPECT_EQ(Json::parse(text.at("text").get<std::string>()).at("pores").size(), 2U);
-  EXPECT_THROW(studio.call("read_file", {{"file", "../../../project.json"}}),
-               std::invalid_argument);
+  EXPECT_THROW(gui.call("read_file", {{"file", "../../../project.json"}}), std::invalid_argument);
   // Pictures come back as images; other binary files are refused.
-  EXPECT_EQ(studio.call("read_file", {{"file", "projection_z.png"}}).at("image").at("mime_type"),
+  EXPECT_EQ(gui.call("read_file", {{"file", "projection_z.png"}}).at("image").at("mime_type"),
             "image/png");
-  EXPECT_THROW(studio.call("read_file", {{"file", "analysis.vdb"}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("read_file", {{"file", "analysis.vdb"}}), std::invalid_argument);
 
   // The surface of the box: 6 x 5 x 4 mm, lunkers inside, as mask, images and mesh.
-  const Json surface = studio.call("run_surface", {{"stl", true}});
+  const Json surface = gui.call("run_surface", {{"stl", true}});
   EXPECT_EQ(surface.at("status"), "done");
   EXPECT_NEAR(surface.at("summary").at("surface_volume_mm3").get<double>(), 120.0, 1.5);
   EXPECT_GT(surface.at("summary").at("compression_vs_raw").get<double>(), 10.0);
-  const Json surface_files = studio.call("list_files", {});
+  const Json surface_files = gui.call("list_files", {});
   std::vector<std::string> names;
   for (const Json& file : surface_files.at("files")) {
     names.push_back(file.at("file").get<std::string>());
@@ -273,32 +272,32 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
 
   // Nominal-actual comparison with the box as CAD model, placed elsewhere.
   writeStl(dir_ / "cad.stl", boxMesh({6.0, 5.0, 4.0}, {10.0, -3.0, 2.0}));
-  const Json compared = studio.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}});
+  const Json compared = gui.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}});
   EXPECT_EQ(compared.at("status"), "done");
   EXPECT_GT(compared.at("summary").at("within_tolerance_percent").get<double>(), 90.0);
   EXPECT_LT(std::abs(compared.at("summary").at("deviation_mean_mm").get<double>()), 0.02);
-  const auto deviation = studio.deviationMesh(std::nullopt);
+  const auto deviation = gui.deviationMesh(std::nullopt);
   EXPECT_FALSE(deviation->mesh.triangles.empty());
   EXPECT_EQ(deviation->deviation_mm.size(), deviation->mesh.points.size());
   EXPECT_DOUBLE_EQ(deviation->tolerance_mm, 0.1);
-  EXPECT_EQ(studio.deviationMesh(std::nullopt), deviation);  // cached
+  EXPECT_EQ(gui.deviationMesh(std::nullopt), deviation);  // cached
   EXPECT_TRUE(deviation->displacement_mm.empty());
   EXPECT_FALSE(compared.at("summary").contains("displacement_max_mm"));
 
   // The same with a non-rigid registration: the box keeps its shape, so it hardly moves.
-  const Json bent = studio.call("run_compare_cad",
-                                {{"cad_path", (dir_ / "cad.stl").string()}, {"non_rigid", true}});
+  const Json bent =
+      gui.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}, {"non_rigid", true}});
   EXPECT_EQ(bent.at("status"), "done");
   EXPECT_LT(bent.at("summary").at("displacement_max_mm").get<double>(), 0.05);
   EXPECT_GT(bent.at("summary").at("within_tolerance_percent").get<double>(), 90.0);
-  const auto bent_view = studio.deviationMesh(std::nullopt);
+  const auto bent_view = gui.deviationMesh(std::nullopt);
   EXPECT_EQ(bent_view->displacement_mm.size(), bent_view->mesh.points.size());
   EXPECT_GT(bent_view->displacement_range_mm, 0.0);
-  EXPECT_THROW((void)studio.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
+  EXPECT_THROW((void)gui.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
                std::exception);
 
   // The report picks up the surface and the comparison for its 3D views.
-  const Json reported = studio.call("run_report", {});
+  const Json reported = gui.call("run_report", {});
   EXPECT_EQ(reported.at("status"), "done");
   EXPECT_EQ(reported.at("inputs").at("surface").at("step"), surface.at("id"));
   EXPECT_EQ(reported.at("inputs").at("comparison").at("step"), bent.at("id"));
@@ -313,13 +312,13 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_NE(html.find("Pores (red)"), std::string::npos);
 
   // Explicit inputs by step id.
-  const Json histogram = studio.call(
+  const Json histogram = gui.call(
       "run_histogram", {{"bins", 8}, {"inputs", {{"dataset", {{"step", imported.at("id")}}}}}});
   EXPECT_EQ(histogram.at("inputs").at("dataset").at("step"), imported.at("id"));
 
   // Every analysis is a result of the scanned object, with its files; the newer comparison
   // replaces the older one, and the report names what it builds on.
-  const Json results = studio.call("results", {}).at("results");
+  const Json results = gui.call("results", {}).at("results");
   ASSERT_EQ(results.size(), 6U);
   std::vector<std::string> types;
   for (const Json& result : results) {
@@ -334,32 +333,31 @@ TEST_F(StudioTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_FALSE(results[2].at("current"));
   EXPECT_TRUE(results[3].at("current"));
   EXPECT_EQ(results[4].at("based_on").size(), 3U);
-  EXPECT_EQ(studio.call("results", {{"current_only", true}}).at("results").size(), 5U);
-  EXPECT_TRUE(studio.call("results", {{"object", "o9"}}).at("results").empty());
-  EXPECT_EQ(studio.call("project_status", {}).at("results").size(), 6U);
+  EXPECT_EQ(gui.call("results", {{"current_only", true}}).at("results").size(), 5U);
+  EXPECT_TRUE(gui.call("results", {{"object", "o9"}}).at("results").empty());
+  EXPECT_EQ(gui.call("project_status", {}).at("results").size(), 6U);
 
-  const Json undone = studio.call("undo", {});
+  const Json undone = gui.call("undo", {});
   EXPECT_TRUE(undone.at("changed"));
   EXPECT_FALSE(undone.at("steps").back().at("active"));
-  EXPECT_TRUE(studio.call("redo", {}).at("can_undo"));
+  EXPECT_TRUE(gui.call("redo", {}).at("can_undo"));
 
   const Json reopened = [&] {
-    Studio other;
+    Gui other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
   EXPECT_EQ(reopened.at("steps").size(), 8U);
 
-  EXPECT_THROW(studio.call("nope", {}), std::invalid_argument);
-  EXPECT_THROW(studio.call("undo", Json::array()), std::invalid_argument);
-  EXPECT_THROW(studio.call("project_open", {{"path", 3}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("nope", {}), std::invalid_argument);
+  EXPECT_THROW(gui.call("undo", Json::array()), std::invalid_argument);
+  EXPECT_THROW(gui.call("project_open", {{"path", 3}}), std::invalid_argument);
 }
 
-TEST_F(StudioTest, ShowsCurrentTitlesForStepsOfOlderProjects) {
+TEST_F(GuiTest, ShowsCurrentTitlesForStepsOfOlderProjects) {
   {
-    Studio studio;
-    (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
-    (void)studio.call("run_import_raw",
-                      {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+    Gui gui;
+    (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+    (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
   }
   // Projects saved before the UI was English stored German step titles.
   const auto project_file = dir_ / "p" / "project.json";
@@ -371,21 +369,21 @@ TEST_F(StudioTest, ShowsCurrentTitlesForStepsOfOlderProjects) {
   project.at("steps").at(0).at("title") = "Rohdaten importieren";
   writeJson(project_file, project);
 
-  Studio studio;
-  const Json status = studio.call("project_open", {{"path", (dir_ / "p").string()}});
+  Gui gui;
+  const Json status = gui.call("project_open", {{"path", (dir_ / "p").string()}});
   EXPECT_EQ(status.at("steps").at(0).at("title"), "Import raw volume");
 }
 
-TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
-  Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
-  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+TEST_F(GuiTest, SegmentsMaterialsAndShowsThemInSlices) {
+  Gui gui({VOXELSIEVE_TEST_PLUGIN_DIR});
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
   const Json imported =
-      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
-  // Name and colour as the histogram of the studio defines them.
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  // Name and colour as the histogram of the GUI defines them.
   const Json segmented =
-      studio.call("run_segment_materials", {{"materials", 1},
-                                            {"material_names", Json::array({"Aluminium"})},
-                                            {"material_colors", Json::array({"#20a0ff"})}});
+      gui.call("run_segment_materials", {{"materials", 1},
+                                         {"material_names", Json::array({"Aluminium"})},
+                                         {"material_colors", Json::array({"#20a0ff"})}});
   ASSERT_EQ(segmented.at("status"), "done");
   // One material: the box of 6 x 5 x 4 mm with two lunkers of 0.5 mm radius.
   const Json& material = segmented.at("summary").at("materials").at(0);
@@ -394,28 +392,28 @@ TEST_F(StudioTest, SegmentsMaterialsAndShowsThemInSlices) {
   EXPECT_EQ(material.at("name"), "Aluminium");
   EXPECT_EQ(material.at("color"), Json::array({32, 160, 255}));
 
-  const Json slice = studio.call("view_slice", {});
+  const Json slice = gui.call("view_slice", {});
   EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
   EXPECT_EQ(slice.at("materials").size(), 1U);
 
-  const Json info = studio.call("dataset_info", {});
+  const Json info = gui.call("dataset_info", {});
   SliceRequest request;
   request.index = info.at("dims").at(2).get<std::int64_t>() / 2;
   request.size = {info.at("dims").at(0).get<std::int64_t>(),
                   info.at("dims").at(1).get<std::int64_t>()};
-  const SliceImage tile = studio.sliceTile(imported.at("id").get<int>(), std::nullopt, request,
-                                           segmented.at("id").get<int>());
+  const SliceImage tile = gui.sliceTile(imported.at("id").get<int>(), std::nullopt, request,
+                                        segmented.at("id").get<int>());
   const auto material_pixels = std::count(tile.overlay.begin(), tile.overlay.end(),
                                           static_cast<std::uint8_t>(SliceOverlay::kMaterial) + 1);
   EXPECT_GT(material_pixels, 0);
   EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
 }
 
-TEST_F(StudioTest, SegmentsWithALearnedModel) {
-  Studio studio;
-  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
-  (void)studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
-  const auto threshold = studio.call("dataset_info", {}).at("threshold").get<float>();
+TEST_F(GuiTest, SegmentsWithALearnedModel) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const auto threshold = gui.call("dataset_info", {}).at("threshold").get<float>();
   // A one-layer model: material where the grey value is above the dataset's threshold.
   Material material;
   material.id = 1;
@@ -430,30 +428,30 @@ TEST_F(StudioTest, SegmentsWithALearnedModel) {
   writeModel(dir_ / "schwelle.vsm", spec);
 
   const Json segmented =
-      studio.call("run_segment_model", {{"model_path", (dir_ / "schwelle.vsm").string()}});
+      gui.call("run_segment_model", {{"model_path", (dir_ / "schwelle.vsm").string()}});
   ASSERT_EQ(segmented.at("status"), "done");
   EXPECT_EQ(segmented.at("summary").at("model"), "Schwelle");
   const Json& result = segmented.at("summary").at("materials").at(0);
   EXPECT_EQ(result.at("name"), "Guss");
   EXPECT_NEAR(result.at("volume_mm3").get<double>(),
               120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 3.0);
-  const Json slice = studio.call("view_slice", {});
+  const Json slice = gui.call("view_slice", {});
   EXPECT_EQ(slice.at("materials_step"), segmented.at("id"));
-  EXPECT_THROW((void)studio.call("run_segment_model", {}), std::invalid_argument);
+  EXPECT_THROW((void)gui.call("run_segment_model", {}), std::invalid_argument);
 }
 
-TEST_F(StudioTest, DenoisesIntoANewDatasetOfTheSameObject) {
+TEST_F(GuiTest, DenoisesIntoANewDatasetOfTheSameObject) {
   SyntheticSpec spec;
   spec.noise_sigma = 800.0;
   spec.noise_correlation_mm = 0.07;
   const SyntheticScan scan(boxMesh({6.0, 5.0, 4.0}), spec);
   writeRaw(dir_ / "noisy.raw", scan);
   writeJson(dir_ / "noisy.json", scan.toJson());
-  Studio studio;
-  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
   const Json imported =
-      studio.call("run_import_raw", {{"path", (dir_ / "noisy.raw").string()}, {"brick_size", 32}});
-  const Json denoised = studio.call("run_denoise", {});
+      gui.call("run_import_raw", {{"path", (dir_ / "noisy.raw").string()}, {"brick_size", 32}});
+  const Json denoised = gui.call("run_denoise", {});
   ASSERT_EQ(denoised.at("status"), "done");
   EXPECT_EQ(denoised.at("object"), imported.at("object"));
   const Json& summary = denoised.at("summary");
@@ -463,43 +461,43 @@ TEST_F(StudioTest, DenoisesIntoANewDatasetOfTheSameObject) {
             0.5 * summary.at("noise_sigma").get<double>());
   EXPECT_GT(summary.at("noise_correlation").at(0).get<double>(), 0.4);
   EXPECT_EQ(summary.at("active_voxels"), imported.at("summary").at("active_voxels"));
-  EXPECT_EQ(studio.call("objects", {}).at("objects").size(), 1U);
+  EXPECT_EQ(gui.call("objects", {}).at("objects").size(), 1U);
   // Later steps of the object take the denoised dataset.
-  const Json porosity = studio.call("run_porosity", {});
+  const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), denoised.at("id"));
-  EXPECT_THROW((void)studio.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
+  EXPECT_THROW((void)gui.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
 }
 
-TEST_F(StudioTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
+TEST_F(GuiTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
   const auto project = (dir_ / "p").string();
   const Json state = {{"stage", "view"}, {"mode", "3d"}, {"transfer", {{"points", Json::array()}}}};
   {
-    Studio studio;
-    (void)studio.call("project_create", {{"path", project}});
-    (void)studio.call("view_set", {{"state", state}});
+    Gui gui;
+    (void)gui.call("project_create", {{"path", project}});
+    (void)gui.call("view_set", {{"state", state}});
     // "iVBORw0KGgo=" is the PNG signature.
     const Json saved =
-        studio.call("view_save", {{"name", "Aufsicht"}, {"image_base64", "iVBORw0KGgo="}});
+        gui.call("view_save", {{"name", "Aufsicht"}, {"image_base64", "iVBORw0KGgo="}});
     EXPECT_EQ(saved.at("state"), state);  // the current view by default
-    EXPECT_THROW((void)studio.call("view_save", {{"name", "x"}, {"image_base64", "#?"}}),
+    EXPECT_THROW((void)gui.call("view_save", {{"name", "x"}, {"image_base64", "#?"}}),
                  std::invalid_argument);
   }
-  Studio studio;
-  const Json status = studio.call("project_open", {{"path", project}});
+  Gui gui;
+  const Json status = gui.call("project_open", {{"path", project}});
   EXPECT_EQ(status.at("view"), state);
-  const Json views = studio.call("view_list", {}).at("views");
+  const Json views = gui.call("view_list", {}).at("views");
   ASSERT_EQ(views.size(), 1U);
-  const Json image = studio.call("view_image", {{"id", views[0].at("id")}});
+  const Json image = gui.call("view_image", {{"id", views[0].at("id")}});
   EXPECT_EQ(image.at("image").at("mime_type"), "image/png");
   EXPECT_EQ(image.at("image").at("base64"), "iVBORw0KGgo=");
-  const Json renamed = studio.call("view_rename", {{"id", views[0].at("id")}, {"name", "Seite"}});
+  const Json renamed = gui.call("view_rename", {{"id", views[0].at("id")}, {"name", "Seite"}});
   EXPECT_EQ(renamed.at("name"), "Seite");
 }
 
-TEST_F(StudioTest, EveryOperationIsAMethodWithItsSchema) {
-  const Studio studio({VOXELSIEVE_TEST_PLUGIN_DIR});
+TEST_F(GuiTest, EveryOperationIsAMethodWithItsSchema) {
+  const Gui gui({VOXELSIEVE_TEST_PLUGIN_DIR});
   bool found = false;
-  for (const StudioMethod& method : studio.methods()) {
+  for (const GuiMethod& method : gui.methods()) {
     EXPECT_EQ(method.parameters.at("type"), "object") << method.name;
     if (method.name == "run_porosity") {
       found = true;
@@ -515,10 +513,10 @@ Json request(int id, const std::string& method, const Json& params = Json::objec
   return {{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}};
 }
 
-TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
-  Studio studio;
+TEST_F(GuiTest, McpServesToolsOverJsonRpc) {
+  Gui gui;
   std::vector<Json> sent;
-  McpServer server(studio, [&sent](const Json& message) { sent.push_back(message); });
+  McpServer server(gui, [&sent](const Json& message) { sent.push_back(message); });
   const auto handle = [&server](const Json& message) {
     return server.handle(message).value_or(Json());
   };
@@ -535,7 +533,7 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
 
   // The analysis profile leaves out the six methods of the UI's saved views.
   const auto list = handle(request(3, "tools/list"));
-  EXPECT_EQ(list.at("result").at("tools").size(), studio.methods().size() - 6);
+  EXPECT_EQ(list.at("result").at("tools").size(), gui.methods().size() - 6);
   for (const Json& tool : list.at("result").at("tools")) {
     EXPECT_TRUE(tool.contains("inputSchema"));
     EXPECT_NE(tool.at("name"), "view_set");
@@ -552,9 +550,9 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
   const Json hidden =
       handle(request(30, "tools/call", {{"name", "view_set"}, {"arguments", {{"state", {}}}}}));
   EXPECT_TRUE(hidden.at("result").at("isError"));
-  McpServer all(studio, [](const Json&) {}, McpTools::kAll);
+  McpServer all(gui, [](const Json&) {}, McpTools::kAll);
   EXPECT_EQ(all.handle(request(31, "tools/list")).value_or(Json()).at("result").at("tools").size(),
-            studio.methods().size());
+            gui.methods().size());
 
   const Json created = handle(
       request(4, "tools/call",
@@ -603,7 +601,7 @@ TEST_F(StudioTest, McpServesToolsOverJsonRpc) {
 // A whole session as a client such as Claude Desktop runs it, each request after the response to
 // the one before: the porosity_check prompt's steps, then the results read back as resources. The
 // pore count is scored against the ground truth of the synthetic scan.
-TEST_F(StudioTest, McpSessionFindsThePoresOfASyntheticScan) {
+TEST_F(GuiTest, McpSessionFindsThePoresOfASyntheticScan) {
   SyntheticSpec spec;
   spec.noise_sigma = 500.0;
   spec.lunker_count = 3;
@@ -613,12 +611,12 @@ TEST_F(StudioTest, McpSessionFindsThePoresOfASyntheticScan) {
   writeRaw(dir_ / "lunkers.raw", scan);
   writeJson(dir_ / "lunkers.json", scan.toJson());
 
-  Studio studio;
-  studio.setAllowedRoots({dir_});
+  Gui gui;
+  gui.setAllowedRoots({dir_});
   const auto call = [](int id, const std::string& tool, const Json& arguments) {
     return request(id, "tools/call", {{"name", tool}, {"arguments", arguments}});
   };
-  McpServer server(studio, [](const Json&) {});
+  McpServer server(gui, [](const Json&) {});
   const auto handle = [&server](const Json& message) {
     return server.handle(message).value_or(Json());
   };
@@ -691,13 +689,13 @@ TEST_F(StudioTest, McpSessionFindsThePoresOfASyntheticScan) {
   EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 3U);
 }
 
-TEST_F(StudioTest, McpServeReadsLines) {
-  Studio studio;
+TEST_F(GuiTest, McpServeReadsLines) {
+  Gui gui;
   std::istringstream in(request(1, "ping").dump() + "\n\nnot json\n" +
                         Json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump() +
                         "\n" + request(2, "tools/list").dump() + "\n");
   std::ostringstream out;
-  McpServer::serve(studio, in, out);
+  McpServer::serve(gui, in, out);
   std::istringstream lines(out.str());
   std::vector<Json> responses;
   for (std::string line; std::getline(lines, line);) {
@@ -710,34 +708,34 @@ TEST_F(StudioTest, McpServeReadsLines) {
 }
 
 }  // namespace
-TEST_F(StudioTest, AllowedRootsKeepPathsInside) {
-  Studio studio;
+TEST_F(GuiTest, AllowedRootsKeepPathsInside) {
+  Gui gui;
   std::filesystem::create_directories(dir_ / "data");
   std::filesystem::copy_file(dir_ / "scan.raw", dir_ / "data" / "scan.raw");
   std::filesystem::copy_file(dir_ / "scan.json", dir_ / "data" / "scan.json");
-  studio.setAllowedRoots({dir_ / "data"});
-  EXPECT_THROW(studio.setAllowedRoots({dir_ / "missing"}), std::invalid_argument);
-  ASSERT_EQ(studio.allowedRoots().size(), 1U);
+  gui.setAllowedRoots({dir_ / "data"});
+  EXPECT_THROW(gui.setAllowedRoots({dir_ / "missing"}), std::invalid_argument);
+  ASSERT_EQ(gui.allowedRoots().size(), 1U);
 
   // Browsing starts in the root and stays inside; "..", other directories and files are refused.
-  EXPECT_EQ(std::filesystem::path(studio.call("browse", {}).at("path").get<std::string>()),
+  EXPECT_EQ(std::filesystem::path(gui.call("browse", {}).at("path").get<std::string>()),
             std::filesystem::canonical(dir_ / "data"));
-  EXPECT_THROW(studio.call("browse", {{"path", dir_.string()}}), std::invalid_argument);
-  EXPECT_THROW(studio.call("browse", {{"path", (dir_ / "data" / "..").string()}}),
+  EXPECT_THROW(gui.call("browse", {{"path", dir_.string()}}), std::invalid_argument);
+  EXPECT_THROW(gui.call("browse", {{"path", (dir_ / "data" / "..").string()}}),
                std::invalid_argument);
-  EXPECT_THROW(studio.call("project_create", {{"path", (dir_ / "p").string()}}),
+  EXPECT_THROW(gui.call("project_create", {{"path", (dir_ / "p").string()}}),
                std::invalid_argument);
   EXPECT_FALSE(std::filesystem::exists(dir_ / "p"));
 
-  studio.call("project_create", {{"path", (dir_ / "data" / "p").string()}});
-  EXPECT_THROW(studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}}),
+  gui.call("project_create", {{"path", (dir_ / "data" / "p").string()}});
+  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}}),
                std::invalid_argument);
-  const Json step = studio.call(
-      "run_import_raw", {{"path", (dir_ / "data" / "scan.raw").string()}, {"brick_size", 32}});
+  const Json step = gui.call("run_import_raw",
+                             {{"path", (dir_ / "data" / "scan.raw").string()}, {"brick_size", 32}});
   EXPECT_EQ(step.at("status"), "done");
 }
 
-TEST_F(StudioTest, CancelledOperationsFailAtTheirNextProgressReport) {
+TEST_F(GuiTest, CancelledOperationsFailAtTheirNextProgressReport) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
   Project project = Project::create(dir_ / "p", "p");
@@ -750,9 +748,9 @@ TEST_F(StudioTest, CancelledOperationsFailAtTheirNextProgressReport) {
   EXPECT_EQ(project.steps().front().status, "failed");
 }
 
-TEST_F(StudioTest, McpCancellationOnlyConcernsRunningCalls) {
-  Studio studio;
-  McpServer server(studio, [](const Json&) {});
+TEST_F(GuiTest, McpCancellationOnlyConcernsRunningCalls) {
+  Gui gui;
+  McpServer server(gui, [](const Json&) {});
   EXPECT_FALSE(server.handle(
       {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}}));
   EXPECT_FALSE(server.cancelled(7));

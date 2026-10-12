@@ -14,7 +14,7 @@ structures no wider than the cube, such as pores of three voxels, are smoothed a
 for those, non-local means keeps more.
 
 The input is a headerless uint16 volume, x fastest, such as vs-synth writes or a staged scan.
-Writes a VoxelSieve model (.vsm) with the task "denoising" for vs-denoise --model and the studio
+Writes a VoxelSieve model (.vsm) with the task "denoising" for vs-denoise --model and the GUI
 operation "denoise". Needs PyTorch and NumPy; runs on the CPU.
 
 Example (the benchmark scan of vs-denoise, see docs/adr/0025-denoising.md):

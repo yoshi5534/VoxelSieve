@@ -6,7 +6,7 @@ Status: accepted (2026-10-09)
 
 Importing a large scan takes minutes: a 3072 x 3072 x 2000 volume of 16-bit voxels is 38 GB, and
 on a Samba share behind 1 Gbit/s Ethernet (about 110 MB/s) reading it alone takes six minutes.
-Until the dataset was written, the studio showed a progress bar and nothing else, so a wrong
+Until the dataset was written, the GUI showed a progress bar and nothing else, so a wrong
 volume, a wrong folder or a threshold that would keep the noise was found only at the end.
 
 What a first look needs is a picture of the part and the histogram, from a small part of the data
@@ -46,8 +46,8 @@ that is cheap to read on every input and does not have to be read again by the i
   and the histogram on a logarithmic scale with the threshold in red; `previewSummary` gives the
   numbers and a binned histogram.
 - Every import operation keeps the preview with its step (`preview.png`, `preview.json`), logs
-  when it came ("Preview after 0.8 s: 64 of 512 slices ..."), and hands it to the studio through
-  `OperationContext::preview`. The studio shows it in `project_status` while the step runs and
+  when it came ("Preview after 0.8 s: 64 of 512 slices ..."), and hands it to the GUI through
+  `OperationContext::preview`. The GUI shows it in `project_status` while the step runs and
   gives it, with the picture, through the API method `import_preview`, so the browser UI and AI
   assistants get it alike; the UI shows it under the progress bar. `vs-sieve --preview <png>`
   writes the picture as soon as it is read. The new member is the last of `OperationContext`, so
@@ -61,7 +61,7 @@ slice order on one thread, and takes the preview's slices as the copy passes the
 therefore comes only at the end of that pass, not after 3 % of the reading; reading the 64 slices
 first would mean decompressing everything up to the last of them anyway. `readImportPreview`
 reads such a source in order. The header size is not known without decompressing everything, so
-it is 0 unless given. `import_raw`, `vs-sieve` and the studio's file browser take `.raw.gz`.
+it is 0 unless given. `import_raw`, `vs-sieve` and the GUI's file browser take `.raw.gz`.
 
 **Measured (explicit reads of whole slices).** A share was emulated with sshfs over loopback
 through a proxy adding 0.25 ms each way and capping the bandwidth (sequential `cat`: 86 MB/s at
@@ -97,7 +97,7 @@ slices that make the preview sharper first and show them as they arrive.
   with the histogram of the whole volume: its threshold is the one the import uses.
   `ImportPreview::slices_read` and `complete()` say how far it is.
 - The picture gets about a pixel per preview voxel, 256 to 1024 pixels along the longest edge.
-  The studio replaces it under the progress bar as each preview arrives (the UI watches
+  The GUI replaces it under the progress bar as each preview arrives (the UI watches
   `slices_read` in `project_status`); the step keeps the last one.
 - Sources read directly (local raw files, phantoms) get only the first look: reading more there
   would read the volume twice, and their import is bound by the passes, not by reading. A stream

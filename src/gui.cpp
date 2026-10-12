@@ -1,4 +1,4 @@
-#include "voxelsieve/studio.hpp"
+#include "voxelsieve/gui.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -329,7 +329,7 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
   return dirs;
 }
 
-Studio::Studio(const std::vector<std::filesystem::path>& plugin_dirs)
+Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
     : view_cache_(std::make_shared<BrickCache>(kViewCacheBytes)) {
   registerBuiltinOperations(registry_);
   for (const auto& dir : plugin_dirs) {
@@ -339,9 +339,9 @@ Studio::Studio(const std::vector<std::filesystem::path>& plugin_dirs)
   }
 }
 
-std::vector<StudioMethod> Studio::methods() const {
+std::vector<GuiMethod> Gui::methods() const {
   const Json path = {{"type", "string"}, {"format", "path"}, {"description", "Project directory"}};
-  std::vector<StudioMethod> methods = {
+  std::vector<GuiMethod> methods = {
       {"project_create",
        "Creates a new project in an empty or missing directory and opens it. Every step is saved "
        "immediately; there is no separate save.",
@@ -561,21 +561,21 @@ std::vector<StudioMethod> Studio::methods() const {
   return methods;
 }
 
-Project& Studio::project() {
+Project& Gui::project() {
   if (!project_) {
     throw std::invalid_argument("No project open: call project_create or project_open first");
   }
   return *project_;
 }
 
-const Project& Studio::project() const {
+const Project& Gui::project() const {
   if (!project_) {
     throw std::invalid_argument("No project open: call project_create or project_open first");
   }
   return *project_;
 }
 
-Json Studio::status() const {
+Json Gui::status() const {
   Json running =
       running_ ? Json{{"operation", running_operation_}, {"progress", progress_.load()}} : Json();
   if (running_ && !running_preview_.is_null()) {
@@ -611,7 +611,7 @@ Json Studio::status() const {
   return json;
 }
 
-ArtifactRef Studio::artifactRef(const Json& params, const std::string& type) const {
+ArtifactRef Gui::artifactRef(const Json& params, const std::string& type) const {
   if (!params.contains("step")) {
     if (!type.empty()) {
       // The data of the active object first, as new steps take it.
@@ -651,11 +651,11 @@ ArtifactRef Studio::artifactRef(const Json& params, const std::string& type) con
   throw std::invalid_argument("No step " + std::to_string(id));
 }
 
-std::filesystem::path Studio::artifactPath(const Json& params) const {
+std::filesystem::path Gui::artifactPath(const Json& params) const {
   return project().resolve(artifactRef(params, ""));
 }
 
-std::shared_ptr<const Dataset> Studio::openDataset(const std::filesystem::path& dir) const {
+std::shared_ptr<const Dataset> Gui::openDataset(const std::filesystem::path& dir) const {
   const std::scoped_lock lock(view_mutex_);
   return cached(datasets_, dir, kOpenVolumes, [this, &dir] {
     return std::make_shared<const Dataset>(
@@ -663,14 +663,13 @@ std::shared_ptr<const Dataset> Studio::openDataset(const std::filesystem::path& 
   });
 }
 
-std::shared_ptr<const PorosityResult> Studio::openPorosity(const std::filesystem::path& dir) const {
+std::shared_ptr<const PorosityResult> Gui::openPorosity(const std::filesystem::path& dir) const {
   const std::scoped_lock lock(view_mutex_);
   return cached(porosity_results_, dir, kOpenDatasets,
                 [&dir] { return std::make_shared<const PorosityResult>(loadPorosityResult(dir)); });
 }
 
-std::shared_ptr<const MaterialVolume> Studio::openMaterials(
-    std::optional<int> materials_step) const {
+std::shared_ptr<const MaterialVolume> Gui::openMaterials(std::optional<int> materials_step) const {
   if (!materials_step) {
     return nullptr;
   }
@@ -682,31 +681,30 @@ std::shared_ptr<const MaterialVolume> Studio::openMaterials(
   return openMaterials(dir);
 }
 
-std::shared_ptr<const MaterialVolume> Studio::openMaterials(
-    const std::filesystem::path& dir) const {
+std::shared_ptr<const MaterialVolume> Gui::openMaterials(const std::filesystem::path& dir) const {
   const std::scoped_lock lock(view_mutex_);
   return cached(material_volumes_, dir, kOpenDatasets, [&dir] {
     return std::make_shared<const MaterialVolume>(MaterialVolume::open(dir));
   });
 }
 
-SliceImage Studio::sliceTile(std::optional<int> dataset_step, std::optional<int> porosity_step,
-                             const SliceRequest& request, std::optional<int> materials_step) const {
+SliceImage Gui::sliceTile(std::optional<int> dataset_step, std::optional<int> porosity_step,
+                          const SliceRequest& request, std::optional<int> materials_step) const {
   const auto [dataset, porosity] = openView(dataset_step, porosity_step);
   const auto materials = openMaterials(materials_step);
   return readSlice(*dataset, request, porosity.get(), materials.get());
 }
 
-VolumePreview Studio::volumePreview(std::optional<int> dataset_step,
-                                    std::optional<int> porosity_step, const VolumeRequest& request,
-                                    std::optional<int> materials_step) const {
+VolumePreview Gui::volumePreview(std::optional<int> dataset_step, std::optional<int> porosity_step,
+                                 const VolumeRequest& request,
+                                 std::optional<int> materials_step) const {
   const auto [dataset, porosity] = openView(dataset_step, porosity_step);
   const auto materials = openMaterials(materials_step);
   return readVolumePreview(*dataset, request, porosity.get(), materials.get());
 }
 
-std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surface_step,
-                                                       std::size_t max_triangles) const {
+std::shared_ptr<const IndexedMesh> Gui::surfaceMesh(std::optional<int> surface_step,
+                                                    std::size_t max_triangles) const {
   std::filesystem::path file;
   {
     const std::scoped_lock lock(mutex_);
@@ -716,8 +714,8 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMesh(std::optional<int> surfac
   return surfaceMeshOf(file, max_triangles);
 }
 
-std::shared_ptr<const IndexedMesh> Studio::surfaceMeshOf(const std::filesystem::path& file,
-                                                         std::size_t max_triangles) const {
+std::shared_ptr<const IndexedMesh> Gui::surfaceMeshOf(const std::filesystem::path& file,
+                                                      std::size_t max_triangles) const {
   // The file time is part of the key: an undone step and its successor share the directory.
   const std::filesystem::path key =
       file.string() + "#" + std::to_string(max_triangles) + "#" + fileStamp(file);
@@ -741,7 +739,7 @@ std::shared_ptr<const IndexedMesh> Studio::surfaceMeshOf(const std::filesystem::
   return mesh;
 }
 
-std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
+std::shared_ptr<const Gui::DeviationView> Gui::deviationMesh(
     std::optional<int> comparison_step) const {
   std::filesystem::path dir;
   {
@@ -784,7 +782,7 @@ std::shared_ptr<const Studio::DeviationView> Studio::deviationMesh(
   return view;
 }
 
-std::shared_ptr<const IndexedMesh> Studio::stlMesh(const std::filesystem::path& file) const {
+std::shared_ptr<const IndexedMesh> Gui::stlMesh(const std::filesystem::path& file) const {
   const std::filesystem::path key = file.string() + "#stl#" + fileStamp(file);
   {
     const std::scoped_lock lock(surface_mutex_);
@@ -803,7 +801,7 @@ std::shared_ptr<const IndexedMesh> Studio::stlMesh(const std::filesystem::path& 
   return mesh;
 }
 
-Studio::ObjectSource Studio::objectSource(const std::string& id) const {
+Gui::ObjectSource Gui::objectSource(const std::string& id) const {
   ObjectSource source;
   source.object = project().object(id);
   source.source = project().resolve(source.object.source);
@@ -815,7 +813,7 @@ Studio::ObjectSource Studio::objectSource(const std::string& id) const {
   return source;
 }
 
-RigidTransform Studio::datasetPose(const ArtifactRef& dataset) const {
+RigidTransform Gui::datasetPose(const ArtifactRef& dataset) const {
   for (const Step& step : project().steps()) {
     if (step.id == dataset.step) {
       return step.object.empty() ? RigidTransform() : project().object(step.object).pose;
@@ -824,7 +822,7 @@ RigidTransform Studio::datasetPose(const ArtifactRef& dataset) const {
   return {};
 }
 
-Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_triangles) const {
+Gui::ObjectShape Gui::objectShape(const std::string& id, std::size_t max_triangles) const {
   ObjectSource source;
   {
     const std::scoped_lock lock(mutex_);
@@ -833,7 +831,7 @@ Studio::ObjectShape Studio::objectShape(const std::string& id, std::size_t max_t
   return shapeOf(source, max_triangles);
 }
 
-Studio::ObjectShape Studio::shapeOf(const ObjectSource& source, std::size_t max_triangles) const {
+Gui::ObjectShape Gui::shapeOf(const ObjectSource& source, std::size_t max_triangles) const {
   ObjectShape shape;
   shape.pose = source.object.pose;
   if (source.object.kind == kMeshObject) {
@@ -862,8 +860,8 @@ Studio::ObjectShape Studio::shapeOf(const ObjectSource& source, std::size_t max_
   return shape;
 }
 
-PlaneImage Studio::objectSliceTile(std::optional<int> dataset_step, const SliceRequest& request,
-                                   const std::string& object) const {
+PlaneImage Gui::objectSliceTile(std::optional<int> dataset_step, const SliceRequest& request,
+                                const std::string& object) const {
   std::filesystem::path base_dir;
   RigidTransform base_pose;
   ObjectSource source;
@@ -878,8 +876,8 @@ PlaneImage Studio::objectSliceTile(std::optional<int> dataset_step, const SliceR
   return objectPlane(*openDataset(base_dir), base_pose, request, source);
 }
 
-std::vector<float> Studio::objectCutLines(std::optional<int> dataset_step, int axis,
-                                          std::int64_t index, const std::string& object) const {
+std::vector<float> Gui::objectCutLines(std::optional<int> dataset_step, int axis,
+                                       std::int64_t index, const std::string& object) const {
   std::filesystem::path base_dir;
   RigidTransform base_pose;
   ObjectSource source;
@@ -894,8 +892,8 @@ std::vector<float> Studio::objectCutLines(std::optional<int> dataset_step, int a
   return objectCuts(*openDataset(base_dir), base_pose, axis, index, source);
 }
 
-PlaneImage Studio::objectPlane(const Dataset& base, const RigidTransform& base_pose,
-                               const SliceRequest& request, const ObjectSource& object) const {
+PlaneImage Gui::objectPlane(const Dataset& base, const RigidTransform& base_pose,
+                            const SliceRequest& request, const ObjectSource& object) const {
   if (object.object.kind != kVolumeObject) {
     throw std::invalid_argument("Object '" + object.object.name +
                                 "' is not a volume; meshes show as cut lines");
@@ -934,9 +932,8 @@ PlaneImage Studio::objectPlane(const Dataset& base, const RigidTransform& base_p
   return samplePlane(*other, plane);
 }
 
-std::vector<float> Studio::objectCuts(const Dataset& base, const RigidTransform& base_pose,
-                                      int axis, std::int64_t index,
-                                      const ObjectSource& object) const {
+std::vector<float> Gui::objectCuts(const Dataset& base, const RigidTransform& base_pose, int axis,
+                                   std::int64_t index, const ObjectSource& object) const {
   const auto shape = shapeOf(object, kCutTriangles);
   const RigidTransform to_base = base_pose.inverse().after(shape.pose);
   const VoxelSize& pitch = base.info().voxel_size;
@@ -951,7 +948,7 @@ std::vector<float> Studio::objectCuts(const Dataset& base, const RigidTransform&
   return cutMesh(points, shape.mesh->triangles, axis, static_cast<double>(index));
 }
 
-Json Studio::viewObjects(const Json& params) const {
+Json Gui::viewObjects(const Json& params) const {
   std::vector<std::string> all;
   {
     const std::scoped_lock lock(mutex_);
@@ -1014,7 +1011,7 @@ Json Studio::viewObjects(const Json& params) const {
       {"height", image.height}, {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
 
-std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Studio::openView(
+std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Gui::openView(
     std::optional<int> dataset_step, std::optional<int> porosity_step) const {
   std::filesystem::path dataset_dir;
   std::filesystem::path porosity_dir;
@@ -1030,9 +1027,8 @@ std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>>
   return {openDataset(dataset_dir), porosity_dir.empty() ? nullptr : openPorosity(porosity_dir)};
 }
 
-Json Studio::drawObjects(const Dataset& base, const ArtifactRef& base_ref,
-                         const SliceRequest& request, const Json& ids,
-                         std::vector<std::uint8_t>& rgb) const {
+Json Gui::drawObjects(const Dataset& base, const ArtifactRef& base_ref, const SliceRequest& request,
+                      const Json& ids, std::vector<std::uint8_t>& rgb) const {
   const auto width = request.size[0];
   const auto height = request.size[1];
   const RigidTransform base_pose = datasetPose(base_ref);
@@ -1115,7 +1111,7 @@ Json Studio::drawObjects(const Dataset& base, const ArtifactRef& base_ref,
   return shown;
 }
 
-Json Studio::importPreview(const Json& params) const {
+Json Gui::importPreview(const Json& params) const {
   if (!params.contains("step") && running_) {
     if (running_preview_.is_null()) {
       throw std::invalid_argument("'" + running_operation_ + "' has no preview yet");
@@ -1162,7 +1158,7 @@ Json Studio::importPreview(const Json& params) const {
   return json;
 }
 
-Json Studio::viewSlice(const Json& params) const {
+Json Gui::viewSlice(const Json& params) const {
   const ArtifactRef dataset_ref = artifactRef(params, artifact::kDataset);
   const auto dataset_dir = project().resolve(dataset_ref);
   const auto dataset = openDataset(dataset_dir);
@@ -1300,8 +1296,8 @@ Json Studio::viewSlice(const Json& params) const {
   return result;
 }
 
-std::filesystem::path Studio::outputFile(int step, const std::string& output,
-                                         const std::string& file) const {
+std::filesystem::path Gui::outputFile(int step, const std::string& output,
+                                      const std::string& file) const {
   const std::scoped_lock lock(mutex_);
   const auto root = project().resolve({step, output});
   const auto path = file.empty() ? root : insideOf(root, file);
@@ -1311,7 +1307,7 @@ std::filesystem::path Studio::outputFile(int step, const std::string& output,
   return path;
 }
 
-std::filesystem::path Studio::viewImage(int id) const {
+std::filesystem::path Gui::viewImage(int id) const {
   const std::scoped_lock lock(mutex_);
   if (!project().savedView(id).has_image) {
     throw std::invalid_argument("View " + std::to_string(id) + " has no picture");
@@ -1319,8 +1315,8 @@ std::filesystem::path Studio::viewImage(int id) const {
   return project().viewImage(id);
 }
 
-Json Studio::runOperation(const std::string& operation, Json params,
-                          const std::function<void(double)>& progress) {
+Json Gui::runOperation(const std::string& operation, Json params,
+                       const std::function<void(double)>& progress) {
   // The operation runs on a copy of the project without holding the lock, so status, file and
   // view requests are answered while it runs. Changes to the project wait until it is done.
   std::optional<Project> working;
@@ -1396,7 +1392,7 @@ Json Studio::runOperation(const std::string& operation, Json params,
   }
 }
 
-void Studio::setAllowedRoots(const std::vector<std::filesystem::path>& roots) {
+void Gui::setAllowedRoots(const std::vector<std::filesystem::path>& roots) {
   std::vector<std::filesystem::path> canonical;
   for (const auto& root : roots) {
     if (!std::filesystem::is_directory(root)) {
@@ -1407,7 +1403,7 @@ void Studio::setAllowedRoots(const std::vector<std::filesystem::path>& roots) {
   allowed_roots_ = std::move(canonical);
 }
 
-void Studio::checkAllowedPath(const std::filesystem::path& path) const {
+void Gui::checkAllowedPath(const std::filesystem::path& path) const {
   if (allowed_roots_.empty()) {
     return;
   }
@@ -1427,14 +1423,14 @@ void Studio::checkAllowedPath(const std::filesystem::path& path) const {
                               "): " + resolved.string());
 }
 
-Json Studio::call(const std::string& method, const Json& arguments,
-                  const std::function<void(double)>& progress) {
+Json Gui::call(const std::string& method, const Json& arguments,
+               const std::function<void(double)>& progress) {
   const Json params = arguments.is_null() ? Json::object() : arguments;  // `{}` in C++ is null
   if (!params.is_object()) {
     throw std::invalid_argument("Parameters must be an object");
   }
   if (!allowed_roots_.empty()) {
-    for (const StudioMethod& known : methods()) {
+    for (const GuiMethod& known : methods()) {
       if (known.name != method || !known.parameters.contains("properties")) {
         continue;
       }
@@ -1474,14 +1470,14 @@ Json Studio::call(const std::string& method, const Json& arguments,
   }
   if (method == "view_objects") {
     // Not under the lock: building the meshes of the objects takes it only to find them.
-    for (const StudioMethod& known : methods()) {
+    for (const GuiMethod& known : methods()) {
       if (known.name == method) {
         return viewObjects(validateParameters(known.parameters, params));
       }
     }
   }
   const std::scoped_lock lock(mutex_);
-  for (const StudioMethod& known : methods()) {
+  for (const GuiMethod& known : methods()) {
     if (known.name != method) {
       continue;
     }

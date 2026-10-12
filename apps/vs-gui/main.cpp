@@ -1,5 +1,5 @@
-// vs-gui: the VoxelSieve studio (ADR 0008). Serves the browser UI on a local port, or with
-// --mcp the studio API to AI systems over the Model Context Protocol on stdin/stdout.
+// vs-gui: the VoxelSieve GUI (ADR 0008). Serves the browser UI on a local port, or with
+// --mcp the GUI API to AI systems over the Model Context Protocol on stdin/stdout.
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -24,28 +24,28 @@
 #include <thread>
 #include <vector>
 
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
 #include "voxelsieve/mcp.hpp"
-#include "voxelsieve/studio.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-gui [options] [<dir>...]
        vs-gui --mcp [options] [<dir>...]
 
-Starts the VoxelSieve studio: open http://localhost:8410 in a browser for the wizard (choose a
+Starts the VoxelSieve GUI: open http://localhost:8410 in a browser for the wizard (choose a
 dataset, run operations, create the report) with the step protocol and undo/redo.
 
-With --mcp it serves the studio over the Model Context Protocol (JSON-RPC on stdin/stdout)
+With --mcp it serves the GUI over the Model Context Protocol (JSON-RPC on stdin/stdout)
 instead. Register it with an MCP client as a stdio server, for example:
   {"command": "vs-gui", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
-Every studio function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
+Every GUI function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
 slice pictures and reading result files. The result files of the steps are also resources, and
 the prompts porosity_check, compare_with_cad and first_look walk through typical inspections.
 
-Directories given after the options are the only places the studio reads data from and keeps
+Directories given after the options are the only places the GUI reads data from and keeps
 projects in (with everything below them); without any, every path is allowed. Give the
-directories with your scans when an AI client drives the studio.
+directories with your scans when an AI client drives the GUI.
 
 Options:
   --port <n>            Port of the browser UI (default 8410, 0 picks a free one)
@@ -159,16 +159,16 @@ int main(int argc, char** argv) {
     }
     auto plugin_dirs = voxelsieve::pluginPathFromEnvironment();
     plugin_dirs.insert(plugin_dirs.end(), options->plugins.begin(), options->plugins.end());
-    voxelsieve::Studio studio(plugin_dirs);
-    studio.setAllowedRoots(options->roots);
+    voxelsieve::Gui gui(plugin_dirs);
+    gui.setAllowedRoots(options->roots);
     // stdout carries the protocol; everything else goes to stderr.
-    for (const std::string& message : studio.pluginMessages()) {
+    for (const std::string& message : gui.pluginMessages()) {
       std::cerr << "vs-gui: " << message << "\n";
     }
     if (options->project) {
       const bool exists = std::filesystem::exists(*options->project / "project.json");
-      (void)studio.call(exists ? "project_open" : "project_create",
-                        {{"path", options->project->string()}});
+      (void)gui.call(exists ? "project_open" : "project_create",
+                     {{"path", options->project->string()}});
     }
     if (options->mcp) {
 #ifdef _WIN32
@@ -176,10 +176,10 @@ int main(int argc, char** argv) {
       (void)_setmode(_fileno(stdin), _O_BINARY);
       (void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
-      voxelsieve::McpServer::serve(studio, std::cin, std::cout, options->tools);
+      voxelsieve::McpServer::serve(gui, std::cin, std::cout, options->tools);
       return 0;
     }
-    voxelsieve::HttpServer server(studio, options->host, options->port);
+    voxelsieve::HttpServer server(gui, options->host, options->port);
     std::cerr << "vs-gui: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
               << ":" << server.port() << "/  (Ctrl+C to stop)\n";
     serveUntilStopped(server);

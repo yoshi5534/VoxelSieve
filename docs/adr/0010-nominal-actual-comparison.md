@@ -69,7 +69,7 @@ different, drawing-specific procedure and is left for later.
   `cad_aligned.stl` is the CAD model in scan coordinates; it is optional, because CAD meshes can
   be large.
 
-The colours are the same in the images, the PLY and the studio: green within the tolerance,
+The colours are the same in the images, the PLY and the GUI: green within the tolerance,
 yellow to red above it and cyan to blue below it, saturated at ±range.
 
 ## Measurements

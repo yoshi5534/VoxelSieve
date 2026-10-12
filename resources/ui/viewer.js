@@ -1,4 +1,4 @@
-// Slice viewer of VoxelSieve Studio (ADR 0008). The volume is never loaded: the view requests
+// Slice viewer of VoxelSieve (ADR 0008). The volume is never loaded: the view requests
 // tiles of 256 x 256 pixels from the resolution level whose voxels match the zoom, so a view of a
 // scan of hundreds of GB reads only a few bricks. Grey values arrive as float32 and are windowed
 // here, so contrast changes need no new requests.

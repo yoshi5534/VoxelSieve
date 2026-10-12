@@ -299,7 +299,7 @@ Vec shade(const Lighting& light, Vec n, const Vec& albedo, double ao, double spe
 }
 
 Vec background(double fy, double fx) {
-  // Light studio backdrop: brighter towards the top, slightly darker at the corners.
+  // Light soft backdrop: brighter towards the top, slightly darker at the corners.
   const double t = std::clamp(fy, 0.0, 1.0);
   const double vignette = 1.0 - 0.05 * ((fx - 0.5) * (fx - 0.5) + (fy - 0.4) * (fy - 0.4));
   return {(0.985 - 0.10 * t) * vignette, (0.987 - 0.095 * t) * vignette,

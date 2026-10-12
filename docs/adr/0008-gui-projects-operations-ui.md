@@ -1,4 +1,4 @@
-# 0008: Studio — projects, operations, plugins, MCP and a browser UI
+# 0008: GUI — projects, operations, plugins, MCP and a browser UI
 
 Status: accepted (2026-09-27)
 
@@ -18,7 +18,7 @@ project needs an application around them:
 
 ### One engine, three front ends
 
-A C++ engine (`voxelsieve/studio.hpp`) owns projects and operations. It is driven through one
+A C++ engine (`voxelsieve/gui.hpp`) owns projects and operations. It is driven through one
 JSON API (method name + JSON parameters → JSON result). The same API is exposed
 
 - to the browser UI over HTTP (`vs-gui`, local server, Boost.Beast),

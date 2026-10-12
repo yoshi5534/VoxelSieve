@@ -11,8 +11,8 @@
 
 #include "dicom_writer.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
-#include "voxelsieve/studio.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -229,10 +229,10 @@ TEST_F(GzippedXmlTest, ReadsTheVolumesAndFindsTheirFiles) {
   EXPECT_TRUE(isGzippedXmlFile(dir_ / "part" / "part.project"));
 }
 
-TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
+TEST_F(GzippedXmlTest, GuiImportsTheVolumeWhereTheProjectPlacesIt) {
   const auto path = writeProject();
-  Studio studio({});
-  const auto listing = studio.call("browse", {{"path", (dir_ / "part").string()}});
+  Gui gui({});
+  const auto listing = gui.call("browse", {{"path", (dir_ / "part").string()}});
   std::map<std::string, std::string> kinds;
   for (const auto& entry : listing.at("entries")) {
     kinds[entry.at("name")] = entry.at("kind");
@@ -240,9 +240,9 @@ TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
   EXPECT_EQ(kinds["part.xml.gz"], "gzipped_xml");
   EXPECT_EQ(kinds["slices"], "dicom");
 
-  studio.call("project_create", {{"path", (dir_ / "project").string()}});
+  gui.call("project_create", {{"path", (dir_ / "project").string()}});
   const auto imported =
-      studio.call("run_import_gzipped_xml", {{"path", path.string()}, {"brick_size", 16}});
+      gui.call("run_import_gzipped_xml", {{"path", path.string()}, {"brick_size", 16}});
   ASSERT_EQ(imported.at("status"), "done") << imported.dump();
   EXPECT_EQ(imported.at("summary").at("volume"), "Test part");
   EXPECT_EQ(imported.at("summary").at("dims"), nlohmann::json(kDims));
@@ -251,7 +251,7 @@ TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
   EXPECT_NE(log.find("Not imported"), std::string::npos) << log;
   EXPECT_NE(log.find("Raw part"), std::string::npos) << log;
 
-  const auto objects = studio.call("objects", {}).at("objects");
+  const auto objects = gui.call("objects", {}).at("objects");
   ASSERT_EQ(objects.size(), 1U);
   const auto pose = objects.front().at("pose").get<std::vector<double>>();
   const auto expected = expectedPose().matrix();
@@ -261,9 +261,9 @@ TEST_F(GzippedXmlTest, StudioImportsTheVolumeWhereTheProjectPlacesIt) {
 
   // The second volume was imported in a way VoxelSieve does not read, and a missing slice stops
   // the import.
-  EXPECT_ANY_THROW(studio.call("run_import_gzipped_xml", {{"path", path.string()}, {"volume", 1}}));
+  EXPECT_ANY_THROW(gui.call("run_import_gzipped_xml", {{"path", path.string()}, {"volume", 1}}));
   std::filesystem::remove(dir_ / "part" / "slices" / "s3.dcm");
-  EXPECT_ANY_THROW(studio.call("run_import_gzipped_xml", {{"path", path.string()}}));
+  EXPECT_ANY_THROW(gui.call("run_import_gzipped_xml", {{"path", path.string()}}));
 }
 
 }  // namespace

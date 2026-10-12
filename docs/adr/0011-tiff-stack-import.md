@@ -68,7 +68,7 @@ per concurrent reader. libzip reads the archive from a memory mapping
 (`zip_source_buffer_create`), not through stdio, whose 4 KiB reads with a seek before each
 made reading a cold archive slow.
 
-The studio gets the operation `import_tiff` (parameters like `import_raw` plus `folder`), and the
+The GUI gets the operation `import_tiff` (parameters like `import_raw` plus `folder`), and the
 file browser marks TIFF files, ZIP archives and directories with TIFF slices as kind `tiff`.
 
 ## Consequences

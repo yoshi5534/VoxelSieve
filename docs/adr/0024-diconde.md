@@ -44,8 +44,8 @@ manufacturer, the material and the indications, the findings of an evaluation.
 - **Reading**: DICONDE series are read by `DicomStackSource` like any DICOM stack;
   `readDicondeInfo` returns component, inspection, equipment and the indications of all slices.
   `import_dicom` logs the component and the number of indications and puts them in its summary.
-- **Studio and CLI**: the operation `export_diconde` (inputs: dataset, optional porosity and
-  materials, so the studio wires the object's current results in; parameters: inspection order,
+- **GUI and CLI**: the operation `export_diconde` (inputs: dataset, optional porosity and
+  materials, so the GUI wires the object's current results in; parameters: inspection order,
   a directory to copy the series to) writes `diconde/volume/`, `diconde/materials/` and
   `diconde.json` with the UIDs. `vs-diconde` writes the same from the command line and prints a
   series with `--info`.

@@ -4,11 +4,11 @@
 #include <string>
 #include <string_view>
 
-#include "voxelsieve/studio.hpp"
+#include "voxelsieve/gui.hpp"
 
 namespace voxelsieve {
 
-/// Local HTTP server of the studio (ADR 0008): serves the browser UI and the studio API.
+/// Local HTTP server of the GUI (ADR 0008): serves the browser UI and the GUI API.
 ///
 ///   GET  /                                  the UI (index.html, app.js, app.css)
 ///   GET  /api/methods                       the API methods with parameter schemas
@@ -25,7 +25,7 @@ namespace voxelsieve {
 class HttpServer {
  public:
   /// Binds to `host`:`port`; port 0 picks a free port.
-  HttpServer(Studio& studio, const std::string& host, unsigned short port);
+  HttpServer(Gui& gui, const std::string& host, unsigned short port);
   ~HttpServer();
   HttpServer(const HttpServer&) = delete;
   HttpServer& operator=(const HttpServer&) = delete;

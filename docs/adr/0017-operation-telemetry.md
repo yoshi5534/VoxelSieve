@@ -8,7 +8,7 @@ Every performance problem so far was found by reading console output by hand: a 
 used few cores because pass 2 decoded the same slices again and again, and a pass 2 that slowed
 from 22 s to 101 s because the pages of a memory-mapped ZIP pushed the staging file out of the
 page cache. `vs-sieve` printed stage times and the process's peak memory; the other tools printed
-one or two times, and the studio recorded nothing but start and end time. To make operations
+one or two times, and the GUI recorded nothing but start and end time. To make operations
 faster and leaner we need the same numbers from every operation, per phase, kept with the result.
 
 ## Decision
@@ -36,11 +36,11 @@ faster and leaner we need the same numbers from every operation, per phase, kept
   waited for the disk. They include other processes.
 - Library code marks its phases with `TelemetryPhase`, which goes to the calling thread's current
   recorder (`TelemetryScope`) and does nothing without one. So `writeDataset`,
-  `analyzePorosity`, `segmentMaterials` and `compareToCad` report the same phases in the studio
+  `analyzePorosity`, `segmentMaterials` and `compareToCad` report the same phases in the GUI
   and on the command line, and plugins get a total without any change of the plugin API.
 - `Project::run` records every step: the record without its timeline goes into the protocol
   (`Step::telemetry` in `project.json`), the whole record into `telemetry.json` in the step
-  directory. A failed step keeps its summary. The studio method `step_telemetry` (and so the MCP
+  directory. A failed step keeps its summary. The GUI method `step_telemetry` (and so the MCP
   tool of the same name) returns the whole record; the UI shows a line per step and, under
   "Run time and resources", the phases, hints and the timeline.
 - Command-line tools print a table of the phases to stderr at the end and write the whole record
@@ -52,7 +52,7 @@ faster and leaner we need the same numbers from every operation, per phase, kept
 
 ## Consequences
 
-- The counters belong to the whole process. The studio runs one operation at a time, so a step
+- The counters belong to the whole process. The GUI runs one operation at a time, so a step
   gets its own numbers; its HTTP threads add a little CPU time.
 - Reading `/proc` at each phase boundary and once a second costs well below a millisecond.
 - Only Linux has these counters; elsewhere the record keeps wall time and CPU time.
