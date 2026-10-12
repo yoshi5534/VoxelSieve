@@ -9,7 +9,9 @@ noise of neighbouring voxels, though, and a network that saw the neighbours woul
 their noise; so not only the voxel but the cube of --mask-radius voxels around it is hidden,
 replaced by voxels from random places of the same patch (structured blind spots). Choose the
 radius from the noise correlation vs-denoise reports: 1 when the neighbours' correlation is
-clearly below 0.2 at a distance of 2 voxels, else 2.
+clearly below 0.2 at a distance of 2 voxels, else 2. The network cannot see what the cube hides:
+structures no wider than the cube, such as pores of three voxels, are smoothed away (ADR 0025);
+for those, non-local means keeps more.
 
 The input is a headerless uint16 volume, x fastest, such as vs-synth writes or a staged scan.
 Writes a VoxelSieve model (.vsm) with the task "denoising" for vs-denoise --model and the studio

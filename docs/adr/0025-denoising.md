@@ -90,24 +90,56 @@ Benchmark scan of `vs-denoise --benchmark` (208 × 160 × 88 voxels of 0.25 mm, 
 12000, noise correlation 0.7 voxels), 4 cores, 2026-10-11. RMSE in grey values; contrast kept as a
 share of the noise-free contrast; CNR of the smallest third of the lunkers.
 
-Noise sigma 2000 (a fifth of the contrast):
+Noise sigma 1000 (a tenth of the contrast); the models are trained for 25 minutes on the noisy
+scan with blind cubes of 3³ (mask radius 1, the default) and single voxels (mask radius 0):
+
+| Variant | Seconds | RMSE | Edges | Material | Air | Lunker contrast | Small lunker contrast | Small lunker CNR | Lunkers found | False pores | Zones |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| noise-free | | 0 | 0 | 0 | 0 | 1.00 | 1.00 | | 12 / 16 | 0 | 1 |
+| noisy | | 1003 | 999 | 1000 | 1010 | 1.02 | 1.05 | 4.5 | 14 / 16 | 0 | 23 |
+| non-local means | 2.9 | 370 | 476 | 324 | 278 | 0.94 | 0.87 | 11.7 | 14 / 16 | 0 | 26 |
+| Noise2Void, mask radius 1 | 25.0 | 430 | 665 | 299 | 129 | 0.12 | 0.11 | 1.6 | 0 / 16 | 0 | 24 |
+| Noise2Void, mask radius 0 | 15.4 | 866 | 861 | 872 | 866 | 0.86 | 0.84 | 4.1 | 10 / 16 | 0 | 27 |
+
+Noise sigma 2000 (a fifth of the contrast), mask radius 1:
 
 | Variant | Seconds | RMSE | Edges | Material | Air | Lunker contrast | Small lunker contrast | Small lunker CNR | Lunkers found | False pores | Zones |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | noise-free | | 0 | 0 | 0 | 0 | 1.00 | 1.00 | | 12 / 16 | 0 | 1 |
 | noisy | | 1881 | 1935 | 1999 | 1795 | 1.05 | 1.10 | 2.4 | 14 / 16 | 320 | 31 |
 | non-local means | 5.7 | 663 | 941 | 679 | 457 | 0.65 | 0.42 | 2.7 | 8 / 16 | 0 | 19 |
-| Noise2Void, 25 min training | 33.7 | 468 | 741 | 452 | 251 | 0.14 | 0.12 | 1.2 | 0 / 16 | 0 | 14 |
+| Noise2Void | 33.7 | 468 | 741 | 452 | 251 | 0.14 | 0.12 | 1.2 | 0 / 16 | 0 | 14 |
 
-- NLM cuts the noise by three and keeps the lunkers that stand out of the noise; the false pores
-  go away. A search radius of 4 raises the small-lunker CNR to 3.0 at twice the time.
-- The model removes more noise but also the lunkers: they are a tiny share of the training
-  patches, so the network learns that material is flat. Its loss reaches the noise floor long
-  before it would gain anything from the lunkers. A model is the better choice for structure that
-  is everywhere in the scan (fibres, foams, lattices), not for rare defects.
+- NLM cuts the noise by about three and keeps the lunkers that stand out of the noise; at sigma
+  2000 the 320 false pores go away. A search radius of 4 raises the small-lunker CNR at sigma 2000
+  to 3.0 at twice the time.
+- The model with the default blind cube removes as much noise as NLM or more, and the lunkers
+  with it. The cores of the lunkers are about three voxels wide, as wide as the hidden cube: the
+  network never sees the inside of a lunker when it predicts it, and the few lunkers in the
+  training patches do not move the loss. Run in PyTorch, the trained network gives the same
+  flat profile through each lunker, so this is what it learned, not an export error.
+- With single blind voxels the model keeps the lunkers but hardly denoises: the noise of the
+  neighbours is correlated (0.6 here), and the network learns to copy it (training loss a fifth
+  of the noise variance).
+- The blind spot therefore trades noise against the smallest structure that survives, and for
+  pores of a few voxels NLM wins. The model is the choice when the structures of interest are
+  clearly larger than the noise correlation.
 
-Me 163 (training volume V4, 512³ voxels of 0.33 × 0.33 × 0.6 mm, 17 % active): measured noise
-sigma 1010, neighbour correlation 0.53 (x), 0.26 (y), 0.18 (z); after NLM the noise is 301.
+Me 163 (training volume V4, 512³ voxels of 0.33 × 0.33 × 0.6 mm, 22.8 million active voxels in 8
+bricks, 4 cores): measured noise sigma 1010, neighbour correlation 0.53 (x), 0.26 (y), 0.18 (z).
+
+| Variant | Seconds | Noise after |
+| --- | --- | --- |
+| non-local means | 86 | 301 |
+| non-local means, patch radius 2 | 98 | 267 |
+| Noise2Void, mask radius 1, 25 min training on V4 | 746 | 416 |
+
+The noise after is `estimateNoise` of the result, from homogeneous blocks only. In the slices the
+model looks clearly cleaner: NLM leaves a grainy texture and does not touch the dense inserts at
+all. The noise of a real scan grows with the grey value (fewer photons through dense material),
+but the noise model is one sigma for the whole scan, so in the inserts every patch differs by more
+than the similarity limit and nothing is averaged. The model learns the noise per region and has
+no such limit; its edges are softer.
 
 ## Consequences
 
@@ -115,6 +147,8 @@ sigma 1010, neighbour correlation 0.53 (x), 0.26 (y), 0.18 (z); after NLM the no
   for as long as both are kept.
 - NLM needs no training and no parameters for a new scan; it is the default. The model needs a
   training run per scanner and setting, PyTorch, and a GPU for large training sets.
+- The noise model is global. Real noise depends on the grey value, so NLM under-smooths dense
+  material; a noise model per grey-value range is the next step for NLM.
 - The porosity analysis finds many false zones in correlated noise, also after denoising (19 to
   31 against one in the noise-free scan). Its zone detection assumes white noise and should take
   the noise model next.
