@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Denoising that keeps small pores**: the new operation `denoise` and the tool `vs-denoise`
+  write a denoised copy of a dataset, tile by tile, with the same bricks and value type. The
+  default is non-local means with a noise model measured from the scan itself, correlation of
+  neighbouring voxels included, and a similarity cutoff, so pores of a few voxels keep their
+  contrast. Alternatively a model trained on the noisy scan alone (`tools/models/
+  train_denoiser.py`, Noise2Void with structured blind spots) runs as a `.vsm` of the new task
+  `denoising`. `vs-denoise --benchmark` measures both on a synthetic scan against its noise-free
+  version; `vs-synth --noise-correlation` makes correlated noise (ADR 0025).
+
 - **DICONDE in and out**: scans and their results can be written as DICONDE (ASTM E2339, DICOM
   for nondestructive evaluation) with the new operation `export_diconde` and the tool
   `vs-diconde`: the volume as CT slices with exact grey values, voxel size and position, the

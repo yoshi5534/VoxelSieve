@@ -442,6 +442,34 @@ TEST_F(StudioTest, SegmentsWithALearnedModel) {
   EXPECT_THROW((void)studio.call("run_segment_model", {}), std::invalid_argument);
 }
 
+TEST_F(StudioTest, DenoisesIntoANewDatasetOfTheSameObject) {
+  SyntheticSpec spec;
+  spec.noise_sigma = 800.0;
+  spec.noise_correlation_mm = 0.07;
+  const SyntheticScan scan(boxMesh({6.0, 5.0, 4.0}), spec);
+  writeRaw(dir_ / "noisy.raw", scan);
+  writeJson(dir_ / "noisy.json", scan.toJson());
+  Studio studio;
+  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      studio.call("run_import_raw", {{"path", (dir_ / "noisy.raw").string()}, {"brick_size", 32}});
+  const Json denoised = studio.call("run_denoise", {});
+  ASSERT_EQ(denoised.at("status"), "done");
+  EXPECT_EQ(denoised.at("object"), imported.at("object"));
+  const Json& summary = denoised.at("summary");
+  EXPECT_EQ(summary.at("method"), "non_local_means");
+  EXPECT_NEAR(summary.at("noise_sigma").get<double>(), 800.0, 120.0);
+  EXPECT_LT(summary.at("noise_sigma_after").get<double>(),
+            0.5 * summary.at("noise_sigma").get<double>());
+  EXPECT_GT(summary.at("noise_correlation").at(0).get<double>(), 0.4);
+  EXPECT_EQ(summary.at("active_voxels"), imported.at("summary").at("active_voxels"));
+  EXPECT_EQ(studio.call("objects", {}).at("objects").size(), 1U);
+  // Later steps of the object take the denoised dataset.
+  const Json porosity = studio.call("run_porosity", {});
+  EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), denoised.at("id"));
+  EXPECT_THROW((void)studio.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
+}
+
 TEST_F(StudioTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
   const auto project = (dir_ / "p").string();
   const Json state = {{"stage", "view"}, {"mode", "3d"}, {"transfer", {{"points", Json::array()}}}};

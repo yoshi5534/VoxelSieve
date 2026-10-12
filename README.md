@@ -30,6 +30,7 @@ assistant, using sample data. The tools:
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
 | `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
 | `vs-segment` | dataset → material classes by grey value or a learned model (`--model`), scored against labels |
+| `vs-denoise` | dataset → denoised dataset (non-local means or a learned model); `--benchmark` compares them |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |

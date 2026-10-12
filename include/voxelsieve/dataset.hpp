@@ -102,6 +102,33 @@ struct DatasetInfo {
 DatasetInfo writeDataset(const VolumeSource& source, const std::filesystem::path& dir,
                          const DatasetOptions& options = {});
 
+class Dataset;
+
+/// Computes the new level-0 grey values of one brick of a derived dataset into `values`, which has
+/// one element per voxel of `box`, the brick's box, x fastest. Only the voxels that are active in
+/// the input brick are kept.
+using BrickValues = std::function<void(const std::array<std::int64_t, 3>& brick, const Box& box,
+                                       std::vector<float>& values)>;
+
+struct DerivedDatasetOptions {
+  /// Type of the stored grey values; unset: the input's. Integer types store the computed values
+  /// rounded to the nearest integer and clamped to the type's range, like the coarser levels.
+  /// `kUInt8` requires 8-bit input.
+  std::optional<ValueType> value_type;
+  /// Called with the stage ("bricks", then "levels") and the fraction of it done, 0 to 1, from
+  /// one thread at a time.
+  std::function<void(std::string_view stage, double fraction)> progress;
+};
+
+/// Writes a dataset with the bricks, active voxels and metadata of `input` and level-0 grey values
+/// from `values`, for processing that keeps the part but changes its grey values, such as
+/// denoising (ADR 0025). `values` is called for one brick after the other (it may work in
+/// parallel inside); the coarser levels are then built from the new values. `dir` must not exist
+/// or be empty. Memory use is bounded by a few bricks, independent of the volume size.
+DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::path& dir,
+                                const BrickValues& values,
+                                const DerivedDatasetOptions& options = {});
+
 [[nodiscard]] DatasetInfo readDatasetInfo(const std::filesystem::path& dir);
 
 [[nodiscard]] std::filesystem::path brickPath(const std::filesystem::path& dir, int level,

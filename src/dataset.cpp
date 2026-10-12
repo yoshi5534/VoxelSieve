@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -60,12 +61,13 @@ Index3 unravel(std::size_t index, const Index3& dims) {
   return {i % dims[0], (i / dims[0]) % dims[1], i / (dims[0] * dims[1])};
 }
 
-/// Reports the fraction of `total` steps done through DatasetOptions::progress, at most once per
+/// Reports the fraction of `total` steps done through a progress callback, at most once per
 /// whole percent, from any thread.
 class ProgressCounter {
  public:
-  ProgressCounter(const DatasetOptions& options, std::string_view stage, std::size_t total)
-      : callback_(options.progress), stage_(stage), total_(total) {
+  ProgressCounter(const std::function<void(std::string_view, double)>& callback,
+                  std::string_view stage, std::size_t total)
+      : callback_(callback), stage_(stage), total_(total) {
     report(0);
   }
   void step() {
@@ -113,7 +115,7 @@ class StagedSource {
       : input_(source),
         dims_(source.dims()),
         copied_(static_cast<std::size_t>(dims_[2]), 0),
-        progress_(options, "staging", static_cast<std::size_t>(dims_[2])) {
+        progress_(options.progress, "staging", static_cast<std::size_t>(dims_[2])) {
     const std::uint64_t bytes = product(dims_) * sizeof(std::uint16_t);
     std::filesystem::create_directories(dir);
     const std::uint64_t available = std::filesystem::space(dir).available;
@@ -275,7 +277,7 @@ BlockStatistics collectBlockStatistics(const VolumeSource& source, int k,
 
   tbb::combinable<Histogram> histograms([] { return Histogram(kHistogramBins, 0); });
   const std::int64_t rows = stats.block_dims[1] * stats.block_dims[2];
-  ProgressCounter progress(options, "histogram", static_cast<std::size_t>(rows));
+  ProgressCounter progress(options.progress, "histogram", static_cast<std::size_t>(rows));
   // One task per row of blocks: an 8 x 8 x dims[0] region, so memory per task stays small.
   tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, rows), [&](const auto& range) {
     Histogram& histogram = histograms.local();
@@ -551,6 +553,67 @@ nlohmann::json toJson(const DatasetInfo& info) {
   return json;
 }
 
+/// Writes the coarser levels of a dataset whose level 0 is written and listed in `info`, until one
+/// brick holds the whole volume, then overview.vdb and index.json.
+void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
+                       const std::function<void(std::string_view, double)>& progress) {
+  std::mutex mutex;
+  int level_count = 1;  // levels needed in all, for the progress
+  for (Index3 d = info.dims;
+       std::any_of(d.begin(), d.end(), [&](std::int64_t n) { return n > info.brick_size; });
+       d = ceilDiv3(d, 2)) {
+    ++level_count;
+  }
+  const TelemetryPhase phase("levels");
+  ProgressCounter level_progress(progress, "levels", static_cast<std::size_t>(level_count - 1));
+  while (true) {
+    const LevelInfo& finer = info.levels.back();
+    if (std::all_of(finer.dims.begin(), finer.dims.end(),
+                    [&](std::int64_t d) { return d <= info.brick_size; })) {
+      break;
+    }
+    LevelInfo coarser{finer.level + 1, ceilDiv3(finer.dims, 2), finer.voxel_size.scaled(2.0), {}};
+    const Index3 coarse_brick_dims = ceilDiv3(coarser.dims, info.brick_size);
+    std::filesystem::create_directories(brickPath(dir, coarser.level, {0, 0, 0}).parent_path());
+    tbb::parallel_for(std::size_t{0}, product(coarse_brick_dims), [&](std::size_t i) {
+      const Index3 brick = unravel(i, coarse_brick_dims);
+      std::vector<std::filesystem::path> children;
+      for (const Index3& child : finer.bricks) {
+        if (child[0] / 2 == brick[0] && child[1] / 2 == brick[1] && child[2] / 2 == brick[2]) {
+          children.push_back(brickPath(dir, finer.level, child));
+        }
+      }
+      if (children.empty()) {
+        return;
+      }
+      const GreyGrid grid = downsample(children, info.value_type);
+      setGridProperties(grid.base(), coarser.level, info.voxel_size);
+      writeBrick(brickPath(dir, coarser.level, brick), grid);
+      const std::scoped_lock lock(mutex);
+      coarser.bricks.push_back(brick);
+    });
+    std::sort(coarser.bricks.begin(), coarser.bricks.end());
+    info.levels.push_back(std::move(coarser));
+    level_progress.step();
+  }
+
+  // Overview: the single brick of the coarsest level, or an empty grid for an empty dataset.
+  const LevelInfo& top = info.levels.back();
+  if (top.bricks.empty()) {
+    const GreyGrid empty = GreyGrid::create(info.value_type);
+    setGridProperties(empty.base(), top.level, info.voxel_size);
+    writeBrick(dir / "overview.vdb", empty);
+  } else {
+    std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
+  }
+
+  std::ofstream index(dir / "index.json");
+  index << toJson(info).dump(2) << '\n';
+  if (!index) {
+    throw std::runtime_error("Cannot write " + (dir / "index.json").string());
+  }
+}
+
 }  // namespace
 
 std::filesystem::path brickPath(const std::filesystem::path& dir, int level, const Index3& brick) {
@@ -666,7 +729,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   std::mutex mutex;
-  ProgressCounter brick_progress(options, "bricks", product(brick_dims));
+  ProgressCounter brick_progress(options.progress, "bricks", product(brick_dims));
   PageRelease bricks_release(staged ? &source : nullptr, 16);
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
@@ -689,62 +752,71 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   std::sort(level0.bricks.begin(), level0.bricks.end());
   info.levels.push_back(std::move(level0));
 
-  // Coarser levels until one brick holds the whole volume.
-  int level_count = 1;  // levels needed in all, for the progress
-  for (Index3 d = info.dims;
-       std::any_of(d.begin(), d.end(), [&](std::int64_t n) { return n > options.brick_size; });
-       d = ceilDiv3(d, 2)) {
-    ++level_count;
+  phase.reset();
+  writeCoarseLevels(dir, info, options.progress);
+  return info;
+}
+
+DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::path& dir,
+                                const BrickValues& values, const DerivedDatasetOptions& options) {
+  if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
+    throw std::invalid_argument("Output directory is not empty: " + dir.string());
+  }
+  const DatasetInfo& source = input.info();
+  if (options.value_type == ValueType::kUInt8 && source.value_type != ValueType::kUInt8) {
+    throw std::invalid_argument(
+        "8-bit grids need 8-bit input; 16-bit grey values would be quantised");
+  }
+  initializeVdb();
+  DatasetInfo info = source;
+  info.value_type = options.value_type.value_or(source.value_type);
+  info.active_voxel_count = 0;
+  info.levels.assign(1, source.levels.front());
+  const LevelInfo& level0 = info.levels.front();
+
+  std::optional<TelemetryPhase> phase(std::in_place, "bricks");
+  std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
+  ProgressCounter progress(options.progress, "bricks", level0.bricks.size());
+  for (const Index3& brick : level0.bricks) {
+    const Box box = input.brickBox(0, brick);
+    std::vector<float> grey(static_cast<std::size_t>(box.voxelCount()));
+    values(brick, box, grey);
+    if (grey.size() != static_cast<std::size_t>(box.voxelCount())) {
+      throw std::logic_error("Derived brick values do not match the brick");
+    }
+    const Dataset::BrickPtr in = input.brick(0, brick);
+    const GreyGrid out = in->visit([&](const auto& typed) {
+      GreyGrid result = GreyGrid::create(info.value_type);
+      result.visit([&](auto& grid) {
+        using Tree = typename std::decay_t<decltype(grid)>::TreeType;
+        using Value = typename Tree::ValueType;
+        grid.setTree(std::make_shared<Tree>(typed.tree(), Value{0}, openvdb::TopologyCopy()));
+        grid.tree().voxelizeActiveTiles();
+        for (auto leaf = grid.tree().beginLeaf(); leaf; ++leaf) {
+          for (auto it = leaf->beginValueOn(); it; ++it) {
+            const openvdb::Coord c = it.getCoord();
+            const float value = grey[static_cast<std::size_t>(
+                (c.x() - box.min[0]) +
+                box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))];
+            if constexpr (std::is_same_v<Value, float>) {
+              it.setValue(value);
+            } else {
+              constexpr double kMax = std::numeric_limits<Value>::max();
+              it.setValue(static_cast<Value>(std::clamp(std::round(double{value}), 0.0, kMax)));
+            }
+          }
+        }
+      });
+      return result;
+    });
+    setGridProperties(out.base(), 0, info.voxel_size);
+    out.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
+    writeBrick(brickPath(dir, 0, brick), out);
+    info.active_voxel_count += static_cast<std::int64_t>(out.base().activeVoxelCount());
+    progress.step();
   }
   phase.reset();
-  phase.emplace("levels");
-  ProgressCounter level_progress(options, "levels", static_cast<std::size_t>(level_count - 1));
-  while (true) {
-    const LevelInfo& finer = info.levels.back();
-    if (std::all_of(finer.dims.begin(), finer.dims.end(),
-                    [&](std::int64_t d) { return d <= options.brick_size; })) {
-      break;
-    }
-    LevelInfo coarser{finer.level + 1, ceilDiv3(finer.dims, 2), finer.voxel_size.scaled(2.0), {}};
-    const Index3 coarse_brick_dims = ceilDiv3(coarser.dims, options.brick_size);
-    std::filesystem::create_directories(brickPath(dir, coarser.level, {0, 0, 0}).parent_path());
-    tbb::parallel_for(std::size_t{0}, product(coarse_brick_dims), [&](std::size_t i) {
-      const Index3 brick = unravel(i, coarse_brick_dims);
-      std::vector<std::filesystem::path> children;
-      for (const Index3& child : finer.bricks) {
-        if (child[0] / 2 == brick[0] && child[1] / 2 == brick[1] && child[2] / 2 == brick[2]) {
-          children.push_back(brickPath(dir, finer.level, child));
-        }
-      }
-      if (children.empty()) {
-        return;
-      }
-      const GreyGrid grid = downsample(children, info.value_type);
-      setGridProperties(grid.base(), coarser.level, info.voxel_size);
-      writeBrick(brickPath(dir, coarser.level, brick), grid);
-      const std::scoped_lock lock(mutex);
-      coarser.bricks.push_back(brick);
-    });
-    std::sort(coarser.bricks.begin(), coarser.bricks.end());
-    info.levels.push_back(std::move(coarser));
-    level_progress.step();
-  }
-
-  // Overview: the single brick of the coarsest level, or an empty grid for an empty dataset.
-  const LevelInfo& top = info.levels.back();
-  if (top.bricks.empty()) {
-    const GreyGrid empty = GreyGrid::create(info.value_type);
-    setGridProperties(empty.base(), top.level, info.voxel_size);
-    writeBrick(dir / "overview.vdb", empty);
-  } else {
-    std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
-  }
-
-  std::ofstream index(dir / "index.json");
-  index << toJson(info).dump(2) << '\n';
-  if (!index) {
-    throw std::runtime_error("Cannot write " + (dir / "index.json").string());
-  }
+  writeCoarseLevels(dir, info, options.progress);
   return info;
 }
 

@@ -213,6 +213,32 @@ Tensor concat(const std::vector<const Tensor*>& inputs) {
   return out;
 }
 
+constexpr const char* kSegmentationTask = "segmentation";
+constexpr const char* kDenoisingTask = "denoising";
+
+ModelTask parseTask(const std::string& name) {
+  if (name == kSegmentationTask) {
+    return ModelTask::kSegmentation;
+  }
+  if (name == kDenoisingTask) {
+    return ModelTask::kDenoising;
+  }
+  throw std::runtime_error("Unknown model task: " + name);
+}
+
+/// `grey` (dims, x fastest) copied into a volume of `padded` dims, filled up with `fill`.
+std::vector<float> padInput(std::span<const float> grey, const Index3& dims, const Index3& padded,
+                            float fill) {
+  std::vector<float> input(static_cast<std::size_t>(padded[0] * padded[1] * padded[2]), fill);
+  for (std::int64_t z = 0; z < dims[2]; ++z) {
+    for (std::int64_t y = 0; y < dims[1]; ++y) {
+      std::copy_n(grey.begin() + (z * dims[1] + y) * dims[0], dims[0],
+                  input.begin() + (z * padded[1] + y) * padded[0]);
+    }
+  }
+  return input;
+}
+
 Material materialFromJson(const Json& json) {
   Material material;
   material.id = json.at("id").get<int>();
@@ -226,8 +252,12 @@ Material materialFromJson(const Json& json) {
 }  // namespace
 
 Model::Model(ModelSpec spec) : spec_(std::move(spec)) {
-  if (spec_.materials.empty() || spec_.materials.size() > kMaxMaterials) {
-    throw std::invalid_argument("A model needs 1 to 8 materials");
+  const bool segmentation = spec_.task == ModelTask::kSegmentation;
+  if (segmentation && (spec_.materials.empty() || spec_.materials.size() > kMaxMaterials)) {
+    throw std::invalid_argument("A segmentation model needs 1 to 8 materials");
+  }
+  if (!segmentation && !spec_.materials.empty()) {
+    throw std::invalid_argument("A denoising model has no materials");
   }
   for (std::size_t m = 0; m < spec_.materials.size(); ++m) {
     if (spec_.materials[m].id != static_cast<int>(m) + 1) {
@@ -288,9 +318,13 @@ Model::Model(ModelSpec spec) : spec_(std::move(spec)) {
     shapes[layer.name] = shape;
   }
   const auto& [channels, level] = shapes.at(spec_.layers.back().name);
-  if (level != 0 || channels != static_cast<int>(spec_.materials.size()) + 1) {
+  if (segmentation && (level != 0 || channels != static_cast<int>(spec_.materials.size()) + 1)) {
     throw std::invalid_argument(
         "The last model layer must give one score per class at full resolution");
+  }
+  if (!segmentation && (level != 0 || channels != 1)) {
+    throw std::invalid_argument(
+        "The last layer of a denoising model must give one channel at full resolution");
   }
   if (spec_.divisor % (1 << deepest) != 0) {
     throw std::invalid_argument("The model divisor must be a multiple of 2^pooling steps");
@@ -316,13 +350,14 @@ Model Model::load(const std::filesystem::path& path) {
     throw std::runtime_error("Unsupported model format in " + path.string());
   }
   ModelSpec spec;
+  spec.task = parseTask(json.value("task", std::string(kSegmentationTask)));
   spec.name = json.at("name").get<std::string>();
   spec.description = json.value("description", std::string());
   spec.input_offset = json.at("input").at("offset").get<float>();
   spec.input_scale = json.at("input").at("scale").get<float>();
   spec.divisor = json.at("divisor").get<int>();
   spec.halo = json.at("halo").get<int>();
-  for (const Json& material : json.at("materials")) {
+  for (const Json& material : json.value("materials", Json::array())) {
     spec.materials.push_back(materialFromJson(material));
   }
   const auto read_floats = [&](std::vector<float>& values, std::size_t count) {
@@ -381,6 +416,7 @@ void writeModel(const std::filesystem::path& path, const ModelSpec& spec) {
   const std::string header = Json{
       {"format", "voxelsieve-model"},
       {"version", kFormatVersion},
+      {"task", spec.task == ModelTask::kSegmentation ? kSegmentationTask : kDenoisingTask},
       {"name", spec.name},
       {"description", spec.description},
       {"input", {{"offset", spec.input_offset}, {"scale", spec.input_scale}}},
@@ -457,19 +493,15 @@ Tensor Model::forward(std::span<const float> grey, const std::array<std::int64_t
 std::vector<std::uint8_t> Model::classify(std::span<const float> grey,
                                           const std::array<std::int64_t, 3>& dims,
                                           float fill) const {
+  if (spec_.task != ModelTask::kSegmentation) {
+    throw std::invalid_argument("Model " + spec_.name + " is not a segmentation model");
+  }
   if (static_cast<std::int64_t>(grey.size()) != dims[0] * dims[1] * dims[2]) {
     throw std::invalid_argument("Model input size does not match its dimensions");
   }
   const std::int64_t d = spec_.divisor;
   const Index3 padded{ceilDiv(dims[0], d) * d, ceilDiv(dims[1], d) * d, ceilDiv(dims[2], d) * d};
-  std::vector<float> input(static_cast<std::size_t>(padded[0] * padded[1] * padded[2]), fill);
-  for (std::int64_t z = 0; z < dims[2]; ++z) {
-    for (std::int64_t y = 0; y < dims[1]; ++y) {
-      std::copy_n(grey.begin() + (z * dims[1] + y) * dims[0], dims[0],
-                  input.begin() + (z * padded[1] + y) * padded[0]);
-    }
-  }
-  const Tensor scores = forward(input, padded);
+  const Tensor scores = forward(padInput(grey, dims, padded, fill), padded);
   const std::int64_t n = padded[0] * padded[1] * padded[2];
   std::vector<std::uint8_t> classes(grey.size());
   tbb::parallel_for(std::int64_t{0}, dims[2], [&](std::int64_t z) {
@@ -491,6 +523,31 @@ std::vector<std::uint8_t> Model::classify(std::span<const float> grey,
   return classes;
 }
 
+std::vector<float> Model::denoise(std::span<const float> grey,
+                                  const std::array<std::int64_t, 3>& dims, float fill) const {
+  if (spec_.task != ModelTask::kDenoising) {
+    throw std::invalid_argument("Model " + spec_.name + " is not a denoising model");
+  }
+  if (static_cast<std::int64_t>(grey.size()) != dims[0] * dims[1] * dims[2]) {
+    throw std::invalid_argument("Model input size does not match its dimensions");
+  }
+  const std::int64_t d = spec_.divisor;
+  const Index3 padded{ceilDiv(dims[0], d) * d, ceilDiv(dims[1], d) * d, ceilDiv(dims[2], d) * d};
+  const Tensor out = forward(padInput(grey, dims, padded, fill), padded);
+  std::vector<float> denoised(grey.size());
+  const float scale = 1.0F / spec_.input_scale;
+  for (std::int64_t z = 0; z < dims[2]; ++z) {
+    for (std::int64_t y = 0; y < dims[1]; ++y) {
+      const float* row = out.data.data() + (z * padded[1] + y) * padded[0];
+      float* target = denoised.data() + (z * dims[1] + y) * dims[0];
+      for (std::int64_t x = 0; x < dims[0]; ++x) {
+        target[x] = row[x] * scale + spec_.input_offset;
+      }
+    }
+  }
+  return denoised;
+}
+
 MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model& model,
                                              const std::filesystem::path& dir,
                                              const ModelSegmentationOptions& options) {
@@ -499,6 +556,9 @@ MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model
   }
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
     throw std::invalid_argument("Output directory is not empty: " + dir.string());
+  }
+  if (model.spec().task != ModelTask::kSegmentation) {
+    throw std::invalid_argument("Model " + model.spec().name + " is not a segmentation model");
   }
   initializeVdb();
   const DatasetInfo& data = dataset.info();

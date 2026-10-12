@@ -72,6 +72,11 @@ struct SyntheticSpec {
 
   /// Standard deviation of Gaussian noise in grey values.
   double noise_sigma = 0.0;
+  /// Correlation length of the noise: standard deviation in mm of a Gaussian kernel that smooths
+  /// white noise before it is scaled back to `noise_sigma`. The reconstruction filter of real
+  /// scans correlates neighbouring voxels; 0.7 voxels gives a correlation of about 0.6 between
+  /// neighbours. 0 keeps the noise white.
+  double noise_correlation_mm = 0.0;
   /// Beam hardening: relative darkening of material far from the surface (cupping), for example
   /// 0.1 for 10 %.
   double cupping = 0.0;
