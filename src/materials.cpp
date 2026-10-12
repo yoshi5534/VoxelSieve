@@ -6,6 +6,7 @@
 #include <tbb/task_arena.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -18,6 +19,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "detail/material_volume.hpp"
 #include "detail/transform.hpp"
@@ -494,32 +496,57 @@ void MaterialVolume::readRegion(const Box& box, std::span<std::uint8_t> out,
   if (static_cast<std::int64_t>(out.size()) != count[0] * count[1] * count[2]) {
     throw std::invalid_argument("Output buffer size does not match the region");
   }
+  // Brick by brick, so that every brick is looked up once; a region that spans more bricks
+  // than the cache holds would otherwise load them again and again. The bricks are read in
+  // parallel; each fills its own voxels of `out`.
   const std::int64_t b = impl_->info.brick_size;
-  Index3 current{-1, -1, -1};
-  openvdb::Int32Grid::ConstPtr grid;
-  std::optional<openvdb::Int32Grid::ConstAccessor> accessor;
-  std::size_t offset = 0;
-  for (std::int64_t k = 0; k < count[2]; ++k) {
-    for (std::int64_t j = 0; j < count[1]; ++j) {
-      for (std::int64_t i = 0; i < count[0]; ++i) {
-        const Index3 voxel{box.min[0] + i * stride, box.min[1] + j * stride,
-                           box.min[2] + k * stride};
-        const Index3 brick{voxel[0] / b, voxel[1] / b, voxel[2] / b};
-        if (brick != current) {
-          current = brick;
-          grid = impl_->brick(brick);
-          accessor.reset();
-          if (grid) {
-            accessor.emplace(grid->getConstAccessor());
-          }
+  // The strided voxels of axis a that lie in [lo, hi): first index and end index.
+  const auto range = [&](std::size_t a, std::int64_t lo, std::int64_t hi) {
+    const std::int64_t first = std::max<std::int64_t>(0, ceilDiv(lo - box.min[a], stride));
+    const std::int64_t last = std::min(count[a], ceilDiv(hi - box.min[a], stride));
+    return std::pair{first, std::max(first, last)};
+  };
+  std::vector<Index3> bricks;
+  if (count[0] > 0 && count[1] > 0 && count[2] > 0) {
+    Index3 lo{};
+    Index3 hi{};
+    for (std::size_t a = 0; a < 3; ++a) {
+      lo[a] = box.min[a] / b;
+      hi[a] = (box.min[a] + (count[a] - 1) * stride) / b;
+    }
+    for (std::int64_t z = lo[2]; z <= hi[2]; ++z) {
+      for (std::int64_t y = lo[1]; y <= hi[1]; ++y) {
+        for (std::int64_t x = lo[0]; x <= hi[0]; ++x) {
+          bricks.push_back({x, y, z});
         }
-        out[offset++] = accessor ? static_cast<std::uint8_t>(accessor->getValue(openvdb::Coord(
-                                       static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
-                                       static_cast<int>(voxel[2]))))
-                                 : std::uint8_t{0};
       }
     }
   }
+  tbb::parallel_for(std::size_t{0}, bricks.size(), [&](std::size_t n) {
+    const Index3& brick = bricks[n];
+    std::array<std::pair<std::int64_t, std::int64_t>, 3> ranges;
+    for (std::size_t a = 0; a < 3; ++a) {
+      ranges[a] = range(a, brick[a] * b, (brick[a] + 1) * b);
+    }
+    // The grid must outlive the accessor, which is registered with its tree.
+    const openvdb::Int32Grid::ConstPtr grid = impl_->brick(brick);
+    std::optional<openvdb::Int32Grid::ConstAccessor> accessor;
+    if (grid) {
+      accessor.emplace(grid->getConstAccessor());
+    }
+    for (std::int64_t k = ranges[2].first; k < ranges[2].second; ++k) {
+      for (std::int64_t j = ranges[1].first; j < ranges[1].second; ++j) {
+        auto offset = static_cast<std::size_t>((k * count[1] + j) * count[0] + ranges[0].first);
+        for (std::int64_t i = ranges[0].first; i < ranges[0].second; ++i) {
+          const openvdb::Coord voxel(static_cast<int>(box.min[0] + i * stride),
+                                     static_cast<int>(box.min[1] + j * stride),
+                                     static_cast<int>(box.min[2] + k * stride));
+          out[offset++] =
+              accessor ? static_cast<std::uint8_t>(accessor->getValue(voxel)) : std::uint8_t{0};
+        }
+      }
+    }
+  });
 }
 
 MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSource& labels,
