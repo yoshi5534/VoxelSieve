@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **`vs-studio` is now `vs-gui`**: the program with the browser UI and the MCP server has a new
+- **New program name `vs-gui`**: the program with the browser UI and the MCP server has a new
   name; its options are unchanged. MCP configurations need the new path.
 
 - **Denoising that keeps small pores**: the new operation `denoise` and the tool `vs-denoise`
@@ -21,7 +21,7 @@
   indications and the material segmentation as a derived label series. DICONDE files import like
   DICOM slices, and the import reports their component and indications (ADR 0024).
 
-- **All results of a scan in one place**: the studio has a new stage *Results* that lists every
+- **All results of a scan in one place**: the GUI has a new stage *Results* that lists every
   analysis per scanned object (pores, materials, surface, nominal-actual comparison, report,
   plugin outputs) with key figures, pictures and files. Replaced results stay reachable below
   the current ones, and *Show in the view* chooses which result the slice and 3D views show; the
@@ -37,7 +37,7 @@
   import (stacks, ZIP archives, DICOM, files on a share) copies the rest of the preview's slices
   coarse to fine and shows a sharper preview after each round, three times as many slices each
   time, until every slice is read and the histogram and threshold are those of the whole volume.
-  The preview is finer in-plane too (up to 1024 voxels per edge, 32 million in all). The studio
+  The preview is finer in-plane too (up to 1024 voxels per edge, 32 million in all). The GUI
   replaces the picture under the progress bar as each arrives; nothing is read twice (ADR 0020).
 
 - **Grey values in the input's 16 or 8 bits instead of float**: datasets and `.vdb` files store
@@ -50,14 +50,14 @@
 
 - **A first look at large scans right away, also from a network share**: every import first
   reads 64 slices spread over the volume and shows their sections, histogram and the estimated
-  threshold while the import goes on, in the studio under the progress bar, through the new API
+  threshold while the import goes on, in the GUI under the progress bar, through the new API
   method `import_preview` and with `vs-sieve --preview <png>`. The import does not read these
   slices again: they are the first the staging copy takes. Raw files on SMB or NFS shares and
   mapped network drives are now staged too, so they cross the network once instead of twice in
   small pieces (ADR 0020).
 
 - **gzip-compressed raw volumes**: `scan.raw.gz` with `scan.json` imports with `vs-sieve`,
-  `import_raw` and the studio's file browser, decompressed once with zlib into the staging file
+  `import_raw` and the GUI's file browser, decompressed once with zlib into the staging file
   (ADR 0020).
 
 - **Faster import with far less memory on Windows**: a 22 GB TIFF stack (1250 x 1250 x 4000,
@@ -95,7 +95,7 @@
 - **MCP for analysis**: tools carry annotations (read-only, destructive), the result files of the
   steps are MCP resources, and three prompts (`porosity_check`, `compare_with_cad`, `first_look`)
   walk a model through the usual inspections. The six tools of the UI's saved views are left out
-  unless `vs-studio --mcp --tools all` is given, and `read_file` returns PNG pictures as images.
+  unless `vs-gui --mcp --tools all` is given, and `read_file` returns PNG pictures as images.
 
 - **Faster material segmentation**: bricks are segmented in parallel. Before, only the filters
   inside one brick ran in parallel and the 1250 x 1250 x 4000 LoDoInd scan took 23 min with 1.3
@@ -111,7 +111,7 @@
 
 - **MCP bundles hold the server again**: the `.mcpb` files of 0.2.0 were empty (22 bytes) because
   the packing script resolved the install directory wrongly; it now checks that each bundle holds
-  `manifest.json` and `vs-studio`.
+  `manifest.json` and `vs-gui`.
 
 ## 0.2.0 (2026-10-07)
 
@@ -127,7 +127,7 @@
   and with Apple Clang on macOS (Apple silicon), presets `windows` and `macos`; CI runs both.
   Plugins are DLLs on Windows, and telemetry reads the counters of each system.
 
-- **Allowed directories and cancelling over MCP**: `vs-studio [--mcp] <dir>...` reads data and
+- **Allowed directories and cancelling over MCP**: `vs-gui [--mcp] <dir>...` reads data and
   keeps projects only inside the given directories (path parameters carry `"format": "path"` in
   their schemas and are checked, symbolic links and `..` included). MCP tool calls run on their
   own threads, so a client can cancel a running operation (`notifications/cancelled`); it stops
@@ -150,7 +150,7 @@
   (robust point-to-plane ICP, optionally from the principal axes for objects far apart). Both
   are steps that apply in order on top of earlier moves, for every pair of meshes and volumes.
   `compare_objects` measures the deviation of a scanned volume from a nominal object (a CAD
-  model or another scan) where both lie, without aligning on its own. The studio's new view
+  model or another scan) where both lie, without aligning on its own. The GUI's new view
   "Objects" shows all objects where they lie, each in its colour, picks point pairs by clicking
   and runs the alignments, moves and the comparison; `view_objects` renders the same scene as a
   PNG for MCP clients. Plugins need to be rebuilt (plugin API 3: `OperationContext::object` and
@@ -160,11 +160,11 @@
   (CAD models as STL, `add_mesh`) as objects with a pose in one global coordinate system of the
   project. `move` moves one or several objects together; moves apply in order and undo takes them
   back. Steps belong to an object and take their inputs from the chosen (active) object first.
-  Studio methods `objects`, `object_add` and `object_select`, also over MCP. Open datasets share
+  GUI methods `objects`, `object_add` and `object_select`, also over MCP. Open datasets share
   one brick cache budget, so a second volume does not double the memory. Older projects open
   with one object per imported dataset. Plugins need to be rebuilt (plugin API 2).
 
-- **English throughout**: the studio (labels, operation names, hints, 3D view presets), the
+- **English throughout**: the GUI (labels, operation names, hints, 3D view presets), the
   built-in report template, the report's field names and verdicts, and the example inspection
   order are now in English; numbers in the report use a decimal point. Projects saved with German
   step titles show the current English titles. A German report is still possible with an own
@@ -173,7 +173,7 @@
 - **Telemetry for every operation** (`telemetry.hpp`, ADR 0017): each step of a project records
   wall time, CPU time and busy cores, peak memory (own and mapped file pages), bytes read and
   written and page faults, per phase, with a timeline sampled every second and hints such as
-  "few cores busy while waiting for the disk". The studio shows it in the protocol and serves it
+  "few cores busy while waiting for the disk". The GUI shows it in the protocol and serves it
   as `step_telemetry` (also over MCP); every command-line tool prints a table of its phases and
   writes the whole record with `--telemetry <file.json>`. Everything stays local.
 
@@ -227,7 +227,7 @@
 
 - **Progress of the streaming sieve** (`DatasetOptions::progress`): `vs-sieve` shows per pass the
   percentage done, the time so far and the time left (one line rewritten in place on a terminal,
-  a line every 10 % in logs); `import_raw` and `import_tiff` report it to the studio.
+  a line every 10 % in logs); `import_raw` and `import_tiff` report it to the GUI.
 
 - **Float TIFF stacks** (`TiffStackOptions::value_range`, `vs-sieve --value-range`, parameter
   `value_range` of `import_tiff`, ADR 0015): 32 and 64-bit float slices, as reconstruction
@@ -244,12 +244,12 @@
   slices with the floating-point predictor and every compression it is built with.
 
 - **Learned segmentation** (`voxelsieve::Model`, `segmentMaterialsWithModel`, `vs-segment
-  --model`, studio operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as
+  --model`, GUI operation `segment_model`, ADR 0014): small 3D networks (U-Nets) stored as
   `.vsm` run on the CPU tile by tile with a halo and write the same material volume as the
   threshold segmentation. Training and export with PyTorch in `tools/models/`. `vs-segment
   --region` scores only a box. On Me 163, scored on volumes left out of training: Dice
   material/air 0.861 → 0.898 (V2) and 0.843 → 0.922 (V6).
-- **Material segmentation** (`voxelsieve::segmentMaterials`, `vs-segment`, studio operation
+- **Material segmentation** (`voxelsieve::segmentMaterials`, `vs-segment`, GUI operation
   `segment_materials`, ADR 0013): splits the part into material classes by grey value with a
   neighbourhood criterion that removes noise spikes but keeps walls one voxel thin, hysteresis and
   multi-level Otsu thresholds. Writes a material volume with volumes per class; the slice view
@@ -268,7 +268,7 @@
   spacing. Volumes, positions, pore sizes, surfaces, the nominal-actual comparison, report images
   and the slice and 3D views use the pitch per axis; VDB grids carry a scale per axis. Existing
   files stay readable. `--voxel-size x,y,z`, `--slice-thickness`, and the same as parameters.
-- **TIFF stacks** (`voxelsieve::TiffStackSource`, `vs-sieve`, studio operation `import_tiff`): a
+- **TIFF stacks** (`voxelsieve::TiffStackSource`, `vs-sieve`, GUI operation `import_tiff`): a
   directory of slices, a multi-page TIFF or a ZIP archive of either, read without extracting it.
   Classic TIFF and BigTIFF, strips and tiles, uncompressed, LZW, Deflate and PackBits, horizontal
   predictor; unsigned 8/16-bit samples and 32-bit labels up to 65535. Label folders next to the
@@ -286,21 +286,21 @@ First version: from a raw CT volume to an inspection report.
   step is recorded with parameters, inputs, outputs and messages, can be undone and redone, and
   the project is saved after each change. Import, porosity and report are operations; more can be
   loaded as plugins (ADR 0008).
-- **Studio** (`vs-studio`): browser UI with a wizard (dataset, operations, report), the step
+- **GUI** (`vs-gui`): browser UI with a wizard (dataset, operations, report), the step
   protocol and undo/redo, served locally; operations run while the UI stays responsive.
 - **Slice view**: tiled slices along x, y and z from the matching resolution level, with pores and
-  zones tinted, in the studio and as `view_slice` for MCP. `Dataset` can load bricks on access
+  zones tinted, in the GUI and as `view_slice` for MCP. `Dataset` can load bricks on access
   (`BrickLoading::kOnAccess`) for sparse reads.
 - **3D view**: WebGL2 ray casting of a coarse level as a surface, with a transfer function or
   as a maximum intensity projection. Histogram editor for the transfer function (control points
   with opacity and colour, colour maps, presets) and the surface threshold; colours for pores,
-  zones, surface and background (studio, gradient, plain); gradient lighting; a cut along x.
+  zones, surface and background (soft light, gradient, plain); gradient lighting; a cut along x.
   Suggested renderings from the histogram when a volume is loaded.
 - **Views**: the project keeps how it was shown and opens the same way; named views with a
   picture are saved in the project, shown again with a click and exported as PNG; `view_*`
   methods for MCP.
-- **MCP** (`vs-studio --mcp`): the studio API as Model Context Protocol tools for AI systems
-  (`voxelsieve::Studio`, `voxelsieve::McpServer`).
+- **MCP** (`vs-gui --mcp`): the GUI API as Model Context Protocol tools for AI systems
+  (`voxelsieve::Gui`, `voxelsieve::McpServer`).
 - **Read API** (`voxelsieve::Dataset`): samples, regions across bricks and parallel brick
   iteration through an LRU brick cache with a memory budget.
 - **Synthetic scans** (`vs-synth`): STL meshes to raw volumes with shrinkage cavities, loosened

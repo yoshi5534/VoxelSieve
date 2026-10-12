@@ -18,9 +18,9 @@
 
 #include "detail/tiff.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -789,7 +789,7 @@ TEST_F(TiffTest, PhantomStackGivesTheSameDatasetAsTheRawVolume) {
   EXPECT_EQ(from_tiff.active_voxel_count, from_phantom.active_voxel_count);
 }
 
-TEST_F(TiffTest, StudioBrowsesAndImportsTiffStacks) {
+TEST_F(TiffTest, GuiBrowsesAndImportsTiffStacks) {
   PhantomSpec phantom = defaultPhantomSpec();
   phantom.dims = {40, 40, 32};
   phantom.outer_size_mm = {2.6, 2.6, 2.2};
@@ -812,8 +812,8 @@ TEST_F(TiffTest, StudioBrowsesAndImportsTiffStacks) {
   writeFile(dir_ / "input" / "slices" / "a.tif", entries.front().second);
   writeFile(dir_ / "input" / "notes.txt", {'x'});
 
-  Studio studio({});
-  const auto listing = studio.call("browse", {{"path", (dir_ / "input").string()}});
+  Gui gui({});
+  const auto listing = gui.call("browse", {{"path", (dir_ / "input").string()}});
   std::map<std::string, std::string> kinds;
   for (const auto& entry : listing.at("entries")) {
     kinds[entry.at("name")] = entry.at("kind");
@@ -822,26 +822,26 @@ TEST_F(TiffTest, StudioBrowsesAndImportsTiffStacks) {
   EXPECT_EQ(kinds["slices"], "tiff");
   EXPECT_EQ(kinds["notes.txt"], "file");
 
-  studio.call("project_create", {{"path", (dir_ / "project").string()}});
+  gui.call("project_create", {{"path", (dir_ / "project").string()}});
   const auto imported =
-      studio.call("run_import_tiff", {{"path", (dir_ / "input" / "scan.zip").string()},
-                                      {"voxel_size_mm", 0.1},
-                                      {"brick_size", 16}});
+      gui.call("run_import_tiff", {{"path", (dir_ / "input" / "scan.zip").string()},
+                                   {"voxel_size_mm", 0.1},
+                                   {"brick_size", 16}});
   EXPECT_EQ(imported.at("status"), "done");
   EXPECT_EQ(imported.at("summary").at("slices"), 32);
   EXPECT_EQ(imported.at("summary").at("bits_per_sample"), 16);
   const std::string log = imported.at("messages").dump();
   EXPECT_NE(log.find("scan/data"), std::string::npos) << log;
   EXPECT_NE(log.find("scan/labels"), std::string::npos) << log;
-  EXPECT_EQ(studio.call("dataset_info", {}).at("step"), imported.at("id"));
+  EXPECT_EQ(gui.call("dataset_info", {}).at("step"), imported.at("id"));
 
   // Float slices with a given value range.
   TiffSpec floating;
   floating.bits = 32;
   const auto folder = writeFloatStack(dir_ / "input" / "float", floating);
   const auto from_float =
-      studio.call("run_import_tiff",
-                  {{"path", folder.string()}, {"value_range", {-0.1, 0.4}}, {"brick_size", 16}});
+      gui.call("run_import_tiff",
+               {{"path", folder.string()}, {"value_range", {-0.1, 0.4}}, {"brick_size", 16}});
   EXPECT_EQ(from_float.at("status"), "done");
   EXPECT_EQ(from_float.at("summary").at("value_range"), (std::array<double, 2>{-0.1, 0.4}));
   EXPECT_EQ(from_float.at("summary").at("clipped_values"), 0);

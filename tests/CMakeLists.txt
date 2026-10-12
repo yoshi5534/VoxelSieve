@@ -14,7 +14,7 @@ add_executable(voxelsieve_tests
   test_alignment.cpp
   test_objects.cpp
   test_project.cpp
-  test_studio.cpp
+  test_gui.cpp
   test_http.cpp
   test_slice.cpp
   test_report.cpp

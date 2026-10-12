@@ -27,7 +27,7 @@ add_library(voxelsieve SHARED
   operation.cpp
   project.cpp
   slice.cpp
-  studio.cpp
+  gui.cpp
   mcp.cpp
   http_server.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp

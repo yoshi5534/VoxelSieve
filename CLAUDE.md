@@ -42,11 +42,11 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
     `transform.hpp`); poses change only through steps. Analysis results per object
     (`Project::results`, ADR 0023) are derived from the steps; new result types need no registry. The
-    studio (UI, MCP) drives everything through operations; new processing becomes an operation
-  - `studio.hpp` the studio engine and its JSON API; `mcp.hpp` serves it as MCP tools and
+    GUI (UI, MCP) drives everything through operations; new processing becomes an operation
+  - `gui.hpp` the GUI engine and its JSON API; `mcp.hpp` serves it as MCP tools and
     `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in); `slice.hpp`
     reads slice tiles with the pore and zone overlay, and other objects in a slice (`samplePlane`,
-    `cutMesh`). New studio
+    `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
   `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-gui`); `examples/` holds an example inspection order

@@ -98,7 +98,7 @@ same poses.
 
 - a mesh is its triangles;
 - a volume is its extracted surface (ADR 0009); aligning a volume needs a `surface` step on it
-  first, and the studio offers to run it.
+  first, and the GUI offers to run it.
 
 The moving side gives the points, the fixed side the distance: `MeshDistance` over the target's
 mesh, or over the display mesh of the target's surface. For XXL volumes the display mesh is
@@ -137,7 +137,7 @@ other), which gives the deviation between two scans of a part.
 Poses are metadata. Viewing and processing several volumes reads each one through its own
 `Dataset`, in its own coordinates, and transforms only the positions that are asked for:
 
-- The studio's open datasets share **one** brick cache budget instead of one budget each, so
+- The GUI's open datasets share **one** brick cache budget instead of one budget each, so
   opening a second volume does not double the memory.
 - A slice tile is a rectangle in a plane of global coordinates. For each object shown in it,
   the pixel positions are transformed into object coordinates and sampled at the mip level that
@@ -212,9 +212,9 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
 - `add_mesh` references an STL file as a mesh object (artifact `mesh`).
 - `RigidTransform` moved to `transform.hpp`. Operations see the objects and their poses in
   `OperationContext::objects`; this changes the plugin ABI, so the plugin API version is 2.
-- `BrickCache` holds one budget for the bricks of several datasets; the studio opens up to eight
+- `BrickCache` holds one budget for the bricks of several datasets; the GUI opens up to eight
   datasets on one 1 GB cache instead of two datasets with 512 MB each.
-- Studio methods `objects`, `object_add`, `object_select`; every `run_<operation>` takes `object`
+- GUI methods `objects`, `object_add`, `object_select`; every `run_<operation>` takes `object`
   and, for steps that create one, `object_name`. MCP lists them like every method.
 - Every new object starts at the origin. Reading its position from a sidecar or a file name comes
   with the importers that know such conventions.
@@ -236,7 +236,7 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   the same way. `compare_cad` stays as it was.
 - Operations see the outputs of every object in `OperationContext::objects` and the step's
   object in `OperationContext::object` (plugin API 3).
-- The studio serves what the 3D view draws of an object (`Studio::objectShape`,
+- The GUI serves what the 3D view draws of an object (`Gui::objectShape`,
   `GET /api/object_mesh`): a mesh's triangles, the display mesh of a volume's latest surface, or
   the outline of the box a volume fills before it has one. The view "Objects" (`scene.js`)
   draws them with their poses, each in its colour, with the global axes, and picks points by
@@ -255,12 +255,12 @@ Poses are metadata. Viewing and processing several volumes reads each one throug
   trilinearly between the eight nearest (removed air counting as the air level); other volumes are
   interpolated, since a turned volume sampled at its nearest voxels shows a staircase. Each pixel says whether it
   hit material (at or above the dataset's threshold), a kept voxel below it (air near the part,
-  pores) or nothing. For another volume the studio maps the pixel centres of the base tile through
-  `other pose⁻¹ ∘ base pose` (`Studio::objectSliceTile`, `GET /api/object_tile`), so the layer
+  pores) or nothing. For another volume the GUI maps the pixel centres of the base tile through
+  `other pose⁻¹ ∘ base pose` (`Gui::objectSliceTile`, `GET /api/object_tile`), so the layer
   lines up with the base tile pixel for pixel.
-- `cutMesh` intersects triangles with an axis plane and returns segments. The studio brings a
+- `cutMesh` intersects triangles with an axis plane and returns segments. The GUI brings a
   mesh, or the display mesh of a volume's latest surface (the box it fills before one), into
-  base voxel coordinates and cuts it at the slice (`Studio::objectCutLines`,
+  base voxel coordinates and cuts it at the slice (`Gui::objectCutLines`,
   `GET /api/cut_lines`); a surface's display mesh is cut at up to 500 000 triangles, a mesh
   object in full.
 - The slice view lists the other objects. Volumes are blended in their object's colour with an

@@ -7,7 +7,7 @@ Contributions are welcome: bug reports, sample data, fixes and new operations.
 - For anything larger than a small fix, open an issue first so we can agree on the approach.
 - Read the architecture decision records in `docs/adr/` before changing data types, file
   formats or the operation and plugin interfaces.
-- New processing belongs in an operation (ADR 0008), so the studio, the command line and AI
+- New processing belongs in an operation (ADR 0008), so the GUI, the command line and AI
   systems get it alike. Algorithms that must handle large scans read through `VolumeSource` or
   `Dataset` and never assume the volume fits in memory (ADR 0004).
 

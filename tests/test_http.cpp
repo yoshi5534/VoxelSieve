@@ -7,10 +7,10 @@
 #include <string>
 #include <thread>
 
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/synthetic.hpp"
 
 namespace voxelsieve {
@@ -64,7 +64,7 @@ std::string base64Encode(const std::string& bytes) {
   return text;
 }
 
-/// Blocks until released, to observe the studio while an operation runs.
+/// Blocks until released, to observe the GUI while an operation runs.
 class Wait final : public Operation {
  public:
   explicit Wait(std::shared_future<void> release) : release_(std::move(release)) {
@@ -93,8 +93,8 @@ class HttpTest : public ::testing::Test {
             std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()));
     std::filesystem::remove_all(dir_);
     std::filesystem::create_directories(dir_);
-    studio_.registry().add(std::make_shared<Wait>(release_.get_future().share()));
-    server_ = std::make_unique<HttpServer>(studio_, "127.0.0.1", 0);
+    gui_.registry().add(std::make_shared<Wait>(release_.get_future().share()));
+    server_ = std::make_unique<HttpServer>(gui_, "127.0.0.1", 0);
     thread_ = std::thread([this] { server_->run(); });
   }
   void TearDown() override {
@@ -109,7 +109,7 @@ class HttpTest : public ::testing::Test {
 
   std::filesystem::path dir_;
   std::promise<void> release_;
-  Studio studio_;
+  Gui gui_;
   std::unique_ptr<HttpServer> server_;
   std::thread thread_;
 };

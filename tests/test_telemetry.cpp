@@ -17,11 +17,11 @@
 #include <thread>
 #include <vector>
 
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/project.hpp"
-#include "voxelsieve/studio.hpp"
 #include "voxelsieve/synthetic.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -201,10 +201,10 @@ TEST(TelemetryTest, EveryStepOfAProjectRecordsItsPhases) {
   writeJson(dir / "scan.json", scan.toJson());
 
   {
-    Studio studio({});
-    (void)studio.call("project_create", {{"path", (dir / "p").string()}});
+    Gui gui({});
+    (void)gui.call("project_create", {{"path", (dir / "p").string()}});
     const Json imported =
-        studio.call("run_import_raw", {{"path", (dir / "scan.raw").string()}, {"brick_size", 32}});
+        gui.call("run_import_raw", {{"path", (dir / "scan.raw").string()}, {"brick_size", 32}});
     const Json& summary = imported.at("telemetry");
     EXPECT_EQ(summary.at("name"), "import_raw");
     EXPECT_FALSE(summary.contains("timeline"));  // the protocol keeps only the summary
@@ -214,13 +214,13 @@ TEST(TelemetryTest, EveryStepOfAProjectRecordsItsPhases) {
     }
     EXPECT_EQ(names, (std::vector<std::string>{"preview", "pass 1 (histogram)", "pass 2 (bricks)",
                                                "levels"}));
-    (void)studio.call("run_porosity", {});
+    (void)gui.call("run_porosity", {});
 
-    const Json full = studio.call("step_telemetry", {{"step", imported.at("id")}});
+    const Json full = gui.call("step_telemetry", {{"step", imported.at("id")}});
     EXPECT_EQ(full.at("step"), imported.at("id"));
     EXPECT_TRUE(full.contains("timeline"));
-    EXPECT_EQ(studio.call("step_telemetry", {}).at("name"), "porosity");
-    EXPECT_THROW((void)studio.call("step_telemetry", {{"step", 99}}), std::invalid_argument);
+    EXPECT_EQ(gui.call("step_telemetry", {}).at("name"), "porosity");
+    EXPECT_THROW((void)gui.call("step_telemetry", {{"step", 99}}), std::invalid_argument);
   }
   // Kept with the protocol when the project is opened again.
   const Project reopened = Project::open(dir / "p");

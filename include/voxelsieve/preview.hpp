@@ -81,7 +81,7 @@ struct PreviewImage {
 /// renderPreview encoded as PNG.
 [[nodiscard]] std::vector<std::uint8_t> previewPng(const ImportPreview& preview);
 
-/// Summary for the protocol and the studio: what was read, the threshold estimate, the window
+/// Summary for the protocol and the GUI: what was read, the threshold estimate, the window
 /// and the histogram in `bins` bins between the lowest and highest grey value that occurs.
 [[nodiscard]] nlohmann::json previewSummary(const ImportPreview& preview, int bins = 128);
 

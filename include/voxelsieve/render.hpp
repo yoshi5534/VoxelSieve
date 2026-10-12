@@ -11,7 +11,7 @@ namespace voxelsieve {
 
 /// Software renderer for report and documentation images: a shaded, anti-aliased view of a
 /// triangle mesh and spheres (pores, zones) with an orthographic camera, ambient occlusion and a
-/// light studio background. Runs without a GPU, so every step can write its images.
+/// light soft background. Runs without a GPU, so every step can write its images.
 
 struct RenderSphere {
   std::array<double, 3> center{};
@@ -42,7 +42,7 @@ struct RenderView {
   int supersampling = 3;
   /// Free border around the scene as a fraction of the image.
   double margin = 0.06;
-  /// Transparent background (RGBA output) instead of the studio gradient.
+  /// Transparent background (RGBA output) instead of the soft backdrop gradient.
   bool transparent = false;
 };
 

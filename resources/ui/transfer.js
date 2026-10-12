@@ -1,4 +1,4 @@
-// Transfer function of the 3D view of VoxelSieve Studio: control points that map the grey value
+// Transfer function of the 3D view of VoxelSieve: control points that map the grey value
 // of the volume preview (0..1 over its window) to colour and opacity, a histogram editor for them
 // and a few presets and colour maps. Runs in the browser and, for its tests, in node.
 'use strict';

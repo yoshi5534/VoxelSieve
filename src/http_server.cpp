@@ -83,8 +83,8 @@ struct HttpServer::Impl {
     explicit Connection(tcp::socket s) : socket(std::move(s)) {}
   };
 
-  Impl(Studio& s, const std::string& host, unsigned short requested_port)
-      : studio(s), acceptor(io), bound_host(host) {
+  Impl(Gui& s, const std::string& host, unsigned short requested_port)
+      : gui(s), acceptor(io), bound_host(host) {
     const tcp::endpoint endpoint(asio::ip::make_address(host), requested_port);
     acceptor.open(endpoint.protocol());
     acceptor.set_option(asio::socket_base::reuse_address(true));
@@ -190,7 +190,7 @@ struct HttpServer::Impl {
         }
         const std::string method(path.substr(std::string_view("/api/call/").size()));
         const Json params = request.body().empty() ? Json::object() : Json::parse(request.body());
-        return json(request, http::status::ok, studio.call(method, params));
+        return json(request, http::status::ok, gui.call(method, params));
       }
       return error(request, http::status::not_found, "Not found");
     } catch (const Json::parse_error& failure) {
@@ -259,7 +259,7 @@ struct HttpServer::Impl {
       return it == values.end() ? std::nullopt : std::optional<int>(static_cast<int>(it->second));
     };
     const SliceImage image =
-        studio.sliceTile(optional("step"), optional("porosity"), slice, optional("materials"));
+        gui.sliceTile(optional("step"), optional("porosity"), slice, optional("materials"));
     std::string body(image.grey.size() * sizeof(float) + image.overlay.size(), '\0');
     static_assert(std::endian::native == std::endian::little, "tiles are sent little endian");
     std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
@@ -304,8 +304,8 @@ struct HttpServer::Impl {
       volume_request.window = std::array<float, 2>{static_cast<float>(values.at("low")),
                                                    static_cast<float>(values.at("high"))};
     }
-    const VolumePreview preview = studio.volumePreview(optional("step"), optional("porosity"),
-                                                       volume_request, optional("materials"));
+    const VolumePreview preview = gui.volumePreview(optional("step"), optional("porosity"),
+                                                    volume_request, optional("materials"));
     std::string body(preview.grey.begin(), preview.grey.end());
     body.append(preview.overlay.begin(), preview.overlay.end());
     return binary(
@@ -322,7 +322,7 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/surface?max_triangles=1500000[&step=3]
-  /// Body: the display mesh of a surface step (Studio::surfaceMesh), the points as three float32
+  /// Body: the display mesh of a surface step (Gui::surfaceMesh), the points as three float32
   /// per vertex in level-0 voxel coordinates, then three uint32 indices per triangle.
   http::message_generator surface(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
@@ -333,7 +333,7 @@ struct HttpServer::Impl {
     if (max < 1000 || max > 20000000) {
       throw std::invalid_argument("max_triangles must be between 1000 and 20000000");
     }
-    const auto mesh = studio.surfaceMesh(step, static_cast<std::size_t>(max));
+    const auto mesh = gui.surfaceMesh(step, static_cast<std::size_t>(max));
     const std::size_t point_bytes = mesh->points.size() * sizeof(mesh->points[0]);
     const std::size_t triangle_bytes = mesh->triangles.size() * sizeof(mesh->triangles[0]);
     std::string body(point_bytes + triangle_bytes, '\0');
@@ -345,7 +345,7 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/deviation[?step=5][&displacement=1]
-  /// Body: the compared surface of a nominal-actual comparison step (Studio::deviationMesh): three
+  /// Body: the compared surface of a nominal-actual comparison step (Gui::deviationMesh): three
   /// float32 per vertex in level-0 voxel coordinates, one float32 deviation in mm per vertex, then
   /// three uint32 indices per triangle. With displacement=1, the displacement of the non-rigid
   /// registration in mm per vertex instead of the deviation, and X-Range is its range;
@@ -355,7 +355,7 @@ struct HttpServer::Impl {
     const std::optional<int> step = values.contains("step")
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
-    const auto view = studio.deviationMesh(step);
+    const auto view = gui.deviationMesh(step);
     const bool displacement = values.contains("displacement") && values.at("displacement") != 0;
     if (displacement && view->displacement_mm.empty()) {
       throw std::invalid_argument("The comparison has no non-rigid registration");
@@ -380,7 +380,7 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/object_mesh?object=2[&max_triangles=1500000]
-  /// Body: what the 3D view draws for object o2 (Studio::objectShape), as /api/surface: three
+  /// Body: what the 3D view draws for object o2 (Gui::objectShape), as /api/surface: three
   /// float32 per vertex, then three uint32 indices per triangle. Points times X-Scale per axis
   /// are object coordinates in mm; X-Shape says whether they are a mesh, a surface or a box.
   http::message_generator objectMesh(const Request& request, std::string_view query) {
@@ -392,8 +392,8 @@ struct HttpServer::Impl {
     if (max < 1000 || max > 20000000) {
       throw std::invalid_argument("max_triangles must be between 1000 and 20000000");
     }
-    const auto shape = studio.objectShape("o" + std::to_string(values.at("object")),
-                                          static_cast<std::size_t>(max));
+    const auto shape =
+        gui.objectShape("o" + std::to_string(values.at("object")), static_cast<std::size_t>(max));
     const auto& mesh = *shape.mesh;
     const std::string scale = Json(shape.scale).dump();
     const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
@@ -410,7 +410,7 @@ struct HttpServer::Impl {
 
   /// GET /api/object_tile?object=2&axis=2&index=100&level=1&u=0&v=0&size=256[&step=1]
   /// Body: object o2 sampled at the pixels of that tile of the dataset of step 1
-  /// (Studio::objectSliceTile): width * height float32 grey values, then one byte per pixel
+  /// (Gui::objectSliceTile): width * height float32 grey values, then one byte per pixel
   /// for what it hit: 2 the object's material, 1 a kept voxel below its threshold (air near the
   /// part, a pore), 0 removed air or nothing. Headers X-Width and X-Height give the size,
   /// X-Threshold the object's material threshold. Grey values are interpolated trilinearly.
@@ -434,7 +434,7 @@ struct HttpServer::Impl {
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
     const PlaneImage image =
-        studio.objectSliceTile(step, slice, "o" + std::to_string(values.at("object")));
+        gui.objectSliceTile(step, slice, "o" + std::to_string(values.at("object")));
     std::string body(image.grey.size() * sizeof(float) + image.inside.size(), '\0');
     std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
     std::memcpy(body.data() + image.grey.size() * sizeof(float), image.inside.data(),
@@ -446,7 +446,7 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/cut_lines?object=2&axis=2&index=100[&step=1]
-  /// Body: where object o2 cuts that slice of the dataset of step 1 (Studio::objectCutLines):
+  /// Body: where object o2 cuts that slice of the dataset of step 1 (Gui::objectCutLines):
   /// four float32 per segment, u0 v0 u1 v1 in level-0 voxel indices. X-Segments gives the count.
   http::message_generator cutLines(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
@@ -457,7 +457,7 @@ struct HttpServer::Impl {
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
     const auto axis = values.contains("axis") ? static_cast<int>(values.at("axis")) : 2;
-    const std::vector<float> segments = studio.objectCutLines(
+    const std::vector<float> segments = gui.objectCutLines(
         step, axis, values.at("index"), "o" + std::to_string(values.at("object")));
     std::string body(segments.size() * sizeof(float), '\0');
     std::memcpy(body.data(), segments.data(), body.size());
@@ -494,7 +494,7 @@ struct HttpServer::Impl {
     }
     if (path == "/api/methods") {
       Json methods = Json::array();
-      for (const StudioMethod& method : studio.methods()) {
+      for (const GuiMethod& method : gui.methods()) {
         methods.push_back({{"name", method.name},
                            {"description", method.description},
                            {"parameters", method.parameters}});
@@ -505,7 +505,7 @@ struct HttpServer::Impl {
       // /views/<id>.png: the picture of a saved view
       const auto name = path.substr(std::string_view("/views/").size());
       const int id = std::stoi(std::string(name.substr(0, name.size() - 4)));
-      return sendFile(request, studio.viewImage(id));
+      return sendFile(request, gui.viewImage(id));
     }
     if (path.starts_with("/files/")) {
       // /files/<step>/<output>/<file...>
@@ -518,7 +518,7 @@ struct HttpServer::Impl {
       const int step = std::stoi(rest.substr(0, first));
       const std::string output = rest.substr(first + 1, second - first - 1);
       const std::string file = second == std::string::npos ? "" : rest.substr(second + 1);
-      return sendFile(request, studio.outputFile(step, output, file));
+      return sendFile(request, gui.outputFile(step, output, file));
     }
     return error(request, http::status::not_found, "Not found");
   }
@@ -563,7 +563,7 @@ struct HttpServer::Impl {
     }
   }
 
-  Studio& studio;
+  Gui& gui;
   asio::io_context io;
   tcp::acceptor acceptor;
   std::string bound_host;
@@ -573,8 +573,8 @@ struct HttpServer::Impl {
   bool stopped = false;
 };
 
-HttpServer::HttpServer(Studio& studio, const std::string& host, unsigned short port)
-    : impl_(std::make_unique<Impl>(studio, host, port)) {}
+HttpServer::HttpServer(Gui& gui, const std::string& host, unsigned short port)
+    : impl_(std::make_unique<Impl>(gui, host, port)) {}
 
 HttpServer::~HttpServer() {
   try {

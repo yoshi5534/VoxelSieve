@@ -1,11 +1,11 @@
-// 3D scene of VoxelSieve Studio (ADR 0018): every object of the project where it lies in the
+// 3D scene of VoxelSieve (ADR 0018): every object of the project where it lies in the
 // global coordinate system, each in its own colour. Meshes are drawn as their triangles, volumes
 // as the display mesh of their latest surface step or, before one, as the outline of the box
 // they fill. The global axes are drawn at the origin. A click on an object picks the point under
 // the pointer (for point-pair alignment); picked points are drawn as dots.
 'use strict';
 
-/// Colours of the objects in the order they were created, as kObjectColors in src/studio.cpp.
+/// Colours of the objects in the order they were created, as kObjectColors in src/gui.cpp.
 const OBJECT_COLORS = [[196, 200, 207], [230, 150, 60], [90, 160, 230], [120, 190, 110],
   [200, 110, 170], [220, 200, 80]];
 

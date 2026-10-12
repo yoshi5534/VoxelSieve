@@ -1,4 +1,4 @@
-// VoxelSieve Studio: browser UI over the studio API (ADR 0008). Plain JavaScript, no build step.
+// VoxelSieve: browser UI over the GUI API (ADR 0008). Plain JavaScript, no build step.
 // Everything goes through POST api/call/<method>, the same methods MCP clients use.
 'use strict';
 
@@ -18,7 +18,7 @@ const state = {
   projectDir: null,     // directory of the open project, to notice when another one is opened
   transfer: null,       // transfer function of the 3D view
   restore: null,        // parts of a saved view state still to apply: {slice, volume, transfer}
-  savedState: {},       // view state last sent to the studio
+  savedState: {},       // view state last sent to the GUI
   suggestions: null,    // renderings suggested for the loaded volume: {key, items, images}
   capture: null,        // returns the picture of the current view as a PNG data URL
   scene: null,          // 3D view of all objects (scene.js)
@@ -301,7 +301,7 @@ function collectViewState() {
 
 let viewSaveTimer = null;
 
-/// Sends the view state to the studio shortly after the last change.
+/// Sends the view state to the GUI shortly after the last change.
 function scheduleViewSave() {
   if (!state.status.open) return;
   clearTimeout(viewSaveTimer);
@@ -1042,7 +1042,7 @@ function renderReportStage(panel) {
 // ---------------------------------------------------------------------------------------------
 // Results: every analysis result of the project per scanned object (ADR 0023)
 
-/// Result types the studio knows: a name, the summary keys that sum a result up, and where it is
+/// Result types the GUI knows: a name, the summary keys that sum a result up, and where it is
 /// shown (a view mode, with the rendering of the 3D view; reports open on their own). Plugin
 /// results have none.
 const RESULT_TYPES = {

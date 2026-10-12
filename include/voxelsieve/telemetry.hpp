@@ -20,7 +20,7 @@ struct TelemetryOptions {
 /// background thread samples the same counters into a timeline. Everything stays local.
 ///
 /// The counters are those of the whole process, read from getrusage and /proc (Linux). Only one
-/// recorder should be active at a time; the studio runs one operation at a time.
+/// recorder should be active at a time; the GUI runs one operation at a time.
 class Telemetry {
  public:
   explicit Telemetry(std::string name, TelemetryOptions options = {});

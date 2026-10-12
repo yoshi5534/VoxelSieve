@@ -18,11 +18,11 @@
 
 #include "detail/network.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/gui.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/preview.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/studio.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -314,7 +314,7 @@ TEST_F(PreviewTest, LocalFilesAreNotOnANetworkShare) {
       MappedRawSource(dir_ / "scan.raw", volume.dims, volume.voxel_size).slowRandomAccess());
 }
 
-/// Hands over a preview, then blocks until released, to observe the studio in between.
+/// Hands over a preview, then blocks until released, to observe the GUI in between.
 class PreviewThenWait final : public Operation {
  public:
   explicit PreviewThenWait(std::shared_future<void> release) : release_(std::move(release)) {
@@ -337,32 +337,31 @@ class PreviewThenWait final : public Operation {
   std::shared_future<void> release_;
 };
 
-TEST_F(PreviewTest, StudioShowsThePreviewWhileTheImportRunsAndKeepsItWithTheStep) {
+TEST_F(PreviewTest, GuiShowsThePreviewWhileTheImportRunsAndKeepsItWithTheStep) {
   std::promise<void> release;
-  Studio studio;
-  studio.registry().add(std::make_shared<PreviewThenWait>(release.get_future().share()));
-  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
-  EXPECT_THROW((void)studio.call("import_preview", {}), std::invalid_argument);
+  Gui gui;
+  gui.registry().add(std::make_shared<PreviewThenWait>(release.get_future().share()));
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  EXPECT_THROW((void)gui.call("import_preview", {}), std::invalid_argument);
 
-  std::thread runner([&studio] {
-    EXPECT_THROW((void)studio.call("run_preview_then_wait", {}), std::runtime_error);
-  });
+  std::thread runner(
+      [&gui] { EXPECT_THROW((void)gui.call("run_preview_then_wait", {}), std::runtime_error); });
   Json status;
   for (int i = 0; i < 1000; ++i) {
-    status = studio.call("project_status", {});
+    status = gui.call("project_status", {});
     if (status.at("running").contains("preview")) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   EXPECT_EQ(status.at("running").at("preview").at("slices_read"), 32);
-  const Json running = studio.call("import_preview", {});
+  const Json running = gui.call("import_preview", {});
   EXPECT_TRUE(running.at("running").get<bool>());
   EXPECT_EQ(running.at("image").at("mime_type"), "image/png");
   EXPECT_FALSE(running.at("image").at("base64").get<std::string>().empty());
   release.set_value();
   runner.join();
-  EXPECT_TRUE(studio.call("project_status", {}).at("running").is_null());
+  EXPECT_TRUE(gui.call("project_status", {}).at("running").is_null());
 
   // A real import keeps its preview with the step and says when it came.
   const Volume16 volume = generatePhantom(spec());
@@ -370,22 +369,22 @@ TEST_F(PreviewTest, StudioShowsThePreviewWhileTheImportRunsAndKeepsItWithTheStep
   writeJson(dir_ / "scan.json",
             {{"dims", volume.dims}, {"voxel_size_mm", {0.1, 0.1, 0.15}}, {"format", "uint16"}});
   const Json step =
-      studio.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
   const auto messages = step.at("messages").get<std::vector<std::string>>();
   EXPECT_TRUE(std::any_of(messages.begin(), messages.end(), [](const std::string& message) {
     return message.starts_with("Preview after ");
   }));
-  const Json kept = studio.call("import_preview", {});
+  const Json kept = gui.call("import_preview", {});
   EXPECT_EQ(kept.at("step"), step.at("id"));
   EXPECT_FALSE(kept.at("running").get<bool>());
   EXPECT_EQ(kept.at("slices_read"), 64);
   EXPECT_GT(kept.at("threshold").get<double>(), 1000.0);
   EXPECT_TRUE(kept.contains("seconds"));
-  EXPECT_EQ(studio.call("import_preview", {{"step", step.at("id")}}).at("step"), step.at("id"));
-  EXPECT_THROW((void)studio.call("import_preview", {{"step", 1}}), std::invalid_argument);
+  EXPECT_EQ(gui.call("import_preview", {{"step", step.at("id")}}).at("step"), step.at("id"));
+  EXPECT_THROW((void)gui.call("import_preview", {{"step", 1}}), std::invalid_argument);
 }
 
-TEST_F(PreviewTest, StudioImportsGzipRawVolumesWithTheirSidecar) {
+TEST_F(PreviewTest, GuiImportsGzipRawVolumesWithTheirSidecar) {
   const Volume16 volume = generatePhantom(spec());
   gzFile file = gzopen((dir_ / "scan.raw.gz").string().c_str(), "wb");
   ASSERT_NE(file, nullptr);
@@ -395,22 +394,22 @@ TEST_F(PreviewTest, StudioImportsGzipRawVolumesWithTheirSidecar) {
   writeJson(dir_ / "scan.json",
             {{"dims", volume.dims}, {"voxel_size_mm", {0.1, 0.1, 0.15}}, {"format", "uint16"}});
 
-  Studio studio;
-  (void)studio.call("project_create", {{"path", (dir_ / "p").string()}});
-  const Json listed = studio.call("browse", {{"path", dir_.string()}});
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json listed = gui.call("browse", {{"path", dir_.string()}});
   const Json& entries = listed.at("entries");
   EXPECT_TRUE(std::any_of(entries.begin(), entries.end(), [](const Json& entry) {
     return entry.at("name") == "scan.raw.gz" && entry.at("kind") == "raw";
   }));
-  const Json step = studio.call("run_import_raw",
-                                {{"path", (dir_ / "scan.raw.gz").string()}, {"brick_size", 32}});
+  const Json step =
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw.gz").string()}, {"brick_size", 32}});
   const auto messages = step.at("messages").get<std::vector<std::string>>();
   EXPECT_TRUE(std::any_of(messages.begin(), messages.end(), [](const std::string& message) {
     return message.starts_with("gzip-compressed");
   }));
   EXPECT_EQ(step.at("summary").at("dims"), volume.dims);
   // Read in one pass, the stream gives one preview, once every slice passed.
-  const Json gzip_preview = studio.call("import_preview", {});
+  const Json gzip_preview = gui.call("import_preview", {});
   EXPECT_EQ(gzip_preview.at("slices_read"), 70);
   EXPECT_TRUE(gzip_preview.at("complete").get<bool>());
 }

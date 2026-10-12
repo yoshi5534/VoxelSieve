@@ -37,7 +37,7 @@ converting them to raw or TIFF.
 Slices are parsed whole, so the source reports `slowRandomAccess()` and `writeDataset` stages it
 like a TIFF stack (ADR 0011). Decoded slices are kept in an LRU cache (default 256 MiB).
 
-The studio gets the operation `import_dicom` (`path`, `series`), with the sieve parameters of
+The GUI gets the operation `import_dicom` (`path`, `series`), with the sieve parameters of
 the other imports; the file browser marks DICOM files and directories with DICOM slices as kind
 `dicom`. `vs-sieve` reads a DICOM directory.
 
