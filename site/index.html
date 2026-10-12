@@ -119,14 +119,14 @@
   <div class="wrap two">
     <div>
       <h2>Works with AI assistants</h2>
-      <p><code>vs-studio --mcp</code> serves VoxelSieve over the Model Context Protocol. An
+      <p><code>vs-gui --mcp</code> serves VoxelSieve over the Model Context Protocol. An
         assistant such as Claude Desktop or Claude Code can create projects, run the analyses,
         look at slices and write the report.</p>
       <p>It runs on your computer: the scans stay where they are, and the assistant only receives
         results such as pore lists, measurements, slice pictures and reports.</p>
     </div>
     <pre><code>claude mcp add voxelsieve -- \
-  /opt/voxelsieve/bin/vs-studio --mcp /data/scans
+  /opt/voxelsieve/bin/vs-gui --mcp /data/scans
 
 &gt; Import /data/scans/housing.raw, analyse the
   porosity and write an inspection report with

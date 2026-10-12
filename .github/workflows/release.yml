@@ -107,7 +107,7 @@ jobs:
           # vcpkg are moved away first).
           mv build build-moved
           mkdir -p check
-          stage/${{ steps.install.outputs.name }}/bin/vs-studio --mcp check < tests/mcp_tools_list.jsonl > tools.json
+          stage/${{ steps.install.outputs.name }}/bin/vs-gui --mcp check < tests/mcp_tools_list.jsonl > tools.json
           grep -q run_porosity tools.json
           mv build-moved build
       - name: Pack

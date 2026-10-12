@@ -49,7 +49,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New studio
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-studio`); `examples/` holds an example inspection order
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-gui`); `examples/` holds an example inspection order
   and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats

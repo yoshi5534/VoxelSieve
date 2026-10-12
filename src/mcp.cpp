@@ -326,7 +326,7 @@ Json McpServer::callTool(const Json& id, const Json& params) {
   const std::string name = params.at("name").get<std::string>();
   if (!offered(name)) {
     return toolResult(
-        Json{{"error", "The tool '" + name + "' is not offered; start vs-studio with --tools all"}},
+        Json{{"error", "The tool '" + name + "' is not offered; start vs-gui with --tools all"}},
         true);
   }
   const Json arguments = params.value("arguments", Json::object());

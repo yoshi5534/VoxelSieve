@@ -4,7 +4,7 @@
 # that is how the release packages are made (.github/workflows/release.yml).
 
 set(VOXELSIEVE_PROGRAMS
-  vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve vs-studio
+  vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve vs-gui
   vs-surface vs-synth)
 
 install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}

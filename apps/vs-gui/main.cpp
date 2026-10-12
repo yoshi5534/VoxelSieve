@@ -1,4 +1,4 @@
-// vs-studio: the VoxelSieve studio (ADR 0008). Serves the browser UI on a local port, or with
+// vs-gui: the VoxelSieve studio (ADR 0008). Serves the browser UI on a local port, or with
 // --mcp the studio API to AI systems over the Model Context Protocol on stdin/stdout.
 
 #ifdef _WIN32
@@ -30,15 +30,15 @@
 
 namespace {
 
-constexpr std::string_view kUsage = R"(Usage: vs-studio [options] [<dir>...]
-       vs-studio --mcp [options] [<dir>...]
+constexpr std::string_view kUsage = R"(Usage: vs-gui [options] [<dir>...]
+       vs-gui --mcp [options] [<dir>...]
 
 Starts the VoxelSieve studio: open http://localhost:8410 in a browser for the wizard (choose a
 dataset, run operations, create the report) with the step protocol and undo/redo.
 
 With --mcp it serves the studio over the Model Context Protocol (JSON-RPC on stdin/stdout)
 instead. Register it with an MCP client as a stdio server, for example:
-  {"command": "vs-studio", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
+  {"command": "vs-gui", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
 Every studio function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
 slice pictures and reading result files. The result files of the steps are also resources, and
 the prompts porosity_check, compare_with_cad and first_look walk through typical inspections.
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
     studio.setAllowedRoots(options->roots);
     // stdout carries the protocol; everything else goes to stderr.
     for (const std::string& message : studio.pluginMessages()) {
-      std::cerr << "vs-studio: " << message << "\n";
+      std::cerr << "vs-gui: " << message << "\n";
     }
     if (options->project) {
       const bool exists = std::filesystem::exists(*options->project / "project.json");
@@ -180,12 +180,12 @@ int main(int argc, char** argv) {
       return 0;
     }
     voxelsieve::HttpServer server(studio, options->host, options->port);
-    std::cerr << "vs-studio: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
+    std::cerr << "vs-gui: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
               << ":" << server.port() << "/  (Ctrl+C to stop)\n";
     serveUntilStopped(server);
     return 0;
   } catch (const std::exception& error) {
-    std::cerr << "vs-studio: " << error.what() << "\n";
+    std::cerr << "vs-gui: " << error.what() << "\n";
     return 1;
   }
 }
