@@ -1,6 +1,6 @@
 #pragma once
 
-// Denoising of datasets (docs/adr/0023-denoising.md): non-local means, which averages voxels
+// Denoising of datasets (docs/adr/0025-denoising.md): non-local means, which averages voxels
 // whose surrounding patches look alike instead of voxels that lie close together, so edges, thin
 // walls and small pores keep their contrast; or a learned model (.vsm, model.hpp) trained on the
 // noisy scan itself. Both run tile by tile with a halo and write a new dataset with the bricks and
@@ -114,7 +114,7 @@ DenoiseInfo denoiseDataset(const Dataset& dataset, const std::filesystem::path& 
                            const DenoiseOptions& options = {});
 
 /// How close a denoised dataset comes to the noise-free scan, for benchmarks on synthetic scans
-/// (ADR 0023). Root mean square differences in grey values over the voxels active in the
+/// (ADR 0025). Root mean square differences in grey values over the voxels active in the
 /// dataset: all of them, and split into edges (voxels where the reference differs from a face
 /// neighbour by more than 5 % of the contrast, 2 * (threshold - air level)), homogeneous
 /// material (above the threshold) and homogeneous air inside the kept region.

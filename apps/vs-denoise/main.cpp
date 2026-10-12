@@ -1,5 +1,5 @@
 // vs-denoise: denoises a sieved dataset with non-local means or a learned model and writes a new
-// dataset (docs/adr/0023-denoising.md). With --benchmark it compares the methods on a synthetic
+// dataset (docs/adr/0025-denoising.md). With --benchmark it compares the methods on a synthetic
 // scan whose noise-free grey values and defects are known.
 
 #include <algorithm>

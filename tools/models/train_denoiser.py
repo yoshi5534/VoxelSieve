@@ -15,7 +15,7 @@ The input is a headerless uint16 volume, x fastest, such as vs-synth writes or a
 Writes a VoxelSieve model (.vsm) with the task "denoising" for vs-denoise --model and the studio
 operation "denoise". Needs PyTorch and NumPy; runs on the CPU.
 
-Example (the benchmark scan of vs-denoise, see docs/adr/0023-denoising.md):
+Example (the benchmark scan of vs-denoise, see docs/adr/0025-denoising.md):
   vs-denoise --benchmark bench
   train_denoiser.py --grey bench/scan.raw --dims 216 176 112 --minutes 30 --out bench.vsm
   vs-denoise --benchmark bench --model bench.vsm

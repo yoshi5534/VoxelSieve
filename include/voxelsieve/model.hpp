@@ -4,7 +4,7 @@
 // example with PyTorch) and stored as a .vsm file, a JSON description of the layers followed by
 // the float32 weights. VoxelSieve runs them itself on the CPU, tile by tile with a halo, so a
 // model segments datasets larger than RAM like the threshold segmentation does and writes the
-// same material volume (materials.hpp), or denoises them (denoise.hpp, ADR 0023).
+// same material volume (materials.hpp), or denoises them (denoise.hpp, ADR 0025).
 
 #include <array>
 #include <cstdint>

@@ -122,7 +122,7 @@ struct DerivedDatasetOptions {
 
 /// Writes a dataset with the bricks, active voxels and metadata of `input` and level-0 grey values
 /// from `values`, for processing that keeps the part but changes its grey values, such as
-/// denoising (ADR 0023). `values` is called for one brick after the other (it may work in
+/// denoising (ADR 0025). `values` is called for one brick after the other (it may work in
 /// parallel inside); the coarser levels are then built from the new values. `dir` must not exist
 /// or be empty. Memory use is bounded by a few bricks, independent of the volume size.
 DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::path& dir,

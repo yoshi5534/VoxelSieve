@@ -1,4 +1,4 @@
-# 0023: Denoising with non-local means or a self-trained model
+# 0025: Denoising with non-local means or a self-trained model
 
 Status: accepted (2026-10-11)
 

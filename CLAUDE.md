@@ -26,7 +26,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     renderer for shaded report and documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
-    its correlation, or a learned model (ADR 0023); `writeDerivedDataset` (`dataset.hpp`) writes
+    its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
     any per-voxel processing that keeps the part
   - `materials.hpp` segmentation into material classes, the material volume and scoring against
     labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
@@ -39,7 +39,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
     `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), and their
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
-    `transform.hpp`); poses change only through steps. The
+    `transform.hpp`); poses change only through steps. Analysis results per object
+    (`Project::results`, ADR 0023) are derived from the steps; new result types need no registry. The
     studio (UI, MCP) drives everything through operations; new processing becomes an operation
   - `studio.hpp` the studio engine and its JSON API; `mcp.hpp` serves it as MCP tools and
     `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in); `slice.hpp`
