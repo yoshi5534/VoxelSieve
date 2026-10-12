@@ -21,8 +21,8 @@ project needs an application around them:
 A C++ engine (`voxelsieve/studio.hpp`) owns projects and operations. It is driven through one
 JSON API (method name + JSON parameters → JSON result). The same API is exposed
 
-- to the browser UI over HTTP (`vs-studio`, local server, Boost.Beast),
-- to AI systems over MCP on stdin/stdout (`vs-studio --mcp`), each API method a tool,
+- to the browser UI over HTTP (`vs-gui`, local server, Boost.Beast),
+- to AI systems over MCP on stdin/stdout (`vs-gui --mcp`), each API method a tool,
 - to C++ code and tests directly.
 
 The UI therefore cannot do anything an AI agent cannot, and the MCP tools are exercised by the
@@ -55,7 +55,7 @@ languages can come later.
 
 ### Browser UI
 
-The UI is plain HTML, CSS and JavaScript with WebGL2, compiled into `vs-studio` like the report
+The UI is plain HTML, CSS and JavaScript with WebGL2, compiled into `vs-gui` like the report
 template, with no build step and no JavaScript dependencies. A browser UI keeps the data where it
 is (the workstation or a server next to the scanner) and needs no GUI toolkit; it is testable with
 a headless browser.
@@ -69,7 +69,7 @@ drawn as an overlay. The 3D viewer ray-casts the overview grid (at most 256³) i
 
 - New dependency: Boost.Beast and Boost.Asio, header-only and part of the Boost headers already
   installed for Boost.Iostreams; no new package.
-- `libvoxelsieve` is built as a shared library so plugins and `vs-studio` share one copy.
+- `libvoxelsieve` is built as a shared library so plugins and `vs-gui` share one copy.
 - The server listens on localhost by default. Serving to other machines needs authentication and
   is not part of this decision.
 - Undone outputs stay on disk until they are discarded; a project can grow large. The UI shows

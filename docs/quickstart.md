@@ -50,17 +50,17 @@ open Settings > Extensions > VoxelSieve.
 **Claude Code:**
 
 ```sh
-claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-studio --mcp ~/ct
+claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-gui --mcp ~/ct
 ```
 
 **Other MCP clients** (Claude Desktop without the bundle, Cursor, ...) take a stdio server; on
-Windows the command is `"C:\\Tools\\voxelsieve\\bin\\vs-studio.exe"` in JSON:
+Windows the command is `"C:\\Tools\\voxelsieve\\bin\\vs-gui.exe"` in JSON:
 
 ```json
 {
   "mcpServers": {
     "voxelsieve": {
-      "command": "/opt/voxelsieve/bin/vs-studio",
+      "command": "/opt/voxelsieve/bin/vs-gui",
       "args": ["--mcp", "/home/me/ct"]
     }
   }
@@ -105,7 +105,7 @@ Every project the assistant creates also opens in the browser UI, with the step 
 undo/redo, slices and the 3D view:
 
 ```sh
-/opt/voxelsieve/bin/vs-studio ~/ct
+/opt/voxelsieve/bin/vs-gui ~/ct
 ```
 
 Then open <http://localhost:8410> and open the project directory the assistant named. The 3D view needs WebGL2; if your browser has it turned off, the
@@ -164,7 +164,7 @@ VoxelSieve is not a certified inspection system; check results that matter.
 
 ## Troubleshooting
 
-- **"Outside the allowed directories"**: give the directory with the scan to `vs-studio` (or
+- **"Outside the allowed directories"**: give the directory with the scan to `vs-gui` (or
   choose it in the bundle's settings).
 - **The tools of the saved views are missing**: they are left out for AI clients; start with
   `--tools all` to get them.

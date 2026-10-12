@@ -202,7 +202,8 @@ TiffPage currentPage(TIFF* tiff) {
   // resolutions are left out: they are almost always a printing default such as 72 dpi.
   // The slice spacing comes only from a key=value image description ("spacing=").
   const auto unit = field<std::uint16_t>(tiff, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
-  const double description_unit_mm = unit == RESUNIT_NONE ? descriptionUnitMm(page.description) : 0.0;
+  const double description_unit_mm =
+      unit == RESUNIT_NONE ? descriptionUnitMm(page.description) : 0.0;
   const auto size_of = [&](ttag_t tag) {
     const double resolution = field<float>(tiff, tag, 0.0F);
     if (resolution > 0.0 && unit == RESUNIT_CENTIMETER) {

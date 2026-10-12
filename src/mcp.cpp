@@ -125,7 +125,7 @@ const std::vector<Prompt>& prompts() {
        "1. Open the project {project} with project_open, or create it with project_create when "
        "it does not exist (choose a directory next to the scan if none is given).\n"
        "2. Import the scan: run_import_raw for a raw volume, run_import_tiff for a TIFF stack, "
-       "run_import_dicom for DICOM slices, run_import_gzipped_xml for a gzipped XML project (.gzxml), "
+       "run_import_dicom for DICOM slices, run_import_gzipped_xml for a gzipped XML project, "
        "run_open_dataset for a .vsieve dataset. Large scans take a while; report progress.\n"
        "3. Run run_porosity and summarise the result: pores, largest pore, porosity in percent, "
        "loosened zones.\n"
@@ -146,8 +146,8 @@ const std::vector<Prompt>& prompts() {
              {"required", false}}}),
        "Compare the CT scan {scan} with the CAD model {cad} using VoxelSieve.\n"
        "1. Open or create the project {project} (next to the scan if none is given).\n"
-       "2. Import the scan (run_import_raw, run_import_tiff, run_import_dicom, run_import_gzipped_xml or "
-       "run_open_dataset).\n"
+       "2. Import the scan (run_import_raw, run_import_tiff, run_import_dicom, "
+       "run_import_gzipped_xml or run_open_dataset).\n"
        "3. Extract the surface with run_surface, then run run_compare_cad with cad_path {cad}; "
        "it aligns the scan to the model.\n"
        "4. Check the alignment with view_objects and report the deviations: share within "
@@ -326,7 +326,7 @@ Json McpServer::callTool(const Json& id, const Json& params) {
   const std::string name = params.at("name").get<std::string>();
   if (!offered(name)) {
     return toolResult(
-        Json{{"error", "The tool '" + name + "' is not offered; start vs-studio with --tools all"}},
+        Json{{"error", "The tool '" + name + "' is not offered; start vs-gui with --tools all"}},
         true);
   }
   const Json arguments = params.value("arguments", Json::object());

@@ -913,7 +913,7 @@ function renderDatasetStage(panel) {
   } else {
     panel.append(el('p', { className: 'hint' },
       'Choose a sieved dataset (.vsieve), a raw file, a TIFF stack (folder, multi-page TIFF ' +
-      'or ZIP), a folder of DICOM slices or a gzipped XML project (.gzxml). On import, raw data is freed from the air around the part and stored as a ' +
+      'or ZIP), a folder of DICOM slices or a gzipped XML project. On import, raw data is freed from the air around the part and stored as a ' +
       'dataset with resolution levels; the original stays unchanged.'));
   }
   panel.append(el('div', { className: 'row' }, el('button', {

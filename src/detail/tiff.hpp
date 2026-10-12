@@ -63,8 +63,8 @@ struct TiffPage {
   std::uint32_t chunk_height = 0;
   std::uint32_t chunks_across = 1;
   std::uint32_t chunk_count = 0;
-  /// Pixel width and height in mm from a centimetre resolution or a key=value image description, 0 if
-  /// unknown; the slice spacing only from a key=value image description ("spacing=").
+  /// Pixel width and height in mm from a centimetre resolution or a key=value image description, 0
+  /// if unknown; the slice spacing only from a key=value image description ("spacing=").
   double pixel_size_mm = 0.0;
   double pixel_height_mm = 0.0;
   double slice_spacing_mm = 0.0;

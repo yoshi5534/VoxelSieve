@@ -34,7 +34,7 @@ assistant, using sample data. The tools:
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
-| `vs-studio` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
+| `vs-gui` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
 | `vs-phantom` | simple box phantom with analytic ground truth |
 
@@ -402,7 +402,7 @@ A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
 
 ## Studio
 
-`vs-studio` starts the studio and prints its address, by default http://localhost:8410. The browser
+`vs-gui` starts the studio and prints its address, by default http://localhost:8410. The browser
 UI leads through three steps: choose a dataset (or import a raw file), run operations such as the
 porosity analysis, create the inspection report. Every step appears in the protocol with its
 parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
@@ -465,14 +465,14 @@ checkerboard, CAD models as their cut lines.
 ![A second scan, turned by 4°, blended over the slice, and the CAD model as its cut line](docs/images/slice-objects.png)
 
 ```sh
-vs-studio --project /data/casting.vsproj --plugins build/release/plugins
+vs-gui --project /data/casting.vsproj --plugins build/release/plugins
 ```
 
 The server listens on 127.0.0.1 only and has no authentication; do not expose it to a network.
 
 ## AI systems: MCP
 
-`vs-studio --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
+`vs-gui --mcp` serves the studio over the Model Context Protocol (stdio), so an AI assistant can
 drive VoxelSieve: create or open a project, run operations, undo and redo, and read results. It
 runs on your machine: scans stay where they are, and the assistant only receives results such as
 pore lists, measurements, slice images and reports.
@@ -497,11 +497,11 @@ The Linux build needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40).
 options are the only places VoxelSieve reads data from and keeps projects in:
 
 ```sh
-claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-studio --mcp /data/scans   # Claude Code
+claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-gui --mcp /data/scans   # Claude Code
 ```
 
 ```json
-{"mcpServers": {"voxelsieve": {"command": "/opt/voxelsieve/bin/vs-studio",
+{"mcpServers": {"voxelsieve": {"command": "/opt/voxelsieve/bin/vs-gui",
                                "args": ["--mcp", "/data/scans"]}}}
 ```
 

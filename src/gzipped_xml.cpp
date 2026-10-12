@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace voxelsieve {
 namespace {
@@ -23,39 +24,58 @@ std::string lower(std::string text) {
   return text;
 }
 
-/// The XML of a project. The application writes it gzip-compressed with a few bytes after the gzip
-/// stream, which are ignored.
-std::string projectXml(const std::filesystem::path& file) {
-  std::ifstream in(file, std::ios::binary);
-  if (!in) {
-    throw std::runtime_error("Cannot open " + file.string());
-  }
-  std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-  if (bytes.size() < 2 || static_cast<unsigned char>(bytes[0]) != 0x1f ||
-      static_cast<unsigned char>(bytes[1]) != 0x8b) {
-    return bytes;  // plain XML
-  }
+bool isGzip(const std::string& bytes) {
+  return bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0x1f &&
+         static_cast<unsigned char>(bytes[1]) == 0x8b;
+}
+
+struct Inflated {
+  std::string text;
+  /// Whether the gzip stream ended; false when the input or the limit cut it short.
+  bool complete = false;
+  std::string error;
+};
+
+/// Inflates gzip `bytes` up to `limit` bytes of text. Bytes after the gzip stream are ignored:
+/// projects are often written with a few of them.
+Inflated inflateGzip(const std::string& bytes, std::size_t limit) {
+  Inflated result;
   z_stream stream{};
   if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) {
     throw std::runtime_error("Cannot initialise zlib");
   }
   stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.data()));  // NOLINT
   stream.avail_in = static_cast<uInt>(bytes.size());
-  std::string xml;
   std::array<char, 1 << 16> chunk{};
   int status = Z_OK;
-  while (status == Z_OK) {
+  while (status == Z_OK && result.text.size() < limit) {
     stream.next_out = reinterpret_cast<Bytef*>(chunk.data());  // NOLINT(*-reinterpret-cast)
     stream.avail_out = static_cast<uInt>(chunk.size());
     status = inflate(&stream, Z_NO_FLUSH);
-    xml.append(chunk.data(), chunk.size() - stream.avail_out);
+    result.text.append(chunk.data(), chunk.size() - stream.avail_out);
   }
+  result.complete = status == Z_STREAM_END;
+  result.error = stream.msg != nullptr ? stream.msg : "truncated";
   inflateEnd(&stream);
-  if (status != Z_STREAM_END) {
-    throw std::runtime_error(file.string() + " is not a readable gzipped XML project (" +
-                             (stream.msg != nullptr ? stream.msg : "truncated") + ")");
+  return result;
+}
+
+/// The XML of a project, gzip-compressed or plain.
+std::string projectXml(const std::filesystem::path& file) {
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("Cannot open " + file.string());
   }
-  return xml;
+  std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  if (!isGzip(bytes)) {
+    return bytes;  // plain XML
+  }
+  Inflated xml = inflateGzip(bytes, std::string::npos);
+  if (!xml.complete) {
+    throw std::runtime_error(file.string() + " is not a readable gzipped XML project (" +
+                             xml.error + ")");
+  }
+  return std::move(xml.text);
 }
 
 /// The objects of a project by id, for links written as <objectref id="..."/>.
@@ -162,9 +182,8 @@ class FileFinder {
   std::string saved_dir_;
 };
 
-std::string describeReference(const std::string& owner_class, const std::string& reference) {
-  const std::string extension = lower(std::filesystem::path(reference).extension().string());
-  if (owner_class.starts_with("SampleMaskIO") || extension == ".mask") {
+std::string describeReference(const std::string& owner_class) {
+  if (owner_class.find("SampleMaskIO") != std::string::npos) {
     return "mask or region of interest in the application's own mask format";
   }
   return "file of " + owner_class;
@@ -186,8 +205,8 @@ void readVolume(pugi::xml_node render_object, const ObjectIndex& index, const Fi
     volume.voxel_size = VoxelSize(d[0], d[1], d[2]);
   }
   volume.sample_type = text(grid, "SampleDataType");
-  // The project's grid coordinates have voxel corners at integer multiples of the pitch, VoxelSieve's
-  // voxel centres: shift by half a voxel.
+  // The project's grid coordinates have voxel corners at integer multiples of the pitch,
+  // VoxelSieve's voxel centres: shift by half a voxel.
   RigidTransform half_voxel;
   for (std::size_t axis = 0; axis < 3; ++axis) {
     half_voxel.translation[axis] = 0.5 * volume.voxel_size[axis];
@@ -207,7 +226,7 @@ void readVolume(pugi::xml_node render_object, const ObjectIndex& index, const Fi
         volume.files.push_back(finder.find(reference));
       }
     }
-    if (volume.import_class == "DicomImportSettings") {
+    if (volume.import_class.ends_with("DicomImportSettings")) {
       volume.format = "dicom";
       if (const auto swap = numbers(settings, "AxisSwap"); !swap.empty() && swap[0] != 0x010203) {
         volume.notes.emplace_back("axes were swapped on import (AxisSwap " +
@@ -231,7 +250,8 @@ GzippedXmlProject readGzippedXmlProject(const std::filesystem::path& file) {
   const std::string xml = projectXml(file);
   pugi::xml_document document;
   if (const pugi::xml_parse_result parsed = document.load_buffer(xml.data(), xml.size()); !parsed) {
-    throw std::runtime_error(file.string() + " is not a gzipped XML project: " + parsed.description());
+    throw std::runtime_error(file.string() +
+                             " is not a gzipped XML project: " + parsed.description());
   }
   const pugi::xml_node root = document.child("Project");
   if (!root) {
@@ -249,9 +269,10 @@ GzippedXmlProject readGzippedXmlProject(const std::filesystem::path& file) {
     index.emplace(node.node().attribute("id").value(), node.node());
   }
   std::set<const void*> imported_io;
-  for (const pugi::xpath_node node :
-       root.select_nodes("//object[@class='VolumeRenderObject']")) {
-    readVolume(node.node(), index, finder, project, imported_io);
+  for (const pugi::xpath_node node : root.select_nodes("//object[@class]")) {
+    if (std::string_view(node.node().attribute("class").value()).ends_with("VolumeRenderObject")) {
+      readVolume(node.node(), index, finder, project, imported_io);
+    }
   }
   for (const pugi::xpath_node node : root.select_nodes("//property[@name='FileName']")) {
     const pugi::xml_node owner = node.node().parent();
@@ -261,14 +282,21 @@ GzippedXmlProject readGzippedXmlProject(const std::filesystem::path& file) {
     }
     const std::string owner_class = owner.attribute("class").value();
     project.other_files.push_back({.owner_class = owner_class,
-                                   .description = describeReference(owner_class, reference),
+                                   .description = describeReference(owner_class),
                                    .file = finder.find(reference)});
   }
   return project;
 }
 
 bool isGzippedXmlFile(const std::filesystem::path& path) {
-  return lower(path.extension().string()) == ".gzxml";
+  constexpr std::size_t kHead = 1 << 14;
+  std::ifstream in(path, std::ios::binary);
+  std::string head(kHead, '\0');
+  in.read(head.data(), static_cast<std::streamsize>(kHead));
+  head.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+  const std::string xml = isGzip(head) ? inflateGzip(head, kHead).text : head;
+  // The root element and the version element with the application that wrote the project.
+  return xml.find("<Project") != std::string::npos && xml.find("appname=") != std::string::npos;
 }
 
 }  // namespace voxelsieve

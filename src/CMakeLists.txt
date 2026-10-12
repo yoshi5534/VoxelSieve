@@ -11,7 +11,7 @@ endfunction()
 voxelsieve_embed(VOXELSIEVE_REPORT_TEMPLATE ${PROJECT_SOURCE_DIR}/resources/report_template.html)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
 
-# The browser UI of vs-studio is compiled in the same way.
+# The browser UI of vs-gui is compiled in the same way.
 set(VOXELSIEVE_UI_DIR ${PROJECT_SOURCE_DIR}/resources/ui)
 voxelsieve_embed(VOXELSIEVE_UI_INDEX ${VOXELSIEVE_UI_DIR}/index.html)
 voxelsieve_embed(VOXELSIEVE_UI_SCRIPT ${VOXELSIEVE_UI_DIR}/app.js)

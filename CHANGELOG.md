@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`vs-studio` is now `vs-gui`**: the program with the browser UI and the MCP server has a new
+  name; its options are unchanged. MCP configurations need the new path.
+
 - **Denoising that keeps small pores**: the new operation `denoise` and the tool `vs-denoise`
   write a denoised copy of a dataset, tile by tile, with the same bricks and value type. The
   default is non-local means with a noise model measured from the scan itself, correlation of
