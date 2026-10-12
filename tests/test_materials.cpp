@@ -10,6 +10,7 @@
 #include "material_scene.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/slice.hpp"
 #include "voxelsieve/source.hpp"
 
 namespace voxelsieve {
@@ -87,6 +88,80 @@ TEST_F(MaterialsTest, SegmentsTwoMaterialsAndKeepsThinSheet) {
   std::vector<std::uint8_t> coarse(static_cast<std::size_t>(24 * 24 * 24));
   volume.readRegion(whole, coarse, 4);
   EXPECT_EQ(coarse[static_cast<std::size_t>(12 + 24 * (12 + 24 * 12))], 2);  // (48, 48, 48)
+}
+
+TEST_F(MaterialsTest, ReadsRegionsOfMoreBricksThanTheCacheHolds) {
+  const Scene scene = makeScene();
+  DatasetOptions sieve;
+  sieve.threshold = kThreshold;
+  sieve.brick_size = 16;  // 216 bricks, more than the material volume keeps cached
+  sieve.min_material_voxels = 4;
+  (void)writeDataset(MemorySource(scene.grey), dir_ / "dataset", sieve);
+  const Dataset dataset = Dataset::open(dir_ / "dataset");
+  (void)segmentMaterials(dataset, dir_ / "materials");
+  const MaterialVolume volume = MaterialVolume::open(dir_ / "materials");
+
+  // The whole volume agrees with the ground truth: the light box and sheet are material 1, the
+  // dense cube material 2.
+  const Box whole{{0, 0, 0}, {kSize, kSize, kSize}};
+  std::vector<std::uint8_t> ids(static_cast<std::size_t>(whole.voxelCount()));
+  volume.readRegion(whole, ids);
+  const auto at = [&ids](std::int64_t x, std::int64_t y, std::int64_t z) {
+    return ids[static_cast<std::size_t>(x + kSize * (y + kSize * z))];
+  };
+  std::int64_t agree = 0;
+  for (std::int64_t z = 0; z < kSize; ++z) {
+    for (std::int64_t y = 0; y < kSize; ++y) {
+      for (std::int64_t x = 0; x < kSize; ++x) {
+        const std::uint16_t label = labelAt(x, y, z);
+        agree += at(x, y, z) == (label == 0 ? 0 : label == 2 ? 2 : 1) ? 1 : 0;
+      }
+    }
+  }
+  EXPECT_GT(static_cast<double>(agree), 0.99 * static_cast<double>(whole.voxelCount()));
+
+  // A strided region that starts and ends inside bricks samples the same voxels.
+  const Box region{{5, 3, 7}, {91, 90, 95}};
+  constexpr std::int64_t kStride = 3;
+  const std::array<std::int64_t, 3> count{29, 29, 30};
+  std::vector<std::uint8_t> coarse(static_cast<std::size_t>(count[0] * count[1] * count[2]));
+  volume.readRegion(region, coarse, kStride);
+  std::size_t offset = 0;
+  for (std::int64_t k = 0; k < count[2]; ++k) {
+    for (std::int64_t j = 0; j < count[1]; ++j) {
+      for (std::int64_t i = 0; i < count[0]; ++i) {
+        ASSERT_EQ(coarse[offset++], at(5 + i * kStride, 3 + j * kStride, 7 + k * kStride))
+            << i << ' ' << j << ' ' << k;
+      }
+    }
+  }
+
+  // The 3D view's overview reads all bricks at once and shows the materials of every 4th voxel
+  // (level 2), like the slices of that level.
+  const VolumePreview preview = readVolumePreview(dataset, 24, nullptr, &volume);
+  ASSERT_EQ(preview.level, 2);
+  ASSERT_EQ(preview.dims, (std::array<std::int64_t, 3>{24, 24, 24}));
+  for (std::int64_t z = 0; z < 24; ++z) {
+    SliceRequest request;
+    request.axis = 2;
+    request.level = 2;
+    request.index = z * 4;
+    request.size = {24, 24};
+    const SliceImage slice = readSlice(dataset, request, nullptr, &volume);
+    for (std::int64_t y = 0; y < 24; ++y) {
+      for (std::int64_t x = 0; x < 24; ++x) {
+        const std::uint8_t expected =
+            at(x * 4, y * 4, z * 4) == 0
+                ? 0
+                : static_cast<std::uint8_t>(static_cast<int>(SliceOverlay::kMaterial) +
+                                            at(x * 4, y * 4, z * 4));
+        const auto pixel = static_cast<std::size_t>(x + 24 * y);
+        ASSERT_EQ(slice.overlay[pixel], expected) << x << ' ' << y << ' ' << z;
+        ASSERT_EQ(preview.overlay[pixel + static_cast<std::size_t>(z * 24 * 24)], expected)
+            << x << ' ' << y << ' ' << z;
+      }
+    }
+  }
 }
 
 TEST_F(MaterialsTest, RejectsBadOptions) {

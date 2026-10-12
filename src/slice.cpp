@@ -344,12 +344,31 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
                           << static_cast<unsigned>(preview.level);
     slice_request.origin = {box.min[0], box.min[1]};
     slice_request.size = {box.size(0), box.size(1)};
-    const SliceImage slice = readSlice(dataset, slice_request, porosity, materials);
+    // Materials below, for the whole box at once: per slice, every slice would look up all
+    // bricks of its plane again.
+    const SliceImage slice = readSlice(dataset, slice_request, porosity, nullptr);
     std::copy(slice.grey.begin(), slice.grey.end(),
               grey.begin() + static_cast<std::ptrdiff_t>(z * plane));
     std::copy(slice.overlay.begin(), slice.overlay.end(),
               preview.overlay.begin() + static_cast<std::ptrdiff_t>(z * plane));
   });
+  if (materials != nullptr) {
+    // Every 2^level-th level-0 voxel, like readSlice; pores and zones win over materials.
+    const auto shift = static_cast<unsigned>(preview.level);
+    Box footprint0;
+    for (std::size_t a = 0; a < 3; ++a) {
+      footprint0.min[a] = box.min[a] << shift;
+      footprint0.max[a] = std::min(box.max[a] << shift, info.dims[a]);
+    }
+    std::vector<std::uint8_t> ids(preview.overlay.size());
+    materials->readRegion(footprint0, ids, std::int64_t{1} << shift);
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      if (ids[i] != 0 && preview.overlay[i] == 0) {
+        preview.overlay[i] =
+            static_cast<std::uint8_t>(static_cast<int>(SliceOverlay::kMaterial) + ids[i]);
+      }
+    }
+  }
 
   if (request.window) {
     preview.low = (*request.window)[0];
