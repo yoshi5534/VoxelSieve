@@ -11,6 +11,13 @@
   `denoising`. `vs-denoise --benchmark` measures both on a synthetic scan against its noise-free
   version; `vs-synth --noise-correlation` makes correlated noise (ADR 0025).
 
+- **DICONDE in and out**: scans and their results can be written as DICONDE (ASTM E2339, DICOM
+  for nondestructive evaluation) with the new operation `export_diconde` and the tool
+  `vs-diconde`: the volume as CT slices with exact grey values, voxel size and position, the
+  inspection order as component, inspection and scan metadata, pores and loosened zones as
+  indications and the material segmentation as a derived label series. DICONDE files import like
+  DICOM slices, and the import reports their component and indications (ADR 0024).
+
 - **All results of a scan in one place**: the studio has a new stage *Results* that lists every
   analysis per scanned object (pores, materials, surface, nominal-actual comparison, report,
   plugin outputs) with key figures, pictures and files. Replaced results stay reachable below

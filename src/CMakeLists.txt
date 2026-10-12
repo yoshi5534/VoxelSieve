@@ -45,6 +45,7 @@ add_library(voxelsieve SHARED
   dataset.cpp
   dataset_reader.cpp
   denoise.cpp
+  diconde.cpp
   dicom.cpp
   detail/blocks.cpp
   detail/network.cpp

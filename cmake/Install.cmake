@@ -4,8 +4,8 @@
 # that is how the release packages are made (.github/workflows/release.yml).
 
 set(VOXELSIEVE_PROGRAMS
-  vs-compare vs-denoise vs-phantom vs-porosity vs-report vs-segment vs-sieve vs-studio vs-surface
-  vs-synth)
+  vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve vs-studio
+  vs-surface vs-synth)
 
 install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
   RUNTIME_DEPENDENCY_SET voxelsieve_runtime

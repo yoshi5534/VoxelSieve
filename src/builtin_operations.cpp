@@ -19,6 +19,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/denoise.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/diconde.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -513,6 +514,29 @@ std::string describeDims(const std::array<std::int64_t, 3>& dims) {
          std::to_string(dims[2]);
 }
 
+/// Whether the files of a DICOM import say anything about the part, as DICONDE files do.
+void addDicondeSummary(const DicomStackSource& source, const OperationContext& context,
+                       Json& summary) {
+  const DicondeInfo info = readDicondeInfo(source);
+  if (!info.component.name.empty()) {
+    context.log("Component '" + info.component.name + "'" +
+                (info.component.id.empty() ? "" : ", " + info.component.id) +
+                (info.component.material.empty() ? "" : ", " + info.component.material));
+    summary["component"] = info.component.name;
+  }
+  if (!info.inspection.study_id.empty()) {
+    summary["study_id"] = info.inspection.study_id;
+  }
+  if (!info.indications.empty()) {
+    context.log(std::to_string(info.indications.size()) + " indications in the files");
+    summary["indications"] = info.indications.size();
+  }
+  if (info.derived) {
+    context.log("The series holds derived images" +
+                (info.image_comments.empty() ? std::string() : ": " + info.image_comments));
+  }
+}
+
 class ImportDicom final : public Operation {
  public:
   ImportDicom() {
@@ -561,6 +585,7 @@ class ImportDicom final : public Operation {
                 describe(source.voxelSize()));
     OperationResult result = sieveDicom(source, source.filePose(), context);
     result.summary["series"] = source.seriesUid();
+    addDicondeSummary(source, context, result.summary);
     return result;
   }
 
@@ -916,6 +941,14 @@ class CompareCad final : public Operation {
   OperationInfo info_;
 };
 
+std::string readTextFile(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("Cannot read " + path.string());
+  }
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
 class Report final : public Operation {
  public:
   Report() {
@@ -949,19 +982,19 @@ class Report final : public Operation {
     const Json& p = context.params;
     Json order = Json::object();
     if (p.contains("order_path")) {
-      order = Json::parse(readText(p.at("order_path").get<std::string>()));
+      order = Json::parse(readTextFile(p.at("order_path").get<std::string>()));
     }
     if (p.contains("order")) {
       order.merge_patch(p.at("order"));
     }
     const std::string report_template = p.contains("template_path")
-                                            ? readText(p.at("template_path").get<std::string>())
+                                            ? readTextFile(p.at("template_path").get<std::string>())
                                             : std::string(defaultReportTemplate());
     const auto porosity_dir = context.inputs.at("porosity");
     const PorosityResult porosity = loadPorosityResult(porosity_dir);
     PorosityOptions options;
     if (std::filesystem::exists(porosity_dir / "options.json")) {
-      const Json used = Json::parse(readText(porosity_dir / "options.json"));
+      const Json used = Json::parse(readTextFile(porosity_dir / "options.json"));
       options.min_pore_voxels = used.value("min_pore_voxels", options.min_pore_voxels);
       options.zone_sigma = used.value("zone_sigma", options.zone_sigma);
       options.min_zone_void_fraction =
@@ -1003,14 +1036,6 @@ class Report final : public Operation {
   }
 
  private:
-  static std::string readText(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-      throw std::runtime_error("Cannot read " + path.string());
-    }
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-  }
-
   OperationInfo info_;
 };
 
@@ -1691,6 +1716,139 @@ class CompareObjects final : public Operation {
   OperationInfo info_;
 };
 
+class ExportDiconde final : public Operation {
+ public:
+  ExportDiconde() {
+    info_.id = "export_diconde";
+    info_.title = "Export DICONDE";
+    info_.description =
+        "Writes the scan as DICONDE (ASTM E2339, DICOM for nondestructive evaluation): one CT "
+        "image per slice with the exact grey values, voxel size and position in the global "
+        "coordinates. With a porosity result, its pores and loosened zones become indications; "
+        "with a material segmentation, its labels a second, derived series in the same "
+        "coordinates. The inspection order fills in the component (part, material, serial "
+        "number), the inspection (laboratory, customer, report and order number, inspector) and "
+        "the scan settings, and with acceptance limits the evaluation.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to export"},
+                    {"porosity", artifact::kPorosity, "Pores and zones as indications", true},
+                    {"materials", artifact::kMaterials, "Material labels as derived series", true}};
+    info_.outputs = {{"diconde", artifact::kDiconde, "DICONDE series (volume/, materials/)"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"order",
+           {{"type", "object"},
+            {"description",
+             "Inspection order: laboratory, customer, part, scan, acceptance limits (see "
+             "examples/inspection_order.json)"}}},
+          {"order_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Inspection order file"}}},
+          {"path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description",
+             "Directory to copy the series to as well, for other programs; must be empty"}}},
+          {"series_description",
+           {{"type", "string"},
+            {"description", "Description of the volume series; default: the object's name"}}},
+          {"indications",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Write the pores and zones of the porosity result as indications"}}},
+          {"material_labels",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Write the material segmentation as a series of labels"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    Json order = Json::object();
+    if (p.contains("order_path")) {
+      order = Json::parse(readTextFile(p.at("order_path").get<std::string>()));
+    }
+    if (p.contains("order")) {
+      order.merge_patch(p.at("order"));
+    }
+    std::filesystem::path copy_to;
+    if (p.contains("path")) {
+      copy_to = std::filesystem::absolute(p.at("path").get<std::string>());
+      if (std::filesystem::exists(copy_to) && !std::filesystem::is_empty(copy_to)) {
+        throw std::invalid_argument("Directory is not empty: " + copy_to.string());
+      }
+    }
+    DicondeWriteOptions options;
+    std::string object_name;
+    if (!context.object.empty()) {
+      const Json& object = objectEntry(context, context.object);
+      options.pose = entryPose(object);
+      object_name = object.at("name").get<std::string>();
+    }
+    options.series_description = p.value("series_description", object_name);
+
+    std::optional<Evaluation> evaluation;
+    const auto porosity = context.inputs.find("porosity");
+    if (porosity != context.inputs.end() && p.at("indications").get<bool>()) {
+      const PorosityResult result = loadPorosityResult(porosity->second);
+      options.indications = porosityIndications(result, options.pose);
+      if (const auto zones = inspectionZonesFromJson(order); !zones.empty()) {
+        evaluation = evaluate(result, zones);
+      }
+    }
+    applyInspectionOrder(order, options, evaluation ? &*evaluation : nullptr);
+
+    const auto dir = context.output_dir / "diconde";
+    const auto dataset = Dataset::open(context.inputs.at("dataset"), Dataset::kDefaultCacheBytes,
+                                       BrickLoading::kOnAccess);
+    const DicondeSeries volume = writeDicondeDataset(dataset, dir / "volume", options);
+    Json series = Json::array({{{"directory", "volume"},
+                                {"series_uid", volume.series_uid},
+                                {"files", volume.files},
+                                {"indications", options.indications.size()}}});
+    const auto materials = context.inputs.find("materials");
+    if (materials != context.inputs.end() && p.at("material_labels").get<bool>()) {
+      context.progress(0.6);
+      DicondeWriteOptions labels = options;
+      labels.inspection.study_uid = volume.study_uid;
+      labels.frame_of_reference_uid = volume.frame_of_reference_uid;
+      labels.series_uid.clear();
+      labels.series_number = 2;
+      labels.series_description = "Materials";
+      labels.indications.clear();
+      const DicondeSeries written =
+          writeDicondeMaterials(MaterialVolume::open(materials->second), dir / "materials", labels);
+      series.push_back({{"directory", "materials"},
+                        {"series_uid", written.series_uid},
+                        {"files", written.files}});
+    }
+    writeJson(dir / "diconde.json", {{"study_uid", volume.study_uid},
+                                     {"frame_of_reference_uid", volume.frame_of_reference_uid},
+                                     {"series", series}});
+    if (!copy_to.empty()) {
+      context.log("Copying to " + copy_to.string());
+      std::filesystem::create_directories(copy_to);
+      std::filesystem::copy(dir, copy_to, std::filesystem::copy_options::recursive);
+    }
+    OperationResult result;
+    result.outputs["diconde"] = "diconde";
+    result.summary = {{"series", series.size()},
+                      {"slices", volume.files},
+                      {"indications", options.indications.size()},
+                      {"study_uid", volume.study_uid}};
+    if (evaluation) {
+      result.summary["passed"] = evaluation->passed();
+    }
+    if (!copy_to.empty()) {
+      result.summary["path"] = copy_to.string();
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 }  // namespace
 
 void registerBuiltinOperations(OperationRegistry& registry) {
@@ -1711,6 +1869,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<AlignPoints>());
   registry.add(std::make_shared<AlignSurfaces>());
   registry.add(std::make_shared<CompareObjects>());
+  registry.add(std::make_shared<ExportDiconde>());
 }
 
 }  // namespace voxelsieve

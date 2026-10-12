@@ -32,6 +32,7 @@ assistant, using sample data. The tools:
 | `vs-segment` | dataset → material classes by grey value or a learned model (`--model`), scored against labels |
 | `vs-denoise` | dataset → denoised dataset (non-local means or a learned model); `--benchmark` compares them |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
+| `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
 | `vs-studio` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
@@ -144,6 +145,24 @@ Voxel size and pose come from the files. Signed samples are shifted by 32768 and
 rescale slope and intercept, recorded as the value mapping, so no value is lost. When a directory
 holds several series, the largest is read and the others are printed. In the studio this is the
 operation `import_dicom`.
+
+### DICONDE
+
+```sh
+./build/release/apps/vs-diconde/vs-diconde scan.vsieve --porosity scan.porosity \
+  --materials scan.materials --order examples/inspection_order.json --out scan.diconde
+./build/release/apps/vs-diconde/vs-diconde --info scan.diconde/volume
+```
+
+DICONDE (ASTM E2339) is DICOM for nondestructive evaluation (ADR 0024). VoxelSieve writes a
+dataset as a series of CT images, one file per slice, with the exact grey values, the voxel size
+and the position of the object; removed outside air gets the air level. The inspection order
+becomes the component (part, serial number, drawing, material), the inspection (laboratory,
+customer, report and order number, inspector, the evaluation against the acceptance limits) and
+the scan settings. Pores and loosened zones become indications with their position, volume and
+size, and a material segmentation a second, derived series of labels in the same coordinates.
+DICONDE files are read like other DICOM slices (`vs-sieve`, `import_dicom`), and the import
+reports their component and indications. In the studio this is the operation `export_diconde`.
 
 ### First look while importing, also from a network share
 

@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 add_executable(voxelsieve_tests
   test_dataset.cpp
   test_denoise.cpp
+  test_diconde.cpp
   test_dicom.cpp
   test_io.cpp
   test_materials.cpp
@@ -38,6 +39,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/examples/plugins/histogram
                  ${CMAKE_BINARY_DIR}/examples/plugins/histogram)
 add_dependencies(voxelsieve_tests voxelsieve_histogram)
 target_compile_definitions(voxelsieve_tests PRIVATE
+  VOXELSIEVE_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
   VOXELSIEVE_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins")
 
 include(GoogleTest)
@@ -112,6 +114,20 @@ add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_po
          --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report)
 set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
+# The sieved synthetic scan, its pores and the example order as DICONDE, then read back.
+add_test(NAME vs_diconde_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_diconde)
+set_tests_properties(vs_diconde_cli_clean PROPERTIES FIXTURES_SETUP cli_diconde)
+add_test(NAME vs_diconde_cli COMMAND vs-diconde ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
+         --porosity ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity
+         --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_diconde)
+set_tests_properties(vs_diconde_cli PROPERTIES DEPENDS vs_porosity_cli FIXTURES_REQUIRED cli_diconde
+                     PASS_REGULAR_EXPRESSION "volume +[0-9]+ slices, [0-9]+ indications")
+add_test(NAME vs_diconde_info_cli
+         COMMAND vs-diconde --info ${CMAKE_CURRENT_BINARY_DIR}/cli_diconde/volume)
+set_tests_properties(vs_diconde_info_cli PROPERTIES DEPENDS vs_diconde_cli
+                     PASS_REGULAR_EXPRESSION "component +Gearbox housing")
 add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
 set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Test report")
 
