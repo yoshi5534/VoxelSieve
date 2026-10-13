@@ -3,7 +3,8 @@
 ## Unreleased
 
 - **Release packages carry the release's version**: the packages and MCP bundles attached to the
-  releases 0.2.2 to 0.3.1 were named and versioned 0.2.1, and so was `--version` of the programs.
+  releases 0.2.2 to 0.3.1 were named and versioned 0.2.1, and so were the MCP server, reports and
+  DICONDE files written with them.
   They now take the version of the release tag. Run by hand with a tag, the "Packages" workflow
   rebuilds that release's packages and replaces the misnamed ones.
 
