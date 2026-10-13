@@ -20,7 +20,7 @@ casting solidifies last: `vs-synth --part bellhousing --voxel-size 0.1 --hot-spo
 truth (the smallest, 0.06 mm³, within 4 %), the zones deep in the flanges within 2 % and those
 just below the surface within 10 %, and the part volume within 0.02 %.
 
-Status: early development, latest release 0.2.1 (see [CHANGELOG.md](CHANGELOG.md)). New here?
+Status: early development, latest release 0.3.1 (see [CHANGELOG.md](CHANGELOG.md)). New here?
 The [quickstart](docs/quickstart.md) takes you from download to a porosity report with an AI
 assistant, using sample data. The tools:
 

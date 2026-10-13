@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Release packages carry the release's version**: the packages and MCP bundles attached to the
+  releases 0.2.2 to 0.3.1 were named and versioned 0.2.1, and so were the MCP server, reports and
+  DICONDE files written with them.
+  They now take the version of the release tag. Run by hand with a tag, the "Packages" workflow
+  rebuilds that release's packages and replaces the misnamed ones.
+
 - **Smooth material edges in the 3D view**: with a material segmentation shown, the surface
   view drew the voxels of the segmentation as blocks where it and the grey-value threshold
   disagreed, most visible when zoomed in, and so did materials left out. The edges of what the
