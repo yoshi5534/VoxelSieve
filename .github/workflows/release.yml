@@ -5,11 +5,18 @@ name: Packages
 # installation in Claude Desktop. The Linux job also writes the sample data of the quickstart and
 # builds and checks the Docker image from its package. When a release is published on GitHub, the
 # packages and the sample data are attached to it; otherwise they are workflow artifacts.
-# Publishing stays a manual step.
+# Publishing stays a manual step. All packages carry the version of the release tag (v0.3.1 gives
+# voxelsieve-0.3.1-*). Run by hand with a tag, the workflow rebuilds that release's packages and
+# replaces the ones attached to it.
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose packages to rebuild and replace (empty builds the branch)
+        required: false
+        default: ""
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -51,8 +58,25 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Version
+        id: version
+        run: |
+          if [[ -n "$TAG" ]]; then
+            version="${TAG#v}"
+          else
+            version="$(sed -n 's/^  set(VOXELSIEVE_VERSION \([0-9.]*\))$/\1/p' CMakeLists.txt)"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::No version x.y.z in tag '$TAG' or CMakeLists.txt (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -90,13 +114,14 @@ jobs:
           path: ${{ steps.vcpkg.outputs.archives }}
           key: ${{ steps.vcpkg.outputs.key }}
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DVOXELSIEVE_BUILD_TESTS=OFF -DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON
+        run: cmake --preset ${{ matrix.preset }} -DVOXELSIEVE_BUILD_TESTS=OFF -DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON \
+            -DVOXELSIEVE_VERSION=${{ steps.version.outputs.version }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Install
         id: install
         run: |
-          version="$(sed -n 's/^project(VoxelSieve VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          version="${{ steps.version.outputs.version }}"
           name="voxelsieve-${version}-${{ matrix.platform }}-${{ matrix.arch }}"
           cmake --install build/${{ matrix.preset }} --prefix "stage/$name"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -107,7 +132,11 @@ jobs:
           # vcpkg are moved away first).
           mv build build-moved
           mkdir -p check
-          stage/${{ steps.install.outputs.name }}/bin/vs-gui --mcp check < tests/mcp_tools_list.jsonl > tools.json
+          # Releases before 0.3.1 named the server vs-studio.
+          bin="stage/${{ steps.install.outputs.name }}/bin"
+          server="$bin/vs-gui"
+          if [[ ! -e "$server" && ! -e "$server.exe" ]]; then server="$bin/vs-studio"; fi
+          "$server" --mcp check < tests/mcp_tools_list.jsonl > tools.json
           grep -q run_porosity tools.json
           mv build-moved build
       - name: Pack
@@ -143,7 +172,17 @@ jobs:
           name: ${{ steps.install.outputs.name }}
           path: dist/*
       - name: Attach to the release
-        if: github.event_name == 'release'
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+        run: |
+          # Packages of this platform under another name (an older build with a wrong version)
+          # are removed, so the release holds one set per platform.
+          gh release view "$TAG" --json assets -q '.assets[].name' | while read -r asset; do
+            if [[ "$asset" =~ ^voxelsieve-.*-${{ matrix.platform }}-${{ matrix.arch }}\.(mcpb|zip|tar\.gz)$ ||
+                  ( "$RUNNER_OS" == Linux && "$asset" =~ ^voxelsieve-.*-samples\.zip$ ) ]] &&
+               [[ ! -e "dist/$asset" ]]; then
+              gh release delete-asset "$TAG" "$asset" --yes
+            fi
+          done
+          gh release upload "$TAG" dist/* --clobber

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(VoxelSieve VERSION 0.2.1 LANGUAGES CXX)
+# The release packages pass the version of their tag (-DVOXELSIEVE_VERSION=x.y.z), so programs,
+# file names and the MCP bundle all carry it; builds from a branch use the version below.
+if(NOT VOXELSIEVE_VERSION)
+  set(VOXELSIEVE_VERSION 0.3.1)
+endif()
+project(VoxelSieve VERSION ${VOXELSIEVE_VERSION} LANGUAGES CXX)
 
 # The presets set VCPKG_TARGET_TRIPLET. CMake only loads a toolchain on the first configure of a
 # build directory, so a directory configured before the switch to vcpkg silently keeps finding the
