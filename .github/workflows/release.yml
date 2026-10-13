@@ -114,7 +114,8 @@ jobs:
           path: ${{ steps.vcpkg.outputs.archives }}
           key: ${{ steps.vcpkg.outputs.key }}
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DVOXELSIEVE_BUILD_TESTS=OFF -DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON \
+        run: |
+          cmake --preset ${{ matrix.preset }} -DVOXELSIEVE_BUILD_TESTS=OFF -DVOXELSIEVE_INSTALL_RUNTIME_DEPS=ON \
             -DVOXELSIEVE_VERSION=${{ steps.version.outputs.version }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
