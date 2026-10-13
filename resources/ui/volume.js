@@ -96,6 +96,11 @@ uniform sampler3D overlay;
 uniform sampler2D transfer; // 256 x 1 RGBA: colour and opacity per grey value
 uniform sampler3D detailGrey;    // a finer level of the part near the camera
 uniform sampler3D detailOverlay;
+// What the material colouring lets be seen, filtered linearly so its edges are smooth surfaces
+// and not the faces of voxels: red 1 where the surface may lie (a material shown, or a pore),
+// green 1 where a material is not left out. Of the volume and of the detail.
+uniform sampler3D visibility;
+uniform sampler3D detailVisibility;
 uniform bool hasDetail;
 uniform vec3 detailMin;          // the detail region in texture coordinates of the volume
 uniform vec3 detailMax;
@@ -163,36 +168,67 @@ float greyAt(vec3 t) {
   return mix(coarse, fine, w);
 }
 
-// Differences of the grey values one voxel apart.
-vec3 coarseGradient(vec3 t) {
+// Differences of a channel of a volume and its detail one voxel apart, per world unit, so voxels
+// that are not cubes shade right.
+vec3 coarseDifferences(sampler3D volume, vec3 t, vec4 channel) {
   return vec3(
-    texture(grey, t + vec3(voxel.x, 0, 0)).r - texture(grey, t - vec3(voxel.x, 0, 0)).r,
-    texture(grey, t + vec3(0, voxel.y, 0)).r - texture(grey, t - vec3(0, voxel.y, 0)).r,
-    texture(grey, t + vec3(0, 0, voxel.z)).r - texture(grey, t - vec3(0, 0, voxel.z)).r);
+    dot(texture(volume, t + vec3(voxel.x, 0, 0)) - texture(volume, t - vec3(voxel.x, 0, 0)), channel),
+    dot(texture(volume, t + vec3(0, voxel.y, 0)) - texture(volume, t - vec3(0, voxel.y, 0)), channel),
+    dot(texture(volume, t + vec3(0, 0, voxel.z)) - texture(volume, t - vec3(0, 0, voxel.z)), channel));
 }
 
-vec3 detailGradient(vec3 t) {
+vec3 detailDifferences(sampler3D volume, vec3 t, vec4 channel) {
   vec3 d = detailAt(t);
   vec3 v = detailVoxel;
   return vec3(
-    texture(detailGrey, d + vec3(v.x, 0, 0)).r - texture(detailGrey, d - vec3(v.x, 0, 0)).r,
-    texture(detailGrey, d + vec3(0, v.y, 0)).r - texture(detailGrey, d - vec3(0, v.y, 0)).r,
-    texture(detailGrey, d + vec3(0, 0, v.z)).r - texture(detailGrey, d - vec3(0, 0, v.z)).r);
+    dot(texture(volume, d + vec3(v.x, 0, 0)) - texture(volume, d - vec3(v.x, 0, 0)), channel),
+    dot(texture(volume, d + vec3(0, v.y, 0)) - texture(volume, d - vec3(0, v.y, 0)), channel),
+    dot(texture(volume, d + vec3(0, 0, v.z)) - texture(volume, d - vec3(0, 0, v.z)), channel));
 }
 
+vec3 worldGradient(sampler3D coarse, sampler3D fine, vec3 t, vec4 channel) {
+  float w = detailWeight(t);
+  vec3 g = w < 1.0 ? coarseDifferences(coarse, t, channel) / (box * voxel) : vec3(0.0);
+  if (w > 0.0) {
+    g = mix(g, detailDifferences(fine, t, channel) / (box * (detailMax - detailMin) * detailVoxel),
+            w);
+  }
+  return g;
+}
+
+const vec4 kRed = vec4(1.0, 0.0, 0.0, 0.0);
+const vec4 kGreen = vec4(0.0, 1.0, 0.0, 0.0);
+
+// Differences of the grey values one voxel apart, per voxel (for the transfer function).
 vec3 gradientAt(vec3 t) {
   float w = detailWeight(t);
-  if (w <= 0.0) return coarseGradient(t);
-  if (w >= 1.0) return detailGradient(t);
-  return mix(coarseGradient(t), detailGradient(t), w);
+  vec3 g = w < 1.0 ? coarseDifferences(grey, t, kRed) : vec3(0.0);
+  return w > 0.0 ? mix(g, detailDifferences(detailGrey, t, kRed), w) : g;
 }
 
 vec3 normalAt(vec3 t) {
-  // Per voxel to per world unit, so voxels that are not cubes shade right.
+  vec3 g = worldGradient(grey, detailGrey, t, kRed);
+  return length(g) > 1e-5 ? -normalize(g) : vec3(0.0);
+}
+
+vec2 visibilityAt(vec3 t) {
   float w = detailWeight(t);
-  vec3 g = w < 1.0 ? coarseGradient(t) / (box * voxel) : vec3(0.0);
-  if (w > 0.0) {
-    g = mix(g, detailGradient(t) / (box * (detailMax - detailMin) * detailVoxel), w);
+  vec2 coarse = w < 1.0 ? texture(visibility, t).rg : vec2(0.0);
+  vec2 fine = w > 0.0 ? texture(detailVisibility, detailAt(t)).rg : vec2(0.0);
+  return mix(coarse, fine, w);
+}
+
+// Normal of the surface at t, where the grey value is above the threshold and the visibility
+// above one half: of the grey values, or of the edge of what the materials let be seen where that
+// edge is the nearer of the two.
+vec3 surfaceNormal(vec3 t, float value, float visible) {
+  vec3 g = worldGradient(grey, detailGrey, t, kRed);
+  if (materials) {
+    vec3 v = worldGradient(visibility, detailVisibility, t, kGreen + kRed);
+    // Distances to both edges, estimated from value and gradient.
+    float toGrey = (value - threshold) / max(length(g), 1e-5);
+    float toVisible = (visible - 0.5) / max(length(v), 1e-5);
+    if (toVisible < toGrey && length(v) > 1e-5) g = v;
   }
   return length(g) > 1e-5 ? -normalize(g) : vec3(0.0);
 }
@@ -215,8 +251,8 @@ int materialOf(int kind) {
   return materials && kind > 16 ? kind - 16 : 0;
 }
 
-bool materialHidden(int material) {
-  return material > 0 && ((hiddenMaterials >> (material - 1)) & 1) == 1;
+bool materialShown(int material) {
+  return material > 0 && ((hiddenMaterials >> (material - 1)) & 1) == 0;
 }
 
 // Opacity of one step of the given length for an opacity per reference length.
@@ -274,28 +310,33 @@ void main() {
     int kind = classAt(tex);
     float value = greyAt(tex);
     int material = materialOf(kind);
-    // A material left out is seen through like air, and so is what the segmentation counts as
-    // air: the grey values blend across the edge of a material left out.
-    if (materialHidden(material) || (mode == 0 && materials && kind == 0)) {
-      entered = true;
-      continue;
-    }
+    // A material left out is seen through like air, and in the surface view so is what the
+    // segmentation counts as air. The visibility is interpolated, so these edges are as smooth
+    // as the grey surface instead of showing the voxels of the segmentation.
+    vec2 visible = materials ? visibilityAt(tex) : vec2(1.0);
     if (mode == 0) {
       if (pores && kind == 1) {
         color = vec4(shade(poreColor, normalAt(tex), direction), 1.0);
         return;
       }
-      if (value >= threshold) {
+      if (value >= threshold && visible.r >= 0.5) {
         // On the cut face the grey gradient says nothing; light it as the plane it is.
         bool onCut = cut < 1.0 && tex.x > cut - 1.5 * voxel.x && !entered;
-        vec3 n = onCut ? vec3(1.0, 0.0, 0.0) : normalAt(tex);
+        vec3 n = onCut ? vec3(1.0, 0.0, 0.0) : surfaceNormal(tex, value, visible.r);
+        // The interpolated edge can lie in a voxel of air or of a material left out; its colour
+        // is that of the material shown just behind it.
+        for (int k = 1; materials && !materialShown(material) && kind != 2 && k <= 3; ++k) {
+          kind = classAt(tex + direction * stepSize * 0.5 * float(k) / (2.0 * box));
+          material = materialOf(kind);
+        }
         vec3 base = (pores && kind == 2) ? zoneColor
-            : material > 0 ? materialColors[(material - 1) % 8] : surfaceColor;
+            : materialShown(material) ? materialColors[(material - 1) % 8] : surfaceColor;
         color = vec4(shade(base, n, direction), 1.0);
         return;
       }
       entered = true;
     } else if (mode == 2) {
+      if (visible.g < 0.5) continue;
       highest = max(highest, value);
       porous = porous || (pores && kind == 1);
     } else {
@@ -310,6 +351,7 @@ void main() {
         sample_.a *= sample_.a;
         if (material > 0) sample_.rgb = materialColors[(material - 1) % 8];
       }
+      sample_.a *= visible.g;
       float a = stepOpacity(sample_.a, stepSize);
       if (a < 0.0005) continue;
       vec3 rgb = sample_.rgb;
@@ -469,6 +511,8 @@ class VolumeViewer {
     this.textures = null;
     this.detailUploaded = false;
     this.detailTextures = null;
+    this.visibilityTextures = null;
+    this.visibilityKey = null;
     this.transferUploaded = false;
     this.transferTexture = null;
     this.program = this.createProgram();
@@ -856,6 +900,7 @@ class VolumeViewer {
     this.textures = [texture(0, this.volume.grey, gl.LINEAR),
       texture(1, this.volume.overlay, gl.NEAREST)];
     this.uploaded = true;
+    this.visibilityKey = null;
   }
 
   uploadDetail() {
@@ -880,6 +925,35 @@ class VolumeViewer {
     };
     this.detailTextures = [texture(3, this.detail?.grey ?? empty, gl.LINEAR),
       texture(4, this.detail?.overlay ?? empty, gl.NEAREST)];
+    this.visibilityKey = null;
+  }
+
+  /// Uploads what the material colouring lets be seen, of the volume and of the detail, as two
+  /// channels per voxel (see `visibility` in VOLUME_FRAGMENT). The shader filters them linearly,
+  /// so the edges of the segmentation and of materials left out are smooth surfaces.
+  uploadVisibility() {
+    const gl = this.gl;
+    const texture = (unit, dims, overlay, previous) => {
+      if (previous) gl.deleteTexture(previous);
+      const handle = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_3D, handle);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.RG8, ...dims, 0, gl.RG, gl.UNSIGNED_BYTE,
+        visibilityChannels(overlay, this.hiddenMaterials));
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      for (const wrap of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
+        gl.texParameteri(gl.TEXTURE_3D, wrap, gl.CLAMP_TO_EDGE);
+      }
+      return handle;
+    };
+    const previous = this.visibilityTextures ?? [];
+    this.visibilityTextures = [
+      texture(5, this.volume.dims, this.volume.overlay, previous[0]),
+      this.detail ? texture(6, this.detail.dims, this.detail.overlay, previous[1])
+        : texture(6, [1, 1, 1], new Uint8Array(1), previous[1])];
+    this.visibilityKey = this.hiddenMaterials.join(',');
   }
 
   /// Sets the transfer function as 256 RGBA bytes (see lookupTable in transfer.js).
@@ -937,6 +1011,7 @@ class VolumeViewer {
     if (!this.uploaded) this.upload();
     if (!this.detailUploaded) this.uploadDetail();
     if (!this.transferUploaded) this.uploadTransfer();
+    if (this.visibilityKey !== this.hiddenMaterials.join(',')) this.uploadVisibility();
     const [x, y, z] = this.volume.dims;
     // The box in true proportions: voxel counts times edge lengths.
     const [sx, sy, sz] = this.volume.dims.map((d, a) => d * this.volume.voxelSize[a]);
@@ -949,6 +1024,8 @@ class VolumeViewer {
     gl.uniform1i(uniform('transfer'), 2);
     gl.uniform1i(uniform('detailGrey'), 3);
     gl.uniform1i(uniform('detailOverlay'), 4);
+    gl.uniform1i(uniform('visibility'), 5);
+    gl.uniform1i(uniform('detailVisibility'), 6);
     const detail = this.detail;
     gl.uniform1i(uniform('hasDetail'), detail ? 1 : 0);
     if (detail) {
@@ -997,6 +1074,25 @@ class VolumeViewer {
   }
 }
 
+/// The two visibility channels per voxel of an overlay (SliceOverlay classes, material m is
+/// 16 + m) for the 3D view: red 255 where the surface may lie (a material shown, a pore or a
+/// zone), green 255 where no material is left out.
+function visibilityChannels(overlay, hiddenMaterials) {
+  const hidden = new Set(hiddenMaterials);
+  const lookup = new Uint8Array(512);
+  for (let kind = 0; kind < 256; kind += 1) {
+    const left = kind > 16 && hidden.has(kind - 16);
+    lookup[2 * kind] = kind !== 0 && !left ? 255 : 0;
+    lookup[2 * kind + 1] = left ? 0 : 255;
+  }
+  const out = new Uint8Array(2 * overlay.length);
+  for (let i = 0; i < overlay.length; i += 1) {
+    out[2 * i] = lookup[2 * overlay[i]];
+    out[2 * i + 1] = lookup[2 * overlay[i] + 1];
+  }
+  return out;
+}
+
 function normalize(v) {
   const length = Math.hypot(...v);
   return v.map((c) => c / length);
@@ -1006,5 +1102,10 @@ function cross(a, b) {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
-window.VolumeViewer = VolumeViewer;
-window.BACKGROUNDS = BACKGROUNDS;
+if (typeof window !== 'undefined') {
+  window.VolumeViewer = VolumeViewer;
+  window.BACKGROUNDS = BACKGROUNDS;
+}
+if (typeof module !== 'undefined') {
+  module.exports = { visibilityChannels };
+}

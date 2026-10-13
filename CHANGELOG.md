@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Smooth material edges in the 3D view**: with a material segmentation shown, the surface
+  view drew the voxels of the segmentation as blocks where it and the grey-value threshold
+  disagreed, most visible when zoomed in, and so did materials left out. The edges of what the
+  materials let be seen are now interpolated like the grey values.
+
 - **3D view of large scans with materials**: with a material segmentation, the 3D view of a large
   scan could stay black at "Loading overview …" or end the program. The materials of the overview
   are now read brick by brick, each brick once.
