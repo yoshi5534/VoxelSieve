@@ -14,7 +14,8 @@ LABEL org.opencontainers.image.title="VoxelSieve" \
       org.opencontainers.image.description="Industrial CT analysis on OpenVDB: porosity, surfaces, nominal-actual comparison and reports, as browser UI and MCP server" \
       org.opencontainers.image.source="https://github.com/yoshi5534/VoxelSieve" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${VERSION}"
+      org.opencontainers.image.version="${VERSION}" \
+      io.modelcontextprotocol.server.name="io.github.yoshi5534/voxelsieve"
 
 COPY ${PACKAGE}/ /opt/voxelsieve/
 # Analyses run as an unprivileged user; give the host user's id with --user to write to a mounted
