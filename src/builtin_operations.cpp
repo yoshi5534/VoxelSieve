@@ -22,6 +22,7 @@
 #include "voxelsieve/diconde.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/isolate.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
@@ -1328,6 +1329,90 @@ class Denoise final : public Operation {
   OperationInfo info_;
 };
 
+class IsolatePart final : public Operation {
+ public:
+  IsolatePart() {
+    info_.id = "isolate_part";
+    info_.title = "Isolate part";
+    info_.description =
+        "Removes what is not the part from a dataset and writes a new dataset; the input stays "
+        "in the project. Voxels outside a region (a box in voxels, a crop) and objects other "
+        "than the largest ones, such as a holder, a support or loose debris that the scan also "
+        "shows, become outside air, so material segmentation, porosity, surfaces and volumes "
+        "see the part alone. An object is material connected across faces, with its voids. "
+        "Objects that touch stay one object: crop them apart with the region first. Later "
+        "steps of the object use the new dataset.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to isolate the part in"}};
+    info_.outputs = {{"dataset", artifact::kDataset, "Dataset with the part alone"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"region_min",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 0}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description", "First voxel (x, y, z) of the region to keep; default: 0, 0, 0"}}},
+          {"region_max",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 1}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description",
+             "End of the region (x, y, z), exclusive; default: the dimensions of the dataset"}}},
+          {"keep_objects",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 1},
+            {"description", "Keep the largest objects, 1: only the largest; 0: all objects"}}},
+          {"threshold",
+           {{"type", "number"},
+            {"description", "Grey value above which a voxel is material; default: the dataset's"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    IsolateOptions options;
+    if (p.contains("region_min") || p.contains("region_max")) {
+      Box region{{0, 0, 0}, dataset.info().dims};
+      if (p.contains("region_min")) {
+        region.min = p.at("region_min").get<std::array<std::int64_t, 3>>();
+      }
+      if (p.contains("region_max")) {
+        region.max = p.at("region_max").get<std::array<std::int64_t, 3>>();
+      }
+      options.region = region;
+    }
+    options.keep_objects = p.at("keep_objects").get<int>();
+    if (p.contains("threshold")) {
+      options.threshold = p.at("threshold").get<float>();
+    }
+    options.progress = [&context](std::string_view stage, double fraction) {
+      context.progress(stage == "objects"  ? 0.3 * fraction
+                       : stage == "bricks" ? 0.3 + 0.65 * fraction
+                                           : 0.95 + 0.05 * fraction);
+    };
+    const IsolateInfo info = isolatePart(dataset, context.output_dir / "dataset", options);
+    std::ostringstream text;
+    text << info.objects << " objects found; kept " << info.kept_material_voxels.size()
+         << ", removed " << info.removed_voxels << " voxels";
+    context.log(text.str());
+    OperationResult result;
+    result.outputs["dataset"] = "dataset";
+    result.summary = datasetSummary(info.dataset);
+    result.summary.update({{"objects_found", info.objects},
+                           {"kept_material_voxels", info.kept_material_voxels},
+                           {"removed_voxels", info.removed_voxels},
+                           {"cell_size", info.cell_size}});
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class AddMesh final : public Operation {
  public:
   AddMesh() {
@@ -1871,6 +1956,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<Denoise>());
+  registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());

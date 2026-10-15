@@ -517,6 +517,27 @@ TEST_F(GuiTest, DenoisesIntoANewDatasetOfTheSameObject) {
   EXPECT_THROW((void)gui.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
 }
 
+TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json dims = gui.call("dataset_info", {}).at("dims");
+  const Json isolated = gui.call(
+      "run_isolate_part",
+      {{"region_max", Json::array({dims.at(0).get<int>() / 2, dims.at(1), dims.at(2)})}});
+  ASSERT_EQ(isolated.at("status"), "done");
+  EXPECT_EQ(isolated.at("object"), imported.at("object"));
+  const Json& summary = isolated.at("summary");
+  EXPECT_EQ(summary.at("objects_found"), 1);
+  EXPECT_GT(summary.at("removed_voxels").get<std::int64_t>(), 0);
+  EXPECT_LT(summary.at("active_voxels").get<std::int64_t>(),
+            imported.at("summary").at("active_voxels").get<std::int64_t>());
+  // Later steps of the object take the isolated dataset.
+  const Json porosity = gui.call("run_porosity", {});
+  EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), isolated.at("id"));
+}
+
 TEST_F(GuiTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
   const auto project = (dir_ / "p").string();
   const Json state = {{"stage", "view"}, {"mode", "3d"}, {"transfer", {{"points", Json::array()}}}};
