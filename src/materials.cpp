@@ -135,8 +135,8 @@ Json toJson(const MaterialVolumeInfo& info) {
 std::vector<float> estimateMaterialThresholds(const Dataset& dataset, float air_threshold,
                                               int classes) {
   std::vector<std::uint64_t> histogram = datasetHistogram(dataset, 0);
-  const auto first = static_cast<std::size_t>(std::clamp(std::floor(air_threshold) + 1.0F, 0.0F,
-                                                          static_cast<float>(histogram.size())));
+  const auto first = static_cast<std::size_t>(
+      std::clamp(std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
   std::fill(histogram.begin(), histogram.begin() + static_cast<std::ptrdiff_t>(first), 0);
   return multiOtsu(histogram, classes);
 }
@@ -169,11 +169,10 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
   }
   // The grey values above the air threshold, without the sparse top end (the last 0.01 %, such
   // as metal or streaks) that would squeeze the materials into a few bins.
-  const auto first = static_cast<std::size_t>(std::clamp(
-      std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
-  const std::uint64_t total =
-      std::accumulate(histogram.begin() + static_cast<std::ptrdiff_t>(first), histogram.end(),
-                      std::uint64_t{0});
+  const auto first = static_cast<std::size_t>(
+      std::clamp(std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
+  const std::uint64_t total = std::accumulate(
+      histogram.begin() + static_cast<std::ptrdiff_t>(first), histogram.end(), std::uint64_t{0});
   MaterialSuggestion suggestion;
   if (total == 0) {
     return suggestion;
@@ -198,7 +197,7 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
         static_cast<double>(histogram[i]);
   }
   constexpr double kSigma = 1.5;
-  constexpr auto kRadius = static_cast<std::ptrdiff_t>(3.0 * kSigma + 0.5);
+  constexpr std::ptrdiff_t kRadius = 5;  // 3 sigma, rounded up
   std::vector<double> smooth(bins, 0.0);
   for (std::size_t b = 0; b < bins; ++b) {
     double sum = 0.0;
@@ -218,7 +217,7 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
 
   // Peaks: inner local maxima, with their prominence (height above the higher of the two lowest
   // points on the way to a higher peak or the end of the histogram on either side).
-  constexpr double kMinDip = 0.2;           // the histogram falls by a fifth on both sides
+  constexpr double kMinDip = 0.2;              // the histogram falls by a fifth on both sides
   constexpr double kMinRelativeHeight = 5e-3;  // not tiny next to the highest peak
   struct Peak {
     std::size_t bin;
@@ -230,8 +229,8 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
       continue;
     }
     double left = smooth[b];
-    for (std::size_t j = b; j-- > 0 && smooth[j] <= smooth[b];) {
-      left = std::min(left, smooth[j]);
+    for (std::size_t j = b; j > 0 && smooth[j - 1] <= smooth[b]; --j) {
+      left = std::min(left, smooth[j - 1]);
     }
     double right = smooth[b];
     for (std::size_t j = b + 1; j < bins && smooth[j] <= smooth[b]; ++j) {
@@ -288,10 +287,10 @@ IndexedMesh materialMesh(const MaterialVolume& volume, int id, std::size_t max_t
       for (std::int64_t y = 0; y < n[1]; ++y) {
         for (std::int64_t x = 0; x < n[0]; ++x, ++i) {
           if (ids[i] == id) {
-            accessor.setValue(openvdb::Coord(static_cast<openvdb::Int32>(x),
-                                             static_cast<openvdb::Int32>(y),
-                                             static_cast<openvdb::Int32>(z)),
-                              0.0F);
+            accessor.setValue(
+                openvdb::Coord(static_cast<openvdb::Int32>(x), static_cast<openvdb::Int32>(y),
+                               static_cast<openvdb::Int32>(z)),
+                0.0F);
           }
         }
       }

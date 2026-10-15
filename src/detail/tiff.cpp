@@ -2,8 +2,6 @@
 
 #include <tiffio.h>
 
-#include <pugixml.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -11,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <pugixml.hpp>
 #include <stdexcept>
 #include <string_view>
 
@@ -144,8 +143,7 @@ double descriptionNumber(const std::string& description, const std::string& key)
 /// A length unit in mm ("micron", "um", "µm", "nm", "mm", "cm", "m"); 0 if unknown.
 double unitMm(std::string unit) {
   std::erase_if(unit, [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; });
-  if (unit == "micron" || unit == "um" || unit == "µm" || unit == "microns" ||
-      unit == "μm") {
+  if (unit == "micron" || unit == "um" || unit == "µm" || unit == "microns" || unit == "μm") {
     return 1e-3;
   }
   if (unit == "mm") {
@@ -204,12 +202,11 @@ std::array<double, 3> omePixelSizeMm(const std::string& description) {
 /// Whether a resolution in pixels per inch is a real pixel size rather than a printing default
 /// such as 72 or 300 dpi that most image writers put into every file.
 bool physicalInchResolution(double dpi) {
-  constexpr std::array<double, 11> kPrintDefaults = {72.0,  96.0,  100.0,  120.0,  150.0, 200.0,
+  constexpr std::array<double, 11> kPrintDefaults = {72.0,  96.0,  100.0, 120.0,  150.0, 200.0,
                                                      300.0, 400.0, 600.0, 1200.0, 2400.0};
   constexpr double kFewest = 10.0;  // 2.5 mm pixels: no CT scan, often 1 dpi as a placeholder
   return dpi > kFewest && std::isfinite(dpi) &&
-         std::ranges::none_of(kPrintDefaults,
-                              [dpi](double d) { return std::abs(dpi - d) < 1e-3; });
+         std::ranges::none_of(kPrintDefaults, [dpi](double d) { return std::abs(dpi - d) < 1e-3; });
 }
 
 TiffPage currentPage(TIFF* tiff) {

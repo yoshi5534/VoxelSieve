@@ -61,7 +61,7 @@ std::vector<std::uint8_t> histogramPng(const std::vector<std::uint64_t>& counts,
   std::vector<std::uint8_t> rgb(static_cast<std::size_t>(kWidth * kHeight) * 3, kBackground);
   const auto set = [&rgb](int x, int y, const std::array<std::uint8_t, 3>& color) {
     std::copy(color.begin(), color.end(),
-              rgb.begin() + static_cast<std::ptrdiff_t>((x + kWidth * y) * 3));
+              rgb.begin() + (static_cast<std::ptrdiff_t>(x) + std::ptrdiff_t{kWidth} * y) * 3);
   };
   const std::uint64_t highest = counts.empty() ? 0 : *std::ranges::max_element(counts);
   for (int x = 0; x < kWidth && highest > 0; ++x) {
@@ -1095,8 +1095,8 @@ Json Gui::histogram(const Json& params) const {
   std::vector<std::uint64_t> counts(bins, 0);
   std::uint64_t total = 0;
   for (std::size_t v = low; v <= high; ++v) {
-    counts[std::min(bins - 1, static_cast<std::size_t>(static_cast<double>(v - low) / bin_width))] +=
-        full[v];
+    counts[std::min(bins - 1,
+                    static_cast<std::size_t>(static_cast<double>(v - low) / bin_width))] += full[v];
     total += full[v];
   }
   std::vector<float> starts{info.threshold};
@@ -1197,10 +1197,8 @@ Json Gui::viewObjects(const Json& params) const {
                              {"color", material->color},
                              {"triangles", mesh.triangles.size()}});
       }
-      listed.push_back({{"id", id},
-                        {"shape", "materials"},
-                        {"materials", materials},
-                        {"triangles", triangles}});
+      listed.push_back(
+          {{"id", id}, {"shape", "materials"}, {"materials", materials}, {"triangles", triangles}});
       continue;
     }
     const ObjectShape shape = shapeOf(source, budget);

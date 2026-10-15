@@ -104,8 +104,8 @@ TEST_F(MaterialsTest, SuggestsTheMaterialsFromTheHistogram) {
   const MaterialVolumeInfo info = segmentMaterials(dataset, dir_ / "materials", options);
   ASSERT_EQ(info.materials.size(), 2U);
   EXPECT_FLOAT_EQ(info.materials[1].lower, suggestion.thresholds[0]);
-  const MaterialScore score = scoreMaterials(MaterialVolume::open(dir_ / "materials"),
-                                             MemorySource(scene.labels), dataset);
+  const MaterialScore score =
+      scoreMaterials(MaterialVolume::open(dir_ / "materials"), MemorySource(scene.labels), dataset);
   EXPECT_EQ(score.components_per_material, (std::vector<std::int64_t>{0, 2, 1}));
   EXPECT_GT(score.dice[2], 0.97);
 }

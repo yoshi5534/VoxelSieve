@@ -51,11 +51,11 @@ struct Cells {
     const std::int64_t row = dims[0];
     const std::int64_t layer = dims[0] * dims[1];
     const std::array<std::pair<bool, std::int64_t>, 6> steps{{{x > 0, -1},
-                                                             {x + 1 < dims[0], 1},
-                                                             {y > 0, -row},
-                                                             {y + 1 < dims[1], row},
-                                                             {z > 0, -layer},
-                                                             {z + 1 < dims[2], layer}}};
+                                                              {x + 1 < dims[0], 1},
+                                                              {y > 0, -row},
+                                                              {y + 1 < dims[1], row},
+                                                              {z > 0, -layer},
+                                                              {z + 1 < dims[2], layer}}};
     for (const auto& [valid, step] : steps) {
       if (valid) {
         function(static_cast<std::size_t>(n + step));
@@ -67,8 +67,7 @@ struct Cells {
     const std::int64_t x = n % dims[0];
     const std::int64_t y = (n / dims[0]) % dims[1];
     const std::int64_t z = n / (dims[0] * dims[1]);
-    return x == 0 || y == 0 || z == 0 || x + 1 == dims[0] || y + 1 == dims[1] ||
-           z + 1 == dims[2];
+    return x == 0 || y == 0 || z == 0 || x + 1 == dims[0] || y + 1 == dims[1] || z + 1 == dims[2];
   }
 };
 
@@ -93,7 +92,7 @@ std::vector<std::uint16_t> countMaterial(const Dataset& dataset, const Cells& ce
           continue;
         }
         // Cells can straddle bricks, which run in parallel.
-        std::atomic_ref<std::uint16_t> count(counts[cells.ofVoxel(*c)]);
+        const std::atomic_ref<std::uint16_t> count(counts[cells.ofVoxel(*c)]);
         std::uint16_t value = count.load(std::memory_order_relaxed);
         while (value < std::numeric_limits<std::uint16_t>::max() &&
                !count.compare_exchange_weak(value, static_cast<std::uint16_t>(value + 1),

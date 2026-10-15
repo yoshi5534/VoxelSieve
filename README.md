@@ -127,8 +127,10 @@ refused. When the first and last slice cut through the part (a pipe, a drill cor
 xy` lets outside air in only from the sides, so the inside of the part is kept (ADR 0003). When
 the input holds several folders of slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
 `seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
-comes from a centimetre resolution or a key=value image description (including its slice `spacing`),
-otherwise 1 mm is assumed and printed; set it with `--voxel-size`. In the GUI this is the operation `import_tiff`.
+comes from an OME-XML image description (`PhysicalSizeX`, `Y`, `Z`), a centimetre resolution, an
+inch resolution that is not a printing default such as 72 or 300 dpi, or a key=value image
+description (including its slice `spacing`), otherwise 1 mm is assumed and printed; set it with
+`--voxel-size`. In the GUI this is the operation `import_tiff`.
 For a dataset, the slices are first decoded once, on all cores, into a temporary raw file of 2
 bytes per voxel in the output directory (elsewhere with `--staging-dir`), which is removed at the
 end; `--no-staging` reads the slices directly, which is much slower for large stacks.
@@ -456,9 +458,18 @@ They are aligned by steps that apply in order: "Move" by hand, "Align by point p
 clicked on both objects, and "Best fit of the surfaces" (from where they lie, or from the
 principal axes for objects far apart). "Nominal-actual comparison" then measures a scan against a
 CAD model or another scan where both lie; its result shows in the 3D view and the report like that
-of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture. The slice view shows
+of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture, with `materials` each
+material of a segmented volume as a surface in its colour. The slice view shows
 the other objects in the slice of the shown volume: other scans blended in their colour or as a
 checkerboard, CAD models as their cut lines.
+
+When a scan shows more than the part, such as the holder it stands in, "Isolate part"
+(`isolate_part`) writes a dataset without voxels outside a region (a box in voxels) and without
+every object but the largest ones, so segmentation, porosity and volumes see the part alone (ADR
+0026). Objects that touch are one object; the region crops them apart. The material segmentation
+finds the number of materials itself with `materials` 0, one per peak of the histogram, which the
+method `histogram` shows with its suggestion; "Material meshes" (`material_meshes`) exports the
+surface of each material as an STL.
 
 ![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
 
@@ -514,8 +525,9 @@ Imports and analyses of large scans can take longer than a client waits for one 
 50 s per call) and gives its step when it is done, and `cancel` stops it.
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
-`objects`, `results`, `object_select`, `dataset_info`, `view_slice` (a slice as an image, with
-pores and zones), `view_objects`, `import_preview`, `step_telemetry`, `list_files`, `read_file`
+`objects`, `results`, `object_select`, `dataset_info`, `histogram` (grey values with the
+threshold and a suggested number of materials), `view_slice` (a slice as an image, with pores and
+zones), `view_objects` (also in the colours of the materials), `import_preview`, `step_telemetry`, `list_files`, `read_file`
 (text files, and PNG pictures as images), `browse`, `wait`, `cancel` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). To keep the choice
 small for a model, the methods that keep the browser UI's saved views (`view_set`, `view_save`,

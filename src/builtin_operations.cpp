@@ -417,8 +417,8 @@ class ImportTiff final : public Operation {
     result.summary["bits_per_sample"] = source.bitsPerSample();
     // Where the voxel size came from, so that a client sees when it is only assumed.
     result.summary["voxel_size_from"] = p.contains("voxel_size_mm") ? "parameters"
-                                        : source.fileVoxelSize()     ? "files"
-                                                                     : "assumed";
+                                        : source.fileVoxelSize()    ? "files"
+                                                                    : "assumed";
     if (source.isFloat()) {
       result.summary["value_range"] = source.valueRange();
       result.summary["clipped_values"] = source.clippedValues();
@@ -1204,10 +1204,8 @@ class MaterialMeshes final : public Operation {
     const Json& p = context.params;
     const MaterialVolume volume = MaterialVolume::open(context.inputs.at("materials"));
     const MaterialVolumeInfo& info = volume.info();
-    std::vector<int> ids;
-    for (const Material& material : info.materials) {
-      ids.push_back(material.id);
-    }
+    std::vector<int> ids(info.materials.size());
+    std::ranges::transform(info.materials, ids.begin(), &Material::id);
     if (p.contains("material_ids")) {
       ids = p.at("material_ids").get<std::vector<int>>();
       for (const int id : ids) {
@@ -1458,7 +1456,8 @@ class IsolatePart final : public Operation {
             {"description", "Keep the largest objects, 1: only the largest; 0: all objects"}}},
           {"threshold",
            {{"type", "number"},
-            {"description", "Grey value above which a voxel is material; default: the dataset's"}}}}}};
+            {"description",
+             "Grey value above which a voxel is material; default: the dataset's"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 

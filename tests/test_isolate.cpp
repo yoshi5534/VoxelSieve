@@ -43,12 +43,11 @@ Volume16 makeScan(std::int64_t gap) {
     for (std::int64_t y = 0; y < kSize; ++y) {
       for (std::int64_t x = 0; x < kSize; ++x) {
         double value = kAir;
-        if (part(x, y, z)) {
+        const bool debris = in(x, 5, 8) && in(y, 80, 83) && in(z, 80, 83);
+        if (part(x, y, z) || debris) {
           value = kPart;
         } else if (in(x, 60 + gap, 70 + gap) && in(y, 20, 60) && in(z, 0, 60)) {
           value = kHolder;
-        } else if (in(x, 5, 8) && in(y, 80, 83) && in(z, 80, 83)) {
-          value = kPart;
         }
         scan.data[scan.index(x, y, z)] =
             static_cast<std::uint16_t>(std::clamp(value + noise(rng), 0.0, 65535.0));
