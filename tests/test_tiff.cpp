@@ -471,6 +471,28 @@ TEST_F(TiffTest, ReadsVoxelSize) {
   EXPECT_NEAR(from_spacing[1], 1.0 / 3.0, 1e-9);
   EXPECT_NEAR(from_spacing[2], 0.6, 1e-12);
 
+  // OME-XML gives the pixel size per axis, in micrometres unless a unit is given.
+  TiffSpec ome;
+  ome.resolution_unit = 2;
+  ome.resolution = 72.0;
+  ome.description =
+      R"(<?xml version="1.0" encoding="UTF-8"?>)"
+      R"(<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">)"
+      R"(<Image ID="Image:0"><Pixels ID="Pixels:0" DimensionOrder="XYZCT" Type="uint16" SizeX="6" )"
+      R"(SizeY="6" SizeZ="6" SizeC="1" SizeT="1" PhysicalSizeX="25" PhysicalSizeY="25" )"
+      R"(PhysicalSizeZ="0.04" PhysicalSizeZUnit="mm"/></Image></OME>)";
+  const VoxelSize from_ome =
+      TiffStackSource(writeStack(ome, "ome")).fileVoxelSize().value_or(VoxelSize(-1.0));
+  EXPECT_NEAR(from_ome[0], 0.025, 1e-12);
+  EXPECT_NEAR(from_ome[1], 0.025, 1e-12);
+  EXPECT_NEAR(from_ome[2], 0.04, 1e-12);
+
+  // An inch resolution that no printer uses is a pixel size: 1270 dpi is 20 micrometres.
+  TiffSpec fine_inch;
+  fine_inch.resolution_unit = 2;
+  fine_inch.resolution = 1270.0;
+  EXPECT_NEAR(TiffStackSource(writeStack(fine_inch, "fine_inch")).voxelSize()[0], 0.02, 1e-9);
+
   TiffSpec inch;  // print resolution, not a pixel size
   inch.resolution = 300.0;
   const TiffStackSource unknown(writeStack(inch, "inch"));

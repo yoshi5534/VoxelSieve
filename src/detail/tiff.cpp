@@ -2,6 +2,8 @@
 
 #include <tiffio.h>
 
+#include <pugixml.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -139,16 +141,11 @@ double descriptionNumber(const std::string& description, const std::string& key)
   }
 }
 
-/// Length unit of a key=value image description ("unit=micron"), in mm; 0 if none.
-double descriptionUnitMm(const std::string& description) {
-  const auto pos = description.find("unit=");
-  if (pos == std::string::npos) {
-    return 0.0;
-  }
-  const auto end = description.find('\n', pos);
-  std::string unit = description.substr(pos + 5, end == std::string::npos ? end : end - pos - 5);
+/// A length unit in mm ("micron", "um", "µm", "nm", "mm", "cm", "m"); 0 if unknown.
+double unitMm(std::string unit) {
   std::erase_if(unit, [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; });
-  if (unit == "micron" || unit == "um" || unit == "µm" || unit == "microns") {
+  if (unit == "micron" || unit == "um" || unit == "µm" || unit == "microns" ||
+      unit == "μm") {
     return 1e-3;
   }
   if (unit == "mm") {
@@ -160,7 +157,59 @@ double descriptionUnitMm(const std::string& description) {
   if (unit == "nm") {
     return 1e-6;
   }
+  if (unit == "m") {
+    return 1e3;
+  }
   return 0.0;
+}
+
+/// Length unit of a key=value image description ("unit=micron"), in mm; 0 if none.
+double descriptionUnitMm(const std::string& description) {
+  const auto pos = description.find("unit=");
+  if (pos == std::string::npos) {
+    return 0.0;
+  }
+  const auto end = description.find('\n', pos);
+  return unitMm(description.substr(pos + 5, end == std::string::npos ? end : end - pos - 5));
+}
+
+/// Pixel size of an OME-XML image description (PhysicalSizeX, Y and Z of its Pixels element, in
+/// micrometres unless a unit is given), in mm; zeros for what it does not give.
+std::array<double, 3> omePixelSizeMm(const std::string& description) {
+  std::array<double, 3> size{};
+  if (description.find("<OME") == std::string::npos) {
+    return size;
+  }
+  pugi::xml_document document;
+  if (!document.load_string(description.c_str())) {
+    return size;
+  }
+  const pugi::xml_node pixels = document.find_node([](const pugi::xml_node& node) {
+    const std::string_view name = node.name();
+    return name == "Pixels" || name.ends_with(":Pixels");
+  });
+  constexpr std::array<const char*, 3> kAxes = {"X", "Y", "Z"};
+  for (std::size_t a = 0; a < 3; ++a) {
+    const std::string key = std::string("PhysicalSize") + kAxes[a];
+    const double value = pixels.attribute(key.c_str()).as_double(0.0);
+    const pugi::xml_attribute unit = pixels.attribute((key + "Unit").c_str());
+    const double unit_mm = unit ? unitMm(unit.as_string()) : 1e-3;
+    if (value > 0.0 && std::isfinite(value)) {
+      size[a] = value * unit_mm;
+    }
+  }
+  return size;
+}
+
+/// Whether a resolution in pixels per inch is a real pixel size rather than a printing default
+/// such as 72 or 300 dpi that most image writers put into every file.
+bool physicalInchResolution(double dpi) {
+  constexpr std::array<double, 11> kPrintDefaults = {72.0,  96.0,  100.0,  120.0,  150.0, 200.0,
+                                                     300.0, 400.0, 600.0, 1200.0, 2400.0};
+  constexpr double kFewest = 10.0;  // 2.5 mm pixels: no CT scan, often 1 dpi as a placeholder
+  return dpi > kFewest && std::isfinite(dpi) &&
+         std::ranges::none_of(kPrintDefaults,
+                              [dpi](double d) { return std::abs(dpi - d) < 1e-3; });
 }
 
 TiffPage currentPage(TIFF* tiff) {
@@ -198,16 +247,28 @@ TiffPage currentPage(TIFF* tiff) {
   if (page.chunk_height == 0 || page.chunk_count < chunks_down * page.chunks_across) {
     throw std::runtime_error("TIFF image with missing strips or tiles");
   }
-  // Pixel size: a centimetre resolution, or pixels per unit of a key=value image description. Inch
-  // resolutions are left out: they are almost always a printing default such as 72 dpi.
-  // The slice spacing comes only from a key=value image description ("spacing=").
+  // Pixel size: from an OME-XML image description, else a centimetre resolution, an inch
+  // resolution that is not a printing default such as 72 or 300 dpi, or pixels per unit of a
+  // key=value image description. The slice spacing comes from the OME-XML or a key=value image
+  // description ("spacing=").
+  const auto ome = omePixelSizeMm(page.description);
+  if (ome[0] > 0.0) {
+    page.pixel_size_mm = ome[0];
+    page.pixel_height_mm = ome[1];
+    page.slice_spacing_mm = ome[2];
+    return page;
+  }
   const auto unit = field<std::uint16_t>(tiff, TIFFTAG_RESOLUTIONUNIT, RESUNIT_INCH);
   const double description_unit_mm =
       unit == RESUNIT_NONE ? descriptionUnitMm(page.description) : 0.0;
+  constexpr double kMmPerInch = 25.4;
   const auto size_of = [&](ttag_t tag) {
     const double resolution = field<float>(tiff, tag, 0.0F);
     if (resolution > 0.0 && unit == RESUNIT_CENTIMETER) {
       return 10.0 / resolution;
+    }
+    if (unit == RESUNIT_INCH && physicalInchResolution(resolution)) {
+      return kMmPerInch / resolution;
     }
     return resolution > 0.0 && description_unit_mm > 0.0 ? description_unit_mm / resolution : 0.0;
   };

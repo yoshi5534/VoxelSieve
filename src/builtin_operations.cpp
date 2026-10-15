@@ -387,7 +387,9 @@ class ImportTiff final : public Operation {
       context.log("Also in the input: " + other + " (choose with 'folder')");
     }
     if (!tiff.voxel_size && !source.fileVoxelSize()) {
-      context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
+      context.log(
+          "The files give no voxel size (no OME-XML, centimetre or inch resolution or "
+          "key=value description); 1 mm assumed. Set voxel_size_mm.");
     }
     context.log("Voxel size " + describe(source.voxelSize()));
     if (source.isFloat()) {
@@ -413,6 +415,10 @@ class ImportTiff final : public Operation {
     result.summary = datasetSummary(info);
     result.summary["slices"] = source.dims()[2];
     result.summary["bits_per_sample"] = source.bitsPerSample();
+    // Where the voxel size came from, so that a client sees when it is only assumed.
+    result.summary["voxel_size_from"] = p.contains("voxel_size_mm") ? "parameters"
+                                        : source.fileVoxelSize()     ? "files"
+                                                                     : "assumed";
     if (source.isFloat()) {
       result.summary["value_range"] = source.valueRange();
       result.summary["clipped_values"] = source.clippedValues();
