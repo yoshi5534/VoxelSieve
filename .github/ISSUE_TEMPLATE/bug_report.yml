@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work or gives a wrong result
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please do not attach scans of parts you may not share; dimensions,
+        voxel size and the JSON sidecar are usually enough.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Commands, the tool call of the AI assistant, or the steps in the GUI. A scan made with vs-synth or vs-phantom that shows the problem helps most.
+  - type: input
+    id: version
+    attributes:
+      label: VoxelSieve version
+      placeholder: "0.4.0 (as in the package name), or a commit"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Windows, macOS, Linux, Docker, built from source]
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data
+      description: Input format, dimensions, voxel size and file size of the scan.
+  - type: textarea
+    id: log
+    attributes:
+      label: Messages and telemetry
+      description: Error messages, the step's messages, or the file written with --telemetry.
+      render: text

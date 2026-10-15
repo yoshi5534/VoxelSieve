@@ -4,8 +4,10 @@ name: Packages
 # installed tree (programs, libraries, examples, licenses) and an MCP bundle (.mcpb) for one-click
 # installation in Claude Desktop. The Linux job also writes the sample data of the quickstart and
 # builds and checks the Docker image from its package. When a release is published on GitHub, the
-# packages and the sample data are attached to it; otherwise they are workflow artifacts.
-# Publishing stays a manual step. All packages carry the version of the release tag (v0.3.1 gives
+# packages and the sample data are attached to it, with server.json, the entry of the bundles for
+# the official MCP registry; otherwise they are workflow artifacts. Publishing stays a manual
+# step: the image is pushed to ghcr.io only for a release and only once the repository variable
+# PUBLISH_IMAGE is true, and the registry entry is published by hand with mcp-publisher. All packages carry the version of the release tag (v0.3.1 gives
 # voxelsieve-0.3.1-*). Run by hand with a tag, the workflow rebuilds that release's packages and
 # replaces the ones attached to it.
 on:
@@ -30,6 +32,7 @@ concurrency:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   VCPKG_DISABLE_METRICS: 1
@@ -168,6 +171,20 @@ jobs:
           # The image answers tools/list over MCP on its own.
           docker run -i --rm "voxelsieve:$version" --mcp /data < tests/mcp_tools_list.jsonl > image-tools.json
           grep -q run_porosity image-tools.json
+      - name: Push the Docker image (Linux)
+        # Off until the maintainer sets the repository variable PUBLISH_IMAGE to true (Settings >
+        # Secrets and variables > Actions > Variables). A new package on ghcr.io starts private.
+        if: runner.os == 'Linux' && env.TAG != '' && vars.PUBLISH_IMAGE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.install.outputs.version }}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/voxelsieve"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "voxelsieve:$version" "$image:$version"
+          docker tag "voxelsieve:$version" "$image:latest"
+          docker push "$image:$version"
+          docker push "$image:latest"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.install.outputs.name }}
@@ -187,3 +204,59 @@ jobs:
             fi
           done
           gh release upload "$TAG" dist/* --clobber
+
+  registry:
+    # server.json for the official MCP registry: the three bundles of this release with their
+    # download links and SHA-256 hashes. Without a tag (pull requests, branch runs) the links name
+    # the tag the version would get, so the file can be checked.
+    name: MCP registry entry
+    needs: package
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: voxelsieve-*
+          path: dist
+          merge-multiple: true
+      - name: Write server.json
+        run: |
+          shopt -s nullglob
+          bundles=(dist/*.mcpb)
+          if [[ ${#bundles[@]} -ne 3 ]]; then
+            echo "::error::Expected 3 MCP bundles, found ${#bundles[@]}"
+            exit 1
+          fi
+          version="$(basename "${bundles[0]}" | sed -n 's/^voxelsieve-\([0-9.]*\)-.*\.mcpb$/\1/p')"
+          tag="${TAG:-v$version}"
+          packages='[]'
+          for bundle in "${bundles[@]}"; do
+            name="$(basename "$bundle")"
+            packages="$(jq -c --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/$name" \
+              --arg sha "$(sha256sum "$bundle" | cut -d' ' -f1)" \
+              '. + [{registryType: "mcpb", identifier: $url, fileSha256: $sha, transport: {type: "stdio"}}]' \
+              <<< "$packages")"
+          done
+          jq -n --arg version "$version" --argjson packages "$packages" '{
+            "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+            name: "io.github.yoshi5534/voxelsieve",
+            title: "VoxelSieve",
+            description: "Analyse industrial CT scans locally: porosity, CAD comparison and inspection reports",
+            repository: {url: "https://github.com/yoshi5534/VoxelSieve", source: "github"},
+            websiteUrl: "https://github.com/yoshi5534/VoxelSieve/blob/main/docs/quickstart.md",
+            version: $version,
+            packages: $packages
+          }' > server.json
+          cat server.json
+          # The registry allows at most 100 characters of description.
+          test "$(jq -r .description server.json | wc -m)" -le 101
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-registry
+          path: server.json
+      - name: Attach to the release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" server.json --clobber --repo "$GITHUB_REPOSITORY"

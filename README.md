@@ -486,8 +486,9 @@ Linux (x64), Windows (x64) and macOS (Apple silicon), built from the same source
   anywhere; nothing else needs to be installed.
 - `voxelsieve-<version>-samples.zip`: a synthetic scan of a cast housing with its CAD model,
   inspection order and the ground truth of its defects, for the [quickstart](docs/quickstart.md).
-- A Docker image built from the Linux package with `packaging/Dockerfile`: the browser UI by
-  default, MCP with `--mcp` (see the [quickstart](docs/quickstart.md#docker)).
+- `ghcr.io/yoshi5534/voxelsieve`: a Docker image built from the Linux package with
+  `packaging/Dockerfile`: the browser UI by default, MCP with `--mcp` (see the
+  [quickstart](docs/quickstart.md#docker)).
 
 The packages are not signed yet. On macOS, clear the download flag once with
 `xattr -dr com.apple.quarantine voxelsieve-*`; on Windows, SmartScreen may ask for confirmation.

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Quickstart
+    url: https://github.com/yoshi5534/VoxelSieve/blob/main/docs/quickstart.md
+    about: From download to the first porosity report with sample data.
+  - name: Report a security problem
+    url: https://github.com/yoshi5534/VoxelSieve/security/advisories/new
+    about: Please report vulnerabilities privately, not as an issue (see SECURITY.md).

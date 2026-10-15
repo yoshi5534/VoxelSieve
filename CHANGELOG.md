@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Ready for the MCP registry and ghcr.io**: every release gets `server.json`, the entry of its
+  MCP bundles with download links and hashes for the official MCP registry, and the Docker image
+  carries the label the registry checks. Releases push the image to
+  `ghcr.io/yoshi5534/voxelsieve` once the maintainer turns it on, and the quickstart runs it from
+  there instead of building it. Issue templates and a security policy (`SECURITY.md`) are new.
+
 - **Long operations in the background**: an AI assistant can start the import or analysis of a
   large scan with `background: true` and follow it with the new tool `wait` instead of holding
   one tool call open for hours, which clients give up on. The new `cancel` stops the running
