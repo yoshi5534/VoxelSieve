@@ -53,7 +53,8 @@ Options:
                         authentication; keep it on the local machine
   --mcp                 Serve MCP on stdin/stdout instead of the browser UI
   --tools <profile>     Tools offered over MCP: analysis (default) leaves out the methods
-                        that keep the browser UI's saved views; all offers every method
+                        that keep the browser UI's saved views, list_operations and
+                        object_add; all offers every method
   --project <dir>       Open this project at start; created if the directory has no project
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like

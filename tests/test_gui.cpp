@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <map>
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -25,6 +28,26 @@ namespace voxelsieve {
 namespace {
 
 using Json = nlohmann::json;
+
+/// Reports progress until it is cancelled, like a long import of a large scan.
+class Spin final : public Operation {
+ public:
+  Spin() {
+    info_.id = "spin";
+    info_.title = "Spin";
+    info_.outputs = {{"table", "table", ""}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    for (;;) {  // progress throws once the operation is cancelled
+      context.progress(0.5);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  }
+
+ private:
+  OperationInfo info_;
+};
 
 class GuiTest : public ::testing::Test {
  protected:
@@ -531,13 +554,16 @@ TEST_F(GuiTest, McpServesToolsOverJsonRpc) {
   EXPECT_FALSE(
       server.handle({{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}).has_value());
 
-  // The analysis profile leaves out the six methods of the UI's saved views.
+  // The analysis profile leaves out the six methods of the UI's saved views, list_operations and
+  // object_add.
   const auto list = handle(request(3, "tools/list"));
-  EXPECT_EQ(list.at("result").at("tools").size(), gui.methods().size() - 6);
+  EXPECT_EQ(list.at("result").at("tools").size(), gui.methods().size() - 8);
   for (const Json& tool : list.at("result").at("tools")) {
     EXPECT_TRUE(tool.contains("inputSchema"));
     EXPECT_NE(tool.at("name"), "view_set");
     EXPECT_NE(tool.at("name"), "view_delete");
+    EXPECT_NE(tool.at("name"), "list_operations");
+    EXPECT_NE(tool.at("name"), "object_add");
     EXPECT_FALSE(tool.at("annotations").at("openWorldHint"));
     if (tool.at("name") == "dataset_info") {
       EXPECT_TRUE(tool.at("annotations").at("readOnlyHint"));
@@ -746,6 +772,90 @@ TEST_F(GuiTest, CancelledOperationsFailAtTheirNextProgressReport) {
       std::runtime_error);
   ASSERT_EQ(project.steps().size(), 1U);
   EXPECT_EQ(project.steps().front().status, "failed");
+}
+
+TEST_F(GuiTest, OperationsRunInTheBackgroundUntilDoneOrCancelled) {
+  Gui gui;
+  gui.registry().add(std::make_shared<Spin>());
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  EXPECT_EQ(gui.call("wait", {{"seconds", 0}}).at("done"), true);  // nothing runs
+
+  const Json started =
+      gui.call("run_import_raw",
+               {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}, {"background", true}});
+  EXPECT_TRUE(started.at("background"));
+  EXPECT_EQ(started.at("operation"), "import_raw");
+  Json waited = gui.call("wait", {{"seconds", 50}});
+  for (int i = 0; i < 20 && !waited.at("done").get<bool>(); ++i) {
+    waited = gui.call("wait", {{"seconds", 50}});
+  }
+  ASSERT_TRUE(waited.at("done"));
+  EXPECT_EQ(waited.at("result").at("operation"), "import_raw");
+  EXPECT_EQ(waited.at("result").at("status"), "done");
+  EXPECT_EQ(gui.call("project_status", {}).at("steps").size(), 1U);
+  EXPECT_THROW(gui.call("wait", {{"seconds", 3600}}), std::invalid_argument);
+  EXPECT_THROW(
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"background", "yes"}}),
+      std::invalid_argument);
+
+  // A running operation is reported by wait and blocks further operations until cancelled.
+  gui.call("run_spin", {{"background", true}});
+  waited = gui.call("wait", {{"seconds", 0.05}});
+  EXPECT_FALSE(waited.at("done"));
+  EXPECT_EQ(waited.at("running").at("operation"), "spin");
+  EXPECT_TRUE(waited.at("result").is_null());
+  EXPECT_THROW(gui.call("run_spin", {}), std::invalid_argument);
+  EXPECT_THROW(gui.call("undo", {}), std::invalid_argument);
+  EXPECT_EQ(gui.call("cancel", {}).at("cancelled"), "spin");
+  waited = gui.call("wait", {{"seconds", 50}});
+  ASSERT_TRUE(waited.at("done"));
+  EXPECT_EQ(waited.at("result").at("status"), "failed");
+  EXPECT_EQ(waited.at("result").at("operation"), "spin");
+  EXPECT_TRUE(gui.call("cancel", {}).at("cancelled").is_null());
+  const Json steps = gui.call("project_status", {}).at("steps");
+  ASSERT_EQ(steps.size(), 2U);
+  EXPECT_EQ(steps[1].at("status"), "failed");
+
+  // A GUI that goes away stops its background operation.
+  {
+    Gui leaving;
+    leaving.registry().add(std::make_shared<Spin>());
+    leaving.call("project_create", {{"path", (dir_ / "q").string()}});
+    leaving.call("run_spin", {{"background", true}});
+  }
+}
+
+TEST_F(GuiTest, McpCancelsOnlyCallsThatRunTheOperation) {
+  Gui gui;
+  gui.registry().add(std::make_shared<Spin>());
+  McpServer server(gui, [](const Json&) {});
+  const auto call = [&server](int id, const std::string& tool, const Json& arguments) {
+    return server.handle(request(id, "tools/call", {{"name", tool}, {"arguments", arguments}}))
+        .value_or(Json());
+  };
+  call(1, "project_create", {{"path", (dir_ / "p").string()}});
+  const Json started = call(2, "run_spin", {{"background", true}});
+  ASSERT_FALSE(started.at("result").at("isError")) << started.dump();
+  EXPECT_TRUE(started.at("result").at("structuredContent").at("background"));
+  const Json again = call(3, "run_spin", Json::object());
+  EXPECT_TRUE(again.at("result").at("isError"));
+  EXPECT_NE(again.at("result").at("content")[0].at("text").get<std::string>().find("still running"),
+            std::string::npos);
+
+  // A client that gives up on a wait call cancels the call, not the operation.
+  auto waiting =
+      std::async(std::launch::async, [&call] { return call(4, "wait", {{"seconds", 1}}); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(server.handle(
+      {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 4}}}}));
+  EXPECT_FALSE(waiting.get().at("result").at("structuredContent").at("done"));
+  EXPECT_EQ(gui.call("project_status", {}).at("running").at("operation"), "spin");
+
+  const Json cancelled = call(5, "cancel", Json::object());
+  EXPECT_EQ(cancelled.at("result").at("structuredContent").at("cancelled"), "spin");
+  const Json waited = call(6, "wait", {{"seconds", 50}});
+  EXPECT_TRUE(waited.at("result").at("structuredContent").at("done"));
+  EXPECT_EQ(waited.at("result").at("structuredContent").at("result").at("status"), "failed");
 }
 
 TEST_F(GuiTest, McpCancellationOnlyConcernsRunningCalls) {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Long operations in the background**: an AI assistant can start the import or analysis of a
+  large scan with `background: true` and follow it with the new tool `wait` instead of holding
+  one tool call open for hours, which clients give up on. The new `cancel` stops the running
+  operation, over MCP and with the new *Cancel* button of the browser UI. A client that gives up
+  on a call no longer stops an operation the call did not start. The MCP tool set for analyses
+  leaves out `list_operations` and `object_add`, which other tools already cover; `--tools all`
+  still offers them.
+
 - **Release packages carry the release's version**: the packages and MCP bundles attached to the
   releases 0.2.2 to 0.3.1 were named and versioned 0.2.1, and so were the MCP server, reports and
   DICONDE files written with them.

@@ -110,3 +110,14 @@ takes the views over before it replaces the project). The state is opaque JSON t
 limited to 256 kB; pictures must be PNG. Suggested renderings are computed in the browser from the
 histogram of the preview (Otsu split into air and material, the material peak and its width,
 further prominent peaks), since they need no data beyond it.
+
+Addendum (2026-10-15, long operations): importing a scan of hundreds of GB takes hours, longer
+than an MCP client waits for one tool call, and a client that gives up cancels the call. So
+`run_<operation>` takes `background: true`: the call checks the parameters and inputs, starts the
+operation on a thread of the GUI and returns at once. `wait` waits for the running operation, at
+most 50 s per call so no client times out, and returns its progress or, once done, the step of
+the latest background run (or its error); `cancel` stops the running operation at its next
+progress report, for the browser UI as for MCP. Still one operation runs at a time, and the step
+lands in the protocol as with a direct call. Cancelling an MCP call stops the operation only when
+that call runs it, not a `wait` or a call that started it in the background. Destroying the GUI
+cancels a background operation and waits for it.

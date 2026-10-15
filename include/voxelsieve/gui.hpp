@@ -2,13 +2,16 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "voxelsieve/operation.hpp"
@@ -33,11 +36,21 @@ struct GuiMethod {
 ///
 /// Methods that read a step output take the latest output of that type by default: of the active
 /// object when it has one, else of the whole project.
+///
+/// `run_<operation>` with `background: true` returns as soon as the operation has started and runs
+/// it on a thread of its own, for imports and analyses that take longer than a client waits for
+/// one call; `wait` waits for it and gives its step, `cancel` stops it.
 class Gui {
  public:
   /// Registers the built-in operations and loads plugins from `plugin_dirs`; the load messages are
   /// available through `pluginMessages()`.
   explicit Gui(const std::vector<std::filesystem::path>& plugin_dirs = {});
+  /// Cancels an operation running in the background and waits for it.
+  ~Gui();
+  Gui(const Gui&) = delete;
+  Gui& operator=(const Gui&) = delete;
+  Gui(Gui&&) = delete;
+  Gui& operator=(Gui&&) = delete;
 
   [[nodiscard]] const OperationRegistry& registry() const { return registry_; }
   /// For adding operations in-process; not while calls are running.
@@ -137,8 +150,23 @@ class Gui {
   Project& project();
   [[nodiscard]] const Project& project() const;
   nlohmann::json status() const;
+  /// An operation that has been checked and marked as running, with the copy of the project it
+  /// runs on.
+  struct PreparedRun {
+    std::string operation;
+    nlohmann::json params;
+    std::map<std::string, ArtifactRef> inputs;
+    StepTarget target;
+    std::optional<Project> working;
+  };
+  /// Runs `operation` and returns its step; with "background": true in `params`, starts it on
+  /// background_ and returns at once.
   nlohmann::json runOperation(const std::string& operation, nlohmann::json params,
                               const std::function<void(double)>& progress);
+  /// Runs a prepared operation and makes its project copy the project, also when it fails.
+  nlohmann::json executeRun(PreparedRun& run, const std::function<void(double)>& progress);
+  /// The wait method: waits up to `seconds` until no operation runs; needs mutex_ not held.
+  nlohmann::json waitForOperation(double seconds);
   [[nodiscard]] std::filesystem::path artifactPath(const nlohmann::json& params) const;
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
@@ -189,6 +217,11 @@ class Gui {
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_
   std::string running_operation_;
+  std::condition_variable idle_;  // notified when running_ turns false
+  // The operation started with background: true, and the outcome of the latest one: its step, or
+  // {operation, error}. Guarded by mutex_.
+  std::thread background_;
+  nlohmann::json background_result_;
   // The preview the running import handed over (ADR 0020), guarded by mutex_.
   nlohmann::json running_preview_;
   std::vector<std::uint8_t> running_preview_png_;

@@ -37,25 +37,30 @@ constexpr const char* kInstructions =
     "dataset), run_porosity, run_report with the inspection order. Inputs are taken from the "
     "latest step with the right output type unless given. project_status shows the step "
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "
-    "with read_file, use dataset_info and the summaries of the steps. The result files of the "
-    "steps (report, porosity results, their pictures) are also resources.";
+    "with read_file, use dataset_info and the summaries of the steps. Imports and analyses of "
+    "large scans can take minutes to hours: give run_ tools background: true and call wait "
+    "until done is true; cancel stops the operation. The result files of the steps (report, "
+    "porosity results, their pictures) are also resources.";
 
-/// Methods that only keep the browser UI's view state; hidden in the analysis profile.
-constexpr std::array<std::string_view, 6> kViewStateMethods = {
-    "view_set", "view_save", "view_list", "view_image", "view_rename", "view_delete"};
+/// Methods hidden in the analysis profile, so a model chooses among fewer tools: those that only
+/// keep the browser UI's view state, list_operations (tools/list already carries every
+/// operation's schema) and object_add (run_open_dataset and run_add_mesh do the same).
+constexpr std::array<std::string_view, 8> kHiddenAnalysisMethods = {
+    "view_set",    "view_save",   "view_list",       "view_image",
+    "view_rename", "view_delete", "list_operations", "object_add"};
 
 /// Methods that change nothing: no project, no file, no state of the GUI.
-constexpr std::array<std::string_view, 14> kReadOnlyMethods = {
+constexpr std::array<std::string_view, 15> kReadOnlyMethods = {
     "project_status", "objects",    "results",    "step_telemetry", "list_operations",
     "dataset_info",   "list_files", "view_slice", "view_objects",   "view_list",
-    "view_image",     "browse",     "read_file",  "import_preview"};
+    "view_image",     "browse",     "read_file",  "import_preview", "wait"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
 constexpr std::array<std::string_view, 1> kDestructiveMethods = {"view_delete"};
 
 /// Methods whose second call with the same arguments changes nothing more.
-constexpr std::array<std::string_view, 3> kIdempotentMethods = {"project_open", "object_select",
-                                                                "view_set"};
+constexpr std::array<std::string_view, 4> kIdempotentMethods = {"project_open", "object_select",
+                                                                "view_set", "cancel"};
 
 /// Output types whose files are resources: results small enough to read, unlike datasets.
 constexpr std::array<std::string_view, 4> kResourceOutputTypes = {"report", "porosity",
@@ -224,7 +229,7 @@ McpServer::McpServer(Gui& gui, std::function<void(const Json&)> send, McpTools t
     : gui_(gui), send_(std::move(send)), tools_(tools) {}
 
 bool McpServer::offered(const std::string& tool) const {
-  return tools_ == McpTools::kAll || !contains(kViewStateMethods, tool);
+  return tools_ == McpTools::kAll || !contains(kHiddenAnalysisMethods, tool);
 }
 
 Json McpServer::listResources() const {
@@ -344,9 +349,14 @@ Json McpServer::callTool(const Json& id, const Json& params) {
              {"params", {{"progressToken", token}, {"progress", fraction}, {"total", 1.0}}}});
     };
   }
+  // Cancelling this call stops the operation only when the call runs it: not for one started in
+  // the background, and not for other tools such as wait.
+  const bool background = arguments.is_object() && arguments.contains("background") &&
+                          arguments.at("background") == true;
+  const bool runs_operation = (name.starts_with("run_") || name == "object_add") && !background;
   {
     const std::scoped_lock lock(mutex_);
-    running_.insert(id.dump());
+    running_[id.dump()] = runs_operation;
   }
   struct Done {
     McpServer& server;
@@ -379,9 +389,11 @@ std::optional<Json> McpServer::handle(const Json& message) {
         message.at("params").contains("requestId")) {
       const std::string id = message.at("params").at("requestId").dump();
       const std::scoped_lock lock(mutex_);
-      if (running_.contains(id)) {
+      if (const auto call = running_.find(id); call != running_.end()) {
         cancelled_.insert(id);
-        gui_.cancel();  // one operation runs at a time: the one of this call
+        if (call->second) {
+          gui_.cancel();  // one operation runs at a time: the one of this call
+        }
       }
     }
     return std::nullopt;  // other notifications: initialized, ...
