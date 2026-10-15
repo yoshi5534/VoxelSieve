@@ -449,8 +449,10 @@ std::vector<GuiMethod> Gui::methods() const {
       {"view_objects",
        "Renders objects where they lie in global coordinates as a PNG image, each in its own "
        "colour (listed in the result): meshes as their triangles, volumes as their extracted "
-       "surface or, before a surface step, as the box they fill. Shows whether an alignment "
-       "worked; z is up in the image.",
+       "surface or, before a surface step, as the box they fill. With materials, volumes with a "
+       "material segmentation show the surface of each material in its colour instead; choose "
+       "material_ids to look at inner materials alone. Shows whether an alignment worked; z is "
+       "up in the image.",
        objectSchema(
            {{"objects",
              {{"type", "array"},
@@ -469,7 +471,15 @@ std::vector<GuiMethod> Gui::methods() const {
               {"minimum", 1000},
               {"maximum", 5000000},
               {"default", 300000},
-              {"description", "Triangle budget of each volume's surface"}}}})},
+              {"description", "Triangle budget of each volume's surface"}}},
+            {"materials",
+             {{"type", "boolean"},
+              {"default", false},
+              {"description", "Volumes in the colours of their latest material segmentation"}}},
+            {"material_ids",
+             {{"type", "array"},
+              {"items", {{"type", "integer"}, {"minimum", 1}}},
+              {"description", "With materials: the materials to show; default: all"}}}})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -899,6 +909,9 @@ Gui::ObjectSource Gui::objectSource(const std::string& id) const {
     if (const auto surface = project().latest(artifact::kSurface, id)) {
       source.surface_file = project().resolve(*surface) / "surface.vss";
     }
+    if (const auto materials = project().latest(artifact::kMaterials, id)) {
+      source.materials_dir = project().resolve(*materials);
+    }
   }
   return source;
 }
@@ -1130,12 +1143,10 @@ Json Gui::viewObjects(const Json& params) const {
   std::array<double, 3> low{kInf, kInf, kInf};
   std::array<double, 3> high{-kInf, -kInf, -kInf};
   Json listed = Json::array();
-  for (const std::string& id : ids) {
-    const ObjectShape shape = objectShape(id, budget);
-    const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
-    const auto& color = kObjectColors[index % kObjectColors.size()];
+  const auto add = [&](const IndexedMesh& mesh, const ObjectShape& shape,
+                       const std::array<std::uint8_t, 3>& color) {
     const auto offset = static_cast<std::uint32_t>(scene.points.size());
-    for (const auto& p : shape.mesh->points) {
+    for (const auto& p : mesh.points) {
       const auto q =
           shape.pose.apply({p[0] * shape.scale[0], p[1] * shape.scale[1], p[2] * shape.scale[2]});
       scene.points.push_back(
@@ -1145,14 +1156,64 @@ Json Gui::viewObjects(const Json& params) const {
         high[k] = std::max(high[k], q[k]);
       }
     }
-    colors.insert(colors.end(), shape.mesh->points.size(), color);
-    for (const auto& t : shape.mesh->triangles) {
+    colors.insert(colors.end(), mesh.points.size(), color);
+    for (const auto& t : mesh.triangles) {
       scene.triangles.push_back({t[0] + offset, t[1] + offset, t[2] + offset});
     }
+  };
+  const bool by_material = params.at("materials").get<bool>();
+  const auto chosen = params.contains("material_ids")
+                          ? params.at("material_ids").get<std::vector<int>>()
+                          : std::vector<int>{};
+  for (const std::string& id : ids) {
+    ObjectSource source;
+    {
+      const std::scoped_lock lock(mutex_);
+      source = objectSource(id);
+    }
+    if (by_material && !source.materials_dir.empty()) {
+      // The surface of each material, in its colour.
+      const auto volume = openMaterials(source.materials_dir);
+      std::vector<const Material*> shown;
+      for (const Material& material : volume->info().materials) {
+        if (chosen.empty() || std::ranges::find(chosen, material.id) != chosen.end()) {
+          shown.push_back(&material);
+        }
+      }
+      ObjectShape shape;
+      shape.pose = source.object.pose;
+      for (std::size_t k = 0; k < 3; ++k) {
+        shape.scale[k] = volume->info().voxel_size[k];
+      }
+      Json materials = Json::array();
+      std::size_t triangles = 0;
+      for (const Material* material : shown) {
+        const IndexedMesh mesh =
+            materialMesh(*volume, material->id, std::max<std::size_t>(1, budget / shown.size()));
+        add(mesh, shape, material->color);
+        triangles += mesh.triangles.size();
+        materials.push_back({{"id", material->id},
+                             {"name", material->name},
+                             {"color", material->color},
+                             {"triangles", mesh.triangles.size()}});
+      }
+      listed.push_back({{"id", id},
+                        {"shape", "materials"},
+                        {"materials", materials},
+                        {"triangles", triangles}});
+      continue;
+    }
+    const ObjectShape shape = shapeOf(source, budget);
+    const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
+    const auto& color = kObjectColors[index % kObjectColors.size()];
+    add(*shape.mesh, shape, color);
     listed.push_back({{"id", id},
                       {"shape", shape.shape},
                       {"color", color},
                       {"triangles", shape.mesh->triangles.size()}});
+  }
+  if (scene.triangles.empty()) {
+    throw std::invalid_argument("Nothing to show: the chosen materials have no voxels");
   }
   RenderScene render_scene;
   render_scene.mesh = &scene;

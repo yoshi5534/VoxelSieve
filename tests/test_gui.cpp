@@ -458,6 +458,39 @@ TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
   EXPECT_EQ(segmented.at("summary").at("materials_from_histogram"), true);
 }
 
+TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json plain = gui.call("view_objects", {{"materials", true}});
+  EXPECT_EQ(plain.at("objects").at(0).at("shape"), "box");  // no segmentation yet
+  (void)gui.call("run_segment_materials",
+                 {{"materials", 1}, {"material_colors", Json::array({"#20a0ff"})}});
+  const Json view = gui.call("view_objects", {{"materials", true}, {"width", 200}, {"height", 160}});
+  const Json& object = view.at("objects").at(0);
+  EXPECT_EQ(object.at("shape"), "materials");
+  ASSERT_EQ(object.at("materials").size(), 1U);
+  EXPECT_EQ(object.at("materials").at(0).at("color"), Json::array({32, 160, 255}));
+  EXPECT_GT(object.at("triangles").get<int>(), 0);
+  // The box of 6 x 5 x 4 mm from the origin.
+  EXPECT_NEAR(view.at("bounds_max_mm").at(0).get<double>() -
+                  view.at("bounds_min_mm").at(0).get<double>(),
+              6.0, 0.3);
+  EXPECT_THROW((void)gui.call("view_objects", {{"materials", true}, {"material_ids", {7}}}),
+               std::invalid_argument);
+
+  const Json exported = gui.call("run_material_meshes", {});
+  ASSERT_EQ(exported.at("status"), "done");
+  const Json& mesh = exported.at("summary").at("meshes").at(0);
+  const Json files = gui.call("list_files", {{"step", exported.at("id")}});
+  const auto stl = std::filesystem::path(files.at("path").get<std::string>()) /
+                   mesh.at("file").get<std::string>();
+  EXPECT_NEAR(meshVolumeMm3(readStl(stl)), 120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125,
+              4.0);
+  EXPECT_THROW((void)gui.call("run_material_meshes", {{"material_ids", {5}}}),
+               std::invalid_argument);
+}
+
 TEST_F(GuiTest, SegmentsWithALearnedModel) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});

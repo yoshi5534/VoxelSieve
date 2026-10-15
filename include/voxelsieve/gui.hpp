@@ -188,6 +188,7 @@ class Gui {
     ProjectObject object;
     std::filesystem::path source;        // dataset directory or STL file
     std::filesystem::path surface_file;  // surface.vss of its latest surface step, or empty
+    std::filesystem::path materials_dir;  // its latest material volume, or empty
   };
   /// Need mutex_ held.
   [[nodiscard]] ObjectSource objectSource(const std::string& id) const;

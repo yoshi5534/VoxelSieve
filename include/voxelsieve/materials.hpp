@@ -19,6 +19,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -101,6 +102,15 @@ class MaterialVolume {
   explicit MaterialVolume(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
+
+/// Surface of material `id` of `volume` as a triangle mesh in level-0 voxel coordinates (voxel
+/// index, not mm), facing outwards: the boundary between its voxels and all others, so a sheet one
+/// voxel thin keeps both faces. Meshed from every stride-th voxel, the stride the smallest power
+/// of two that reads at most `max_samples` voxels and, when `max_triangles` is not 0, gives at most
+/// that many triangles. Empty when the material has no voxels.
+[[nodiscard]] IndexedMesh materialMesh(const MaterialVolume& volume, int id,
+                                       std::size_t max_triangles = 0,
+                                       std::int64_t max_samples = std::int64_t{1} << 26);
 
 /// Agreement of a material volume with labelled components (ground truth).
 struct MaterialScore {

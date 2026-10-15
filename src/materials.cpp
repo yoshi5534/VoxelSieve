@@ -1,6 +1,7 @@
 #include "voxelsieve/materials.hpp"
 
 #include <openvdb/io/File.h>
+#include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
@@ -259,6 +260,69 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
     }
   }
   return suggestion;
+}
+
+IndexedMesh materialMesh(const MaterialVolume& volume, int id, std::size_t max_triangles,
+                         std::int64_t max_samples) {
+  const MaterialVolumeInfo& info = volume.info();
+  const Box whole{{0, 0, 0}, info.dims};
+  const std::int64_t longest = *std::max_element(info.dims.begin(), info.dims.end());
+  std::int64_t stride = 1;
+  const auto samples = [&](std::int64_t s) {
+    return ceilDiv(info.dims[0], s) * ceilDiv(info.dims[1], s) * ceilDiv(info.dims[2], s);
+  };
+  while (samples(stride) > max_samples && stride < longest) {
+    stride *= 2;
+  }
+  for (;; stride *= 2) {
+    const Index3 n{ceilDiv(info.dims[0], stride), ceilDiv(info.dims[1], stride),
+                   ceilDiv(info.dims[2], stride)};
+    std::vector<std::uint8_t> ids(static_cast<std::size_t>(n[0] * n[1] * n[2]));
+    volume.readRegion(whole, ids, stride);
+    // 0 inside the material, 1 (the background) elsewhere, so that the surface at 0.5 faces
+    // outwards like the surface of a level set.
+    auto grid = openvdb::FloatGrid::create(1.0F);
+    auto accessor = grid->getAccessor();
+    std::size_t i = 0;
+    for (std::int64_t z = 0; z < n[2]; ++z) {
+      for (std::int64_t y = 0; y < n[1]; ++y) {
+        for (std::int64_t x = 0; x < n[0]; ++x, ++i) {
+          if (ids[i] == id) {
+            accessor.setValue(openvdb::Coord(static_cast<openvdb::Int32>(x),
+                                             static_cast<openvdb::Int32>(y),
+                                             static_cast<openvdb::Int32>(z)),
+                              0.0F);
+          }
+        }
+      }
+    }
+    IndexedMesh mesh;
+    if (grid->tree().activeVoxelCount() == 0) {
+      return mesh;
+    }
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+    openvdb::tools::volumeToMesh(*grid, points, triangles, quads, 0.5);
+    const std::size_t count = triangles.size() + 2 * quads.size();
+    if (max_triangles != 0 && count > max_triangles && stride < longest) {
+      continue;
+    }
+    const auto scale = static_cast<float>(stride);
+    mesh.points.reserve(points.size());
+    for (const openvdb::Vec3s& p : points) {
+      mesh.points.push_back({p.x() * scale, p.y() * scale, p.z() * scale});
+    }
+    mesh.triangles.reserve(count);
+    for (const openvdb::Vec3I& t : triangles) {
+      mesh.triangles.push_back({t[0], t[1], t[2]});
+    }
+    for (const openvdb::Vec4I& q : quads) {
+      mesh.triangles.push_back({q[0], q[1], q[2]});
+      mesh.triangles.push_back({q[0], q[2], q[3]});
+    }
+    return mesh;
+  }
 }
 
 std::vector<float> multiOtsu(const std::vector<std::uint64_t>& histogram, int classes) {

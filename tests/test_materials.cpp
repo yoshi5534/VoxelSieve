@@ -110,6 +110,50 @@ TEST_F(MaterialsTest, SuggestsTheMaterialsFromTheHistogram) {
   EXPECT_GT(score.dice[2], 0.97);
 }
 
+/// Volume enclosed by a mesh in voxels, positive when its triangles face outwards.
+double enclosedVolume(const IndexedMesh& mesh) {
+  double volume = 0.0;
+  for (const auto& t : mesh.triangles) {
+    const auto& a = mesh.points[t[0]];
+    const auto& b = mesh.points[t[1]];
+    const auto& c = mesh.points[t[2]];
+    volume += (static_cast<double>(a[0]) * (b[1] * c[2] - b[2] * c[1]) -
+               static_cast<double>(a[1]) * (b[0] * c[2] - b[2] * c[0]) +
+               static_cast<double>(a[2]) * (b[0] * c[1] - b[1] * c[0])) /
+              6.0;
+  }
+  return volume;
+}
+
+TEST_F(MaterialsTest, MeshesEachMaterial) {
+  const Scene scene = makeScene();
+  DatasetOptions sieve;
+  sieve.threshold = kThreshold;
+  sieve.brick_size = 32;
+  (void)writeDataset(MemorySource(scene.grey), dir_ / "dataset", sieve);
+  (void)segmentMaterials(Dataset::open(dir_ / "dataset"), dir_ / "materials");
+  const MaterialVolume volume = MaterialVolume::open(dir_ / "materials");
+
+  // The dense cube of 16 voxels, facing outwards, where it lies.
+  const IndexedMesh dense = materialMesh(volume, 2);
+  ASSERT_FALSE(dense.triangles.empty());
+  EXPECT_NEAR(enclosedVolume(dense), 16.0 * 16.0 * 16.0, 0.08 * 16.0 * 16.0 * 16.0);
+  for (const auto& p : dense.points) {
+    EXPECT_GT(p[0], 42.0F);
+    EXPECT_LT(p[0], 61.0F);
+  }
+  // Coarser when it must fit fewer samples or triangles.
+  const IndexedMesh sampled = materialMesh(volume, 2, 0, 96 * 96 * 96 / 8);
+  EXPECT_LT(sampled.triangles.size(), dense.triangles.size());
+  EXPECT_NEAR(enclosedVolume(sampled), 16.0 * 16.0 * 16.0, 0.3 * 16.0 * 16.0 * 16.0);
+  EXPECT_LE(materialMesh(volume, 2, 500).triangles.size(), 500U);
+  // The hollow box: its outer and inner walls enclose the shell.
+  const IndexedMesh light = materialMesh(volume, 1);
+  EXPECT_NEAR(enclosedVolume(light), 64.0 * 64.0 * 64.0 - 52.0 * 52.0 * 52.0,
+              0.1 * (64.0 * 64.0 * 64.0 - 52.0 * 52.0 * 52.0));
+  EXPECT_TRUE(materialMesh(volume, 3).triangles.empty());
+}
+
 TEST_F(MaterialsTest, SegmentsTwoMaterialsAndKeepsThinSheet) {
   const Scene scene = makeScene();
   DatasetOptions sieve;

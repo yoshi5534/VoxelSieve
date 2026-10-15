@@ -1166,6 +1166,91 @@ class SegmentMaterials final : public Operation {
   OperationInfo info_;
 };
 
+class MaterialMeshes final : public Operation {
+ public:
+  MaterialMeshes() {
+    info_.id = "material_meshes";
+    info_.title = "Material meshes";
+    info_.description =
+        "Exports the surface of each material of a material segmentation as a triangle mesh: "
+        "one binary STL in mm per material, in the coordinates of the dataset (like the surface "
+        "step's surface.stl), for CAD, 3D printing or other viewers. A material's surface is the "
+        "boundary between its voxels and all others, so inner materials get closed meshes too. "
+        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds.";
+    info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
+    info_.outputs = {{"meshes", artifact::kMaterialMeshes, "One STL per material"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"material_ids",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 1}}},
+            {"description", "Materials to export; default: all"}}},
+          {"max_triangles",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 2000000},
+            {"description", "Triangles per material at most; 0: full resolution"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const MaterialVolume volume = MaterialVolume::open(context.inputs.at("materials"));
+    const MaterialVolumeInfo& info = volume.info();
+    std::vector<int> ids;
+    for (const Material& material : info.materials) {
+      ids.push_back(material.id);
+    }
+    if (p.contains("material_ids")) {
+      ids = p.at("material_ids").get<std::vector<int>>();
+      for (const int id : ids) {
+        if (std::ranges::none_of(info.materials, [id](const Material& m) { return m.id == id; })) {
+          throw std::invalid_argument("The segmentation has no material " + std::to_string(id));
+        }
+      }
+    }
+    const auto max_triangles = p.at("max_triangles").get<std::size_t>();
+    const std::filesystem::path dir = context.output_dir / "meshes";
+    std::filesystem::create_directories(dir);
+    Json meshes = Json::array();
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      const Material& material =
+          *std::ranges::find_if(info.materials, [&](const Material& m) { return m.id == ids[i]; });
+      const IndexedMesh voxels = materialMesh(volume, material.id, max_triangles);
+      Mesh mesh;
+      mesh.triangles.reserve(voxels.triangles.size());
+      const auto mm = [&](std::uint32_t index) {
+        const auto& q = voxels.points[index];
+        return std::array<float, 3>{static_cast<float>(q[0] * info.voxel_size[0]),
+                                    static_cast<float>(q[1] * info.voxel_size[1]),
+                                    static_cast<float>(q[2] * info.voxel_size[2])};
+      };
+      for (const auto& t : voxels.triangles) {
+        mesh.triangles.push_back({mm(t[0]), mm(t[1]), mm(t[2])});
+      }
+      std::string name;
+      for (const char c : material.name) {
+        name += std::isalnum(static_cast<unsigned char>(c)) != 0 ? c : '_';
+      }
+      const std::string file = "material_" + std::to_string(material.id) + "_" + name + ".stl";
+      writeStl(dir / file, mesh);
+      meshes.push_back({{"id", material.id},
+                        {"name", material.name},
+                        {"file", file},
+                        {"triangles", mesh.triangles.size()}});
+      context.progress(static_cast<double>(i + 1) / static_cast<double>(ids.size()));
+    }
+    OperationResult result;
+    result.outputs["meshes"] = "meshes";
+    result.summary = {{"meshes", meshes}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class SegmentWithModel final : public Operation {
  public:
   SegmentWithModel() {
@@ -1955,6 +2040,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
+  registry.add(std::make_shared<MaterialMeshes>());
   registry.add(std::make_shared<Denoise>());
   registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
