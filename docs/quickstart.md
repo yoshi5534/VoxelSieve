@@ -17,7 +17,7 @@ Download from the [latest release](https://github.com/yoshi5534/VoxelSieve/relea
 | --- | --- | --- |
 | Claude Desktop | `voxelsieve-<version>-<platform>.mcpb` | Double-click it, or drag it into Settings > Extensions. Choose the directories with your scans when asked. Done; go to step 3. |
 | Claude Code or another MCP client | `voxelsieve-<version>-<platform>.tar.gz` (Linux, macOS) or `.zip` (Windows) | Unpack it anywhere, for example to `/opt/voxelsieve` or `C:\Tools\voxelsieve`. The programs are in `bin/`. |
-| Docker | `voxelsieve-<version>-linux-x64.tar.gz` | Build the image, see [Docker](#docker). |
+| Docker | the image `ghcr.io/yoshi5534/voxelsieve` | Nothing to download by hand, see [Docker](#docker). |
 
 The programs are not signed yet. On macOS, unpacked programs from the archive are blocked until
 you remove the quarantine flag: `xattr -dr com.apple.quarantine /opt/voxelsieve`. On Windows,
@@ -113,19 +113,13 @@ view says how to turn it on.
 
 ## Docker
 
-The image runs the same server on Ubuntu 24.04. Build it from the Linux package and the
-Dockerfile in this repository:
-
-```sh
-tar xzf voxelsieve-<version>-linux-x64.tar.gz
-curl -LO https://raw.githubusercontent.com/yoshi5534/VoxelSieve/main/packaging/Dockerfile
-docker build --build-arg PACKAGE=voxelsieve-<version>-linux-x64 -t voxelsieve .
-```
+The image runs the same server on Ubuntu 24.04, built from the Linux package of each release:
+`ghcr.io/yoshi5534/voxelsieve:<version>`, or `:latest` for the newest release.
 
 Browser UI for the data in `~/ct`, on <http://localhost:8410>:
 
 ```sh
-docker run --rm -p 8410:8410 -v ~/ct:/data --user "$(id -u):$(id -g)" voxelsieve
+docker run --rm -p 8410:8410 -v ~/ct:/data --user "$(id -u):$(id -g)" ghcr.io/yoshi5534/voxelsieve
 ```
 
 MCP over stdin/stdout, for an MCP client (`-i` keeps stdin open):
@@ -136,7 +130,7 @@ MCP over stdin/stdout, for an MCP client (`-i` keeps stdin open):
     "voxelsieve": {
       "command": "docker",
       "args": ["run", "-i", "--rm", "-v", "/home/me/ct:/data", "--user", "1000:1000",
-               "voxelsieve", "--mcp", "/data"]
+               "ghcr.io/yoshi5534/voxelsieve", "--mcp", "/data"]
     }
   }
 }
@@ -146,6 +140,15 @@ Inside the container the data is at `/data`, so ask for `/data/voxelsieve-sample
 `--user` with your user and group id lets VoxelSieve write projects into the mounted directory;
 without it, it runs as its own user, which may not write there. The UI has no login: publish the
 port only on a network you trust.
+
+To build the image yourself instead, unpack the Linux package next to the Dockerfile of this
+repository:
+
+```sh
+tar xzf voxelsieve-<version>-linux-x64.tar.gz
+curl -LO https://raw.githubusercontent.com/yoshi5534/VoxelSieve/main/packaging/Dockerfile
+docker build --build-arg PACKAGE=voxelsieve-<version>-linux-x64 -t voxelsieve .
+```
 
 ## What the assistant sees
 
