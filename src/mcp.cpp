@@ -50,10 +50,11 @@ constexpr std::array<std::string_view, 8> kHiddenAnalysisMethods = {
     "view_rename", "view_delete", "list_operations", "object_add"};
 
 /// Methods that change nothing: no project, no file, no state of the GUI.
-constexpr std::array<std::string_view, 15> kReadOnlyMethods = {
-    "project_status", "objects",    "results",    "step_telemetry", "list_operations",
-    "dataset_info",   "list_files", "view_slice", "view_objects",   "view_list",
-    "view_image",     "browse",     "read_file",  "import_preview", "wait"};
+constexpr std::array<std::string_view, 16> kReadOnlyMethods = {
+    "project_status", "objects",    "results",   "step_telemetry", "list_operations",
+    "dataset_info",   "histogram",  "list_files", "view_slice",    "view_objects",
+    "view_list",      "view_image", "browse",    "read_file",      "import_preview",
+    "wait"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
 constexpr std::array<std::string_view, 1> kDestructiveMethods = {"view_delete"};

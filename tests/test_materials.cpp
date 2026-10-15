@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -44,6 +45,69 @@ TEST(MultiOtsu, SplitsSeparatedPeaks) {
   EXPECT_LT(two[1], 20500.0F);
   EXPECT_TRUE(multiOtsu(histogram, 1).empty());
   EXPECT_THROW((void)multiOtsu(std::vector<std::uint64_t>(65536, 0), 2), std::invalid_argument);
+}
+
+// Adds `count` voxels in a Gaussian peak around `mean`.
+void addPeak(std::vector<std::uint64_t>& histogram, double mean, double sigma, double count) {
+  for (std::size_t v = 0; v < histogram.size(); ++v) {
+    const double d = (static_cast<double>(v) - mean) / sigma;
+    histogram[v] += static_cast<std::uint64_t>(
+        std::llround(count * std::exp(-0.5 * d * d) / (sigma * 2.5066282746310002)));
+  }
+}
+
+TEST(SuggestMaterials, FindsOnePeakPerMaterial) {
+  std::vector<std::uint64_t> histogram(65536, 0);
+  addPeak(histogram, 1000.0, 1200.0, 5e7);  // air, whose tail reaches past the threshold
+  addPeak(histogram, 9000.0, 1200.0, 7e6);
+  addPeak(histogram, 20000.0, 1500.0, 2.5e6);
+  addPeak(histogram, 35000.0, 1500.0, 5e5);  // a small dense class
+  const MaterialSuggestion three = suggestMaterials(histogram, 4500.0F);
+  ASSERT_EQ(three.peaks.size(), 3U);
+  EXPECT_NEAR(three.peaks[0], 9000.0F, 500.0F);
+  EXPECT_NEAR(three.peaks[1], 20000.0F, 500.0F);
+  EXPECT_NEAR(three.peaks[2], 35000.0F, 500.0F);
+  ASSERT_EQ(three.thresholds.size(), 2U);
+  EXPECT_GT(three.thresholds[0], 12000.0F);
+  EXPECT_LT(three.thresholds[0], 17000.0F);
+  EXPECT_GT(three.thresholds[1], 25000.0F);
+  EXPECT_LT(three.thresholds[1], 31000.0F);
+
+  // The two most prominent peaks when fewer are allowed.
+  const MaterialSuggestion two = suggestMaterials(histogram, 4500.0F, 2);
+  ASSERT_EQ(two.peaks.size(), 2U);
+  EXPECT_NEAR(two.peaks[0], 9000.0F, 500.0F);
+  EXPECT_NEAR(two.peaks[1], 20000.0F, 500.0F);
+
+  // Two classes that blend into one peak with a shoulder are one material.
+  std::vector<std::uint64_t> blended(65536, 0);
+  addPeak(blended, 10000.0, 1500.0, 1e6);
+  addPeak(blended, 12000.0, 1500.0, 3e5);
+  EXPECT_EQ(suggestMaterials(blended, 4000.0F).peaks.size(), 1U);
+  EXPECT_TRUE(suggestMaterials(std::vector<std::uint64_t>(65536, 0), 4000.0F).peaks.empty());
+}
+
+TEST_F(MaterialsTest, SuggestsTheMaterialsFromTheHistogram) {
+  const Scene scene = makeScene();
+  DatasetOptions sieve;
+  sieve.threshold = kThreshold;
+  (void)writeDataset(MemorySource(scene.grey), dir_ / "dataset", sieve);
+  const Dataset dataset = Dataset::open(dir_ / "dataset");
+
+  const MaterialSuggestion suggestion = suggestMaterials(datasetHistogram(dataset), kThreshold);
+  ASSERT_EQ(suggestion.peaks.size(), 2U);
+  EXPECT_NEAR(suggestion.peaks[0], static_cast<float>(kLight), 600.0F);
+  EXPECT_NEAR(suggestion.peaks[1], static_cast<float>(kDense), 600.0F);
+
+  SegmentationOptions options;
+  options.materials = 0;
+  const MaterialVolumeInfo info = segmentMaterials(dataset, dir_ / "materials", options);
+  ASSERT_EQ(info.materials.size(), 2U);
+  EXPECT_FLOAT_EQ(info.materials[1].lower, suggestion.thresholds[0]);
+  const MaterialScore score = scoreMaterials(MaterialVolume::open(dir_ / "materials"),
+                                             MemorySource(scene.labels), dataset);
+  EXPECT_EQ(score.components_per_material, (std::vector<std::int64_t>{0, 2, 1}));
+  EXPECT_GT(score.dice[2], 0.97);
 }
 
 TEST_F(MaterialsTest, SegmentsTwoMaterialsAndKeepsThinSheet) {
@@ -171,7 +235,7 @@ TEST_F(MaterialsTest, RejectsBadOptions) {
   (void)writeDataset(MemorySource(scene.grey), dir_ / "dataset", sieve);
   const Dataset dataset = Dataset::open(dir_ / "dataset");
   SegmentationOptions options;
-  options.materials = 0;
+  options.materials = -1;
   EXPECT_THROW((void)segmentMaterials(dataset, dir_ / "a", options), std::invalid_argument);
   options.materials = 2;
   options.material_thresholds = {1.0F, 2.0F};

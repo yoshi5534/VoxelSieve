@@ -34,7 +34,8 @@ struct Material {
 };
 
 struct SegmentationOptions {
-  /// Number of material classes.
+  /// Number of material classes; 0: one per peak of the histogram above the air threshold, with
+  /// the thresholds in the valleys between them (suggestMaterials).
   int materials = 2;
   /// Smoothed grey value above which a voxel is material; default: the dataset's threshold.
   std::optional<float> air_threshold;
@@ -123,6 +124,28 @@ struct MaterialScore {
                                            const std::vector<std::int64_t>& part_starts = {},
                                            int part_axis = 2,
                                            const std::optional<Box>& region = std::nullopt);
+
+/// Grey-value histogram of the active voxels of one level of `dataset`: one count per 16-bit grey
+/// value (65536 bins; float grey values are clamped to 0 to 65535). Coarser levels are much
+/// faster to count, and averaging narrows the peaks of the materials.
+[[nodiscard]] std::vector<std::uint64_t> datasetHistogram(const Dataset& dataset, int level = 0);
+
+/// Material classes found in a histogram (suggestMaterials).
+struct MaterialSuggestion {
+  /// Grey values of the peaks above the air threshold, ascending: one material class each.
+  std::vector<float> peaks;
+  /// Thresholds between the classes (peaks - 1, ascending): the lowest point of the smoothed
+  /// histogram between two neighbouring peaks.
+  std::vector<float> thresholds;
+};
+
+/// Suggests the number of materials and the thresholds between them from `histogram` (one count
+/// per 16-bit grey value): every clear peak above `air_threshold` is a material. A peak counts
+/// when the histogram falls by at least a fifth of its height on both sides before it reaches a
+/// higher peak and when it is not tiny next to the highest one; when more than `max_materials`
+/// peaks count, the most prominent ones are kept. No peak at all gives one material.
+[[nodiscard]] MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
+                                                  float air_threshold, int max_materials = 8);
 
 /// Thresholds that split `histogram` (one count per 16-bit grey value) into `classes` classes
 /// with the largest between-class variance (multi-level Otsu), ascending.

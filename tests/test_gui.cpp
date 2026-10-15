@@ -432,6 +432,32 @@ TEST_F(GuiTest, SegmentsMaterialsAndShowsThemInSlices) {
   EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
 }
 
+TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json histogram = gui.call("histogram", {{"bins", 64}});
+  EXPECT_EQ(histogram.at("level"), 0);
+  ASSERT_EQ(histogram.at("counts").size(), 64U);
+  std::uint64_t total = 0;
+  for (const Json& count : histogram.at("counts")) {
+    total += count.get<std::uint64_t>();
+  }
+  EXPECT_EQ(total, histogram.at("voxels").get<std::uint64_t>());
+  EXPECT_EQ(total, gui.call("dataset_info", {}).at("active_voxels").get<std::uint64_t>());
+  // The scan is one material, a box with lunkers.
+  EXPECT_EQ(histogram.at("suggested_materials"), 1);
+  EXPECT_TRUE(histogram.at("material_thresholds").empty());
+  EXPECT_EQ(histogram.at("image").at("mime_type"), "image/png");
+  EXPECT_EQ(gui.call("histogram", {{"level", 1}}).at("level"), 1);
+  EXPECT_THROW((void)gui.call("histogram", {{"level", 99}}), std::invalid_argument);
+
+  const Json segmented = gui.call("run_segment_materials", {{"materials", 0}});
+  ASSERT_EQ(segmented.at("status"), "done");
+  EXPECT_EQ(segmented.at("summary").at("materials").size(), 1U);
+  EXPECT_EQ(segmented.at("summary").at("materials_from_histogram"), true);
+}
+
 TEST_F(GuiTest, SegmentsWithALearnedModel) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});

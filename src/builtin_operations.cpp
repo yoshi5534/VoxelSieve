@@ -1081,14 +1081,21 @@ class SegmentMaterials final : public Operation {
         "Splits the part into materials by grey value: a voxel is material when it and enough "
         "of its neighbours are above the air threshold (noise spikes go, walls one voxel thin "
         "stay), material grows into touching voxels above a lower threshold, and the classes are "
-        "separated by thresholds (multi-level Otsu unless given). Writes a material volume with "
-        "volumes per material; the slice view shows the materials in colour.";
+        "separated by thresholds (multi-level Otsu unless given). With materials 0 the classes "
+        "are found in the histogram: one per peak above the air threshold, split in the valleys "
+        "between them (the histogram tool shows the suggestion first). Writes a material volume "
+        "with volumes per material; the slice view shows the materials in colour.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset to segment"}};
     info_.outputs = {{"materials", artifact::kMaterials, "Material volume"}};
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"materials", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}, {"default", 2}}},
+         {{"materials",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"maximum", 8},
+            {"default", 2},
+            {"description", "Number of classes; 0: one per peak of the histogram"}}},
           {"air_threshold",
            {{"type", "number"}, {"description", "Default: the dataset's threshold"}}},
           {"material_thresholds",
@@ -1148,6 +1155,9 @@ class SegmentMaterials final : public Operation {
     result.outputs["materials"] = "materials";
     result.summary = {{"air_threshold", info.air_threshold},
                       {"materials", materialSummary(info, true)}};
+    if (options.materials == 0) {
+      result.summary["materials_from_histogram"] = true;
+    }
     return result;
   }
 

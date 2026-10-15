@@ -11,11 +11,13 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "detail/material_volume.hpp"
 #include "detail/png.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
 
@@ -45,6 +47,47 @@ const Json& artifactProperties() {
       {"step", {{"type", "integer"}, {"description", "Step id; default: the latest step"}}},
       {"output", {{"type", "string"}, {"description", "Output name; default: the first output"}}}};
   return properties;
+}
+
+/// Picture of a histogram for the histogram method: bars on a logarithmic scale, grey below the
+/// air threshold and in the colour of each suggested material above it, the air threshold as a
+/// red line. RGB PNG.
+std::vector<std::uint8_t> histogramPng(const std::vector<std::uint64_t>& counts, double first,
+                                       double bin_width, float threshold,
+                                       const std::vector<float>& material_starts) {
+  constexpr int kWidth = 768;
+  constexpr int kHeight = 200;
+  constexpr std::uint8_t kBackground = 24;
+  std::vector<std::uint8_t> rgb(static_cast<std::size_t>(kWidth * kHeight) * 3, kBackground);
+  const auto set = [&rgb](int x, int y, const std::array<std::uint8_t, 3>& color) {
+    std::copy(color.begin(), color.end(),
+              rgb.begin() + static_cast<std::ptrdiff_t>((x + kWidth * y) * 3));
+  };
+  const std::uint64_t highest = counts.empty() ? 0 : *std::ranges::max_element(counts);
+  for (int x = 0; x < kWidth && highest > 0; ++x) {
+    const auto bin = static_cast<std::size_t>(x) * counts.size() / kWidth;
+    const double grey = first + (static_cast<double>(bin) + 0.5) * bin_width;
+    std::array<std::uint8_t, 3> color{150, 150, 150};
+    for (std::size_t m = 0; m < material_starts.size(); ++m) {
+      if (grey >= material_starts[m]) {
+        color = detail::materialColor(static_cast<int>(m) + 1);
+      }
+    }
+    const double fraction =
+        std::log1p(static_cast<double>(counts[bin])) / std::log1p(static_cast<double>(highest));
+    const int bar = static_cast<int>(std::lround(fraction * kHeight));
+    for (int y = kHeight - bar; y < kHeight; ++y) {
+      set(x, y, color);
+    }
+  }
+  const double span = bin_width * static_cast<double>(counts.size());
+  if (span > 0.0 && threshold >= first && threshold < first + span) {
+    const int x = std::min(kWidth - 1, static_cast<int>((threshold - first) / span * kWidth));
+    for (int y = 0; y < kHeight; ++y) {
+      set(x, y, {230, 60, 50});
+    }
+  }
+  return detail::encodePng(kWidth, kHeight, 3, rgb);
 }
 
 /// The files of a step output (a directory or a single file) with their sizes, at most
@@ -440,6 +483,26 @@ std::vector<GuiMethod> Gui::methods() const {
       {"dataset_info",
        "Dimensions, voxel size, threshold and resolution levels of a dataset output.",
        objectSchema(artifactProperties())},
+      {"histogram",
+       "Grey-value histogram of a dataset (its active voxels: the part, its voids and a thin "
+       "margin of air) with the air threshold and a suggested number of materials: one per "
+       "peak above the threshold, with the thresholds in the valleys between them. Comes with "
+       "a picture (logarithmic scale, threshold in red, the suggested materials in their "
+       "colours). run_segment_materials with materials 0 uses the same suggestion, counted at "
+       "full resolution; to choose differently, pass materials and material_thresholds.",
+       [] {
+         Json properties = artifactProperties();
+         properties["level"] = {
+             {"type", "integer"},
+             {"minimum", 0},
+             {"description",
+              "Resolution level to count; default: the finest with at most 2^27 voxels"}};
+         properties["bins"] = {
+             {"type", "integer"}, {"minimum", 8}, {"maximum", 1024}, {"default", 256}};
+         properties["max_materials"] = {
+             {"type", "integer"}, {"minimum", 1}, {"maximum", 8}, {"default", 8}};
+         return objectSchema(properties);
+       }()},
       {"list_files", "Files of a step output (a directory or a single file) with sizes.",
        objectSchema(artifactProperties())},
       {"view_slice",
@@ -973,6 +1036,78 @@ std::vector<float> Gui::objectCuts(const Dataset& base, const RigidTransform& ba
                       static_cast<float>(q[2] / pitch[2])});
   }
   return cutMesh(points, shape.mesh->triangles, axis, static_cast<double>(index));
+}
+
+Json Gui::histogram(const Json& params) const {
+  ArtifactRef ref;
+  std::filesystem::path dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    ref = artifactRef(params, artifact::kDataset);
+    dir = project().resolve(ref);
+  }
+  // Counted without the lock, like view_objects: a full level of a large scan takes a while.
+  const auto dataset = openDataset(dir);
+  const DatasetInfo& info = dataset->info();
+  constexpr std::int64_t kDefaultVoxels = std::int64_t{1} << 27;
+  int level = 0;
+  if (params.contains("level")) {
+    level = params.at("level").get<int>();
+    if (level >= static_cast<int>(info.levels.size())) {
+      throw std::invalid_argument("The dataset has levels 0 to " +
+                                  std::to_string(info.levels.size() - 1));
+    }
+  } else {
+    const auto voxels = [&](int l) {
+      const auto& d = info.levels[static_cast<std::size_t>(l)].dims;
+      return d[0] * d[1] * d[2];
+    };
+    while (level + 1 < static_cast<int>(info.levels.size()) && voxels(level) > kDefaultVoxels) {
+      ++level;
+    }
+  }
+  const std::vector<std::uint64_t> full = datasetHistogram(*dataset, level);
+  const MaterialSuggestion suggestion =
+      suggestMaterials(full, info.threshold, params.at("max_materials").get<int>());
+  std::size_t low = 0;
+  while (low + 1 < full.size() && full[low] == 0) {
+    ++low;
+  }
+  std::size_t high = full.size() - 1;
+  while (high > low && full[high] == 0) {
+    --high;
+  }
+  const auto bins = params.at("bins").get<std::size_t>();
+  const double bin_width = static_cast<double>(high + 1 - low) / static_cast<double>(bins);
+  std::vector<std::uint64_t> counts(bins, 0);
+  std::uint64_t total = 0;
+  for (std::size_t v = low; v <= high; ++v) {
+    counts[std::min(bins - 1, static_cast<std::size_t>(static_cast<double>(v - low) / bin_width))] +=
+        full[v];
+    total += full[v];
+  }
+  std::vector<float> starts{info.threshold};
+  starts.insert(starts.end(), suggestion.thresholds.begin(), suggestion.thresholds.end());
+  const std::vector<std::uint8_t> png =
+      histogramPng(counts, static_cast<double>(low), bin_width, info.threshold, starts);
+  Json json = {{"step", ref.step},
+               {"output", ref.output},
+               {"level", level},
+               {"voxels", total},
+               {"threshold", info.threshold},
+               {"air_level", info.air_level},
+               {"first", low},
+               {"bin_width", bin_width},
+               {"counts", counts},
+               {"suggested_materials", std::max<std::size_t>(1, suggestion.peaks.size())},
+               {"material_peaks", suggestion.peaks},
+               {"material_thresholds", suggestion.thresholds},
+               {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  if (!info.value_mapping.isIdentity()) {
+    json["value_mapping"] = {{"offset", info.value_mapping.offset},
+                             {"scale", info.value_mapping.scale}};
+  }
+  return json;
 }
 
 Json Gui::viewObjects(const Json& params) const {
@@ -1556,7 +1691,7 @@ Json Gui::call(const std::string& method, const Json& arguments,
                                 "projects with run_import_raw, run_import_tiff, run_import_dicom "
                                 "and run_import_gzipped_xml");
   }
-  if (method == "view_objects" || method == "wait") {
+  if (method == "view_objects" || method == "wait" || method == "histogram") {
     // Not under the lock: building the meshes of the objects takes it only to find them, and
     // waiting releases it while it waits.
     for (const GuiMethod& known : methods()) {
@@ -1564,6 +1699,9 @@ Json Gui::call(const std::string& method, const Json& arguments,
         continue;
       }
       const Json checked = validateParameters(known.parameters, params);
+      if (method == "histogram") {
+        return histogram(checked);
+      }
       return method == "wait" ? waitForOperation(checked.at("seconds").get<double>())
                               : viewObjects(checked);
     }
