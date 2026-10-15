@@ -25,6 +25,9 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr const char* kRunPrefix = "run_";
+// Long enough to save calls, short enough for clients that give up on a call after a minute.
+constexpr double kDefaultWaitSeconds = 30.0;
+constexpr double kMaxWaitSeconds = 50.0;
 constexpr std::uintmax_t kMaxReadBytes = 1U << 20U;
 constexpr std::uintmax_t kMaxImageBytes = 8U << 20U;
 constexpr std::size_t kMaxListedFiles = 1000;
@@ -339,6 +342,13 @@ Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
   }
 }
 
+Gui::~Gui() {
+  cancel_ = true;
+  if (background_.joinable()) {
+    background_.join();
+  }
+}
+
 std::vector<GuiMethod> Gui::methods() const {
   const Json path = {{"type", "string"}, {"format", "path"}, {"description", "Project directory"}};
   std::vector<GuiMethod> methods = {
@@ -501,6 +511,19 @@ std::vector<GuiMethod> Gui::methods() const {
                     Json::array({"id", "name"}))},
       {"view_delete", "Deletes a saved view and its picture.",
        objectSchema({{"id", {{"type", "integer"}}}}, {"id"})},
+      {"wait",
+       "Waits until the running operation is done, at most `seconds` (default 30). Gives done, "
+       "the progress while it still runs and, as result, the step of the latest operation "
+       "started with background: true (or its error). Call it again while done is false.",
+       objectSchema({{"seconds",
+                      {{"type", "number"},
+                       {"minimum", 0},
+                       {"maximum", kMaxWaitSeconds},
+                       {"default", kDefaultWaitSeconds}}}})},
+      {"cancel",
+       "Stops the running operation at its next progress report; its step is kept as failed. "
+       "Gives the operation that was asked to stop, or null when none was running.",
+       objectSchema(Json::object())},
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
        "DICOM stacks, gzipped XML projects, datasets (.vsieve), projects and inspection orders. "
@@ -556,6 +579,10 @@ std::vector<GuiMethod> Gui::methods() const {
       description += " Inputs: " + inputs + ".";
     }
     description += " Runs as a new step of the open project.";
+    schema["properties"]["background"] = {
+        {"type", "boolean"},
+        {"description",
+         "Optional: return at once and run in the background; then call wait until done"}};
     methods.push_back({kRunPrefix + info.id, description, schema});
   }
   return methods;
@@ -1319,13 +1346,22 @@ Json Gui::runOperation(const std::string& operation, Json params,
                        const std::function<void(double)>& progress) {
   // The operation runs on a copy of the project without holding the lock, so status, file and
   // view requests are answered while it runs. Changes to the project wait until it is done.
-  std::optional<Project> working;
-  std::map<std::string, ArtifactRef> inputs;
-  StepTarget target;
+  bool background = false;
+  if (params.contains("background")) {
+    if (!params.at("background").is_boolean()) {
+      throw std::invalid_argument("'background' must be true or false");
+    }
+    background = params.at("background").get<bool>();
+    params.erase("background");
+  }
+  PreparedRun run;
+  run.operation = operation;
+  std::thread finished;
   {
     const std::scoped_lock lock(mutex_);
     if (running_) {
-      throw std::invalid_argument("Operation '" + running_operation_ + "' is still running");
+      throw std::invalid_argument("Operation '" + running_operation_ +
+                                  "' is still running; wait for it or cancel it");
     }
     if (params.contains("inputs")) {
       if (!params.at("inputs").is_object()) {
@@ -1335,7 +1371,7 @@ Json Gui::runOperation(const std::string& operation, Json params,
         if (!ref.is_object() || !ref.contains("step") || !ref.at("step").is_number_integer()) {
           throw std::invalid_argument("Input '" + name + "' needs {step, output}");
         }
-        inputs[name] = artifactRef(ref, "");
+        run.inputs[name] = artifactRef(ref, "");
       }
       params.erase("inputs");
     }
@@ -1345,18 +1381,50 @@ Json Gui::runOperation(const std::string& operation, Json params,
         if (!params.at(key).is_string()) {
           throw std::invalid_argument(std::string("'") + key + "' must be a string");
         }
-        target.*field = params.at(key).get<std::string>();
+        run.target.*field = params.at(key).get<std::string>();
         params.erase(key);
       }
     }
-    working = project();
+    run.params = std::move(params);
+    run.working = project();
     running_ = true;
     running_operation_ = operation;
     running_preview_ = nullptr;
     running_preview_png_.clear();
     progress_ = 0.0;
     cancel_ = false;
+    // The previous background thread has finished its operation; it is joined below, unlocked.
+    finished = std::move(background_);
   }
+  if (finished.joinable()) {
+    finished.join();
+  }
+  if (!background) {
+    return executeRun(run, progress);
+  }
+  // Under the lock, so the thread cannot finish before background_ holds it.
+  const std::scoped_lock lock(mutex_);
+  background_result_ = nullptr;
+  background_ = std::thread([this, run = std::move(run)]() mutable {
+    Json result;
+    try {
+      result = executeRun(run, {});
+    } catch (const std::exception& error) {
+      result = {{"operation", run.operation}, {"status", "failed"}, {"error", error.what()}};
+    }
+    const std::scoped_lock result_lock(mutex_);
+    background_result_ = std::move(result);
+  });
+  return {{"background", true},
+          {"operation", operation},
+          {"message", "Started in the background; call wait for its step, cancel to stop it"}};
+}
+
+Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progress) {
+  if (!run.working) {
+    throw std::logic_error("Operation '" + run.operation + "' was not prepared");
+  }
+  Project& working = *run.working;
   const auto report = [this, &progress](double fraction) {
     progress_ = fraction;
     if (progress) {
@@ -1364,14 +1432,17 @@ Json Gui::runOperation(const std::string& operation, Json params,
     }
   };
   const auto finish = [this, &working] {
-    const std::scoped_lock lock(mutex_);
-    // Views saved while the operation ran went to the project, not to the working copy.
-    working->adoptViews(*project_);
-    project_ = std::move(working);
-    running_ = false;
-    running_operation_.clear();
-    running_preview_ = nullptr;
-    running_preview_png_.clear();
+    {
+      const std::scoped_lock lock(mutex_);
+      // Views saved while the operation ran went to the project, not to the working copy.
+      working.adoptViews(*project_);
+      project_ = std::move(working);
+      running_ = false;
+      running_operation_.clear();
+      running_preview_ = nullptr;
+      running_preview_png_.clear();
+    }
+    idle_.notify_all();
   };
   const auto preview = [this](const Json& summary, const std::vector<std::uint8_t>& png) {
     const std::scoped_lock lock(mutex_);
@@ -1379,17 +1450,34 @@ Json Gui::runOperation(const std::string& operation, Json params,
     running_preview_png_ = png;
   };
   try {
-    const Step& step =
-        working->run(registry_, operation, params, inputs, report, &cancel_, target, preview);
-    Json json = working->toJson().at("steps").back();
+    const Step& step = working.run(registry_, run.operation, run.params, run.inputs, report,
+                                   &cancel_, run.target, preview);
+    Json json = working.toJson().at("steps").back();
     json["active"] = true;
-    json["size_bytes"] = directorySize(working->stepDir(step));
+    json["size_bytes"] = directorySize(working.stepDir(step));
     finish();
     return json;
   } catch (...) {
     finish();  // the failed step is part of the protocol
     throw;
   }
+}
+
+Json Gui::waitForOperation(double seconds) {
+  std::unique_lock lock(mutex_);
+  idle_.wait_for(lock, std::chrono::duration<double>(seconds), [this] { return !running_; });
+  // The background thread stores its result right after it marks the operation as done.
+  if (!running_ && background_.joinable()) {
+    std::thread finished = std::move(background_);
+    lock.unlock();
+    finished.join();
+    lock.lock();
+  }
+  Json json = {{"done", !running_}, {"result", background_result_}};
+  if (running_) {
+    json["running"] = {{"operation", running_operation_}, {"progress", progress_.load()}};
+  }
+  return json;
 }
 
 void Gui::setAllowedRoots(const std::vector<std::filesystem::path>& roots) {
@@ -1468,12 +1556,16 @@ Json Gui::call(const std::string& method, const Json& arguments,
                                 "projects with run_import_raw, run_import_tiff, run_import_dicom "
                                 "and run_import_gzipped_xml");
   }
-  if (method == "view_objects") {
-    // Not under the lock: building the meshes of the objects takes it only to find them.
+  if (method == "view_objects" || method == "wait") {
+    // Not under the lock: building the meshes of the objects takes it only to find them, and
+    // waiting releases it while it waits.
     for (const GuiMethod& known : methods()) {
-      if (known.name == method) {
-        return viewObjects(validateParameters(known.parameters, params));
+      if (known.name != method) {
+        continue;
       }
+      const Json checked = validateParameters(known.parameters, params);
+      return method == "wait" ? waitForOperation(checked.at("seconds").get<double>())
+                              : viewObjects(checked);
     }
   }
   const std::scoped_lock lock(mutex_);
@@ -1499,6 +1591,12 @@ Json Gui::call(const std::string& method, const Json& arguments,
     }
     if (method == "project_status") {
       return status();
+    }
+    if (method == "cancel") {
+      if (running_) {
+        cancel_ = true;
+      }
+      return {{"cancelled", running_ ? Json(running_operation_) : Json()}};
     }
     if (method == "project_save_as") {
       project().saveAs(checked.at("path").get<std::string>());

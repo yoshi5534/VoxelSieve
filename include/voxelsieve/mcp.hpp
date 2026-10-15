@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -15,7 +16,7 @@ namespace voxelsieve {
 
 /// Which GUI methods an MCP client sees as tools.
 enum class McpTools : std::uint8_t {
-  kAnalysis,  ///< everything but the methods that keep the browser UI's view state
+  kAnalysis,  ///< the tools for analyses: without the UI's view state and duplicates
   kAll,       ///< every GUI method
 };
 
@@ -24,7 +25,9 @@ enum class McpTools : std::uint8_t {
 /// destructive); results come back as JSON text and as structured content. The result files of
 /// the open project's steps (reports, porosity results, their pictures) are resources, and a few
 /// prompts walk through typical inspections. A client cancels a running operation with
-/// notifications/cancelled; the operation stops at its next progress report.
+/// notifications/cancelled; the operation stops at its next progress report. Operations that run
+/// longer than a client waits for one call run with background: true, and the tools wait and
+/// cancel follow and stop them.
 class McpServer {
  public:
   /// `send` writes one message (a notification such as progress) to the client.
@@ -53,7 +56,8 @@ class McpServer {
   std::function<void(const nlohmann::json&)> send_;
   McpTools tools_;
   mutable std::mutex mutex_;
-  std::set<std::string> running_;    // ids (dumped) of tool calls in progress
+  std::map<std::string, bool>
+      running_;                      // ids (dumped) of tool calls in progress: runs an operation
   std::set<std::string> cancelled_;  // ids (dumped) of cancelled calls
 };
 

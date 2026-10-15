@@ -416,6 +416,7 @@ async function runStep(operation, params) {
   $('busy-text').textContent = title + ' running …';
   $('busy-progress').removeAttribute('value');
   $('busy-preview').hidden = true;
+  $('busy-cancel').disabled = false;
   $('busy').hidden = false;
   render();
   // Slices read by the preview shown; a staged import sends a sharper one after each round.
@@ -2518,6 +2519,16 @@ async function start() {
   $('btn-save-as').addEventListener('click', saveAs);
   $('btn-undo').addEventListener('click', undo);
   $('btn-redo').addEventListener('click', redo);
+  $('busy-cancel').addEventListener('click', async () => {
+    // The operation stops at its next progress report; runStep then shows it as failed.
+    $('busy-cancel').disabled = true;
+    $('busy-text').textContent = $('busy-text').textContent.replace(' running …', ' stopping …');
+    try {
+      await api('cancel');
+    } catch (error) {
+      showError(error);
+    }
+  });
   for (const button of document.querySelectorAll('.stages button')) {
     button.addEventListener('click', () => {
       state.stage = button.dataset.stage;
