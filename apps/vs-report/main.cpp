@@ -23,6 +23,7 @@ namespace {
 constexpr std::string_view kUsage =
     R"(Usage: vs-report <dataset> --order <order.json> --out <dir> [options]
        vs-report --print-template > my_template.html
+       vs-report --print-first-article-template > my_first_article_template.html
 
 Analyses a dataset written by vs-sieve, evaluates it against the acceptance limits of the
 inspection order (BDG P 202 scheme) and writes to <dir>:
@@ -39,6 +40,9 @@ Options:
   --comparison <dir>      Output of vs-compare: adds the nominal-actual comparison
   --template <file>       Report template instead of the built-in one
   --print-template        Print the built-in template and exit
+  --print-first-article-template
+                          Print the built-in first article report template (used by the
+                          first_article_report operation) and exit
   --min-pore <voxels>     Smallest pore reported (default 3)
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
@@ -55,6 +59,7 @@ struct Options {
   std::filesystem::path surface;
   std::filesystem::path comparison;
   bool print_template = false;
+  bool print_first_article_template = false;
   voxelsieve::PorosityOptions porosity;
   std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
@@ -86,6 +91,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.report_template = next();
     } else if (arg == "--print-template") {
       options.print_template = true;
+    } else if (arg == "--print-first-article-template") {
+      options.print_first_article_template = true;
     } else if (arg == "--min-pore") {
       options.porosity.min_pore_voxels = std::stoll(next());
     } else if (arg == "--zone-sigma") {
@@ -100,7 +107,7 @@ std::optional<Options> parse(int argc, char** argv) {
       throw std::invalid_argument("Unknown option: " + std::string(arg));
     }
   }
-  if (!options.print_template &&
+  if (!options.print_template && !options.print_first_article_template &&
       (options.dataset.empty() || options.order.empty() || options.out.empty())) {
     throw std::invalid_argument("A dataset, --order and --out are required");
   }
@@ -128,6 +135,10 @@ int main(int argc, char** argv) {
     const voxelsieve::TelemetryScope scope(telemetry);
     if (options->print_template) {
       std::cout << voxelsieve::defaultReportTemplate();
+      return 0;
+    }
+    if (options->print_first_article_template) {
+      std::cout << voxelsieve::defaultFirstArticleTemplate();
       return 0;
     }
     const nlohmann::json order = nlohmann::json::parse(readFile(options->order));

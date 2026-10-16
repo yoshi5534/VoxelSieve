@@ -885,7 +885,17 @@ TEST_F(GuiTest, McpSessionFindsThePoresOfASyntheticScan) {
   EXPECT_EQ(
       handle(request(12, "prompts/get", {{"name", "compare_with_cad"}})).at("error").at("code"),
       -32602);
-  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 3U);
+  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 4U);
+  EXPECT_NE(handle(request(14, "prompts/get",
+                           {{"name", "first_article_inspection"},
+                            {"arguments", {{"scan", "part.raw"}, {"cad", "part.stl"}}}}))
+                .at("result")
+                .at("messages")[0]
+                .at("content")
+                .at("text")
+                .get<std::string>()
+                .find("run_first_article_report"),
+            std::string::npos);
 }
 
 TEST_F(GuiTest, McpServeReadsLines) {
@@ -1070,6 +1080,90 @@ TEST_F(GuiTest, McpCancellationOnlyConcernsRunningCalls) {
   EXPECT_FALSE(server.handle(
       {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}}));
   EXPECT_FALSE(server.cancelled(7));
+}
+
+TEST_F(GuiTest, FirstArticleReportIsMadeThroughTheApi) {
+  Gui gui;
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  ASSERT_EQ(gui.call("run_surface", {}).at("status"), "done");
+  // The drawing's coordinates: the box centred on the origin.
+  writeStl(dir_ / "cad.stl", boxMesh({6.0, 5.0, 4.0}));
+
+  // The CAD model's regular geometry: the six faces of the box, with a picture.
+  const Json features = gui.call("cad_features", {{"path", (dir_ / "cad.stl").string()}});
+  ASSERT_EQ(features.at("features").size(), 6U);
+  for (const Json& feature : features.at("features")) {
+    EXPECT_EQ(feature.at("type"), "plane");
+  }
+  EXPECT_EQ(features.at("image").at("mime_type"), "image/png");
+  EXPECT_THROW((void)gui.call("cad_features", Json::object()), std::invalid_argument);
+
+  ASSERT_EQ(gui.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}}).at("status"),
+            "done");
+  const Json plan = {
+      {"part", {{"name", "Box"}, {"number", "4711"}}},
+      {"elements",
+       {{{"id", "A"}, {"type", "plane"}, {"at", {0.0, 0.0, -2.0}}},
+        {{"id", "B"}, {"type", "plane"}, {"at", {-3.0, 0.0, 0.0}}},
+        {{"id", "C"}, {"type", "plane"}, {"at", {0.0, -2.5, 0.0}}},
+        {{"id", "top"}, {"type", "plane"}, {"at", {0.0, 0.0, 2.0}}},
+        {{"id", "right"}, {"type", "plane"}, {"at", {3.0, 0.0, 0.0}}},
+        {{"id", "back"}, {"type", "plane"}, {"at", {0.0, 2.5, 0.0}}}}},
+      {"alignment", {{"datums", {"A", "B", "C"}}}},
+      {"characteristics",
+       {{{"number", "1"}, {"type", "distance"}, {"elements", {"A", "top"}}, {"tolerance", 0.1}},
+        {{"number", "2"}, {"type", "distance"}, {"elements", {"B", "right"}}, {"tolerance", 0.1}},
+        // Drawn 0.3 mm too long: out of tolerance.
+        {{"number", "3"},
+         {"type", "distance"},
+         {"elements", {"C", "back"}},
+         {"nominal", 5.3},
+         {"tolerance", 0.1}},
+        {{"number", "4"}, {"type", "flatness"}, {"elements", {"top"}}, {"tolerance", 0.1}},
+        {{"number", "5"},
+         {"type", "perpendicularity"},
+         {"elements", {"right"}},
+         {"datum", "A"},
+         {"tolerance", 0.1}}}}};
+  const Json measured = gui.call("run_measure_dimensions", {{"plan", plan}});
+  ASSERT_EQ(measured.at("status"), "done") << measured.dump(2);
+  const Json& summary = measured.at("summary");
+  EXPECT_EQ(summary.at("characteristics"), 5);
+  EXPECT_EQ(summary.at("passed"), 4);
+  EXPECT_EQ(summary.at("failed"), 1);
+  EXPECT_EQ(summary.at("alignment"), "datums");
+  const Json measurement = Json::parse(
+      gui.call("read_file", {{"file", "measurement.json"}}).at("text").get<std::string>());
+  const Json& characteristics = measurement.at("characteristics");
+  EXPECT_NEAR(characteristics[0].at("actual").get<double>(), 4.0, 0.05);
+  EXPECT_NEAR(characteristics[1].at("actual").get<double>(), 6.0, 0.05);
+  EXPECT_NEAR(characteristics[2].at("actual").get<double>(), 5.0, 0.05);
+  EXPECT_EQ(characteristics[2].at("result"), "NOK");
+  EXPECT_THROW((void)gui.call("run_measure_dimensions", {{"plan", {{"elements", Json::array()}}}}),
+               std::exception);
+
+  const Json order = {{"report", {{"number", "FA-1"}, {"date", "2026-10-16"}}},
+                      {"supplier", {{"name", "Foundry"}}},
+                      {"customer", {{"name", "Customer"}}},
+                      {"part", {{"drawing", "D-4711"}, {"revision", "B"}}},
+                      {"submission", {{"reason", "new part"}}}};
+  const Json reported = gui.call("run_first_article_report", {{"order", order}});
+  ASSERT_EQ(reported.at("status"), "done") << reported.dump(2);
+  EXPECT_EQ(reported.at("summary").at("decision"), "not conforming");
+  EXPECT_EQ(reported.at("summary").at("failed"), 1);
+  // Material, serial number and inspector are missing.
+  EXPECT_EQ(reported.at("summary").at("missing_fields"), 3);
+  const std::string html =
+      gui.call("read_file", {{"file", "report.html"}}).at("text").get<std::string>();
+  for (const char* text : {"First article inspection report", "D-4711", "4711", "NOK",
+                           "not conforming", "data:image/png;base64,", "not given"}) {
+    EXPECT_NE(html.find(text), std::string::npos) << text;
+  }
+  EXPECT_EQ(html.find("{{"), std::string::npos);
+  const std::string csv =
+      gui.call("read_file", {{"file", "characteristics.csv"}}).at("text").get<std::string>();
+  EXPECT_EQ(std::count(csv.begin(), csv.end(), '\n'), 6);
 }
 
 }  // namespace voxelsieve

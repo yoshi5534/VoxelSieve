@@ -1288,7 +1288,8 @@ RigidTransform RigidTransform::fromAxisAngle(const std::array<double, 3>& axis, 
 struct MeshDistance::Impl {
   struct Triangle {
     Vec a, b, c;
-    Vec normal;  // unit, outward
+    Vec normal;                // unit, outward
+    std::uint32_t source = 0;  // index in the mesh
   };
   struct Node {
     Vec lo, hi;
@@ -1380,8 +1381,10 @@ MeshDistance::MeshDistance(const Mesh& mesh) : impl_(std::make_unique<Impl>()) {
   Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
          std::numeric_limits<double>::max()};
   Vec hi = -1.0 * lo;
-  for (const auto& t : mesh.triangles) {
+  for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+    const auto& t = mesh.triangles[i];
     Impl::Triangle tri;
+    tri.source = static_cast<std::uint32_t>(i);
     tri.a = {t[0][0], t[0][1], t[0][2]};
     tri.b = {t[1][0], t[1][1], t[1][2]};
     tri.c = {t[2][0], t[2][1], t[2][2]};
@@ -1433,6 +1436,7 @@ MeshDistance::Hit MeshDistance::query(const std::array<double, 3>& p) const {
   });
   Hit hit;
   hit.closest = best_point.point;
+  hit.triangle = impl.triangles[best].source;
   const Vec offset = p - best_point.point;
   const double distance = std::sqrt(best2);
   Vec normal = impl.triangles[best].normal;

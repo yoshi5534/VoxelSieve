@@ -37,6 +37,7 @@ class MeshDistance {
     double distance = 0.0;            // signed, mm
     std::array<double, 3> closest{};  // closest point on the mesh
     std::array<double, 3> normal{};   // unit direction with distance = normal . (p - closest)
+    std::uint32_t triangle = 0;       // index of the closest triangle in the mesh
   };
   [[nodiscard]] Hit query(const std::array<double, 3>& p) const;
 

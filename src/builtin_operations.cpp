@@ -20,6 +20,7 @@
 #include "voxelsieve/denoise.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
+#include "voxelsieve/dimensional.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/isolate.hpp"
@@ -1028,6 +1029,31 @@ std::string readTextFile(const std::filesystem::path& path) {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+/// The options a porosity step ran with, from its options.json.
+PorosityOptions usedPorosityOptions(const std::filesystem::path& porosity_dir) {
+  PorosityOptions options;
+  if (std::filesystem::exists(porosity_dir / "options.json")) {
+    const Json used = Json::parse(readTextFile(porosity_dir / "options.json"));
+    options.min_pore_voxels = used.value("min_pore_voxels", options.min_pore_voxels);
+    options.zone_sigma = used.value("zone_sigma", options.zone_sigma);
+    options.min_zone_void_fraction =
+        used.value("min_zone_void_fraction", options.min_zone_void_fraction);
+  }
+  return options;
+}
+
+/// The inspection order of a report step: order_path, then order merged over it.
+Json readOrder(const Json& p) {
+  Json order = Json::object();
+  if (p.contains("order_path")) {
+    order = Json::parse(readTextFile(p.at("order_path").get<std::string>()));
+  }
+  if (p.contains("order")) {
+    order.merge_patch(p.at("order"));
+  }
+  return order;
+}
+
 class Report final : public Operation {
  public:
   Report() {
@@ -1059,26 +1085,13 @@ class Report final : public Operation {
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
-    Json order = Json::object();
-    if (p.contains("order_path")) {
-      order = Json::parse(readTextFile(p.at("order_path").get<std::string>()));
-    }
-    if (p.contains("order")) {
-      order.merge_patch(p.at("order"));
-    }
+    const Json order = readOrder(p);
     const std::string report_template = p.contains("template_path")
                                             ? readTextFile(p.at("template_path").get<std::string>())
                                             : std::string(defaultReportTemplate());
     const auto porosity_dir = context.inputs.at("porosity");
     const PorosityResult porosity = loadPorosityResult(porosity_dir);
-    PorosityOptions options;
-    if (std::filesystem::exists(porosity_dir / "options.json")) {
-      const Json used = Json::parse(readTextFile(porosity_dir / "options.json"));
-      options.min_pore_voxels = used.value("min_pore_voxels", options.min_pore_voxels);
-      options.zone_sigma = used.value("zone_sigma", options.zone_sigma);
-      options.min_zone_void_fraction =
-          used.value("min_zone_void_fraction", options.min_zone_void_fraction);
-    }
+    const PorosityOptions options = usedPorosityOptions(porosity_dir);
     std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
     const auto zones = inspectionZonesFromJson(order);
     const Evaluation evaluation = evaluate(porosity, zones);
@@ -2176,6 +2189,228 @@ class CompareObjects final : public Operation {
   OperationInfo info_;
 };
 
+/// The nominal geometry of a comparison in the coordinates its compare.json places in the scan
+/// with cad_to_scan: the CAD file it was made with or the nominal object.
+Mesh comparisonNominal(const OperationContext& context, const Json& compared,
+                       std::filesystem::path& cad_path) {
+  if (!cad_path.empty()) {
+    return readStl(cad_path);
+  }
+  if (compared.contains("cad_path")) {
+    cad_path = compared.at("cad_path").get<std::string>();
+    return readStl(cad_path);
+  }
+  if (compared.contains("nominal_object")) {
+    const std::string id = compared.at("nominal_object").get<std::string>();
+    const Json& nominal = objectEntry(context, id);
+    if (nominal.at("kind") != kMeshObject) {
+      throw std::invalid_argument(
+          "The comparison's nominal object is a volume: dimensional measurement needs a CAD model "
+          "(give cad_path)");
+    }
+    cad_path = nominal.at("outputs").at(artifact::kMesh).get<std::string>();
+    return readStl(cad_path);
+  }
+  throw std::invalid_argument("The comparison names no CAD model: give cad_path");
+}
+
+class MeasureDimensions final : public Operation {
+ public:
+  MeasureDimensions() {
+    info_.id = "measure_dimensions";
+    info_.title = "Dimensional measurement";
+    info_.description =
+        "Measures the characteristics of a drawing on the scanned surface: fits planes, "
+        "cylinders, spheres and points where the CAD model has them, aligns the part on its "
+        "datums (3-2-1, RPS) or keeps the best fit of the comparison, and evaluates sizes, "
+        "distances, angles, form, orientation, position and profile against their tolerances "
+        "(see examples/first_article_plan.json). Elements are found on the CAD model by a point "
+        "on them ('at'); cad_features lists the ones it has. Writes measurement.json, "
+        "characteristics.csv and views with the characteristic numbers as balloons.";
+    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan"},
+                    {"comparison", artifact::kComparison,
+                     "Nominal-actual comparison that placed the CAD model"}};
+    info_.outputs = {
+        {"measurement", artifact::kDimensionalMeasurement, "Measured characteristics"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"plan",
+           {{"type", "object"},
+            {"description",
+             "Inspection plan in CAD (drawing) coordinates, mm. elements: [{id, type: plane | "
+             "cylinder | sphere | point, at: [x,y,z] a point on the feature of the CAD model "
+             "(from cad_features), optional search_mm, edge_margin_mm}]; instead of at, explicit "
+             "geometry (plane: point, normal, radius_mm; cylinder: point, direction, diameter, "
+             "length; "
+             "sphere: center, diameter; point: point, normal). alignment: \"best_fit\" or "
+             "{datums: [\"A\", \"B\", \"C\"]} in order of precedence (3-2-1), or with "
+             "{element, directions: [\"x\"]} per datum for RPS points. characteristics: "
+             "[{number, label, type, elements: [ids] or element, datum, nominal, upper, lower or "
+             "tolerance (± or zone width), drawing_zone, note}]; types diameter, radius, "
+             "distance (optional along: x|y|z), angle, coordinate (axis: x|y|z), position "
+             "(datum-based zone), flatness, cylindricity, sphericity, form, parallelism, "
+             "perpendicularity (datum), profile, deviation. nominal defaults to the CAD value. "
+             "part: {name, number, drawing, revision} for the report"}}},
+          {"plan_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Inspection plan file"}}},
+          {"cad_path",
+           {{"type", "string"},
+            {"format", "path"},
+            {"description",
+             "CAD model as STL in mm; default: the one of the comparison or its nominal object"}}},
+          {"search_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "How far from the nominal surface scanned points are taken; 0: five voxels"}}},
+          {"edge_margin_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Points this close to the edge of an element are left out; 0: two voxels"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    Json plan = Json::object();
+    if (p.contains("plan_path")) {
+      plan = Json::parse(readTextFile(p.at("plan_path").get<std::string>()));
+    }
+    if (p.contains("plan")) {
+      plan.merge_patch(p.at("plan"));
+    }
+    const auto comparison_dir = context.inputs.at("comparison");
+    const Json compared = Json::parse(readTextFile(comparison_dir / "compare.json"));
+    std::filesystem::path cad_path;
+    if (p.contains("cad_path")) {
+      cad_path = std::filesystem::absolute(p.at("cad_path").get<std::string>());
+    }
+    const Mesh cad = comparisonNominal(context, compared, cad_path);
+    const RigidTransform cad_to_scan =
+        RigidTransform::fromMatrix(compared.at("cad_to_scan").get<std::vector<double>>());
+    DimensionalOptions options;
+    options.search_mm = p.at("search_mm").get<double>();
+    options.edge_margin_mm = p.at("edge_margin_mm").get<double>();
+    context.progress(0.05);
+    const SurfaceMask mask = SurfaceMask::open(context.inputs.at("surface") / "surface.vss");
+    Measurement measurement = measure(mask, cad, cad_to_scan, plan, options);
+    measurement.json["cad_path"] = cad_path.string();
+    if (plan.contains("part")) {
+      measurement.json["part"] = plan.at("part");
+    }
+    context.progress(0.8);
+    const TelemetryPhase phase("write results");
+    writeMeasurement(measurement, cad, context.output_dir / "measurement");
+    OperationResult result;
+    result.outputs["measurement"] = "measurement";
+    result.summary = measurement.json.at("summary");
+    result.summary["alignment"] = measurement.json.at("alignment").at("method");
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class FirstArticleReport final : public Operation {
+ public:
+  FirstArticleReport() {
+    info_.id = "first_article_report";
+    info_.title = "First article inspection report";
+    info_.description =
+        "Writes the first article inspection report of a dimensional measurement: cover sheet "
+        "(supplier, customer, part, drawing and revision, reason for the submission), the "
+        "decision, the list of characteristics with nominal value, tolerance, actual value and "
+        "result, the ballooned views and the measured elements; with a comparison or a porosity "
+        "result also those, and porosity limits of the order count for the decision. Writes "
+        "report.html (print to PDF from the browser), report.json and characteristics.csv.";
+    info_.inputs = {{"measurement", artifact::kDimensionalMeasurement, "Dimensional measurement"},
+                    {"comparison", artifact::kComparison, "Nominal-actual comparison", true},
+                    {"porosity", artifact::kPorosity, "Porosity result", true},
+                    {"surface", artifact::kSurface, "Surface for the view of the pores", true}};
+    info_.outputs = {{"report", artifact::kReport, "Report directory"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"order",
+           {{"type", "object"},
+            {"description",
+             "report {number, date}, supplier {name, address, code}, customer {name, plant}, "
+             "part {name, number, drawing, revision, material, serial}, submission {reason, "
+             "quantity}, approval {inspector, approver}, optional scan, acceptance (porosity "
+             "limits) and notes (see examples/first_article_order.json)"}}},
+          {"order_path", {{"type", "string"}, {"format", "path"}, {"description", "Order file"}}},
+          {"template_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Report template file"}}},
+          {"include_comparison",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Include the nominal-actual comparison when there is one"}}},
+          {"include_porosity",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Include the porosity result when there is one"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const Json order = readOrder(p);
+    const std::string report_template = p.contains("template_path")
+                                            ? readTextFile(p.at("template_path").get<std::string>())
+                                            : std::string(defaultFirstArticleTemplate());
+    std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
+    Json porosity_data;
+    if (const auto porosity = context.inputs.find("porosity");
+        p.at("include_porosity").get<bool>() && porosity != context.inputs.end()) {
+      const PorosityResult result = loadPorosityResult(porosity->second);
+      const Evaluation evaluation = evaluate(result, inspectionZonesFromJson(order));
+      porosity_data = reportData(order, result, usedPorosityOptions(porosity->second), evaluation,
+                                 porosity->second);
+      if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
+        context.log("Rendering the part and its pores");
+        phase.reset();
+        phase.emplace("images");
+        addPartImages(porosity_data, SurfaceMask::open(surface->second / "surface.vss"), result);
+      }
+    }
+    std::vector<std::string> warnings;
+    const auto measurement_dir = context.inputs.at("measurement");
+    Json data = firstArticleData(order, measurement_dir, porosity_data, &warnings);
+    if (const auto comparison = context.inputs.find("comparison");
+        p.at("include_comparison").get<bool>() && comparison != context.inputs.end()) {
+      addComparison(data, comparison->second);
+    }
+    phase.reset();
+    phase.emplace("write report");
+    const auto dir = context.output_dir / "report";
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    std::filesystem::copy_file(measurement_dir / "characteristics.csv",
+                               dir / "characteristics.csv");
+    data.erase("images");
+    writeJson(dir / "report.json", data);
+    for (const std::string& warning : warnings) {
+      context.log(warning);
+    }
+    OperationResult result;
+    result.outputs["report"] = "report";
+    result.summary = {{"decision", data.at("decision").at("result")},
+                      {"characteristics", data.at("measurement").at("characteristics")},
+                      {"failed", data.at("measurement").at("failed")},
+                      {"not_measured", data.at("measurement").at("not_measured")},
+                      {"missing_fields", warnings.size()}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class ExportDiconde final : public Operation {
  public:
   ExportDiconde() {
@@ -2332,6 +2567,8 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<AlignPoints>());
   registry.add(std::make_shared<AlignSurfaces>());
   registry.add(std::make_shared<CompareObjects>());
+  registry.add(std::make_shared<MeasureDimensions>());
+  registry.add(std::make_shared<FirstArticleReport>());
   registry.add(std::make_shared<ExportDiconde>());
 }
 

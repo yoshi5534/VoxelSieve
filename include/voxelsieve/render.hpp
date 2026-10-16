@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <span>
+#include <string>
 #include <vector>
 
 #include "voxelsieve/surface.hpp"
@@ -56,5 +58,17 @@ struct RenderImage {
 [[nodiscard]] RenderImage render(const RenderScene& scene, const RenderView& view = {});
 
 void writePng(const RenderImage& image, const std::filesystem::path& file);
+
+/// Draws `text` (digits, A to Z, '.', '-' and space; others become spaces) in a filled circle or
+/// rounded box centred at pixel (`x`, `y`), with a leader line to (`anchor_x`, `anchor_y`) unless
+/// that is the centre. `scale` is the size of one font pixel.
+void drawBalloon(RenderImage& image, double x, double y, double anchor_x, double anchor_y,
+                 const std::string& text, int scale = 2);
+
+/// Image coordinates of points in a rendering of `scene` with `view`, in the pixels of the final
+/// image.
+[[nodiscard]] std::vector<std::array<double, 2>> projectToImage(
+    const RenderScene& scene, const RenderView& view,
+    std::span<const std::array<double, 3>> points);
 
 }  // namespace voxelsieve

@@ -23,8 +23,10 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `surface.hpp` the surface as a few-bit distance mask (`.vss`, ADR 0009); `compare.hpp` the
     nominal-actual comparison of that surface with a CAD model (ADR 0010) and the fits that
     align objects (`fitRigid`, `alignSurfaces`, ADR 0018) and the optional non-rigid registration
-    for flexible parts (`CompareOptions::deformation`, ADR 0022); `render.hpp` a CPU
-    renderer for shaded report and documentation images
+    for flexible parts (`CompareOptions::deformation`, ADR 0022); `dimensional.hpp` dimensional
+    measurement: elements found on the CAD model, fitted to the scan, datum alignment and
+    characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
+    documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
     its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
@@ -34,7 +36,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     trained with the PyTorch scripts in `tools/models/` (segmentation, and denoising from the noisy
     scan alone)
   - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
-    the built-in template is `resources/report_template.html`, compiled in
+    the built-in templates are `resources/report_template.html` and
+    `resources/first_article_template.html` (first article report), compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
     the phases of new long-running code with `TelemetryPhase`
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
@@ -49,7 +52,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-gui`); `examples/` holds an example inspection order
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order
   and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats

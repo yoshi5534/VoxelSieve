@@ -5,7 +5,9 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <numbers>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 
@@ -182,12 +184,12 @@ std::string deviationHistogramSvg(const std::vector<double>& histogram, double t
   return svg.str();
 }
 
-/// Mandatory fields of the report, from the report contents required by ISO/IEC 17025
-/// (7.8.2.1) and the CT-specific settings a test report states under ISO 15708-3.
 struct Field {
   std::string_view path;
   std::string_view label;
 };
+/// Mandatory fields of the report, from the report contents required by ISO/IEC 17025
+/// (7.8.2.1) and the CT-specific settings a test report states under ISO 15708-3.
 constexpr std::array kMandatoryFields{
     Field{"report.number", "Report number"},
     Field{"report.date", "Date of issue"},
@@ -211,8 +213,26 @@ constexpr std::array kMandatoryFields{
     Field{"approval.approver", "Approved by"},
 };
 
-void completeMandatory(Json& data, std::vector<std::string>* warnings) {
-  for (const Field& field : kMandatoryFields) {
+/// Mandatory fields of a first article inspection report: what identifies the part, its drawing
+/// and the submission, as the common first article forms ask for it.
+constexpr std::array kFirstArticleFields{
+    Field{"report.number", "Report number"},
+    Field{"report.date", "Date of issue"},
+    Field{"supplier.name", "Supplier"},
+    Field{"customer.name", "Customer"},
+    Field{"part.name", "Part name"},
+    Field{"part.number", "Part number"},
+    Field{"part.drawing", "Drawing number"},
+    Field{"part.revision", "Drawing revision"},
+    Field{"part.material", "Material"},
+    Field{"part.serial", "Serial number or batch"},
+    Field{"submission.reason", "Reason for the submission"},
+    Field{"approval.inspector", "Inspector"},
+};
+
+void completeMandatory(Json& data, std::span<const Field> fields,
+                       std::vector<std::string>* warnings) {
+  for (const Field& field : fields) {
     Json* node = &data;
     std::string_view rest = field.path;
     while (true) {
@@ -399,7 +419,7 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
                           const std::filesystem::path& image_dir,
                           std::vector<std::string>* warnings) {
   Json data = order.is_object() ? order : Json::object();
-  completeMandatory(data, warnings);
+  completeMandatory(data, kMandatoryFields, warnings);
   const VoxelSize& v = result.voxel_size;
   const double voxel_volume = v.volumeMm3();
 
@@ -606,6 +626,182 @@ void addComparison(Json& data, const std::filesystem::path& dir, const std::stri
   data["images"]["deviation_2"] = dataUri(dir / "deviation_view_2.png");
   data["images"]["deviation_histogram"] =
       deviationHistogramSvg(d.at("histogram").get<std::vector<double>>(), tolerance, range);
+}
+
+namespace {
+
+/// GD&T-like symbol of a characteristic type for the table.
+std::string_view characteristicSymbol(const std::string& type) {
+  static const std::map<std::string, std::string_view, std::less<>> symbols = {
+      {"diameter", "⌀"},   {"radius", "R"},   {"distance", "↔"},    {"angle", "∠"},
+      {"coordinate", "⌗"}, {"position", "⌖"}, {"flatness", "⏥"},    {"cylindricity", "⌭"},
+      {"sphericity", "◯"}, {"form", "◯"},     {"parallelism", "∥"}, {"perpendicularity", "⟂"},
+      {"profile", "⌓"},    {"deviation", "±"}};
+  const auto found = symbols.find(type);
+  return found == symbols.end() ? std::string_view() : found->second;
+}
+
+/// A value of a characteristic: angles and lengths with three decimals.
+std::string characteristicNumber(const Json& value, bool sign) {
+  if (!value.is_number()) {
+    return {};
+  }
+  return sign ? formatSigned(value.get<double>(), 3) : formatNumber(value.get<double>(), 3);
+}
+
+}  // namespace
+
+nlohmann::json firstArticleData(const nlohmann::json& order,
+                                const std::filesystem::path& measurement_dir,
+                                const nlohmann::json& porosity,
+                                std::vector<std::string>* warnings) {
+  std::ifstream in(measurement_dir / "measurement.json", std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("No measurement.json in " + measurement_dir.string());
+  }
+  const Json measurement = Json::parse(in);
+  Json data = order.is_object() ? order : Json::object();
+  // The inspection plan may name the part and its drawing; the order wins.
+  if (const auto part = measurement.find("part"); part != measurement.end() && part->is_object()) {
+    Json merged = *part;
+    if (data.contains("part") && data["part"].is_object()) {
+      merged.merge_patch(data["part"]);
+    }
+    data["part"] = merged;
+  }
+  completeMandatory(data, kFirstArticleFields, warnings);
+  data["software"] = {{"name", "VoxelSieve"}, {"version", VOXELSIEVE_VERSION}};
+
+  Json characteristics = Json::array();
+  for (const Json& c : measurement.value("characteristics", Json::array())) {
+    const std::string type = c.value("type", "");
+    const Json passed = c.value("passed", Json());
+    std::string result_class = "open";
+    if (passed.is_boolean()) {
+      result_class = passed.get<bool>() ? "ok" : "nok";
+    }
+    std::string relation;
+    for (const Json& id : c.value("elements", Json::array())) {
+      relation += (relation.empty() ? "" : ", ") + id.get<std::string>();
+    }
+    if (c.contains("datum")) {
+      relation += " | " + c.at("datum").get<std::string>();
+    }
+    if (c.contains("along")) {
+      relation += " (" + c.at("along").get<std::string>() + ")";
+    }
+    if (c.contains("axis")) {
+      relation += " (" + c.at("axis").get<std::string>() + ")";
+    }
+    Json row = {{"number", c.value("number", "")},
+                {"label", c.value("label", "")},
+                {"type", type},
+                {"symbol", std::string(characteristicSymbol(type))},
+                {"relation", relation},
+                {"nominal", characteristicNumber(c.value("nominal", Json()), false)},
+                {"upper", characteristicNumber(c.value("upper", Json()), true)},
+                {"lower", characteristicNumber(c.value("lower", Json()), true)},
+                {"actual", characteristicNumber(c.value("actual", Json()), false)},
+                {"deviation", characteristicNumber(c.value("deviation", Json()), true)},
+                {"unit", c.value("unit", "mm") == "deg" ? "°" : "mm"},
+                {"result", c.value("result", "")},
+                {"result_class", result_class}};
+    for (const char* key : {"drawing_zone", "method", "note", "message"}) {
+      if (c.contains(key)) {
+        row[key] = c.at(key);
+      }
+    }
+    characteristics.push_back(row);
+  }
+  data["characteristics"] = characteristics;
+
+  Json elements = Json::array();
+  for (const Json& e : measurement.value("elements", Json::array())) {
+    Json row = {{"id", e.value("id", "")},
+                {"type", e.value("type", "")},
+                {"source", e.value("source", "") == "cad" ? "CAD model" : "given"},
+                {"measured", e.value("measured", false)}};
+    if (e.value("measured", false)) {
+      row["points"] = e.value("points", 0);
+      row["rms"] = formatNumber(e.value("rms_mm", 0.0), 4);
+      row["form"] = formatNumber(e.value("form_mm", 0.0), 4);
+    } else {
+      row["message"] = e.value("message", "");
+    }
+    elements.push_back(row);
+  }
+  data["elements"] = elements;
+
+  const Json& alignment = measurement.at("alignment");
+  std::string alignment_text = "best fit of the surface to the CAD model";
+  if (alignment.value("method", "") == "datums") {
+    std::string datums;
+    for (const Json& d : alignment.value("datums", Json::array())) {
+      datums += (datums.empty() ? "" : ", ") + d.value("element", "");
+    }
+    alignment_text = "on the datums " + datums + " in this order (" +
+                     std::to_string(alignment.value("fixed_degrees_of_freedom", 0)) +
+                     " degrees of freedom fixed, the others from the best fit)";
+  }
+  const Json& summary = measurement.at("summary");
+  const auto count = [&](const char* key) { return summary.value(key, std::size_t{0}); };
+  const std::size_t failed = count("failed");
+  const std::size_t not_measured = count("not_measured");
+  data["measurement"] = {
+      {"alignment", alignment_text},
+      {"voxel_size", voxelSizeText(readVoxelSize(measurement))},
+      {"search", formatNumber(measurement.value("search_mm", 0.0), 3) + " mm"},
+      {"edge_margin", formatNumber(measurement.value("edge_margin_mm", 0.0), 3) + " mm"},
+      {"cad",
+       std::filesystem::path(measurement.value("cad_path", std::string())).filename().string()},
+      {"characteristics", count("characteristics")},
+      {"passed", count("passed")},
+      {"failed", failed},
+      {"not_measured", not_measured},
+      {"unrated", count("unrated")}};
+  // The decision on the dimensional result; porosity limits, when evaluated, count as well.
+  const bool conforming = failed == 0;
+  bool porosity_failed = false;
+  if (porosity.is_object()) {
+    data["porosity"] = {{"results", porosity.at("results")}, {"analysis", porosity.at("analysis")}};
+    if (const auto evaluation = porosity.find("evaluation"); evaluation != porosity.end()) {
+      data["porosity"]["evaluation"] = *evaluation;
+      porosity_failed = !evaluation->value("passed", true);
+    }
+    if (const auto images = porosity.find("images"); images != porosity.end()) {
+      for (const char* key : {"part", "pores"}) {
+        if (images->contains(key)) {
+          data["images"][key] = images->at(key);
+        }
+      }
+    }
+  }
+  std::string decision = "conforming";
+  std::string decision_text = "All measured characteristics are within their tolerances.";
+  if (!conforming || porosity_failed) {
+    decision = "not conforming";
+    decision_text.clear();
+    if (failed > 0) {
+      decision_text = std::to_string(failed) + " characteristic" + (failed == 1 ? " is" : "s are") +
+                      " out of tolerance.";
+    }
+    if (porosity_failed) {
+      decision_text += std::string(decision_text.empty() ? "" : " ") +
+                       "The porosity exceeds the acceptance limits.";
+    }
+  } else if (not_measured > 0) {
+    decision = "incomplete";
+    decision_text = std::to_string(not_measured) + " characteristic" +
+                    (not_measured == 1 ? " was" : "s were") + " not measured.";
+  }
+  data["decision"] = {{"result", decision},
+                      {"text", decision_text},
+                      {"class", decision == "conforming"       ? "ok"
+                                : decision == "not conforming" ? "nok"
+                                                               : "open"}};
+  data["images"]["measurement_1"] = dataUri(measurement_dir / "measurement_view_1.png");
+  data["images"]["measurement_2"] = dataUri(measurement_dir / "measurement_view_2.png");
+  return data;
 }
 
 }  // namespace voxelsieve

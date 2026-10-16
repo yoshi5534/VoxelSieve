@@ -17,6 +17,7 @@
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
+#include "voxelsieve/dimensional.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -548,6 +549,28 @@ std::vector<GuiMethod> Gui::methods() const {
               {"enum", {"below", "above"}},
               {"default", "below"},
               {"description", "With cut_axis: the side of the plane that stays"}}}})},
+      {"cad_features",
+       "Regular geometry of a CAD model (a mesh object or an STL file), in its own coordinates "
+       "(those of the drawing): planes, cylinders and spheres with their position, size and "
+       "area, largest first, and a picture with their ids. The 'at' point of a feature names it "
+       "in an inspection plan for run_measure_dimensions.",
+       objectSchema(
+           {{"object", {{"type", "string"}, {"description", "Id of a mesh object; or give path"}}},
+            {"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}},
+            {"max_features",
+             {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}, {"default", 40}}},
+            {"min_area_percent",
+             {{"type", "number"},
+              {"minimum", 0},
+              {"maximum", 50},
+              {"default", 0.1},
+              {"description",
+               "Features smaller than this share of the model's area are left out"}}},
+            {"azimuth_deg", {{"type", "number"}, {"default", -60.0}}},
+            {"elevation_deg", {{"type", "number"}, {"default", 30.0}}},
+            {"width", {{"type", "integer"}, {"minimum", 64}, {"maximum", 2048}, {"default", 1000}}},
+            {"height",
+             {{"type", "integer"}, {"minimum", 64}, {"maximum", 2048}, {"default", 750}}}})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -1391,6 +1414,57 @@ Json Gui::viewObjects(const Json& params) const {
           {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
 
+Json Gui::cadFeatures(const Json& params) const {
+  std::filesystem::path file;
+  if (params.contains("object")) {
+    const std::scoped_lock lock(mutex_);
+    const ObjectSource source = objectSource(params.at("object").get<std::string>());
+    if (source.object.kind != kMeshObject) {
+      throw std::invalid_argument("Object '" + source.object.name +
+                                  "' is not a mesh: CAD features are found on CAD models");
+    }
+    file = source.source;
+  } else if (params.contains("path")) {
+    file = params.at("path").get<std::string>();
+  } else {
+    throw std::invalid_argument("Give object or path");
+  }
+  FeatureOptions options;
+  options.max_features = params.at("max_features").get<std::size_t>();
+  options.min_area_fraction = params.at("min_area_percent").get<double>() / 100.0;
+  const FeatureFinder finder(readStl(file), options);
+  const std::vector<CadFeature> features = finder.detect();
+  RenderView view;
+  view.azimuth_degrees = params.at("azimuth_deg").get<double>();
+  view.elevation_degrees = params.at("elevation_deg").get<double>();
+  view.width = params.at("width").get<int>();
+  view.height = params.at("height").get<int>();
+  view.supersampling = 2;
+  const RenderImage image = renderFeatures(finder.mesh(), features, view);
+  const auto png =
+      detail::encodePng(static_cast<std::uint32_t>(image.width),
+                        static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  std::array<double, 3> low{kInf, kInf, kInf};
+  std::array<double, 3> high{-kInf, -kInf, -kInf};
+  for (const auto& p : finder.mesh().points) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      low[k] = std::min(low[k], static_cast<double>(p[k]));
+      high[k] = std::max(high[k], static_cast<double>(p[k]));
+    }
+  }
+  Json listed = Json::array();
+  for (const CadFeature& feature : features) {
+    listed.push_back(toJson(feature));
+  }
+  return {{"path", file.string()},
+          {"features", listed},
+          {"bounds_min_mm", low},
+          {"bounds_max_mm", high},
+          {"tolerance_mm", finder.toleranceMm()},
+          {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+}
+
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Gui::openView(
     std::optional<int> dataset_step, std::optional<int> porosity_step) const {
   std::filesystem::path dataset_dir;
@@ -2085,7 +2159,8 @@ Json Gui::call(const std::string& method, const Json& arguments,
                                 "projects with run_import_raw, run_import_tiff, run_import_dicom "
                                 "and run_import_gzipped_xml");
   }
-  if (method == "view_objects" || method == "wait" || method == "histogram") {
+  if (method == "view_objects" || method == "wait" || method == "histogram" ||
+      method == "cad_features") {
     // Not under the lock: building the meshes of the objects takes it only to find them, and
     // waiting releases it while it waits.
     for (const GuiMethod& known : methods()) {
@@ -2095,6 +2170,9 @@ Json Gui::call(const std::string& method, const Json& arguments,
       const Json checked = validateParameters(known.parameters, params);
       if (method == "histogram") {
         return histogram(checked);
+      }
+      if (method == "cad_features") {
+        return cadFeatures(checked);
       }
       return method == "wait" ? waitForOperation(checked.at("seconds").get<double>())
                               : viewObjects(checked);

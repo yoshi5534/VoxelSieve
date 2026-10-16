@@ -1,0 +1,33 @@
+{
+  "part": {
+    "name": "Wheel hub",
+    "number": "VS-HUB-001",
+    "drawing": "VS-HUB-001-D",
+    "revision": "A"
+  },
+  "elements": [
+    {"id": "A", "type": "plane", "at": [0.0, 19.0, -4.0]},
+    {"id": "B", "type": "cylinder", "at": [-4.0, 0.0, 5.0]},
+    {"id": "C", "type": "cylinder", "at": [5.582, 4.056, 3.0]},
+    {"id": "rim_top", "type": "plane", "at": [0.0, 19.0, 6.0]},
+    {"id": "rim", "type": "cylinder", "at": [0.0, 22.0, 1.0]},
+    {"id": "hub_top", "type": "plane", "at": [0.0, -6.0, 10.0]}
+  ],
+  "alignment": {"datums": ["A", "B", "C"]},
+  "characteristics": [
+    {"number": "1", "label": "Bore", "type": "diameter", "element": "B", "nominal": 8.0,
+     "tolerance": 0.02, "drawing_zone": "C4"},
+    {"number": "2", "label": "Rim", "type": "diameter", "element": "rim", "tolerance": 0.1},
+    {"number": "3", "label": "Rim height", "type": "distance", "elements": ["A", "rim_top"],
+     "tolerance": 0.1},
+    {"number": "4", "label": "Hub height", "type": "distance", "elements": ["A", "hub_top"],
+     "tolerance": 0.1},
+    {"number": "5", "type": "flatness", "element": "A", "tolerance": 0.05},
+    {"number": "6", "type": "parallelism", "element": "rim_top", "datum": "A", "tolerance": 0.05},
+    {"number": "7", "type": "perpendicularity", "element": "B", "datum": "A", "tolerance": 0.03},
+    {"number": "8", "type": "cylindricity", "element": "B", "tolerance": 0.05},
+    {"number": "9", "label": "Bolt hole", "type": "diameter", "element": "C", "tolerance": 0.05},
+    {"number": "10", "label": "Bolt hole", "type": "position", "element": "C", "tolerance": 0.1},
+    {"number": "11", "label": "Rim", "type": "profile", "element": "rim", "tolerance": 0.2}
+  ]
+}

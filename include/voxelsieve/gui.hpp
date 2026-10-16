@@ -210,6 +210,8 @@ class Gui {
   nlohmann::json viewObjects(const nlohmann::json& params) const;
   /// The histogram method; needs mutex_ not held.
   nlohmann::json histogram(const nlohmann::json& params) const;
+  /// The cad_features method; needs mutex_ not held.
+  nlohmann::json cadFeatures(const nlohmann::json& params) const;
   /// Draws objects into the RGB image of a slice for view_slice; needs mutex_.
   nlohmann::json drawObjects(const Dataset& base, const ArtifactRef& base_ref,
                              const SliceRequest& request, const nlohmann::json& ids,

@@ -7,8 +7,10 @@ function(voxelsieve_embed out_var file)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
 endfunction()
 
-# The report template is compiled in, so vs-report works without installed data files.
+# The report templates are compiled in, so vs-report works without installed data files.
 voxelsieve_embed(VOXELSIEVE_REPORT_TEMPLATE ${PROJECT_SOURCE_DIR}/resources/report_template.html)
+voxelsieve_embed(VOXELSIEVE_FIRST_ARTICLE_TEMPLATE
+                 ${PROJECT_SOURCE_DIR}/resources/first_article_template.html)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
 
 # The browser UI of vs-gui is compiled in the same way.
@@ -58,6 +60,7 @@ add_library(voxelsieve SHARED
   source.cpp
   surface.cpp
   compare.cpp
+  dimensional.cpp
   render.cpp
   synthetic.cpp
   telemetry.cpp

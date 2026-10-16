@@ -26,6 +26,8 @@ inline constexpr const char* kMeasurements = "measurements";       // objects.cs
 inline constexpr const char* kMesh = "mesh";  // triangle mesh as STL in mm (ADR 0018)
 inline constexpr const char* kPose = "pose";  // directory with pose.json: objects moved (ADR 0018)
 inline constexpr const char* kDiconde = "diconde";  // DICONDE series of a scan (ADR 0024)
+inline constexpr const char* kDimensionalMeasurement =
+    "dimensional_measurement";  // characteristics of a drawing measured on a scan (ADR 0027)
 }  // namespace artifact
 
 struct PortInfo {
