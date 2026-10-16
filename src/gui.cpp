@@ -790,7 +790,7 @@ std::optional<std::filesystem::path> Gui::reopenProject() {
     if (!in) {
       return std::nullopt;
     }
-    const std::filesystem::path dir = Json::parse(in).at("project").get<std::string>();
+    std::filesystem::path dir = Json::parse(in).at("project").get<std::string>();
     if (!std::filesystem::exists(dir / "project.json")) {
       return std::nullopt;
     }

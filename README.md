@@ -476,7 +476,10 @@ segmentation finds the number of materials itself with `materials` 0, one per pe
 histogram or per shoulder and tail a Gaussian mixture finds, which the method `histogram` shows
 with its suggestion and the share of voxels at class boundaries; `view_slice` with
 `preview_thresholds` previews the classes. "Material meshes" (`material_meshes`) exports the
-surface of each material as an STL and adds it as an object in the material's colour.
+surface of each material as an STL and adds it as an object in the material's colour. "Measure
+objects" (`measure_objects`) measures each connected object of a material, or the enclosed air
+(material 0, such as a swim bladder or a cavity): volume, surface area, centroid, bounding box
+and lengths along its principal axes and along a given axis, as a table (`objects.csv`).
 
 ![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
 

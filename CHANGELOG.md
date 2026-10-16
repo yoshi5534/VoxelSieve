@@ -34,6 +34,11 @@
   an AI client that restarts the server between chats finds it open (`--no-reopen` turns this
   off).
 
+- **Measure objects**: the new operation `measure_objects` measures every connected object of a
+  material, and the enclosed air with material 0: volume, surface area, centroid, bounding box,
+  lengths along the principal axes and along a given axis, written as `objects.csv` and
+  `objects.json`.
+
 - **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
   in the background as well, and stops at the first failure.
 

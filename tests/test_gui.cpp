@@ -486,8 +486,8 @@ TEST_F(GuiTest, ReopensTheProjectUsedLast) {
   Gui later;
   later.setProjectMemory(memory);
   const auto reopened = later.reopenProject();
-  ASSERT_TRUE(reopened.has_value());
-  EXPECT_EQ(std::filesystem::canonical(*reopened), std::filesystem::canonical(dir_ / "p"));
+  EXPECT_EQ(std::filesystem::canonical(reopened.value_or("")),
+            std::filesystem::canonical(dir_ / "p"));
   EXPECT_EQ(later.call("project_status", {}).at("steps").size(), 1U);
   EXPECT_FALSE(later.reopenProject().has_value());  // one is open already
 
@@ -561,6 +561,18 @@ TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   EXPECT_NEAR(meshVolumeMm3(readStl(stl)), 120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 4.0);
   EXPECT_THROW((void)gui.call("run_material_meshes", {{"material_ids", {5}}}),
                std::invalid_argument);
+
+  // The objects of the material, measured into a table.
+  const Json measured = gui.call(
+      "run_measure_objects", {{"axis", {1.0, 0.0, 0.0}},
+                              {"inputs", {{"materials", {{"step", 2}, {"output", "materials"}}}}}});
+  ASSERT_EQ(measured.at("status"), "done");
+  ASSERT_GE(measured.at("summary").at("objects").size(), 1U);
+  const Json& box = measured.at("summary").at("objects").at(0);
+  EXPECT_NEAR(box.at("axis_length_mm").get<double>(), 6.0, 0.3);
+  EXPECT_NEAR(box.at("volume_mm3").get<double>(), 120.0, 6.0);
+  const Json table = gui.call("read_file", {{"step", measured.at("id")}, {"file", "objects.csv"}});
+  EXPECT_NE(table.dump().find("volume_mm3"), std::string::npos);
 }
 
 TEST_F(GuiTest, SegmentsWithALearnedModel) {

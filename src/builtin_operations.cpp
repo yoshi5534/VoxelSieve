@@ -24,6 +24,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/isolate.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/measure.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
@@ -1342,6 +1343,114 @@ class MaterialMeshes final : public Operation {
   OperationInfo info_;
 };
 
+class MeasureObjects final : public Operation {
+ public:
+  MeasureObjects() {
+    info_.id = "measure_objects";
+    info_.title = "Measure objects";
+    info_.description =
+        "Measures every object of a material segmentation: each connected piece of a material "
+        "(voxels sharing faces), such as a separated part, a bone or an organ, with its volume, "
+        "surface area, centroid, bounding box and its lengths along its principal axes and along "
+        "an axis you give. Material 0 measures enclosed air, the voids that do not reach the "
+        "border, such as a swim bladder or a cavity. Writes a table (objects.csv) and "
+        "objects.json; coordinates in mm in the volume's own coordinates.";
+    info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
+    info_.outputs = {{"measurements", artifact::kMeasurements, "objects.csv and objects.json"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"material_ids",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 0}}},
+            {"description", "Materials to measure, 0 for enclosed air; default: every material"}}},
+          {"min_voxels",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"default", 27},
+            {"description", "Objects smaller than this many voxels are left out"}}},
+          {"max_objects", {{"type", "integer"}, {"minimum", 1}, {"default", 100}}},
+          {"axis",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description",
+             "Direction along the volume's x, y, z to measure each object's length along, such "
+             "as [0, 0, 1]"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    MeasureOptions options;
+    if (p.contains("material_ids")) {
+      options.material_ids = p.at("material_ids").get<std::vector<int>>();
+    }
+    options.min_voxels = p.at("min_voxels").get<std::int64_t>();
+    options.max_objects = p.at("max_objects").get<int>();
+    if (p.contains("axis")) {
+      options.axis = p.at("axis").get<std::array<double, 3>>();
+    }
+    const MaterialVolume volume = MaterialVolume::open(context.inputs.at("materials"));
+    const MeasureInfo info = measureObjects(volume, options);
+    context.progress(0.9);
+    const std::filesystem::path dir = context.output_dir / "measurements";
+    std::filesystem::create_directories(dir);
+    writeObjectsCsv(dir / "objects.csv", info);
+    Json objects = Json::array();
+    for (std::size_t k = 0; k < info.objects.size(); ++k) {
+      const MeasuredObject& object = info.objects[k];
+      Json json = {{"object", k + 1},
+                   {"material", object.material},
+                   {"material_name", object.material_name},
+                   {"voxels", object.voxels},
+                   {"volume_mm3", object.volume_mm3},
+                   {"surface_mm2", object.surface_mm2},
+                   {"centroid_mm", object.centroid_mm},
+                   {"min_mm", object.min_mm},
+                   {"max_mm", object.max_mm},
+                   {"principal_axes", object.principal_axes},
+                   {"principal_lengths_mm", object.principal_lengths_mm},
+                   {"touches_border", object.touches_border}};
+      if (object.axis_length_mm) {
+        json["axis_length_mm"] = *object.axis_length_mm;
+      }
+      objects.push_back(std::move(json));
+    }
+    std::ofstream(dir / "objects.json") << Json{{"stride", info.stride},
+                                                {"objects_found", info.objects_found},
+                                                {"objects", objects}}
+                                               .dump(2)
+                                        << '\n';
+    OperationResult result;
+    result.outputs["measurements"] = "measurements";
+    // The summary keeps the largest objects; the files hold all.
+    constexpr std::size_t kSummaryObjects = 20;
+    Json shown = Json::array();
+    for (std::size_t k = 0; k < std::min(kSummaryObjects, objects.size()); ++k) {
+      Json brief = objects[k];
+      brief.erase("principal_axes");
+      brief.erase("min_mm");
+      brief.erase("max_mm");
+      shown.push_back(std::move(brief));
+    }
+    result.summary = {{"objects_found", info.objects_found},
+                      {"objects_measured", info.objects.size()},
+                      {"stride", info.stride},
+                      {"objects", shown},
+                      {"table", "measurements/objects.csv"}};
+    if (info.stride > 1) {
+      context.log("Measured on every " + std::to_string(info.stride) +
+                  "th voxel per axis: the volume is large");
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class SegmentWithModel final : public Operation {
  public:
   SegmentWithModel() {
@@ -2212,6 +2321,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<MaterialMeshes>());
+  registry.add(std::make_shared<MeasureObjects>());
   registry.add(std::make_shared<Denoise>());
   registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
