@@ -173,7 +173,7 @@ TEST_F(IsolateTest, ErosionSeparatesObjectsJoinedByANeck) {
   EXPECT_TRUE(separated.sample(0, {21, 21, 21}).has_value());   // the part's corner grows back
   const std::int64_t material = materialVoxels(separated);
   EXPECT_GE(material, partVoxels());
-  EXPECT_LE(material, partVoxels() + 4 * 6);  // at most a stub of the bar
+  EXPECT_LE(material, partVoxels() + std::int64_t{4 * 6});  // at most a stub of the bar
 }
 
 TEST_F(IsolateTest, PlanesAndACylinderCutAway) {

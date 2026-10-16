@@ -141,12 +141,21 @@ class Gui {
                                                   std::int64_t index,
                                                   const std::string& object) const;
 
+  /// Remembers the project last created, opened or saved in `file`, so that a GUI started later
+  /// (an MCP client restarts its server for every session) can reopen it with reopenProject.
+  void setProjectMemory(const std::filesystem::path& file);
+  /// Opens the remembered project when none is open and it still exists inside the allowed
+  /// directories; returns its directory, or nothing.
+  std::optional<std::filesystem::path> reopenProject();
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
  private:
   /// Throws std::invalid_argument when allowed roots are set and `path` is outside all of them.
   void checkAllowedPath(const std::filesystem::path& path) const;
+  /// Writes the open project's directory to project_memory_, if set.
+  void rememberProject() const;
   /// Checks every path parameter of a call of `method`.
   void checkAllowedPaths(const std::string& method, const nlohmann::json& params) const;
   Project& project();
@@ -241,6 +250,7 @@ class Gui {
   std::vector<std::string> plugin_messages_;
   std::vector<std::filesystem::path> allowed_roots_;  // canonical
   std::optional<Project> project_;
+  std::filesystem::path project_memory_;
   std::atomic<bool> cancel_ = false;
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_

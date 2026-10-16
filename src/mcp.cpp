@@ -33,7 +33,9 @@ constexpr std::uintmax_t kMaxImageResourceBytes = 8U << 20U;
 
 constexpr const char* kInstructions =
     "VoxelSieve analyses industrial CT scans. Work happens in a project: create or open one, then "
-    "run operations as steps. Typical order: run_import_raw (or run_open_dataset for an existing "
+    "run operations as steps; the project used last is open again when the server restarts "
+    "(project_status shows which). Typical order: run_import_raw (or run_open_dataset for an "
+    "existing "
     "dataset), run_porosity, run_report with the inspection order. Inputs are taken from the "
     "latest step with the right output type unless given. project_status shows the step "
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "

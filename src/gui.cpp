@@ -760,6 +760,47 @@ std::vector<GuiMethod> Gui::methods() const {
   return methods;
 }
 
+void Gui::setProjectMemory(const std::filesystem::path& file) { project_memory_ = file; }
+
+void Gui::rememberProject() const {
+  if (project_memory_.empty() || !project_) {
+    return;
+  }
+  // Best effort: a GUI that cannot write it still works, it only does not reopen the project.
+  std::error_code error;
+  std::filesystem::create_directories(project_memory_.parent_path(), error);
+  const std::filesystem::path temporary = project_memory_.string() + ".tmp";
+  {
+    std::ofstream out(temporary, std::ios::binary);
+    out << Json{{"project", std::filesystem::absolute(project_->dir(), error).string()}}.dump()
+        << '\n';
+    if (!out) {
+      return;
+    }
+  }
+  std::filesystem::rename(temporary, project_memory_, error);
+}
+
+std::optional<std::filesystem::path> Gui::reopenProject() {
+  if (project_memory_.empty() || project_) {
+    return std::nullopt;
+  }
+  try {
+    std::ifstream in(project_memory_, std::ios::binary);
+    if (!in) {
+      return std::nullopt;
+    }
+    const std::filesystem::path dir = Json::parse(in).at("project").get<std::string>();
+    if (!std::filesystem::exists(dir / "project.json")) {
+      return std::nullopt;
+    }
+    (void)call("project_open", {{"path", dir.string()}});
+    return dir;
+  } catch (const std::exception&) {
+    return std::nullopt;  // outside the allowed directories, damaged, or not readable
+  }
+}
+
 Project& Gui::project() {
   if (!project_) {
     throw std::invalid_argument("No project open: call project_create or project_open first");
@@ -2074,10 +2115,12 @@ Json Gui::call(const std::string& method, const Json& arguments,
     if (method == "project_create") {
       const std::filesystem::path path = checked.at("path").get<std::string>();
       project_ = Project::create(path, checked.value("name", path.filename().string()));
+      rememberProject();
       return status();
     }
     if (method == "project_open") {
       project_ = Project::open(checked.at("path").get<std::string>());
+      rememberProject();
       return status();
     }
     if (method == "project_status") {
@@ -2091,6 +2134,7 @@ Json Gui::call(const std::string& method, const Json& arguments,
     }
     if (method == "project_save_as") {
       project().saveAs(checked.at("path").get<std::string>());
+      rememberProject();
       return status();
     }
     if (method == "undo" || method == "redo") {

@@ -524,6 +524,10 @@ claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-gui --mcp /data/scans   # Cl
                                "args": ["--mcp", "/data/scans"]}}}
 ```
 
+The server keeps the project used last and opens it again at its next start (unless
+`--project` names another or `--no-reopen` is given), so a client that starts a new server for
+every chat finds its project open.
+
 Then ask, for example: "Import /data/scans/housing.raw, analyse the porosity and write an
 inspection report with the example order", or "Show me slice 400 of the latest dataset with the
 pores". A client can cancel a running import or analysis; it stops at its next progress report.

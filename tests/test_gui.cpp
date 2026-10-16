@@ -474,6 +474,35 @@ TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
   EXPECT_EQ(segmented.at("summary").at("materials_from_histogram"), true);
 }
 
+TEST_F(GuiTest, ReopensTheProjectUsedLast) {
+  const std::filesystem::path memory = dir_ / "state" / "last_project.json";
+  {
+    Gui gui;
+    gui.setProjectMemory(memory);
+    EXPECT_FALSE(gui.reopenProject().has_value());  // nothing remembered yet
+    (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+    (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  }
+  Gui later;
+  later.setProjectMemory(memory);
+  const auto reopened = later.reopenProject();
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(std::filesystem::canonical(*reopened), std::filesystem::canonical(dir_ / "p"));
+  EXPECT_EQ(later.call("project_status", {}).at("steps").size(), 1U);
+  EXPECT_FALSE(later.reopenProject().has_value());  // one is open already
+
+  // Not outside the allowed directories, and not once the project is gone.
+  Gui confined;
+  confined.setProjectMemory(memory);
+  std::filesystem::create_directories(dir_ / "elsewhere");
+  confined.setAllowedRoots({dir_ / "elsewhere"});
+  EXPECT_FALSE(confined.reopenProject().has_value());
+  std::filesystem::remove_all(dir_ / "p");
+  Gui gone;
+  gone.setProjectMemory(memory);
+  EXPECT_FALSE(gone.reopenProject().has_value());
+}
+
 TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});

@@ -30,6 +30,10 @@
 - **DICOM from ZIP archives**: `import_dicom` and `vs-sieve` read a ZIP archive of DICOM slices
   directly, without extracting it.
 
+- **The project stays open**: `vs-gui --mcp` reopens the project used last when it starts, so
+  an AI client that restarts the server between chats finds it open (`--no-reopen` turns this
+  off).
+
 - **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
   in the background as well, and stops at the first failure.
 

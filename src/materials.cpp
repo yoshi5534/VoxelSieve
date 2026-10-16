@@ -458,10 +458,10 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
   // A mixture with one component per suggested class measures how ambiguous the voxels are.
   Mixture chosen = fits[best];
   if (chosen.components.size() != std::max<std::size_t>(1, suggestion.peaks.size())) {
-    std::vector<double> means;
-    for (const Peak& peak : peaks) {
-      means.push_back(static_cast<double>(peak.bin) - offset);
-    }
+    std::vector<double> means(peaks.size());
+    std::ranges::transform(peaks, means.begin(), [&](const Peak& peak) {
+      return static_cast<double>(peak.bin) - offset;
+    });
     if (means.empty()) {
       means = quantileMeans(fitted, 1);
     }
