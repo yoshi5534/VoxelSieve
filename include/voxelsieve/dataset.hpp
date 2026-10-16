@@ -106,7 +106,8 @@ class Dataset;
 
 /// Computes the new level-0 grey values of one brick of a derived dataset into `values`, which has
 /// one element per voxel of `box`, the brick's box, x fastest. Only the voxels that are active in
-/// the input brick are kept.
+/// the input brick are kept; a NaN value removes the voxel as well (it becomes outside air), and a
+/// brick without any voxel left is not written.
 using BrickValues = std::function<void(const std::array<std::int64_t, 3>& brick, const Box& box,
                                        std::vector<float>& values)>;
 

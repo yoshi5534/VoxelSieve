@@ -58,3 +58,13 @@ The colours of a segmentation can still be changed for the views; that is view s
   voxel classes follow the component classes, not an independent material identification.
 - A learned model can write the same material volume format and be scored the same way; ADR
   0014 does this with models that VoxelSieve runs itself.
+
+## Amendment (2026-10-15): number of materials from the histogram
+
+`materials` 0 lets the segmentation choose the number of classes: one per clear peak of the
+level-0 histogram above the air threshold (`suggestMaterials`), with the thresholds at the lowest
+point of the smoothed histogram between neighbouring peaks rather than multi-level Otsu, whose
+splits drift into a large class when the classes differ much in volume. A peak counts when the
+histogram falls by a fifth of its height on both sides before a higher peak and when it is at
+least 0.5 % of the highest one. The method `histogram` shows the same suggestion before a
+segmentation runs.

@@ -290,9 +290,11 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 18U);
+  EXPECT_EQ(registry.all().size(), 20U);
   EXPECT_NE(registry.find("import_tiff"), nullptr);
   EXPECT_NE(registry.find("denoise"), nullptr);
+  EXPECT_NE(registry.find("isolate_part"), nullptr);
+  EXPECT_NE(registry.find("material_meshes"), nullptr);
 
   SyntheticSpec spec;
   spec.noise_sigma = 300.0;

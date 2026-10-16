@@ -53,9 +53,11 @@ class TiffStackSource final : public VolumeSource {
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
-  /// Voxel size from the files: pixel width and height from a centimetre resolution or a key=value
-  /// image description, the slice spacing from a key=value image description ("spacing=") or else
-  /// the pixel width. Nothing if the files give no pixel size.
+  /// Voxel size from the files: from an OME-XML image description (PhysicalSizeX, Y, Z), else
+  /// pixel width and height from a centimetre resolution, an inch resolution that is not a
+  /// printing default (72, 300 dpi, ...) or a key=value image description, and the slice spacing
+  /// from a key=value image description ("spacing=") or else the pixel width. Nothing if the files
+  /// give no pixel size.
   [[nodiscard]] std::optional<VoxelSize> fileVoxelSize() const;
   [[nodiscard]] int bitsPerSample() const;
   [[nodiscard]] bool isFloat() const;

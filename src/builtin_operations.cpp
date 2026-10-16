@@ -22,6 +22,7 @@
 #include "voxelsieve/diconde.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/isolate.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
@@ -386,7 +387,9 @@ class ImportTiff final : public Operation {
       context.log("Also in the input: " + other + " (choose with 'folder')");
     }
     if (!tiff.voxel_size && !source.fileVoxelSize()) {
-      context.log("The files give no voxel size; 1 mm assumed. Set voxel_size_mm.");
+      context.log(
+          "The files give no voxel size (no OME-XML, centimetre or inch resolution or "
+          "key=value description); 1 mm assumed. Set voxel_size_mm.");
     }
     context.log("Voxel size " + describe(source.voxelSize()));
     if (source.isFloat()) {
@@ -412,6 +415,10 @@ class ImportTiff final : public Operation {
     result.summary = datasetSummary(info);
     result.summary["slices"] = source.dims()[2];
     result.summary["bits_per_sample"] = source.bitsPerSample();
+    // Where the voxel size came from, so that a client sees when it is only assumed.
+    result.summary["voxel_size_from"] = p.contains("voxel_size_mm") ? "parameters"
+                                        : source.fileVoxelSize()    ? "files"
+                                                                    : "assumed";
     if (source.isFloat()) {
       result.summary["value_range"] = source.valueRange();
       result.summary["clipped_values"] = source.clippedValues();
@@ -1081,14 +1088,21 @@ class SegmentMaterials final : public Operation {
         "Splits the part into materials by grey value: a voxel is material when it and enough "
         "of its neighbours are above the air threshold (noise spikes go, walls one voxel thin "
         "stay), material grows into touching voxels above a lower threshold, and the classes are "
-        "separated by thresholds (multi-level Otsu unless given). Writes a material volume with "
-        "volumes per material; the slice view shows the materials in colour.";
+        "separated by thresholds (multi-level Otsu unless given). With materials 0 the classes "
+        "are found in the histogram: one per peak above the air threshold, split in the valleys "
+        "between them (the histogram tool shows the suggestion first). Writes a material volume "
+        "with volumes per material; the slice view shows the materials in colour.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset to segment"}};
     info_.outputs = {{"materials", artifact::kMaterials, "Material volume"}};
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"materials", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}, {"default", 2}}},
+         {{"materials",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"maximum", 8},
+            {"default", 2},
+            {"description", "Number of classes; 0: one per peak of the histogram"}}},
           {"air_threshold",
            {{"type", "number"}, {"description", "Default: the dataset's threshold"}}},
           {"material_thresholds",
@@ -1148,6 +1162,92 @@ class SegmentMaterials final : public Operation {
     result.outputs["materials"] = "materials";
     result.summary = {{"air_threshold", info.air_threshold},
                       {"materials", materialSummary(info, true)}};
+    if (options.materials == 0) {
+      result.summary["materials_from_histogram"] = true;
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class MaterialMeshes final : public Operation {
+ public:
+  MaterialMeshes() {
+    info_.id = "material_meshes";
+    info_.title = "Material meshes";
+    info_.description =
+        "Exports the surface of each material of a material segmentation as a triangle mesh: "
+        "one binary STL in mm per material, in the coordinates of the dataset (like the surface "
+        "step's surface.stl), for CAD, 3D printing or other viewers. A material's surface is the "
+        "boundary between its voxels and all others, so inner materials get closed meshes too. "
+        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds.";
+    info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
+    info_.outputs = {{"meshes", artifact::kMaterialMeshes, "One STL per material"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"material_ids",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 1}}},
+            {"description", "Materials to export; default: all"}}},
+          {"max_triangles",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 2000000},
+            {"description", "Triangles per material at most; 0: full resolution"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const MaterialVolume volume = MaterialVolume::open(context.inputs.at("materials"));
+    const MaterialVolumeInfo& info = volume.info();
+    std::vector<int> ids(info.materials.size());
+    std::ranges::transform(info.materials, ids.begin(), &Material::id);
+    if (p.contains("material_ids")) {
+      ids = p.at("material_ids").get<std::vector<int>>();
+      for (const int id : ids) {
+        if (std::ranges::none_of(info.materials, [id](const Material& m) { return m.id == id; })) {
+          throw std::invalid_argument("The segmentation has no material " + std::to_string(id));
+        }
+      }
+    }
+    const auto max_triangles = p.at("max_triangles").get<std::size_t>();
+    const std::filesystem::path dir = context.output_dir / "meshes";
+    std::filesystem::create_directories(dir);
+    Json meshes = Json::array();
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      const Material& material =
+          *std::ranges::find_if(info.materials, [&](const Material& m) { return m.id == ids[i]; });
+      const IndexedMesh voxels = materialMesh(volume, material.id, max_triangles);
+      Mesh mesh;
+      mesh.triangles.reserve(voxels.triangles.size());
+      const auto mm = [&](std::uint32_t index) {
+        const auto& q = voxels.points[index];
+        return std::array<float, 3>{static_cast<float>(q[0] * info.voxel_size[0]),
+                                    static_cast<float>(q[1] * info.voxel_size[1]),
+                                    static_cast<float>(q[2] * info.voxel_size[2])};
+      };
+      for (const auto& t : voxels.triangles) {
+        mesh.triangles.push_back({mm(t[0]), mm(t[1]), mm(t[2])});
+      }
+      std::string name;
+      for (const char c : material.name) {
+        name += std::isalnum(static_cast<unsigned char>(c)) != 0 ? c : '_';
+      }
+      const std::string file = "material_" + std::to_string(material.id) + "_" + name + ".stl";
+      writeStl(dir / file, mesh);
+      meshes.push_back({{"id", material.id},
+                        {"name", material.name},
+                        {"file", file},
+                        {"triangles", mesh.triangles.size()}});
+      context.progress(static_cast<double>(i + 1) / static_cast<double>(ids.size()));
+    }
+    OperationResult result;
+    result.outputs["meshes"] = "meshes";
+    result.summary = {{"meshes", meshes}};
     return result;
   }
 
@@ -1311,6 +1411,91 @@ class Denoise final : public Operation {
     if (!info.model.empty()) {
       result.summary["model"] = info.model;
     }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class IsolatePart final : public Operation {
+ public:
+  IsolatePart() {
+    info_.id = "isolate_part";
+    info_.title = "Isolate part";
+    info_.description =
+        "Removes what is not the part from a dataset and writes a new dataset; the input stays "
+        "in the project. Voxels outside a region (a box in voxels, a crop) and objects other "
+        "than the largest ones, such as a holder, a support or loose debris that the scan also "
+        "shows, become outside air, so material segmentation, porosity, surfaces and volumes "
+        "see the part alone. An object is material connected across faces, with its voids. "
+        "Objects that touch stay one object: crop them apart with the region first. Later "
+        "steps of the object use the new dataset.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to isolate the part in"}};
+    info_.outputs = {{"dataset", artifact::kDataset, "Dataset with the part alone"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"region_min",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 0}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description", "First voxel (x, y, z) of the region to keep; default: 0, 0, 0"}}},
+          {"region_max",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 1}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description",
+             "End of the region (x, y, z), exclusive; default: the dimensions of the dataset"}}},
+          {"keep_objects",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 1},
+            {"description", "Keep the largest objects, 1: only the largest; 0: all objects"}}},
+          {"threshold",
+           {{"type", "number"},
+            {"description",
+             "Grey value above which a voxel is material; default: the dataset's"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    IsolateOptions options;
+    if (p.contains("region_min") || p.contains("region_max")) {
+      Box region{{0, 0, 0}, dataset.info().dims};
+      if (p.contains("region_min")) {
+        region.min = p.at("region_min").get<std::array<std::int64_t, 3>>();
+      }
+      if (p.contains("region_max")) {
+        region.max = p.at("region_max").get<std::array<std::int64_t, 3>>();
+      }
+      options.region = region;
+    }
+    options.keep_objects = p.at("keep_objects").get<int>();
+    if (p.contains("threshold")) {
+      options.threshold = p.at("threshold").get<float>();
+    }
+    options.progress = [&context](std::string_view stage, double fraction) {
+      context.progress(stage == "objects"  ? 0.3 * fraction
+                       : stage == "bricks" ? 0.3 + 0.65 * fraction
+                                           : 0.95 + 0.05 * fraction);
+    };
+    const IsolateInfo info = isolatePart(dataset, context.output_dir / "dataset", options);
+    std::ostringstream text;
+    text << info.objects << " objects found; kept " << info.kept_material_voxels.size()
+         << ", removed " << info.removed_voxels << " voxels";
+    context.log(text.str());
+    OperationResult result;
+    result.outputs["dataset"] = "dataset";
+    result.summary = datasetSummary(info.dataset);
+    result.summary.update({{"objects_found", info.objects},
+                           {"kept_material_voxels", info.kept_material_voxels},
+                           {"removed_voxels", info.removed_voxels},
+                           {"cell_size", info.cell_size}});
     return result;
   }
 
@@ -1860,7 +2045,9 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
+  registry.add(std::make_shared<MaterialMeshes>());
   registry.add(std::make_shared<Denoise>());
+  registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
   registry.add(std::make_shared<Report>());

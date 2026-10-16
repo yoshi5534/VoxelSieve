@@ -174,6 +174,8 @@ class Gui {
   /// The import_preview method; needs mutex_.
   [[nodiscard]] nlohmann::json importPreview(const nlohmann::json& params) const;
   nlohmann::json viewObjects(const nlohmann::json& params) const;
+  /// The histogram method; needs mutex_ not held.
+  nlohmann::json histogram(const nlohmann::json& params) const;
   /// Draws objects into the RGB image of a slice for view_slice; needs mutex_.
   nlohmann::json drawObjects(const Dataset& base, const ArtifactRef& base_ref,
                              const SliceRequest& request, const nlohmann::json& ids,
@@ -184,8 +186,9 @@ class Gui {
   /// An object with the files its shape comes from.
   struct ObjectSource {
     ProjectObject object;
-    std::filesystem::path source;        // dataset directory or STL file
-    std::filesystem::path surface_file;  // surface.vss of its latest surface step, or empty
+    std::filesystem::path source;         // dataset directory or STL file
+    std::filesystem::path surface_file;   // surface.vss of its latest surface step, or empty
+    std::filesystem::path materials_dir;  // its latest material volume, or empty
   };
   /// Need mutex_ held.
   [[nodiscard]] ObjectSource objectSource(const std::string& id) const;

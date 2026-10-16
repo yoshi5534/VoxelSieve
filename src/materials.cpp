@@ -1,6 +1,7 @@
 #include "voxelsieve/materials.hpp"
 
 #include <openvdb/io/File.h>
+#include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
@@ -133,28 +134,195 @@ Json toJson(const MaterialVolumeInfo& info) {
 /// Material thresholds from the grey values above the air threshold.
 std::vector<float> estimateMaterialThresholds(const Dataset& dataset, float air_threshold,
                                               int classes) {
-  const int level = 0;
-  tbb::combinable<std::vector<std::uint64_t>> histograms(
-      [] { return std::vector<std::uint64_t>(65536, 0); });
-  dataset.forEachGrid(level, [&](const Index3& /*brick*/, const auto& grid) {
-    auto& histogram = histograms.local();
-    for (auto it = grid.cbeginValueOn(); it; ++it) {
-      const auto value = static_cast<float>(*it);
-      if (value > air_threshold) {
-        ++histogram[static_cast<std::size_t>(std::clamp(value, 0.0F, 65535.0F))];
-      }
-    }
-  });
-  std::vector<std::uint64_t> histogram(65536, 0);
-  histograms.combine_each([&](const std::vector<std::uint64_t>& local) {
-    for (std::size_t i = 0; i < histogram.size(); ++i) {
-      histogram[i] += local[i];
-    }
-  });
+  std::vector<std::uint64_t> histogram = datasetHistogram(dataset, 0);
+  const auto first = static_cast<std::size_t>(
+      std::clamp(std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
+  std::fill(histogram.begin(), histogram.begin() + static_cast<std::ptrdiff_t>(first), 0);
   return multiOtsu(histogram, classes);
 }
 
 }  // namespace
+
+std::vector<std::uint64_t> datasetHistogram(const Dataset& dataset, int level) {
+  constexpr std::size_t kBins = 65536;
+  tbb::combinable<std::vector<std::uint64_t>> histograms(
+      [] { return std::vector<std::uint64_t>(kBins, 0); });
+  dataset.forEachGrid(level, [&](const Index3& /*brick*/, const auto& grid) {
+    auto& histogram = histograms.local();
+    for (auto it = grid.cbeginValueOn(); it; ++it) {
+      ++histogram[static_cast<std::size_t>(std::clamp(static_cast<float>(*it), 0.0F, 65535.0F))];
+    }
+  });
+  std::vector<std::uint64_t> histogram(kBins, 0);
+  histograms.combine_each([&](const std::vector<std::uint64_t>& local) {
+    for (std::size_t i = 0; i < kBins; ++i) {
+      histogram[i] += local[i];
+    }
+  });
+  return histogram;
+}
+
+MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
+                                    float air_threshold, int max_materials) {
+  if (max_materials < 1) {
+    throw std::invalid_argument("max_materials must be at least 1");
+  }
+  // The grey values above the air threshold, without the sparse top end (the last 0.01 %, such
+  // as metal or streaks) that would squeeze the materials into a few bins.
+  const auto first = static_cast<std::size_t>(
+      std::clamp(std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
+  const std::uint64_t total = std::accumulate(
+      histogram.begin() + static_cast<std::ptrdiff_t>(first), histogram.end(), std::uint64_t{0});
+  MaterialSuggestion suggestion;
+  if (total == 0) {
+    return suggestion;
+  }
+  constexpr double kTopFraction = 1e-4;
+  std::size_t last = first;
+  for (std::uint64_t seen = 0; last < histogram.size(); ++last) {
+    seen += histogram[last];
+    if (static_cast<double>(seen) >= (1.0 - kTopFraction) * static_cast<double>(total)) {
+      break;
+    }
+  }
+  last = std::min(last, histogram.size() - 1);
+  // Coarse bins, smoothed with a Gaussian, so that counting noise makes no peaks.
+  constexpr std::size_t kBins = 128;
+  const std::size_t span = last + 1 - first;
+  const std::size_t bins = std::min(kBins, span);
+  const double width = static_cast<double>(span) / static_cast<double>(bins);
+  std::vector<double> counts(bins, 0.0);
+  for (std::size_t i = first; i <= last; ++i) {
+    counts[std::min(bins - 1, static_cast<std::size_t>(static_cast<double>(i - first) / width))] +=
+        static_cast<double>(histogram[i]);
+  }
+  constexpr double kSigma = 1.5;
+  constexpr std::ptrdiff_t kRadius = 5;  // 3 sigma, rounded up
+  std::vector<double> smooth(bins, 0.0);
+  for (std::size_t b = 0; b < bins; ++b) {
+    double sum = 0.0;
+    double weight = 0.0;
+    for (std::ptrdiff_t d = -kRadius; d <= kRadius; ++d) {
+      const std::ptrdiff_t j = static_cast<std::ptrdiff_t>(b) + d;
+      if (j < 0 || j >= static_cast<std::ptrdiff_t>(bins)) {
+        continue;
+      }
+      const double w = std::exp(-0.5 * static_cast<double>(d * d) / (kSigma * kSigma));
+      sum += w * counts[static_cast<std::size_t>(j)];
+      weight += w;
+    }
+    smooth[b] = sum / weight;
+  }
+  const double highest = *std::max_element(smooth.begin(), smooth.end());
+
+  // Peaks: inner local maxima, with their prominence (height above the higher of the two lowest
+  // points on the way to a higher peak or the end of the histogram on either side).
+  constexpr double kMinDip = 0.2;              // the histogram falls by a fifth on both sides
+  constexpr double kMinRelativeHeight = 5e-3;  // not tiny next to the highest peak
+  struct Peak {
+    std::size_t bin;
+    double prominence;
+  };
+  std::vector<Peak> peaks;
+  for (std::size_t b = 1; b + 1 < bins; ++b) {
+    if (!(smooth[b] > smooth[b - 1] && smooth[b] >= smooth[b + 1])) {
+      continue;
+    }
+    double left = smooth[b];
+    for (std::size_t j = b; j > 0 && smooth[j - 1] <= smooth[b]; --j) {
+      left = std::min(left, smooth[j - 1]);
+    }
+    double right = smooth[b];
+    for (std::size_t j = b + 1; j < bins && smooth[j] <= smooth[b]; ++j) {
+      right = std::min(right, smooth[j]);
+    }
+    const double base = std::max(left, right);
+    if (smooth[b] >= kMinRelativeHeight * highest && base <= (1.0 - kMinDip) * smooth[b]) {
+      peaks.push_back({b, smooth[b] - base});
+    }
+  }
+  if (peaks.size() > static_cast<std::size_t>(max_materials)) {
+    std::ranges::sort(peaks, std::greater<>(), &Peak::prominence);
+    peaks.resize(static_cast<std::size_t>(max_materials));
+    std::ranges::sort(peaks, std::less<>(), &Peak::bin);
+  }
+  const auto grey = [&](double bin) {
+    return static_cast<float>(static_cast<double>(first) + (bin + 0.5) * width);
+  };
+  for (std::size_t p = 0; p < peaks.size(); ++p) {
+    suggestion.peaks.push_back(grey(static_cast<double>(peaks[p].bin)));
+    if (p > 0) {
+      const auto begin = smooth.begin() + static_cast<std::ptrdiff_t>(peaks[p - 1].bin);
+      const auto end = smooth.begin() + static_cast<std::ptrdiff_t>(peaks[p].bin);
+      suggestion.thresholds.push_back(
+          grey(static_cast<double>(std::min_element(begin, end) - smooth.begin())));
+    }
+  }
+  return suggestion;
+}
+
+IndexedMesh materialMesh(const MaterialVolume& volume, int id, std::size_t max_triangles,
+                         std::int64_t max_samples) {
+  const MaterialVolumeInfo& info = volume.info();
+  const Box whole{{0, 0, 0}, info.dims};
+  const std::int64_t longest = *std::max_element(info.dims.begin(), info.dims.end());
+  std::int64_t stride = 1;
+  const auto samples = [&](std::int64_t s) {
+    return ceilDiv(info.dims[0], s) * ceilDiv(info.dims[1], s) * ceilDiv(info.dims[2], s);
+  };
+  while (samples(stride) > max_samples && stride < longest) {
+    stride *= 2;
+  }
+  for (;; stride *= 2) {
+    const Index3 n{ceilDiv(info.dims[0], stride), ceilDiv(info.dims[1], stride),
+                   ceilDiv(info.dims[2], stride)};
+    std::vector<std::uint8_t> ids(static_cast<std::size_t>(n[0] * n[1] * n[2]));
+    volume.readRegion(whole, ids, stride);
+    // 0 inside the material, 1 (the background) elsewhere, so that the surface at 0.5 faces
+    // outwards like the surface of a level set.
+    auto grid = openvdb::FloatGrid::create(1.0F);
+    auto accessor = grid->getAccessor();
+    std::size_t i = 0;
+    for (std::int64_t z = 0; z < n[2]; ++z) {
+      for (std::int64_t y = 0; y < n[1]; ++y) {
+        for (std::int64_t x = 0; x < n[0]; ++x, ++i) {
+          if (ids[i] == id) {
+            accessor.setValue(
+                openvdb::Coord(static_cast<openvdb::Int32>(x), static_cast<openvdb::Int32>(y),
+                               static_cast<openvdb::Int32>(z)),
+                0.0F);
+          }
+        }
+      }
+    }
+    IndexedMesh mesh;
+    if (grid->tree().activeVoxelCount() == 0) {
+      return mesh;
+    }
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+    openvdb::tools::volumeToMesh(*grid, points, triangles, quads, 0.5);
+    const std::size_t count = triangles.size() + 2 * quads.size();
+    if (max_triangles != 0 && count > max_triangles && stride < longest) {
+      continue;
+    }
+    const auto scale = static_cast<float>(stride);
+    mesh.points.reserve(points.size());
+    for (const openvdb::Vec3s& p : points) {
+      mesh.points.push_back({p.x() * scale, p.y() * scale, p.z() * scale});
+    }
+    mesh.triangles.reserve(count);
+    for (const openvdb::Vec3I& t : triangles) {
+      mesh.triangles.push_back({t[0], t[1], t[2]});
+    }
+    for (const openvdb::Vec4I& q : quads) {
+      mesh.triangles.push_back({q[0], q[1], q[2]});
+      mesh.triangles.push_back({q[0], q[2], q[3]});
+    }
+    return mesh;
+  }
+}
 
 std::vector<float> multiOtsu(const std::vector<std::uint64_t>& histogram, int classes) {
   if (classes < 1) {
@@ -229,9 +397,21 @@ std::vector<float> multiOtsu(const std::vector<std::uint64_t>& histogram, int cl
 }
 
 MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesystem::path& dir,
-                                    const SegmentationOptions& options) {
-  if (options.materials < 1 || options.materials > kMaxMaterials) {
-    throw std::invalid_argument("materials must be between 1 and 8");
+                                    const SegmentationOptions& given) {
+  if (given.materials < 0 || given.materials > kMaxMaterials) {
+    throw std::invalid_argument("materials must be between 0 (suggest) and 8");
+  }
+  SegmentationOptions options = given;
+  if (options.materials == 0 && !options.material_thresholds.empty()) {
+    options.materials = static_cast<int>(options.material_thresholds.size()) + 1;
+  }
+  if (options.materials == 0) {
+    const TelemetryPhase phase("thresholds");
+    const MaterialSuggestion suggestion =
+        suggestMaterials(datasetHistogram(dataset, 0),
+                         options.air_threshold.value_or(dataset.info().threshold), kMaxMaterials);
+    options.material_thresholds = suggestion.thresholds;
+    options.materials = static_cast<int>(suggestion.thresholds.size()) + 1;
   }
   if (options.min_neighbours < 1 || options.min_neighbours > 27 || options.grow_steps < 0 ||
       options.grow_fraction < 0.0F || options.grow_fraction > 1.0F) {
@@ -264,7 +444,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   info.min_neighbours = options.min_neighbours;
   std::optional<TelemetryPhase> phase(std::in_place, "thresholds");
   const std::vector<float> thresholds =
-      options.material_thresholds.empty()
+      options.material_thresholds.empty() && options.materials > 1
           ? estimateMaterialThresholds(dataset, info.air_threshold, options.materials)
           : options.material_thresholds;
   phase.reset();

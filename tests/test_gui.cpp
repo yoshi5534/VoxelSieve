@@ -432,6 +432,65 @@ TEST_F(GuiTest, SegmentsMaterialsAndShowsThemInSlices) {
   EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
 }
 
+TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json histogram = gui.call("histogram", {{"bins", 64}});
+  EXPECT_EQ(histogram.at("level"), 0);
+  ASSERT_EQ(histogram.at("counts").size(), 64U);
+  std::uint64_t total = 0;
+  for (const Json& count : histogram.at("counts")) {
+    total += count.get<std::uint64_t>();
+  }
+  EXPECT_EQ(total, histogram.at("voxels").get<std::uint64_t>());
+  EXPECT_EQ(total, gui.call("dataset_info", {}).at("active_voxels").get<std::uint64_t>());
+  // The scan is one material, a box with lunkers.
+  EXPECT_EQ(histogram.at("suggested_materials"), 1);
+  EXPECT_TRUE(histogram.at("material_thresholds").empty());
+  EXPECT_EQ(histogram.at("image").at("mime_type"), "image/png");
+  EXPECT_EQ(gui.call("histogram", {{"level", 1}}).at("level"), 1);
+  EXPECT_THROW((void)gui.call("histogram", {{"level", 99}}), std::invalid_argument);
+
+  const Json segmented = gui.call("run_segment_materials", {{"materials", 0}});
+  ASSERT_EQ(segmented.at("status"), "done");
+  EXPECT_EQ(segmented.at("summary").at("materials").size(), 1U);
+  EXPECT_EQ(segmented.at("summary").at("materials_from_histogram"), true);
+}
+
+TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json plain = gui.call("view_objects", {{"materials", true}});
+  EXPECT_EQ(plain.at("objects").at(0).at("shape"), "box");  // no segmentation yet
+  (void)gui.call("run_segment_materials",
+                 {{"materials", 1}, {"material_colors", Json::array({"#20a0ff"})}});
+  const Json view =
+      gui.call("view_objects", {{"materials", true}, {"width", 200}, {"height", 160}});
+  const Json& object = view.at("objects").at(0);
+  EXPECT_EQ(object.at("shape"), "materials");
+  ASSERT_EQ(object.at("materials").size(), 1U);
+  EXPECT_EQ(object.at("materials").at(0).at("color"), Json::array({32, 160, 255}));
+  EXPECT_GT(object.at("triangles").get<int>(), 0);
+  // The box of 6 x 5 x 4 mm from the origin.
+  EXPECT_NEAR(
+      view.at("bounds_max_mm").at(0).get<double>() - view.at("bounds_min_mm").at(0).get<double>(),
+      6.0, 0.3);
+  EXPECT_THROW((void)gui.call("view_objects", {{"materials", true}, {"material_ids", {7}}}),
+               std::invalid_argument);
+
+  const Json exported = gui.call("run_material_meshes", {});
+  ASSERT_EQ(exported.at("status"), "done");
+  const Json& mesh = exported.at("summary").at("meshes").at(0);
+  const Json files = gui.call("list_files", {{"step", exported.at("id")}});
+  const auto stl = std::filesystem::path(files.at("path").get<std::string>()) /
+                   mesh.at("file").get<std::string>();
+  EXPECT_NEAR(meshVolumeMm3(readStl(stl)), 120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 4.0);
+  EXPECT_THROW((void)gui.call("run_material_meshes", {{"material_ids", {5}}}),
+               std::invalid_argument);
+}
+
 TEST_F(GuiTest, SegmentsWithALearnedModel) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
@@ -489,6 +548,27 @@ TEST_F(GuiTest, DenoisesIntoANewDatasetOfTheSameObject) {
   const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), denoised.at("id"));
   EXPECT_THROW((void)gui.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
+}
+
+TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json dims = gui.call("dataset_info", {}).at("dims");
+  const Json isolated =
+      gui.call("run_isolate_part",
+               {{"region_max", Json::array({dims.at(0).get<int>() / 2, dims.at(1), dims.at(2)})}});
+  ASSERT_EQ(isolated.at("status"), "done");
+  EXPECT_EQ(isolated.at("object"), imported.at("object"));
+  const Json& summary = isolated.at("summary");
+  EXPECT_EQ(summary.at("objects_found"), 1);
+  EXPECT_GT(summary.at("removed_voxels").get<std::int64_t>(), 0);
+  EXPECT_LT(summary.at("active_voxels").get<std::int64_t>(),
+            imported.at("summary").at("active_voxels").get<std::int64_t>());
+  // Later steps of the object take the isolated dataset.
+  const Json porosity = gui.call("run_porosity", {});
+  EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), isolated.at("id"));
 }
 
 TEST_F(GuiTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {

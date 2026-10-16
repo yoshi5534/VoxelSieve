@@ -2,6 +2,7 @@
 
 #include <openvdb/io/File.h>
 #include <openvdb/tools/Morphology.h>
+#include <openvdb/tools/Prune.h>
 #include <openvdb/tree/LeafManager.h>
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
@@ -777,6 +778,7 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
   std::optional<TelemetryPhase> phase(std::in_place, "bricks");
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   ProgressCounter progress(options.progress, "bricks", level0.bricks.size());
+  std::vector<Index3> kept;
   for (const Index3& brick : level0.bricks) {
     const Box box = input.brickBox(0, brick);
     std::vector<float> grey(static_cast<std::size_t>(box.voxelCount()));
@@ -798,7 +800,9 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
             const float value = grey[static_cast<std::size_t>(
                 (c.x() - box.min[0]) +
                 box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))];
-            if constexpr (std::is_same_v<Value, float>) {
+            if (std::isnan(value)) {
+              it.setValueOff();
+            } else if constexpr (std::is_same_v<Value, float>) {
               it.setValue(value);
             } else {
               constexpr double kMax = std::numeric_limits<Value>::max();
@@ -806,15 +810,22 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
             }
           }
         }
+        openvdb::tools::pruneInactive(grid.tree());  // leaves whose voxels were all removed
       });
       return result;
     });
+    const auto active = static_cast<std::int64_t>(out.base().activeVoxelCount());
+    progress.step();
+    if (active == 0) {
+      continue;  // every voxel removed: the brick is outside air now
+    }
     setGridProperties(out.base(), 0, info.voxel_size);
     out.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
     writeBrick(brickPath(dir, 0, brick), out);
-    info.active_voxel_count += static_cast<std::int64_t>(out.base().activeVoxelCount());
-    progress.step();
+    info.active_voxel_count += active;
+    kept.push_back(brick);
   }
+  info.levels.front().bricks = std::move(kept);
   phase.reset();
   writeCoarseLevels(dir, info, options.progress);
   return info;
