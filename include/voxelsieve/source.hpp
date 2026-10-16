@@ -89,6 +89,27 @@ class MemorySource final : public VolumeSource {
   const Volume16& volume_;
 };
 
+/// Another source with `factor` slices per slice spacing along z, interpolated linearly between
+/// neighbouring slices: (nz - 1) * factor + 1 slices at a pitch of z / factor. Fills the gaps of
+/// slices thinner than their spacing (the new voxel size has no slice thickness) and makes long
+/// voxels closer to cubes; the interpolated grey values are estimates, not measurements.
+class InterpolatedSource final : public VolumeSource {
+ public:
+  InterpolatedSource(const VolumeSource& base, int factor);
+  [[nodiscard]] std::array<std::int64_t, 3> dims() const override;
+  [[nodiscard]] VoxelSize voxelSize() const override;
+  [[nodiscard]] ValueMapping valueMapping() const override { return base_.valueMapping(); }
+  [[nodiscard]] SampleType sampleType() const override { return base_.sampleType(); }
+  [[nodiscard]] bool slowRandomAccess() const override { return base_.slowRandomAccess(); }
+  [[nodiscard]] bool sequentialAccess() const override { return base_.sequentialAccess(); }
+  void releaseMemory() const override { base_.releaseMemory(); }
+  void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
+
+ private:
+  const VolumeSource& base_;
+  std::int64_t factor_;
+};
+
 /// Layout of a raw volume file: voxels x fastest, optionally preceded by a vendor header and
 /// followed by a footer, both of which are skipped.
 struct RawLayout {

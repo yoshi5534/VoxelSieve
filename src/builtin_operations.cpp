@@ -24,6 +24,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/isolate.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/measure.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
@@ -136,6 +137,63 @@ void addVoxelSizeParameters(Json& properties, const std::string& default_text) {
       {"description",
        "Slice thickness in mm when the slices are thinner than their spacing (a gap between "
        "slices); recorded, measurements use the spacing"}};
+  properties["interpolate_slices"] = {
+      {"type", "integer"},
+      {"minimum", 1},
+      {"maximum", 16},
+      {"default", 1},
+      {"description",
+       "Slices per slice spacing, the ones between interpolated linearly: 2 halves the pitch "
+       "along z. Fills the gaps between slices thinner than their spacing and makes long voxels "
+       "closer to cubes; the interpolated grey values are estimates"}};
+}
+
+/// Warnings about the voxel size of an import, also logged: an assumed size, gaps between
+/// slices and long voxels, with what interpolate_slices would do about them.
+Json voxelSizeWarnings(const VoxelSize& scanned, int factor, bool assumed,
+                       const OperationContext& context) {
+  Json warnings = Json::array();
+  const auto mm = [](double value) {
+    std::ostringstream text;
+    text << std::setprecision(4) << value << " mm";
+    return text.str();
+  };
+  if (assumed) {
+    warnings.push_back(
+        "The files give no voxel size, so 1 mm was assumed: lengths, areas and volumes are wrong "
+        "until the import is repeated with voxel_size_mm.");
+  }
+  const double spacing = scanned.pitch_mm[2];
+  const double pixel = std::max(scanned.pitch_mm[0], scanned.pitch_mm[1]);
+  if (scanned.slice_thickness_mm > 0.0 && scanned.slice_thickness_mm < spacing) {
+    const double unscanned = 100.0 * (1.0 - scanned.slice_thickness_mm / spacing);
+    std::string text = "The slices are " + mm(scanned.slice_thickness_mm) + " thick but " +
+                       mm(spacing) + " apart, so " + std::to_string(std::lround(unscanned)) +
+                       " % of the volume along z was not scanned. ";
+    if (factor > 1) {
+      text += "The gaps were filled by linear interpolation (interpolate_slices " +
+              std::to_string(factor) + "); grey values between the slices are estimates.";
+    } else {
+      const auto suggested = std::max<long>(2, std::lround(std::ceil(spacing / pixel)));
+      text +=
+          "Lengths and volumes use the spacing; to fill the gaps, import again with "
+          "interpolate_slices (" +
+          std::to_string(std::min<long>(16, suggested)) +
+          " gives about cubic voxels), knowing that the filled values are estimates.";
+    }
+    warnings.push_back(text);
+  } else if (factor == 1 && spacing > 2.0 * pixel) {
+    const auto ratio = std::lround(spacing / pixel);
+    warnings.push_back("The slices are " + mm(spacing) + " apart, " + std::to_string(ratio) +
+                       " times the pixel size: surfaces and small structures look stepped along "
+                       "z. interpolate_slices " +
+                       std::to_string(std::min<long>(16, ratio)) +
+                       " makes the voxels about cubic, with interpolated grey values.");
+  }
+  for (const Json& warning : warnings) {
+    context.log("Warning: " + warning.get<std::string>());
+  }
+  return warnings;
 }
 
 /// Voxel size from the parameters, if given; the slice thickness alone keeps `fallback`.
@@ -279,7 +337,7 @@ class ImportRaw final : public Operation {
     }
     std::uint64_t header_bytes = 0;
     const auto opened = openRawVolume(path, layout, &header_bytes);
-    const VolumeSource& source = *opened;
+    const InterpolatedSource source(*opened, p.at("interpolate_slices").get<int>());
     if (header_bytes > 0) {
       context.log("Skipped a header of " + std::to_string(header_bytes) + " bytes");
     }
@@ -302,6 +360,8 @@ class ImportRaw final : public Operation {
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
     result.summary["header_bytes"] = header_bytes;
+    result.summary["warnings"] = voxelSizeWarnings(
+        opened->voxelSize(), p.at("interpolate_slices").get<int>(), false, context);
     return result;
   }
 
@@ -379,7 +439,9 @@ class ImportTiff final : public Operation {
       tiff.voxel_size = TiffStackSource(p.at("path").get<std::string>(), tiff).voxelSize();
     }
     tiff.voxel_size = voxelSizeParameter(p, tiff.voxel_size);
-    const TiffStackSource source(p.at("path").get<std::string>(), tiff);
+    const TiffStackSource stack(p.at("path").get<std::string>(), tiff);
+    const TiffStackSource& source = stack;
+    const InterpolatedSource sieved(stack, p.at("interpolate_slices").get<int>());
     if (!source.folder().empty()) {
       context.log("Slices from " + source.folder());
     }
@@ -409,7 +471,7 @@ class ImportTiff final : public Operation {
     options.value_type = valueTypeOption(p);
     options.progress = datasetProgress(context);
     options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info = writeDataset(sieved, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -419,6 +481,9 @@ class ImportTiff final : public Operation {
     result.summary["voxel_size_from"] = p.contains("voxel_size_mm") ? "parameters"
                                         : source.fileVoxelSize()    ? "files"
                                                                     : "assumed";
+    result.summary["warnings"] =
+        voxelSizeWarnings(source.voxelSize(), p.at("interpolate_slices").get<int>(),
+                          !p.contains("voxel_size_mm") && !source.fileVoxelSize(), context);
     if (source.isFloat()) {
       result.summary["value_range"] = source.valueRange();
       result.summary["clipped_values"] = source.clippedValues();
@@ -503,13 +568,17 @@ void logDicom(const DicomStackSource& source, const OperationContext& context) {
 
 /// Writes the dataset of a DICOM stack and describes it.
 OperationResult sieveDicom(const DicomStackSource& source, const RigidTransform& pose,
-                           const OperationContext& context) {
+                           bool assumed_voxel_size, const OperationContext& context) {
+  const int factor = context.params.value("interpolate_slices", 1);
   const DatasetInfo info =
-      writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
+      writeDataset(InterpolatedSource(source, factor), context.output_dir / "dataset.vsieve",
+                   sieveOptions(context));
   OperationResult result;
   result.outputs["dataset"] = "dataset.vsieve";
   result.summary = datasetSummary(info);
   result.summary["slices"] = source.dims()[2];
+  result.summary["warnings"] =
+      voxelSizeWarnings(source.voxelSize(), factor, assumed_voxel_size, context);
   result.summary["bits_stored"] = source.bitsStored();
   result.summary["signed"] = source.isSigned();
   placeObject(context, pose, result.summary);
@@ -561,7 +630,9 @@ class ImportDicom final : public Operation {
          {{"path",
            {{"type", "string"},
             {"format", "path"},
-            {"description", "Directory of slices, or one slice file"}}},
+            {"description",
+             "Directory of slices, one slice file, or a ZIP archive of slices (read without "
+             "extracting it)"}}},
           {"series",
            {{"type", "string"},
             {"description",
@@ -590,7 +661,8 @@ class ImportDicom final : public Operation {
     }
     context.log(describeDims(source.dims()) + " voxels, voxel size " +
                 describe(source.voxelSize()));
-    OperationResult result = sieveDicom(source, source.filePose(), context);
+    OperationResult result = sieveDicom(source, source.filePose(),
+                                        !dicom.voxel_size && !source.fileVoxelSize(), context);
     result.summary["series"] = source.seriesUid();
     addDicondeSummary(source, context, result.summary);
     return result;
@@ -688,7 +760,7 @@ class ImportGzippedXml final : public Operation {
         from_files && describe(*from_files) != describe(volume.voxel_size)) {
       context.log("Voxel size of the project used; the files give " + describe(*from_files));
     }
-    OperationResult result = sieveDicom(source, volume.pose, context);
+    OperationResult result = sieveDicom(source, volume.pose, false, context);
     result.summary["volume"] = volume.name;
     result.summary["format"] = volume.format;
     result.summary["not_imported"] = project.other_files.size();
@@ -1182,21 +1254,30 @@ class MaterialMeshes final : public Operation {
         "one binary STL in mm per material, in the coordinates of the dataset (like the surface "
         "step's surface.stl), for CAD, 3D printing or other viewers. A material's surface is the "
         "boundary between its voxels and all others, so inner materials get closed meshes too. "
-        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds.";
+        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds. "
+        "With add_objects (the default, when run as run_material_meshes), each mesh then also "
+        "becomes an object of the project in its material's colour and at the pose of the "
+        "segmented volume, so view_objects, alignment and comparison can use the materials "
+        "one by one.";
     info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
     info_.outputs = {{"meshes", artifact::kMaterialMeshes, "One STL per material"}};
-    info_.parameters = {
-        {"type", "object"},
-        {"properties",
-         {{"material_ids",
-           {{"type", "array"},
-            {"items", {{"type", "integer"}, {"minimum", 1}}},
-            {"description", "Materials to export; default: all"}}},
-          {"max_triangles",
-           {{"type", "integer"},
-            {"minimum", 0},
-            {"default", 2000000},
-            {"description", "Triangles per material at most; 0: full resolution"}}}}}};
+    info_.parameters = {{"type", "object"},
+                        {"properties",
+                         {{"material_ids",
+                           {{"type", "array"},
+                            {"items", {{"type", "integer"}, {"minimum", 1}}},
+                            {"description", "Materials to export; default: all"}}},
+                          {"max_triangles",
+                           {{"type", "integer"},
+                            {"minimum", 0},
+                            {"default", 2000000},
+                            {"description", "Triangles per material at most; 0: full resolution"}}},
+                          {"add_objects",
+                           {{"type", "boolean"},
+                            {"default", true},
+                            {"description",
+                             "Add each mesh as an object of the project, named and coloured like "
+                             "its material"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1239,8 +1320,15 @@ class MaterialMeshes final : public Operation {
       }
       const std::string file = "material_" + std::to_string(material.id) + "_" + name + ".stl";
       writeStl(dir / file, mesh);
+      std::string color = "#";
+      for (const std::uint8_t channel : material.color) {
+        constexpr std::string_view kHex = "0123456789abcdef";
+        color += kHex[channel >> 4U];
+        color += kHex[channel & 15U];
+      }
       meshes.push_back({{"id", material.id},
                         {"name", material.name},
+                        {"color", color},
                         {"file", file},
                         {"triangles", mesh.triangles.size()}});
       context.progress(static_cast<double>(i + 1) / static_cast<double>(ids.size()));
@@ -1248,6 +1336,114 @@ class MaterialMeshes final : public Operation {
     OperationResult result;
     result.outputs["meshes"] = "meshes";
     result.summary = {{"meshes", meshes}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class MeasureObjects final : public Operation {
+ public:
+  MeasureObjects() {
+    info_.id = "measure_objects";
+    info_.title = "Measure objects";
+    info_.description =
+        "Measures every object of a material segmentation: each connected piece of a material "
+        "(voxels sharing faces), such as a separated part, a bone or an organ, with its volume, "
+        "surface area, centroid, bounding box and its lengths along its principal axes and along "
+        "an axis you give. Material 0 measures enclosed air, the voids that do not reach the "
+        "border, such as a swim bladder or a cavity. Writes a table (objects.csv) and "
+        "objects.json; coordinates in mm in the volume's own coordinates.";
+    info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
+    info_.outputs = {{"measurements", artifact::kMeasurements, "objects.csv and objects.json"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"material_ids",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}, {"minimum", 0}}},
+            {"description", "Materials to measure, 0 for enclosed air; default: every material"}}},
+          {"min_voxels",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"default", 27},
+            {"description", "Objects smaller than this many voxels are left out"}}},
+          {"max_objects", {{"type", "integer"}, {"minimum", 1}, {"default", 100}}},
+          {"axis",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 3},
+            {"maxItems", 3},
+            {"description",
+             "Direction along the volume's x, y, z to measure each object's length along, such "
+             "as [0, 0, 1]"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    MeasureOptions options;
+    if (p.contains("material_ids")) {
+      options.material_ids = p.at("material_ids").get<std::vector<int>>();
+    }
+    options.min_voxels = p.at("min_voxels").get<std::int64_t>();
+    options.max_objects = p.at("max_objects").get<int>();
+    if (p.contains("axis")) {
+      options.axis = p.at("axis").get<std::array<double, 3>>();
+    }
+    const MaterialVolume volume = MaterialVolume::open(context.inputs.at("materials"));
+    const MeasureInfo info = measureObjects(volume, options);
+    context.progress(0.9);
+    const std::filesystem::path dir = context.output_dir / "measurements";
+    std::filesystem::create_directories(dir);
+    writeObjectsCsv(dir / "objects.csv", info);
+    Json objects = Json::array();
+    for (std::size_t k = 0; k < info.objects.size(); ++k) {
+      const MeasuredObject& object = info.objects[k];
+      Json json = {{"object", k + 1},
+                   {"material", object.material},
+                   {"material_name", object.material_name},
+                   {"voxels", object.voxels},
+                   {"volume_mm3", object.volume_mm3},
+                   {"surface_mm2", object.surface_mm2},
+                   {"centroid_mm", object.centroid_mm},
+                   {"min_mm", object.min_mm},
+                   {"max_mm", object.max_mm},
+                   {"principal_axes", object.principal_axes},
+                   {"principal_lengths_mm", object.principal_lengths_mm},
+                   {"touches_border", object.touches_border}};
+      if (object.axis_length_mm) {
+        json["axis_length_mm"] = *object.axis_length_mm;
+      }
+      objects.push_back(std::move(json));
+    }
+    std::ofstream(dir / "objects.json") << Json{{"stride", info.stride},
+                                                {"objects_found", info.objects_found},
+                                                {"objects", objects}}
+                                               .dump(2)
+                                        << '\n';
+    OperationResult result;
+    result.outputs["measurements"] = "measurements";
+    // The summary keeps the largest objects; the files hold all.
+    constexpr std::size_t kSummaryObjects = 20;
+    Json shown = Json::array();
+    for (std::size_t k = 0; k < std::min(kSummaryObjects, objects.size()); ++k) {
+      Json brief = objects[k];
+      brief.erase("principal_axes");
+      brief.erase("min_mm");
+      brief.erase("max_mm");
+      shown.push_back(std::move(brief));
+    }
+    result.summary = {{"objects_found", info.objects_found},
+                      {"objects_measured", info.objects.size()},
+                      {"stride", info.stride},
+                      {"objects", shown},
+                      {"table", "measurements/objects.csv"}};
+    if (info.stride > 1) {
+      context.log("Measured on every " + std::to_string(info.stride) +
+                  "th voxel per axis: the volume is large");
+    }
     return result;
   }
 
@@ -1429,8 +1625,9 @@ class IsolatePart final : public Operation {
         "than the largest ones, such as a holder, a support or loose debris that the scan also "
         "shows, become outside air, so material segmentation, porosity, surfaces and volumes "
         "see the part alone. An object is material connected across faces, with its voids. "
-        "Objects that touch stay one object: crop them apart with the region first. Later "
-        "steps of the object use the new dataset.";
+        "Objects that touch are one object unless separate_voxels splits them at a thin neck; "
+        "cut planes and a cylinder cut them apart where they touch broadly. Later steps of the "
+        "object use the new dataset.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset to isolate the part in"}};
     info_.outputs = {{"dataset", artifact::kDataset, "Dataset with the part alone"}};
     info_.parameters = {
@@ -1454,6 +1651,49 @@ class IsolatePart final : public Operation {
             {"minimum", 0},
             {"default", 1},
             {"description", "Keep the largest objects, 1: only the largest; 0: all objects"}}},
+          {"separate_voxels",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Separates touching objects, such as a holder glued to the part, where they meet "
+             "through a neck thinner than about twice this many voxels (erosion, then growing "
+             "back within the material); 0: only air separates objects"}}},
+          {"cut_planes",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"point",
+                 {{"type", "array"},
+                  {"items", {{"type", "number"}}},
+                  {"minItems", 3},
+                  {"maxItems", 3},
+                  {"description", "A point of the plane, in voxels (x, y, z)"}}},
+                {"normal",
+                 {{"type", "array"},
+                  {"items", {{"type", "number"}}},
+                  {"minItems", 3},
+                  {"maxItems", 3},
+                  {"description", "Points to the side that is removed"}}}}},
+              {"required", {"point", "normal"}}}},
+            {"description",
+             "Planes that remove what lies on their normal's side, such as everything below a "
+             "holder: point [0, 0, 120] with normal [0, 0, -1] removes all below z = 120. "
+             "Several planes approximate a curved cut"}}},
+          {"cylinder",
+           {{"type", "object"},
+            {"properties",
+             {{"axis", {{"type", "string"}, {"enum", {"x", "y", "z"}}, {"default", "z"}}},
+              {"center",
+               {{"type", "array"},
+                {"items", {{"type", "number"}}},
+                {"minItems", 2},
+                {"maxItems", 2},
+                {"description", "Centre in the two other axes, in voxels (x, y for axis z)"}}},
+              {"radius", {{"type", "number"}, {"exclusiveMinimum", 0}}}}},
+            {"required", {"center", "radius"}},
+            {"description", "Keep only the inside of this cylinder, such as a part in a tube"}}},
           {"threshold",
            {{"type", "number"},
             {"description",
@@ -1476,6 +1716,17 @@ class IsolatePart final : public Operation {
       options.region = region;
     }
     options.keep_objects = p.at("keep_objects").get<int>();
+    options.separate_voxels = p.at("separate_voxels").get<int>();
+    for (const Json& plane : p.value("cut_planes", Json::array())) {
+      options.cut_planes.push_back({plane.at("point").get<std::array<double, 3>>(),
+                                    plane.at("normal").get<std::array<double, 3>>()});
+    }
+    if (p.contains("cylinder")) {
+      const Json& cylinder = p.at("cylinder");
+      options.cylinder = RegionCylinder{cylinder.value("axis", std::string("z"))[0] - 'x',
+                                        cylinder.at("center").get<std::array<double, 2>>(),
+                                        cylinder.at("radius").get<double>()};
+    }
     if (p.contains("threshold")) {
       options.threshold = p.at("threshold").get<float>();
     }
@@ -1515,7 +1766,20 @@ class AddMesh final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}}}},
+         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}},
+          {"color",
+           {{"type", "string"},
+            {"pattern", "^#[0-9a-fA-F]{6}$"},
+            {"description",
+             "Colour of the object in views as #rrggbb; default: by its place in the list"}}},
+          {"pose",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 12},
+            {"maxItems", 16},
+            {"description",
+             "Pose of the new object, object to global coordinates, as a row-major 3x4 or 4x4 "
+             "matrix in mm; default: the coordinates of the file"}}}}},
         {"required", {"path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
@@ -1534,6 +1798,13 @@ class AddMesh final : public Operation {
                       {"bounds_min_mm", bounds.min},
                       {"bounds_max_mm", bounds.max},
                       {"volume_mm3", meshVolumeMm3(mesh)}};
+    if (context.params.contains("pose")) {
+      // The object starts at this pose instead of the identity.
+      const RigidTransform pose =
+          RigidTransform::fromMatrix(context.params.at("pose").get<std::vector<double>>());
+      result.summary[kMovedObjectsKey] = Json::array({context.object});
+      result.summary[kMotionKey] = pose.matrix();
+    }
     return result;
   }
 
@@ -1631,7 +1902,7 @@ class MoveObjects final : public Operation {
     info_.description =
         "Moves objects together in the global coordinate system of the project by a rigid "
         "motion: a rotation about an axis through a centre, then a translation. Alternatively "
-        "`pose` places one object at a given pose. Moves apply on top of the earlier ones, in "
+        "`pose` places objects at a given pose. Moves apply on top of the earlier ones, in "
         "order; undo takes them back. The data is not touched.";
     info_.outputs = {{"pose", artifact::kPose, "The motion and the new poses (pose.json)"}};
     info_.parameters = {
@@ -1653,8 +1924,9 @@ class MoveObjects final : public Operation {
             {"minItems", 12},
             {"maxItems", 16},
             {"description",
-             "New pose of a single object, object to global coordinates, as a row-major 3x4 or "
-             "4x4 matrix in mm; replaces the rotation and translation"}}}}},
+             "New pose of the objects (which must share one pose, such as a single object), "
+             "object to global coordinates, as a row-major 3x4 or 4x4 matrix in mm; replaces "
+             "the rotation and translation"}}}}},
         {"required", {"objects"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
@@ -1664,8 +1936,11 @@ class MoveObjects final : public Operation {
     const auto ids = movedObjects(context);
     RigidTransform motion;
     if (p.contains("pose")) {
-      if (ids.size() != 1) {
-        throw std::invalid_argument("'pose' places exactly one object");
+      const auto current = entryPose(objectEntry(context, ids.front())).matrix();
+      for (const std::string& id : ids) {
+        if (entryPose(objectEntry(context, id)).matrix() != current) {
+          throw std::invalid_argument("'pose' places objects that share one pose");
+        }
       }
       motion = RigidTransform::fromMatrix(p.at("pose").get<std::vector<double>>())
                    .after(entryPose(objectEntry(context, ids.front())).inverse());
@@ -2046,6 +2321,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<MaterialMeshes>());
+  registry.add(std::make_shared<MeasureObjects>());
   registry.add(std::make_shared<Denoise>());
   registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());

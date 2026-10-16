@@ -22,6 +22,7 @@ inline constexpr const char* kSurface = "surface";    // directory with surface.
 inline constexpr const char* kComparison = "comparison";  // nominal-actual comparison with CAD
 inline constexpr const char* kMaterials = "materials";    // material volume (ADR 0013)
 inline constexpr const char* kMaterialMeshes = "material_meshes";  // one STL in mm per material
+inline constexpr const char* kMeasurements = "measurements";       // objects.csv and objects.json
 inline constexpr const char* kMesh = "mesh";  // triangle mesh as STL in mm (ADR 0018)
 inline constexpr const char* kPose = "pose";  // directory with pose.json: objects moved (ADR 0018)
 inline constexpr const char* kDiconde = "diconde";  // DICONDE series of a scan (ADR 0024)

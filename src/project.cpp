@@ -279,7 +279,8 @@ std::vector<ProjectObject> Project::objects() const {
                              .source = {},
                              .created_by = step.id,
                              .pose = {},
-                             .moved_by = {}});
+                             .moved_by = {},
+                             .color = step.params.value("color", "")});
           object = &objects.back();
         }
         if (object->kind == kind) {
@@ -393,7 +394,8 @@ Json toJson(const ProjectObject& object) {
           {"source", {{"step", object.source.step}, {"output", object.source.output}}},
           {"created_by", object.created_by},
           {"pose", object.pose.matrix()},
-          {"moved_by", object.moved_by}};
+          {"moved_by", object.moved_by},
+          {"color", object.color.empty() ? Json() : Json(object.color)}};
 }
 
 Json toJson(const AnalysisResult& result) {

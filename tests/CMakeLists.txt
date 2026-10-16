@@ -7,6 +7,7 @@ add_executable(voxelsieve_tests
   test_dicom.cpp
   test_io.cpp
   test_isolate.cpp
+  test_measure.cpp
   test_materials.cpp
   test_model.cpp
   test_phantom.cpp

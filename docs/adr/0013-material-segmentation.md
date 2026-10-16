@@ -68,3 +68,19 @@ splits drift into a large class when the classes differ much in volume. A peak c
 histogram falls by a fifth of its height on both sides before a higher peak and when it is at
 least 0.5 % of the highest one. The method `histogram` shows the same suggestion before a
 segmentation runs.
+
+## Amendment (2026-10-16): shoulders, tails and ambiguous voxels
+
+Real scans often show two materials as one peak with a shoulder, or a dense material as a tail,
+and the peak rule then suggests one class. `suggestMaterials` also fits Gaussian mixtures with 1
+to `max_materials` components to the binned histogram (expectation maximisation, started from
+equal shares of the voxels; the fit starts after the falling tail of the air peak) and takes the
+one with the lowest Bayesian information criterion. Because a histogram of millions of voxels
+makes every deviation from Gaussian shapes significant, the criterion weighs the fit as if it
+came from 10^4 voxels, and a mixture counts only when every component holds at least 1 % of the
+voxels and stands a standard deviation apart from its neighbour. When the mixture finds more
+classes than there are clear peaks, its classes are suggested, with the thresholds where
+neighbouring components are equally likely. `ambiguous_fraction`, the share of the voxels whose
+most likely class has a probability below 90 %, measures how much a segmentation with these
+classes depends on noise. `view_slice` with `preview_thresholds` colours a slice by such classes
+before a segmentation runs.

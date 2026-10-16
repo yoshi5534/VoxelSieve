@@ -140,20 +140,38 @@ struct MaterialScore {
 /// faster to count, and averaging narrows the peaks of the materials.
 [[nodiscard]] std::vector<std::uint64_t> datasetHistogram(const Dataset& dataset, int level = 0);
 
+/// One Gaussian class of a mixture fitted to a histogram: grey value, spread and share of voxels.
+struct MixtureComponent {
+  double mean = 0.0;
+  double sigma = 0.0;
+  double weight = 0.0;
+};
+
 /// Material classes found in a histogram (suggestMaterials).
 struct MaterialSuggestion {
-  /// Grey values of the peaks above the air threshold, ascending: one material class each.
+  /// Grey values of the class centres above the air threshold, ascending: one material each.
   std::vector<float> peaks;
   /// Thresholds between the classes (peaks - 1, ascending): the lowest point of the smoothed
-  /// histogram between two neighbouring peaks.
+  /// histogram between two clear peaks, or where two mixture components are equally likely.
   std::vector<float> thresholds;
+  /// Clear peaks of the histogram; fewer than the classes when shoulders or tails add some.
+  int clear_peaks = 0;
+  /// The Gaussian mixture with one component per class (grey values), empty without voxels.
+  std::vector<MixtureComponent> components;
+  /// Share of the voxels above the air threshold whose class is uncertain: the most likely
+  /// component of the mixture has a probability below 90 %. A high share means classes that
+  /// overlap and a segmentation whose boundaries depend on noise.
+  double ambiguous_fraction = 0.0;
 };
 
 /// Suggests the number of materials and the thresholds between them from `histogram` (one count
-/// per 16-bit grey value): every clear peak above `air_threshold` is a material. A peak counts
+/// per 16-bit grey value) above `air_threshold`. Every clear peak is a material: a peak counts
 /// when the histogram falls by at least a fifth of its height on both sides before it reaches a
 /// higher peak and when it is not tiny next to the highest one; when more than `max_materials`
-/// peaks count, the most prominent ones are kept. No peak at all gives one material.
+/// peaks count, the most prominent ones are kept. A Gaussian mixture fitted to the histogram
+/// (the number of components chosen by the Bayesian information criterion) also finds classes
+/// that show only as a shoulder or a tail; when it finds more classes than there are peaks, its
+/// classes are suggested. No class at all gives one material.
 [[nodiscard]] MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
                                                   float air_threshold, int max_materials = 8);
 

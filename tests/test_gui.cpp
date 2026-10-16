@@ -448,14 +448,59 @@ TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
   // The scan is one material, a box with lunkers.
   EXPECT_EQ(histogram.at("suggested_materials"), 1);
   EXPECT_TRUE(histogram.at("material_thresholds").empty());
+  EXPECT_LE(histogram.at("clear_peaks").get<int>(), 1);
+  ASSERT_EQ(histogram.at("mixture").size(), 1U);
+  EXPECT_NEAR(histogram.at("mixture").at(0).at("share").get<double>(), 1.0, 0.01);
+  EXPECT_GE(histogram.at("ambiguous_fraction").get<double>(), 0.0);
   EXPECT_EQ(histogram.at("image").at("mime_type"), "image/png");
   EXPECT_EQ(gui.call("histogram", {{"level", 1}}).at("level"), 1);
+
+  // A preview of two classes split at the material's peak, before segmenting.
+  const auto peak = histogram.at("material_peaks").at(0).get<float>();
+  const Json preview =
+      gui.call("view_slice", {{"preview_thresholds", Json::array({peak})}, {"max_pixels", 64}});
+  ASSERT_EQ(preview.at("preview").size(), 2U);
+  EXPECT_EQ(preview.at("preview").at(1).at("lower").get<float>(), peak);
+  EXPECT_TRUE(preview.at("materials_step").is_null());
+  const Json plain = gui.call("view_slice", {{"max_pixels", 64}});
+  EXPECT_NE(preview.at("image").at("base64"), plain.at("image").at("base64"));
+  EXPECT_THROW((void)gui.call("view_slice", {{"preview_thresholds", Json::array({2.0, 1.0})}}),
+               std::invalid_argument);
   EXPECT_THROW((void)gui.call("histogram", {{"level", 99}}), std::invalid_argument);
 
   const Json segmented = gui.call("run_segment_materials", {{"materials", 0}});
   ASSERT_EQ(segmented.at("status"), "done");
   EXPECT_EQ(segmented.at("summary").at("materials").size(), 1U);
   EXPECT_EQ(segmented.at("summary").at("materials_from_histogram"), true);
+}
+
+TEST_F(GuiTest, ReopensTheProjectUsedLast) {
+  const std::filesystem::path memory = dir_ / "state" / "last_project.json";
+  {
+    Gui gui;
+    gui.setProjectMemory(memory);
+    EXPECT_FALSE(gui.reopenProject().has_value());  // nothing remembered yet
+    (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+    (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  }
+  Gui later;
+  later.setProjectMemory(memory);
+  const auto reopened = later.reopenProject();
+  EXPECT_EQ(std::filesystem::canonical(reopened.value_or("")),
+            std::filesystem::canonical(dir_ / "p"));
+  EXPECT_EQ(later.call("project_status", {}).at("steps").size(), 1U);
+  EXPECT_FALSE(later.reopenProject().has_value());  // one is open already
+
+  // Not outside the allowed directories, and not once the project is gone.
+  Gui confined;
+  confined.setProjectMemory(memory);
+  std::filesystem::create_directories(dir_ / "elsewhere");
+  confined.setAllowedRoots({dir_ / "elsewhere"});
+  EXPECT_FALSE(confined.reopenProject().has_value());
+  std::filesystem::remove_all(dir_ / "p");
+  Gui gone;
+  gone.setProjectMemory(memory);
+  EXPECT_FALSE(gone.reopenProject().has_value());
 }
 
 TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
@@ -477,11 +522,38 @@ TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   EXPECT_NEAR(
       view.at("bounds_max_mm").at(0).get<double>() - view.at("bounds_min_mm").at(0).get<double>(),
       6.0, 0.3);
+  // Cut open along x: about half of the triangles stay, the cut ones clipped at the plane.
+  const Json cut = gui.call("view_objects", {{"materials", true},
+                                             {"width", 200},
+                                             {"height", 160},
+                                             {"cut_axis", "x"},
+                                             {"cut_keep", "above"}});
+  EXPECT_LT(cut.at("triangles_shown").get<double>(),
+            0.7 * view.at("triangles_shown").get<double>());
+  EXPECT_GT(cut.at("triangles_shown").get<double>(),
+            0.3 * view.at("triangles_shown").get<double>());
+  EXPECT_THROW((void)gui.call("view_objects", {{"cut_axis", "x"}, {"cut_mm", -1e6}}),
+               std::invalid_argument);
   EXPECT_THROW((void)gui.call("view_objects", {{"materials", true}, {"material_ids", {7}}}),
                std::invalid_argument);
 
+  // Moved first, so the mesh objects show where the volume is.
+  (void)gui.call("run_move", {{"objects", {"o1"}}, {"translation_mm", {10.0, 0.0, 0.0}}});
   const Json exported = gui.call("run_material_meshes", {});
   ASSERT_EQ(exported.at("status"), "done");
+  // Each mesh became an object in its material's colour, at the volume's pose.
+  ASSERT_EQ(exported.at("followed_by").size(), 1U);
+  EXPECT_EQ(exported.at("followed_by").at(0).at("operation"), "add_mesh");
+  const Json objects = gui.call("objects", {}).at("objects");
+  ASSERT_EQ(objects.size(), 2U);
+  EXPECT_EQ(objects.at(1).at("kind"), "mesh");
+  EXPECT_EQ(objects.at(1).at("color"), "#20a0ff");
+  EXPECT_EQ(objects.at(1).at("name"), exported.at("summary").at("meshes").at(0).at("name"));
+  EXPECT_EQ(objects.at(1).at("pose"), objects.at(0).at("pose"));
+  EXPECT_DOUBLE_EQ(objects.at(1).at("pose").at(3).get<double>(), 10.0);
+  EXPECT_TRUE(objects.at(0).at("color").is_null());
+  const Json shown = gui.call("view_objects", {{"objects", {objects.at(1).at("id")}}});
+  EXPECT_EQ(shown.at("objects").at(0).at("color"), Json::array({32, 160, 255}));
   const Json& mesh = exported.at("summary").at("meshes").at(0);
   const Json files = gui.call("list_files", {{"step", exported.at("id")}});
   const auto stl = std::filesystem::path(files.at("path").get<std::string>()) /
@@ -489,6 +561,18 @@ TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   EXPECT_NEAR(meshVolumeMm3(readStl(stl)), 120.0 - 2 * 4.0 / 3.0 * std::numbers::pi * 0.125, 4.0);
   EXPECT_THROW((void)gui.call("run_material_meshes", {{"material_ids", {5}}}),
                std::invalid_argument);
+
+  // The objects of the material, measured into a table.
+  const Json measured = gui.call(
+      "run_measure_objects", {{"axis", {1.0, 0.0, 0.0}},
+                              {"inputs", {{"materials", {{"step", 2}, {"output", "materials"}}}}}});
+  ASSERT_EQ(measured.at("status"), "done");
+  ASSERT_GE(measured.at("summary").at("objects").size(), 1U);
+  const Json& box = measured.at("summary").at("objects").at(0);
+  EXPECT_NEAR(box.at("axis_length_mm").get<double>(), 6.0, 0.3);
+  EXPECT_NEAR(box.at("volume_mm3").get<double>(), 120.0, 6.0);
+  const Json table = gui.call("read_file", {{"step", measured.at("id")}, {"file", "objects.csv"}});
+  EXPECT_NE(table.dump().find("volume_mm3"), std::string::npos);
 }
 
 TEST_F(GuiTest, SegmentsWithALearnedModel) {
@@ -569,6 +653,15 @@ TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
   // Later steps of the object take the isolated dataset.
   const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), isolated.at("id"));
+  // Planes, a cylinder and separation as parameters.
+  const Json cut =
+      gui.call("run_isolate_part",
+               {{"cut_planes", Json::array({{{"point", {0, 0, 10}}, {"normal", {0, 0, -1}}}})},
+                {"cylinder", {{"axis", "z"}, {"center", {30, 25}}, {"radius", 1000}}},
+                {"separate_voxels", 1}});
+  ASSERT_EQ(cut.at("status"), "done");
+  EXPECT_LT(cut.at("summary").at("active_voxels").get<std::int64_t>(),
+            summary.at("active_voxels").get<std::int64_t>());
 }
 
 TEST_F(GuiTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {
@@ -895,6 +988,39 @@ TEST_F(GuiTest, OperationsRunInTheBackgroundUntilDoneOrCancelled) {
   const Json steps = gui.call("project_status", {}).at("steps");
   ASSERT_EQ(steps.size(), 2U);
   EXPECT_EQ(steps[1].at("status"), "failed");
+
+  // A pipeline runs its steps one after the other, in the background as well.
+  const Json pipeline = gui.call(
+      "pipeline", {{"steps",
+                    {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                     {{"operation", "material_meshes"}, {"params", {{"add_objects", false}}}}}}});
+  EXPECT_EQ(pipeline.at("status"), "done");
+  ASSERT_EQ(pipeline.at("steps").size(), 2U);
+  EXPECT_EQ(pipeline.at("steps").at(1).at("operation"), "material_meshes");
+  EXPECT_EQ(gui.call("objects", {}).at("objects").size(), 1U);  // no mesh objects
+  (void)gui.call("pipeline",
+                 {{"steps",
+                   {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                    {{"operation", "material_meshes"}}}},
+                  {"background", true}});
+  waited = gui.call("wait", {{"seconds", 50}});
+  for (int i = 0; i < 20 && !waited.at("done").get<bool>(); ++i) {
+    waited = gui.call("wait", {{"seconds", 50}});
+  }
+  ASSERT_TRUE(waited.at("done"));
+  EXPECT_EQ(waited.at("result").at("status"), "done");
+  EXPECT_EQ(waited.at("result").at("steps").size(), 3U);  // with the mesh object
+  // It stops at the first failure and gives the steps done until then.
+  const Json failed = gui.call(
+      "pipeline", {{"steps",
+                    {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                     {{"operation", "material_meshes"}, {"params", {{"material_ids", {9}}}}},
+                     {{"operation", "segment_materials"}}}}});
+  EXPECT_EQ(failed.at("status"), "failed");
+  EXPECT_EQ(failed.at("failed_operation"), "material_meshes");
+  EXPECT_EQ(failed.at("steps").size(), 1U);
+  EXPECT_THROW(gui.call("pipeline", {{"steps", {{{"operation", "nope"}}}}}), std::invalid_argument);
+  EXPECT_FALSE(gui.call("wait", {{"seconds", 0}}).contains("running"));
 
   // A GUI that goes away stops its background operation.
   {

@@ -5,15 +5,42 @@
 - **Histogram with a suggested number of materials**: the new tool `histogram` shows the grey
   values of a dataset as numbers and a picture, with the air threshold and one material per
   peak above it. The material segmentation takes `materials` 0 to use that suggestion, with the
-  thresholds in the valleys between the peaks, instead of a number given by hand.
+  thresholds in the valleys between the peaks, instead of a number given by hand. A Gaussian
+  mixture fitted to the histogram also counts classes that show only as a shoulder or a tail,
+  the share of voxels at class boundaries (`ambiguous_fraction`) shows how certain the classes
+  are, and `view_slice` with `preview_thresholds` previews the classes before segmenting.
 
 - **Isolate the part**: the new operation `isolate_part` removes voxels outside a region (a crop)
   and every object but the largest ones, such as a holder or debris, and writes a new dataset, so
-  the material classes, volumes, porosity and surface no longer count them (ADR 0026).
+  the material classes, volumes, porosity and surface no longer count them (ADR 0026). Objects
+  that touch are separated by erosion and regrowth (`separate_voxels`), and cut planes and a
+  cylinder cut away what a box cannot.
 
 - **Materials in 3D over MCP, and as meshes**: `view_objects` with `materials` draws each
   material of a segmented volume as a surface in its colour (`material_ids` picks some), and the
-  new operation `material_meshes` exports one STL per material.
+  new operation `material_meshes` exports one STL per material. `view_objects` can cut the
+  scene open with a plane (`cut_axis`, `cut_mm`, `cut_keep`). The material meshes become
+  objects of the project in the materials' colours, at the pose of the segmented volume; objects
+  can have a colour of their own (`color` of `add_mesh`).
+
+- **Gaps between slices**: imports warn in their summary (`warnings`) when the slices are thinner
+  than their spacing, much farther apart than the pixels, or the voxel size was only assumed, and
+  `interpolate_slices` fills the gaps with linearly interpolated slices.
+
+- **DICOM from ZIP archives**: `import_dicom` and `vs-sieve` read a ZIP archive of DICOM slices
+  directly, without extracting it.
+
+- **The project stays open**: `vs-gui --mcp` reopens the project used last when it starts, so
+  an AI client that restarts the server between chats finds it open (`--no-reopen` turns this
+  off).
+
+- **Measure objects**: the new operation `measure_objects` measures every connected object of a
+  material, and the enclosed air with material 0: volume, surface area, centroid, bounding box,
+  lengths along the principal axes and along a given axis, written as `objects.csv` and
+  `objects.json`.
+
+- **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
+  in the background as well, and stops at the first failure.
 
 - **Voxel size of more TIFF stacks**: the pixel size is now also read from OME-XML image
   descriptions and from inch resolutions that are not printing defaults; the import summary says

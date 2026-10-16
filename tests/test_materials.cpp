@@ -79,12 +79,57 @@ TEST(SuggestMaterials, FindsOnePeakPerMaterial) {
   EXPECT_NEAR(two.peaks[0], 9000.0F, 500.0F);
   EXPECT_NEAR(two.peaks[1], 20000.0F, 500.0F);
 
-  // Two classes that blend into one peak with a shoulder are one material.
+  EXPECT_EQ(three.clear_peaks, 3);
+  ASSERT_EQ(three.components.size(), 3U);
+  EXPECT_NEAR(three.components[0].sigma, 1200.0, 300.0);
+  EXPECT_LT(three.ambiguous_fraction, 0.01);  // classes far apart
+
+  // Two classes that blend completely are one material.
   std::vector<std::uint64_t> blended(65536, 0);
   addPeak(blended, 10000.0, 1500.0, 1e6);
   addPeak(blended, 12000.0, 1500.0, 3e5);
   EXPECT_EQ(suggestMaterials(blended, 4000.0F).peaks.size(), 1U);
   EXPECT_TRUE(suggestMaterials(std::vector<std::uint64_t>(65536, 0), 4000.0F).peaks.empty());
+
+  // One peak and the air's tail are one material.
+  std::vector<std::uint64_t> single(65536, 0);
+  addPeak(single, 1000.0, 1200.0, 5e7);
+  addPeak(single, 10000.0, 1500.0, 1e6);
+  const MaterialSuggestion one = suggestMaterials(single, 4500.0F);
+  ASSERT_EQ(one.peaks.size(), 1U);
+  EXPECT_NEAR(one.peaks[0], 10000.0F, 300.0F);
+  EXPECT_LT(one.ambiguous_fraction, 1e-3);
+}
+
+TEST(SuggestMaterials, FindsShouldersAndTails) {
+  // A second class that shows only as a shoulder of the first.
+  std::vector<std::uint64_t> shoulder(65536, 0);
+  addPeak(shoulder, 1000.0, 1200.0, 5e7);
+  addPeak(shoulder, 10000.0, 1500.0, 1e6);
+  addPeak(shoulder, 13500.0, 1500.0, 3e5);
+  const MaterialSuggestion two = suggestMaterials(shoulder, 4500.0F);
+  EXPECT_EQ(two.clear_peaks, 1);
+  ASSERT_EQ(two.peaks.size(), 2U);
+  EXPECT_NEAR(two.peaks[0], 10000.0F, 400.0F);
+  EXPECT_NEAR(two.peaks[1], 13500.0F, 400.0F);
+  ASSERT_EQ(two.thresholds.size(), 1U);
+  EXPECT_GT(two.thresholds[0], 11000.0F);
+  EXPECT_LT(two.thresholds[0], 13000.0F);
+  ASSERT_EQ(two.components.size(), 2U);
+  EXPECT_NEAR(two.components[1].weight, 0.23, 0.05);
+  // Classes that overlap this much leave many voxels at their boundary.
+  EXPECT_GT(two.ambiguous_fraction, 0.1);
+  EXPECT_LT(two.ambiguous_fraction, 0.6);
+
+  // A sparse, wide tail of denser material.
+  std::vector<std::uint64_t> tail(65536, 0);
+  addPeak(tail, 10000.0, 1500.0, 1e6);
+  addPeak(tail, 16000.0, 4000.0, 1e5);
+  const MaterialSuggestion tailed = suggestMaterials(tail, 4000.0F);
+  ASSERT_EQ(tailed.peaks.size(), 2U);
+  EXPECT_NEAR(tailed.peaks[1], 16000.0F, 1500.0F);
+  // At most the allowed number.
+  EXPECT_EQ(suggestMaterials(shoulder, 4500.0F, 1).peaks.size(), 1U);
 }
 
 TEST_F(MaterialsTest, SuggestsTheMaterialsFromTheHistogram) {

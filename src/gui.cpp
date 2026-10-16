@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -88,6 +89,47 @@ std::vector<std::uint8_t> histogramPng(const std::vector<std::uint64_t>& counts,
     }
   }
   return detail::encodePng(kWidth, kHeight, 3, rgb);
+}
+
+/// Removes the part of `mesh` (and its vertex colours) on one side of the plane where coordinate
+/// `axis` is `position`: what lies above it when `keep_below`, else below. Triangles across the
+/// plane are clipped along it.
+void cutMesh(IndexedMesh& mesh, std::vector<std::array<std::uint8_t, 3>>& colors, std::size_t axis,
+             float position, bool keep_below) {
+  const auto inside = [&](const std::array<float, 3>& p) {
+    return keep_below ? p[axis] <= position : p[axis] >= position;
+  };
+  IndexedMesh out;
+  std::vector<std::array<std::uint8_t, 3>> out_colors;
+  out.points = mesh.points;
+  out_colors = colors;
+  for (const auto& t : mesh.triangles) {
+    // Sutherland-Hodgman against one plane: at most four corners, so one or two triangles.
+    std::vector<std::uint32_t> polygon;
+    for (std::size_t k = 0; k < 3; ++k) {
+      const std::uint32_t a = t[k];
+      const std::uint32_t b = t[(k + 1) % 3];
+      const bool a_in = inside(out.points[a]);
+      const bool b_in = inside(out.points[b]);
+      if (a_in) {
+        polygon.push_back(a);
+      }
+      if (a_in != b_in) {
+        const auto& p = out.points[a];
+        const auto& q = out.points[b];
+        const float f = (position - p[axis]) / (q[axis] - p[axis]);
+        out.points.push_back(
+            {p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1]), p[2] + f * (q[2] - p[2])});
+        out_colors.push_back(colors[a]);
+        polygon.push_back(static_cast<std::uint32_t>(out.points.size() - 1));
+      }
+    }
+    for (std::size_t k = 2; k < polygon.size(); ++k) {
+      out.triangles.push_back({polygon[0], polygon[k - 1], polygon[k]});
+    }
+  }
+  mesh = std::move(out);
+  colors = std::move(out_colors);
 }
 
 /// The files of a step output (a directory or a single file) with their sizes, at most
@@ -175,6 +217,18 @@ constexpr std::array<std::array<std::uint8_t, 3>, 6> kObjectColors = {{{196, 200
                                                                        {120, 190, 110},
                                                                        {200, 110, 170},
                                                                        {220, 200, 80}}};
+
+/// The colour an object was given (#rrggbb), else the one of its place in the list.
+std::array<std::uint8_t, 3> objectColor(const ProjectObject& object, std::size_t index) {
+  std::array<std::uint8_t, 3> color = kObjectColors[index % kObjectColors.size()];
+  if (object.color.size() == 7 && object.color[0] == '#') {
+    for (std::size_t c = 0; c < 3; ++c) {
+      color[c] =
+          static_cast<std::uint8_t>(std::stoi(object.color.substr(1 + 2 * c, 2), nullptr, 16));
+    }
+  }
+  return color;
+}
 
 std::string base64(std::span<const std::uint8_t> bytes) {
   static constexpr std::string_view kAlphabet =
@@ -330,9 +384,10 @@ Json browse(const std::filesystem::path& requested) {
       entry["directory"] = true;
     } else {
       const auto sidecar = rawSidecarPath(path);
-      entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
-                      : isGzippedXmlFile(path)                           ? "gzipped_xml"
-                      : isDicomFile(path)                                ? "dicom"
+      entry["kind"] = isDicomArchive(path)                                 ? "dicom"
+                      : isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
+                      : isGzippedXmlFile(path)                             ? "gzipped_xml"
+                      : isDicomFile(path)                                  ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
                           : "file";
@@ -451,8 +506,8 @@ std::vector<GuiMethod> Gui::methods() const {
        "colour (listed in the result): meshes as their triangles, volumes as their extracted "
        "surface or, before a surface step, as the box they fill. With materials, volumes with a "
        "material segmentation show the surface of each material in its colour instead; choose "
-       "material_ids to look at inner materials alone. Shows whether an alignment worked; z is "
-       "up in the image.",
+       "material_ids to look at inner materials alone, and cut_axis to cut the scene open. Shows "
+       "whether an alignment worked; z is up in the image.",
        objectSchema(
            {{"objects",
              {{"type", "array"},
@@ -479,7 +534,20 @@ std::vector<GuiMethod> Gui::methods() const {
             {"material_ids",
              {{"type", "array"},
               {"items", {{"type", "integer"}, {"minimum", 1}}},
-              {"description", "With materials: the materials to show; default: all"}}}})},
+              {"description", "With materials: the materials to show; default: all"}}},
+            {"cut_axis",
+             {{"type", "string"},
+              {"enum", {"x", "y", "z"}},
+              {"description",
+               "Cuts the scene open with a plane normal to this global axis, to look inside"}}},
+            {"cut_mm",
+             {{"type", "number"},
+              {"description", "With cut_axis: where the plane lies; default: the scene's middle"}}},
+            {"cut_keep",
+             {{"type", "string"},
+              {"enum", {"below", "above"}},
+              {"default", "below"},
+              {"description", "With cut_axis: the side of the plane that stays"}}}})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -496,10 +564,16 @@ std::vector<GuiMethod> Gui::methods() const {
       {"histogram",
        "Grey-value histogram of a dataset (its active voxels: the part, its voids and a thin "
        "margin of air) with the air threshold and a suggested number of materials: one per "
-       "peak above the threshold, with the thresholds in the valleys between them. Comes with "
-       "a picture (logarithmic scale, threshold in red, the suggested materials in their "
-       "colours). run_segment_materials with materials 0 uses the same suggestion, counted at "
-       "full resolution; to choose differently, pass materials and material_thresholds.",
+       "clear peak above the threshold, with the thresholds in the valleys between them, or "
+       "more when a Gaussian mixture fitted to the histogram also finds classes that show only "
+       "as a shoulder or a tail (clear_peaks counts the peaks alone, mixture lists the classes "
+       "with grey value, spread and share). ambiguous_fraction is the share of the voxels whose "
+       "class is uncertain (below 90 % probability): the voxels at class boundaries, a measure "
+       "of how much a segmentation depends on noise. Comes with a picture (logarithmic scale, "
+       "threshold in red, the suggested materials in their colours). To preview the classes "
+       "before segmenting, pass material_thresholds as preview_thresholds to view_slice. "
+       "run_segment_materials with materials 0 uses the same suggestion, counted at full "
+       "resolution; to choose differently, pass materials and material_thresholds.",
        [] {
          Json properties = artifactProperties();
          properties["level"] = {
@@ -545,6 +619,14 @@ std::vector<GuiMethod> Gui::methods() const {
              {"type", "integer"},
              {"description",
               "Material segmentation for the overlay; default: the latest of this dataset"}};
+         properties["preview_thresholds"] = {
+             {"type", "array"},
+             {"items", {{"type", "number"}}},
+             {"description",
+              "Preview of a material segmentation without running it: voxels above the air "
+              "threshold are coloured by the class these ascending grey values give (material 1 "
+              "below the first, 2 up to the second, ...), for example histogram's "
+              "material_thresholds. Replaces the materials overlay"}};
          properties["objects"] = {
              {"type", "array"},
              {"items", {{"type", "string"}}},
@@ -593,6 +675,23 @@ std::vector<GuiMethod> Gui::methods() const {
                        {"minimum", 0},
                        {"maximum", kMaxWaitSeconds},
                        {"default", kDefaultWaitSeconds}}}})},
+      {"pipeline",
+       "Runs several operations one after the other in one call, such as import, isolate_part, "
+       "segment_materials and material_meshes, so nothing waits between them. Each step names "
+       "an operation (as run_<operation> without the prefix) and its parameters as that method "
+       "takes them; inputs not given come from the active object, which is the object the "
+       "previous step made or worked on. Stops at the first failure and gives the steps done "
+       "until then with the error. With background: true it returns at once; wait gives the "
+       "result and cancel stops it.",
+       objectSchema({{"steps",
+                      {{"type", "array"},
+                       {"minItems", 1},
+                       {"items", objectSchema({{"operation", {{"type", "string"}}},
+                                               {"params",
+                                                {{"type", "object"}, {"default", Json::object()}}}},
+                                              {"operation"})}}},
+                     {"background", {{"type", "boolean"}, {"default", false}}}},
+                    {"steps"})},
       {"cancel",
        "Stops the running operation at its next progress report; its step is kept as failed. "
        "Gives the operation that was asked to stop, or null when none was running.",
@@ -659,6 +758,47 @@ std::vector<GuiMethod> Gui::methods() const {
     methods.push_back({kRunPrefix + info.id, description, schema});
   }
   return methods;
+}
+
+void Gui::setProjectMemory(const std::filesystem::path& file) { project_memory_ = file; }
+
+void Gui::rememberProject() const {
+  if (project_memory_.empty() || !project_) {
+    return;
+  }
+  // Best effort: a GUI that cannot write it still works, it only does not reopen the project.
+  std::error_code error;
+  std::filesystem::create_directories(project_memory_.parent_path(), error);
+  const std::filesystem::path temporary = project_memory_.string() + ".tmp";
+  {
+    std::ofstream out(temporary, std::ios::binary);
+    out << Json{{"project", std::filesystem::absolute(project_->dir(), error).string()}}.dump()
+        << '\n';
+    if (!out) {
+      return;
+    }
+  }
+  std::filesystem::rename(temporary, project_memory_, error);
+}
+
+std::optional<std::filesystem::path> Gui::reopenProject() {
+  if (project_memory_.empty() || project_) {
+    return std::nullopt;
+  }
+  try {
+    std::ifstream in(project_memory_, std::ios::binary);
+    if (!in) {
+      return std::nullopt;
+    }
+    std::filesystem::path dir = Json::parse(in).at("project").get<std::string>();
+    if (!std::filesystem::exists(dir / "project.json")) {
+      return std::nullopt;
+    }
+    (void)call("project_open", {{"path", dir.string()}});
+    return dir;
+  } catch (const std::exception&) {
+    return std::nullopt;  // outside the allowed directories, damaged, or not readable
+  }
 }
 
 Project& Gui::project() {
@@ -1101,6 +1241,11 @@ Json Gui::histogram(const Json& params) const {
   }
   std::vector<float> starts{info.threshold};
   starts.insert(starts.end(), suggestion.thresholds.begin(), suggestion.thresholds.end());
+  Json mixture = Json::array();
+  for (const MixtureComponent& component : suggestion.components) {
+    mixture.push_back(
+        {{"mean", component.mean}, {"sigma", component.sigma}, {"share", component.weight}});
+  }
   const std::vector<std::uint8_t> png =
       histogramPng(counts, static_cast<double>(low), bin_width, info.threshold, starts);
   Json json = {{"step", ref.step},
@@ -1113,8 +1258,11 @@ Json Gui::histogram(const Json& params) const {
                {"bin_width", bin_width},
                {"counts", counts},
                {"suggested_materials", std::max<std::size_t>(1, suggestion.peaks.size())},
+               {"clear_peaks", suggestion.clear_peaks},
                {"material_peaks", suggestion.peaks},
                {"material_thresholds", suggestion.thresholds},
+               {"mixture", mixture},
+               {"ambiguous_fraction", suggestion.ambiguous_fraction},
                {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
   if (!info.value_mapping.isIdentity()) {
     json["value_mapping"] = {{"offset", info.value_mapping.offset},
@@ -1203,15 +1351,23 @@ Json Gui::viewObjects(const Json& params) const {
     }
     const ObjectShape shape = shapeOf(source, budget);
     const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
-    const auto& color = kObjectColors[index % kObjectColors.size()];
+    const auto color = objectColor(source.object, index);
     add(*shape.mesh, shape, color);
     listed.push_back({{"id", id},
                       {"shape", shape.shape},
                       {"color", color},
                       {"triangles", shape.mesh->triangles.size()}});
   }
+  if (params.contains("cut_axis")) {
+    const auto axis = static_cast<std::size_t>(params.at("cut_axis").get<std::string>()[0] - 'x');
+    const double position = params.contains("cut_mm") ? params.at("cut_mm").get<double>()
+                                                      : 0.5 * (low[axis] + high[axis]);
+    cutMesh(scene, colors, axis, static_cast<float>(position),
+            params.at("cut_keep").get<std::string>() == "below");
+  }
   if (scene.triangles.empty()) {
-    throw std::invalid_argument("Nothing to show: the chosen materials have no voxels");
+    throw std::invalid_argument(
+        "Nothing to show: the chosen materials have no voxels, or the cut leaves nothing");
   }
   RenderScene render_scene;
   render_scene.mesh = &scene;
@@ -1226,10 +1382,13 @@ Json Gui::viewObjects(const Json& params) const {
   const auto png =
       detail::encodePng(static_cast<std::uint32_t>(image.width),
                         static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
-  return {
-      {"objects", listed},      {"bounds_min_mm", low},
-      {"bounds_max_mm", high},  {"width", image.width},
-      {"height", image.height}, {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  return {{"objects", listed},
+          {"triangles_shown", scene.triangles.size()},
+          {"bounds_min_mm", low},
+          {"bounds_max_mm", high},
+          {"width", image.width},
+          {"height", image.height},
+          {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
 
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Gui::openView(
@@ -1262,7 +1421,7 @@ Json Gui::drawObjects(const Dataset& base, const ArtifactRef& base_ref, const Sl
   for (const std::string& id : ids.get<std::vector<std::string>>()) {
     const ObjectSource source = objectSource(id);
     const auto index = static_cast<std::size_t>(std::ranges::find(all, id) - all.begin());
-    const auto& color = kObjectColors[index % kObjectColors.size()];
+    const auto color = objectColor(source.object, index);
     const auto blend = [&rgb, &color](std::size_t pixel, float weight, float shade) {
       for (std::size_t c = 0; c < 3; ++c) {
         auto& channel = rgb[pixel * 3 + c];
@@ -1444,6 +1603,15 @@ Json Gui::viewSlice(const Json& params) const {
   }
   const auto& dims = levels[static_cast<std::size_t>(request.level)].dims;
   request.size = {dims[static_cast<std::size_t>(u)], dims[static_cast<std::size_t>(v)]};
+  std::vector<float> preview;
+  if (params.contains("preview_thresholds")) {
+    preview = params.at("preview_thresholds").get<std::vector<float>>();
+    if (!std::ranges::is_sorted(preview)) {
+      throw std::invalid_argument("preview_thresholds must ascend");
+    }
+    materials.reset();
+    materials_step.reset();
+  }
   const SliceImage image = readSlice(*dataset, request, porosity.get(), materials.get());
 
   float low = 0.0F;
@@ -1472,11 +1640,20 @@ Json Gui::viewSlice(const Json& params) const {
       color = {channel(0.35F * g + 165.0F), channel(0.35F * g + 25.0F), channel(0.35F * g + 25.0F)};
     } else if (image.overlay[i] == static_cast<std::uint8_t>(SliceOverlay::kZone)) {
       color = {channel(0.5F * g + 125.0F), channel(0.5F * g + 100.0F), channel(0.4F * g)};
-    } else if (materials && image.overlay[i] > static_cast<std::uint8_t>(SliceOverlay::kMaterial)) {
-      // Materials in their colour, half covering the grey value.
-      const auto id = static_cast<std::size_t>(image.overlay[i] -
-                                               static_cast<std::uint8_t>(SliceOverlay::kMaterial));
-      const auto& tint = materials->info().materials.at(id - 1).color;
+    } else if (!params.contains("preview_thresholds") || image.grey[i] <= info.threshold) {
+      if (materials && image.overlay[i] > static_cast<std::uint8_t>(SliceOverlay::kMaterial)) {
+        // Materials in their colour, half covering the grey value.
+        const auto id = static_cast<std::size_t>(
+            image.overlay[i] - static_cast<std::uint8_t>(SliceOverlay::kMaterial));
+        const auto& tint = materials->info().materials.at(id - 1).color;
+        for (std::size_t c = 0; c < 3; ++c) {
+          color[c] = channel(0.5F * g + 0.5F * static_cast<float>(tint[c]));
+        }
+      }
+    } else {
+      // The class the preview thresholds give, in the colour a segmentation would use.
+      const auto id = 1 + std::ranges::upper_bound(preview, image.grey[i]) - preview.begin();
+      const auto tint = detail::materialColor(static_cast<int>(id));
       for (std::size_t c = 0; c < 3; ++c) {
         color[c] = channel(0.5F * g + 0.5F * static_cast<float>(tint[c]));
       }
@@ -1514,6 +1691,16 @@ Json Gui::viewSlice(const Json& params) const {
     }
     result["materials"] = legend;
   }
+  if (params.contains("preview_thresholds")) {
+    Json legend = Json::array();
+    for (std::size_t m = 0; m <= preview.size(); ++m) {
+      const int id = static_cast<int>(m) + 1;
+      legend.push_back({{"id", id},
+                        {"lower", m == 0 ? info.threshold : preview[m - 1]},
+                        {"color", detail::materialColor(id)}});
+    }
+    result["preview"] = legend;
+  }
   return result;
 }
 
@@ -1538,8 +1725,6 @@ std::filesystem::path Gui::viewImage(int id) const {
 
 Json Gui::runOperation(const std::string& operation, Json params,
                        const std::function<void(double)>& progress) {
-  // The operation runs on a copy of the project without holding the lock, so status, file and
-  // view requests are answered while it runs. Changes to the project wait until it is done.
   bool background = false;
   if (params.contains("background")) {
     if (!params.at("background").is_boolean()) {
@@ -1548,8 +1733,56 @@ Json Gui::runOperation(const std::string& operation, Json params,
     background = params.at("background").get<bool>();
     params.erase("background");
   }
+  std::vector<RunRequest> requests;
+  requests.push_back({operation, std::move(params)});
+  return runSequence(std::move(requests), background, false, progress);
+}
+
+Gui::PreparedRun Gui::prepareRun(RunRequest request) {
   PreparedRun run;
-  run.operation = operation;
+  run.operation = std::move(request.operation);
+  if (!registry_.find(run.operation)) {
+    throw std::invalid_argument("Unknown operation '" + run.operation + "'");
+  }
+  Json params = std::move(request.params);
+  if (!params.is_object()) {
+    throw std::invalid_argument("The parameters of '" + run.operation + "' must be an object");
+  }
+  if (params.contains("inputs")) {
+    if (!params.at("inputs").is_object()) {
+      throw std::invalid_argument("'inputs' must be an object");
+    }
+    for (const auto& [name, ref] : params.at("inputs").items()) {
+      if (!ref.is_object() || !ref.contains("step") || !ref.at("step").is_number_integer()) {
+        throw std::invalid_argument("Input '" + name + "' needs {step, output}");
+      }
+      run.inputs[name] = artifactRef(ref, "");
+    }
+    params.erase("inputs");
+  }
+  for (const auto& [key, field] :
+       {std::pair{"object", &StepTarget::object}, std::pair{"object_name", &StepTarget::name}}) {
+    if (params.contains(key)) {
+      if (!params.at(key).is_string()) {
+        throw std::invalid_argument(std::string("'") + key + "' must be a string");
+      }
+      run.target.*field = params.at(key).get<std::string>();
+      params.erase(key);
+    }
+  }
+  run.params = std::move(params);
+  run.working = project();
+  return run;
+}
+
+Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pipeline,
+                      const std::function<void(double)>& progress) {
+  // The operations run on a copy of the project without holding the lock, so status, file and
+  // view requests are answered while they run. Changes to the project wait until each is done.
+  if (requests.empty()) {
+    throw std::invalid_argument("No operation to run");
+  }
+  PreparedRun first;
   std::thread finished;
   {
     const std::scoped_lock lock(mutex_);
@@ -1557,32 +1790,10 @@ Json Gui::runOperation(const std::string& operation, Json params,
       throw std::invalid_argument("Operation '" + running_operation_ +
                                   "' is still running; wait for it or cancel it");
     }
-    if (params.contains("inputs")) {
-      if (!params.at("inputs").is_object()) {
-        throw std::invalid_argument("'inputs' must be an object");
-      }
-      for (const auto& [name, ref] : params.at("inputs").items()) {
-        if (!ref.is_object() || !ref.contains("step") || !ref.at("step").is_number_integer()) {
-          throw std::invalid_argument("Input '" + name + "' needs {step, output}");
-        }
-        run.inputs[name] = artifactRef(ref, "");
-      }
-      params.erase("inputs");
-    }
-    for (const auto& [key, field] :
-         {std::pair{"object", &StepTarget::object}, std::pair{"object_name", &StepTarget::name}}) {
-      if (params.contains(key)) {
-        if (!params.at(key).is_string()) {
-          throw std::invalid_argument(std::string("'") + key + "' must be a string");
-        }
-        run.target.*field = params.at(key).get<std::string>();
-        params.erase(key);
-      }
-    }
-    run.params = std::move(params);
-    run.working = project();
+    first = prepareRun(std::move(requests.front()));
+    requests.erase(requests.begin());
     running_ = true;
-    running_operation_ = operation;
+    running_operation_ = first.operation;
     running_preview_ = nullptr;
     running_preview_png_.clear();
     progress_ = 0.0;
@@ -1593,18 +1804,20 @@ Json Gui::runOperation(const std::string& operation, Json params,
   if (finished.joinable()) {
     finished.join();
   }
+  const std::string operation = pipeline ? "pipeline" : first.operation;
   if (!background) {
-    return executeRun(run, progress);
+    return executeSequence(std::move(first), std::move(requests), progress, pipeline);
   }
   // Under the lock, so the thread cannot finish before background_ holds it.
   const std::scoped_lock lock(mutex_);
   background_result_ = nullptr;
-  background_ = std::thread([this, run = std::move(run)]() mutable {
+  background_ = std::thread([this, operation, pipeline, first = std::move(first),
+                             requests = std::move(requests)]() mutable {
     Json result;
     try {
-      result = executeRun(run, {});
+      result = executeSequence(std::move(first), std::move(requests), {}, pipeline);
     } catch (const std::exception& error) {
-      result = {{"operation", run.operation}, {"status", "failed"}, {"error", error.what()}};
+      result = {{"operation", operation}, {"status", "failed"}, {"error", error.what()}};
     }
     const std::scoped_lock result_lock(mutex_);
     background_result_ = std::move(result);
@@ -1614,29 +1827,127 @@ Json Gui::runOperation(const std::string& operation, Json params,
           {"message", "Started in the background; call wait for its step, cancel to stop it"}};
 }
 
+Json Gui::executeSequence(PreparedRun first, std::vector<RunRequest> rest,
+                          const std::function<void(double)>& progress, bool pipeline) {
+  std::deque<RunRequest> queue(std::make_move_iterator(rest.begin()),
+                               std::make_move_iterator(rest.end()));
+  Json steps = Json::array();
+  PreparedRun run = std::move(first);
+  const auto failed = [&](const std::string& operation, const std::string& error) {
+    return Json{
+        {"status", "failed"}, {"failed_operation", operation}, {"error", error}, {"steps", steps}};
+  };
+  for (;;) {
+    const auto total = static_cast<double>(steps.size() + 1 + queue.size());
+    run.offset = static_cast<double>(steps.size()) / total;
+    run.share = 1.0 / total;
+    try {
+      steps.push_back(executeRun(run, progress));
+    } catch (const std::exception& error) {
+      if (!pipeline || steps.empty()) {
+        throw;
+      }
+      return failed(run.operation, error.what());
+    }
+    std::string next_error;
+    std::string next_operation;
+    bool more_to_run = false;
+    {
+      const std::scoped_lock lock(mutex_);
+      std::vector<RunRequest> more = followUps(steps.back());
+      queue.insert(queue.begin(), std::make_move_iterator(more.begin()),
+                   std::make_move_iterator(more.end()));
+      if (!queue.empty()) {
+        next_operation = queue.front().operation;
+        if (cancel_) {
+          next_error = "Cancelled before '" + next_operation + "'";
+        } else {
+          try {
+            run = prepareRun(std::move(queue.front()));
+            queue.pop_front();
+            running_operation_ = run.operation;
+            running_preview_ = nullptr;
+            running_preview_png_.clear();
+            more_to_run = true;
+          } catch (const std::exception& error) {
+            next_error = "'" + next_operation + "': " + error.what();
+          }
+        }
+      }
+    }
+    if (more_to_run) {
+      continue;
+    }
+    if (next_error.empty()) {
+      break;
+    }
+    releaseRun();
+    if (!pipeline) {
+      throw std::invalid_argument(next_error);
+    }
+    return failed(next_operation, next_error);
+  }
+  releaseRun();
+  if (pipeline) {
+    return {{"status", "done"}, {"steps", steps}};
+  }
+  Json result = steps.at(0);
+  if (steps.size() > 1) {
+    result["followed_by"] = Json(steps.begin() + 1, steps.end());
+  }
+  return result;
+}
+void Gui::releaseRun() {
+  {
+    const std::scoped_lock lock(mutex_);
+    running_ = false;
+    running_operation_.clear();
+    running_preview_ = nullptr;
+    running_preview_png_.clear();
+  }
+  idle_.notify_all();
+}
+
+std::vector<Gui::RunRequest> Gui::followUps(const Json& step) const {
+  std::vector<RunRequest> requests;
+  if (step.at("operation") != "material_meshes" || step.at("status") != "done" ||
+      !step.at("params").value("add_objects", true)) {
+    return requests;
+  }
+  // Each material mesh becomes an object at the pose of the segmented volume.
+  const std::string& owner = step.value("object", "");
+  const auto& objects = project().objects();
+  const auto object = std::ranges::find(objects, owner, &ProjectObject::id);
+  const std::filesystem::path dir = project().resolve({step.at("id").get<int>(), "meshes"});
+  for (const Json& mesh : step.at("summary").at("meshes")) {
+    Json params = {{"path", (dir / mesh.at("file").get<std::string>()).string()},
+                   {"object_name", mesh.at("name")},
+                   {"color", mesh.at("color")}};
+    if (object != objects.end()) {
+      params["pose"] = object->pose.matrix();
+    }
+    requests.push_back({"add_mesh", std::move(params)});
+  }
+  return requests;
+}
+
 Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progress) {
   if (!run.working) {
     throw std::logic_error("Operation '" + run.operation + "' was not prepared");
   }
   Project& working = *run.working;
-  const auto report = [this, &progress](double fraction) {
-    progress_ = fraction;
+  const auto report = [this, &progress, &run](double fraction) {
+    const double overall = run.offset + run.share * fraction;
+    progress_ = overall;
     if (progress) {
-      progress(fraction);
+      progress(overall);
     }
   };
-  const auto finish = [this, &working] {
-    {
-      const std::scoped_lock lock(mutex_);
-      // Views saved while the operation ran went to the project, not to the working copy.
-      working.adoptViews(*project_);
-      project_ = std::move(working);
-      running_ = false;
-      running_operation_.clear();
-      running_preview_ = nullptr;
-      running_preview_png_.clear();
-    }
-    idle_.notify_all();
+  const auto install = [this, &working] {
+    const std::scoped_lock lock(mutex_);
+    // Views saved while the operation ran went to the project, not to the working copy.
+    working.adoptViews(*project_);
+    project_ = std::move(working);
   };
   const auto preview = [this](const Json& summary, const std::vector<std::uint8_t>& png) {
     const std::scoped_lock lock(mutex_);
@@ -1649,11 +1960,31 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
     Json json = working.toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working.stepDir(step));
-    finish();
+    install();
+    run.working.reset();
     return json;
   } catch (...) {
-    finish();  // the failed step is part of the protocol
+    install();  // the failed step is part of the protocol
+    run.working.reset();
+    releaseRun();
     throw;
+  }
+}
+
+void Gui::checkAllowedPaths(const std::string& method, const Json& params) const {
+  if (allowed_roots_.empty() || !params.is_object()) {
+    return;
+  }
+  for (const GuiMethod& known : methods()) {
+    if (known.name != method || !known.parameters.contains("properties")) {
+      continue;
+    }
+    for (const auto& [key, schema] : known.parameters.at("properties").items()) {
+      if (schema.value("format", "") == "path" && params.contains(key) &&
+          params.at(key).is_string()) {
+        checkAllowedPath(params.at(key).get<std::string>());
+      }
+    }
   }
 }
 
@@ -1711,24 +2042,28 @@ Json Gui::call(const std::string& method, const Json& arguments,
   if (!params.is_object()) {
     throw std::invalid_argument("Parameters must be an object");
   }
-  if (!allowed_roots_.empty()) {
-    for (const GuiMethod& known : methods()) {
-      if (known.name != method || !known.parameters.contains("properties")) {
-        continue;
-      }
-      for (const auto& [key, schema] : known.parameters.at("properties").items()) {
-        if (schema.value("format", "") == "path" && params.contains(key) &&
-            params.at(key).is_string()) {
-          checkAllowedPath(params.at(key).get<std::string>());
-        }
-      }
-    }
-  }
+  checkAllowedPaths(method, params);
   if (method.starts_with(kRunPrefix)) {
     const std::string operation = method.substr(std::string(kRunPrefix).size());
     if (registry_.find(operation)) {
       return runOperation(operation, params, progress);
     }
+  }
+  if (method == "pipeline") {
+    const std::vector<GuiMethod> known = methods();
+    const Json checked = validateParameters(
+        std::ranges::find(known, std::string("pipeline"), &GuiMethod::name)->parameters, params);
+    std::vector<RunRequest> requests;
+    for (const Json& step : checked.at("steps")) {
+      RunRequest request{step.at("operation").get<std::string>(),
+                         step.value("params", Json::object())};
+      if (!registry_.find(request.operation)) {
+        throw std::invalid_argument("Unknown operation '" + request.operation + "'");
+      }
+      checkAllowedPaths(std::string(kRunPrefix) + request.operation, request.params);
+      requests.push_back(std::move(request));
+    }
+    return runSequence(std::move(requests), checked.at("background").get<bool>(), true, progress);
   }
   if (method == "object_add") {
     if (!params.contains("path") || !params.at("path").is_string()) {
@@ -1780,10 +2115,12 @@ Json Gui::call(const std::string& method, const Json& arguments,
     if (method == "project_create") {
       const std::filesystem::path path = checked.at("path").get<std::string>();
       project_ = Project::create(path, checked.value("name", path.filename().string()));
+      rememberProject();
       return status();
     }
     if (method == "project_open") {
       project_ = Project::open(checked.at("path").get<std::string>());
+      rememberProject();
       return status();
     }
     if (method == "project_status") {
@@ -1797,6 +2134,7 @@ Json Gui::call(const std::string& method, const Json& arguments,
     }
     if (method == "project_save_as") {
       project().saveAs(checked.at("path").get<std::string>());
+      rememberProject();
       return status();
     }
     if (method == "undo" || method == "redo") {

@@ -284,7 +284,8 @@ bool isTiffInput(const Options& options) {
 /// Float TIFF inputs, to report their clipped values after the run.
 using FloatInputs = std::vector<const voxelsieve::TiffStackSource*>;
 
-/// A DICOM stack: a directory of slices, or the first volume of a gzipped XML project.
+/// A DICOM stack: a directory or ZIP archive of slices, or the first volume of a gzipped XML
+/// project.
 std::unique_ptr<voxelsieve::VolumeSource> openDicom(const Options& options) {
   voxelsieve::DicomStackOptions dicom;
   dicom.voxel_size = options.voxel_size;
@@ -311,7 +312,9 @@ std::unique_ptr<voxelsieve::VolumeSource> openDicom(const Options& options) {
   }
   if (options.slice_thickness_mm) {
     dicom.voxel_size = withThickness(source->voxelSize(), options);
-    source = std::make_unique<voxelsieve::DicomStackSource>(source->files(), dicom);
+    source = source->archive().empty()
+                 ? std::make_unique<voxelsieve::DicomStackSource>(source->files(), dicom)
+                 : std::make_unique<voxelsieve::DicomStackSource>(options.input, dicom);
   }
   const auto dims = source->dims();
   std::cout << "dicom stack        " << dims[2] << " slices of " << dims[0] << "x" << dims[1]
@@ -330,6 +333,7 @@ std::unique_ptr<voxelsieve::VolumeSource> openDicom(const Options& options) {
 
 bool isDicomInput(const Options& options) {
   return voxelsieve::isGzippedXmlFile(options.input) || voxelsieve::isDicomFile(options.input) ||
+         voxelsieve::isDicomArchive(options.input) ||
          (std::filesystem::is_directory(options.input) && voxelsieve::containsDicom(options.input));
 }
 

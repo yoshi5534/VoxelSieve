@@ -11,6 +11,7 @@
 #include <cmath>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -141,6 +142,154 @@ std::vector<float> estimateMaterialThresholds(const Dataset& dataset, float air_
   return multiOtsu(histogram, classes);
 }
 
+/// A Gaussian mixture fitted to a binned histogram, in bin units.
+struct Mixture {
+  std::vector<MixtureComponent> components;  // ascending means
+  double bic = 0.0;
+};
+
+double gaussian(double x, const MixtureComponent& c) {
+  constexpr double kInvSqrt2Pi = 0.3989422804014327;
+  const double d = (x - c.mean) / c.sigma;
+  return c.weight * kInvSqrt2Pi / c.sigma * std::exp(-0.5 * d * d);
+}
+
+/// Means at the middles of `k` equal shares of the voxels of `counts`; empty when there are too
+/// few bins.
+std::vector<double> quantileMeans(const std::vector<double>& counts, int k) {
+  const auto n = static_cast<std::size_t>(k);
+  const double total = std::accumulate(counts.begin(), counts.end(), 0.0);
+  std::vector<double> means;
+  if (total <= 0.0 || counts.size() < 3 * n) {
+    return means;
+  }
+  double seen = 0.0;
+  std::size_t start = 0;
+  for (std::size_t b = 0; b < counts.size() && means.size() < n; ++b) {
+    seen += counts[b];
+    if (seen >= total * static_cast<double>(means.size() + 1) / static_cast<double>(n) ||
+        b + 1 == counts.size()) {
+      means.push_back(0.5 * static_cast<double>(start + b));
+      start = b + 1;
+    }
+  }
+  if (means.size() < n) {
+    means.clear();
+  }
+  return means;
+}
+
+/// Expectation maximisation of a mixture of Gaussians on `counts` (one count per bin, bin centres
+/// at 0, 1, ...), started at `means`. Real histograms are not sums of Gaussians and hold millions
+/// of voxels, which would make every small deviation significant; the information criterion
+/// therefore weighs the fit as if it came from kEffectiveVoxels voxels, so that only a shoulder or
+/// tail of a few per cent of the voxels earns its own class. With `checked`, nullopt when a
+/// component holds less than kMinWeight of the voxels or does not stand apart from its neighbour
+/// (means less than a standard deviation apart).
+std::optional<Mixture> fitMixture(const std::vector<double>& counts,
+                                  const std::vector<double>& means, bool checked) {
+  constexpr double kEffectiveVoxels = 1e4;
+  constexpr double kMinWeight = 0.01;
+  constexpr int kIterations = 300;
+  constexpr double kMinSigma = 0.5;
+  const std::size_t bins = counts.size();
+  const double total = std::accumulate(counts.begin(), counts.end(), 0.0);
+  const std::size_t n = means.size();
+  if (total <= 0.0 || n == 0) {
+    return std::nullopt;
+  }
+  std::vector<MixtureComponent> c(n);
+  for (std::size_t j = 0; j < n; ++j) {
+    // Spread: half the distance to the nearer neighbour.
+    double gap = static_cast<double>(bins) / static_cast<double>(n);
+    if (j > 0) {
+      gap = std::min(gap, means[j] - means[j - 1]);
+    }
+    if (j + 1 < n) {
+      gap = std::min(gap, means[j + 1] - means[j]);
+    }
+    c[j] = {means[j], std::max(1.0, 0.5 * gap), 1.0 / static_cast<double>(n)};
+  }
+  std::vector<double> responsibility(bins * n);
+  double log_likelihood = 0.0;
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    log_likelihood = 0.0;
+    for (std::size_t b = 0; b < bins; ++b) {
+      double sum = 0.0;
+      for (std::size_t j = 0; j < n; ++j) {
+        responsibility[b * n + j] = gaussian(static_cast<double>(b), c[j]);
+        sum += responsibility[b * n + j];
+      }
+      sum = std::max(sum, 1e-300);
+      for (std::size_t j = 0; j < n; ++j) {
+        responsibility[b * n + j] /= sum;
+      }
+      log_likelihood += counts[b] * std::log(sum);
+    }
+    for (std::size_t j = 0; j < n; ++j) {
+      double mass = 0.0;
+      double first = 0.0;
+      for (std::size_t b = 0; b < bins; ++b) {
+        const double r = counts[b] * responsibility[b * n + j];
+        mass += r;
+        first += r * static_cast<double>(b);
+      }
+      if (mass <= 0.0) {
+        return std::nullopt;
+      }
+      const double mean = first / mass;
+      double second = 0.0;
+      for (std::size_t b = 0; b < bins; ++b) {
+        const double d = static_cast<double>(b) - mean;
+        second += counts[b] * responsibility[b * n + j] * d * d;
+      }
+      c[j] = {mean, std::max(kMinSigma, std::sqrt(second / mass)), mass / total};
+    }
+  }
+  std::ranges::sort(c, std::less<>(), &MixtureComponent::mean);
+  for (std::size_t j = 0; checked && j < n; ++j) {
+    if (c[j].weight < kMinWeight ||
+        (j > 0 && c[j].mean - c[j - 1].mean < std::max(c[j].sigma, c[j - 1].sigma))) {
+      return std::nullopt;
+    }
+  }
+  const double parameters = 3.0 * static_cast<double>(n) - 1.0;
+  return Mixture{std::move(c), -2.0 * log_likelihood * kEffectiveVoxels / total +
+                                   parameters * std::log(kEffectiveVoxels)};
+}
+
+/// Where two neighbouring components are equally likely, between their means.
+double mixtureBoundary(const MixtureComponent& low, const MixtureComponent& high) {
+  double a = low.mean;
+  double b = high.mean;
+  for (int i = 0; i < 60; ++i) {
+    const double m = 0.5 * (a + b);
+    (gaussian(m, low) > gaussian(m, high) ? a : b) = m;
+  }
+  return 0.5 * (a + b);
+}
+
+/// Share of the voxels whose most likely component has a probability below 90 %.
+double ambiguousFraction(const std::vector<double>& counts, const Mixture& fit) {
+  constexpr double kSure = 0.9;
+  double total = 0.0;
+  double ambiguous = 0.0;
+  for (std::size_t b = 0; b < counts.size(); ++b) {
+    double sum = 0.0;
+    double most = 0.0;
+    for (const MixtureComponent& c : fit.components) {
+      const double p = gaussian(static_cast<double>(b), c);
+      sum += p;
+      most = std::max(most, p);
+    }
+    total += counts[b];
+    if (sum > 0.0 && most < kSure * sum) {
+      ambiguous += counts[b];
+    }
+  }
+  return total > 0.0 ? ambiguous / total : 0.0;
+}
+
 }  // namespace
 
 std::vector<std::uint64_t> datasetHistogram(const Dataset& dataset, int level) {
@@ -258,6 +407,68 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
           grey(static_cast<double>(std::min_element(begin, end) - smooth.begin())));
     }
   }
+  suggestion.clear_peaks = static_cast<int>(peaks.size());
+
+  // Shoulders and tails: Gaussian mixtures with 1 to max_materials components, the one with the
+  // lowest Bayesian information criterion. Classes from it replace the peaks when it finds more.
+  // The fit starts after the tail of the air peak, where the histogram stops falling.
+  std::size_t tail = 0;
+  while (tail + 1 < bins && smooth[tail + 1] < smooth[tail]) {
+    ++tail;
+  }
+  if (tail + 1 == bins) {
+    tail = 0;
+  }
+  const std::vector<double> fitted(counts.begin() + static_cast<std::ptrdiff_t>(tail),
+                                   counts.end());
+  std::vector<Mixture> fits;
+  std::size_t best = 0;
+  for (int k = 1; k <= max_materials; ++k) {
+    const std::vector<double> means = quantileMeans(fitted, k);
+    std::optional<Mixture> fit = fitMixture(fitted, means, true);
+    if (!fit) {
+      break;
+    }
+    fits.push_back(std::move(*fit));
+    if (fits.back().bic < fits[best].bic) {
+      best = fits.size() - 1;
+    }
+  }
+  const auto offset = static_cast<double>(tail);
+  const auto to_grey = [&](const MixtureComponent& c) {
+    return MixtureComponent{static_cast<double>(grey(c.mean + offset)), c.sigma * width, c.weight};
+  };
+  const auto use = [&](const Mixture& fit) {
+    suggestion.peaks.clear();
+    suggestion.thresholds.clear();
+    for (std::size_t c = 0; c < fit.components.size(); ++c) {
+      suggestion.peaks.push_back(grey(fit.components[c].mean + offset));
+      if (c > 0) {
+        suggestion.thresholds.push_back(
+            grey(mixtureBoundary(fit.components[c - 1], fit.components[c]) + offset));
+      }
+    }
+  };
+  if (fits.empty()) {
+    return suggestion;
+  }
+  if (fits[best].components.size() > peaks.size()) {
+    use(fits[best]);
+  }
+  // A mixture with one component per suggested class measures how ambiguous the voxels are.
+  Mixture chosen = fits[best];
+  if (chosen.components.size() != std::max<std::size_t>(1, suggestion.peaks.size())) {
+    std::vector<double> means(peaks.size());
+    std::ranges::transform(peaks, means.begin(), [&](const Peak& peak) {
+      return static_cast<double>(peak.bin) - offset;
+    });
+    if (means.empty()) {
+      means = quantileMeans(fitted, 1);
+    }
+    chosen = fitMixture(fitted, means, false).value_or(fits.front());
+  }
+  std::ranges::transform(chosen.components, std::back_inserter(suggestion.components), to_grey);
+  suggestion.ambiguous_fraction = ambiguousFraction(fitted, chosen);
   return suggestion;
 }
 

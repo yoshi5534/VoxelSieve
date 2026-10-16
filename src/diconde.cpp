@@ -3,6 +3,7 @@
 // DCMTK's configuration header comes before any of its other headers.
 // clang-format off
 #include <dcmtk/config/osconfig.h>
+#include <dcmtk/dcmdata/dcistrmb.h>
 #include <dcmtk/dcmdata/dctk.h>
 // clang-format on
 #include <tbb/parallel_for.h>
@@ -577,15 +578,29 @@ void applyInspectionOrder(const Json& order, DicondeWriteOptions& options,
 
 DicondeInfo readDicondeInfo(const DicomStackSource& source) {
   const auto& files = source.files();
-  const auto load = [](const std::filesystem::path& path, DcmFileFormat& file) {
-    check(file.loadFileUntilTag(path.string().c_str(), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                                ERM_autoDetect, DCM_PixelData),
-          "reading " + path.string());
+  const auto load = [&source, &files](std::size_t index, DcmFileFormat& file) {
+    const std::filesystem::path& path = files[index];
+    if (source.archive().empty()) {
+      check(file.loadFileUntilTag(path.string().c_str(), EXS_Unknown, EGL_noChange,
+                                  DCM_MaxReadLength, ERM_autoDetect, DCM_PixelData),
+            "reading " + path.string());
+      return;
+    }
+    // A file inside a ZIP archive, read from memory in full.
+    const std::vector<std::uint8_t> bytes = source.fileContent(index);
+    DcmInputBufferStream stream;
+    stream.setBuffer(bytes.data(), static_cast<offile_off_t>(bytes.size()));
+    stream.setEos();
+    file.transferInit();
+    const OFCondition status =
+        file.readUntilTag(stream, EXS_Unknown, EGL_noChange, 0xFFFFFFFFU, DCM_PixelData);
+    file.transferEnd();
+    check(status, "reading " + path.string());
   };
   DicondeInfo info;
   {
     DcmFileFormat file;
-    load(files.front(), file);
+    load(0, file);
     DcmDataset& data = *file.getDataset();
     DicondeComponent& component = info.component;
     component.name = getString(data, DCM_PatientName);
@@ -630,7 +645,7 @@ DicondeInfo readDicondeInfo(const DicomStackSource& source) {
   std::vector<std::vector<DicondeIndication>> per_file(files.size());
   tbb::parallel_for(std::size_t{0}, files.size(), [&](std::size_t i) {
     DcmFileFormat file;
-    load(files[i], file);
+    load(i, file);
     per_file[i] = readIndications(*file.getDataset());
   });
   for (auto& indications : per_file) {
