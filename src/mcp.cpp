@@ -34,7 +34,10 @@ constexpr std::uintmax_t kMaxImageResourceBytes = 8U << 20U;
 constexpr const char* kInstructions =
     "VoxelSieve analyses industrial CT scans. Work happens in a project: create or open one, then "
     "run operations as steps. Typical order: run_import_raw (or run_open_dataset for an existing "
-    "dataset), run_porosity, run_report with the inspection order. Inputs are taken from the "
+    "dataset), run_porosity, run_report with the inspection order. A first article inspection "
+    "against a drawing: run_surface, run_compare_cad, cad_features to find the nominal "
+    "elements, run_measure with the inspection plan, run_first_article_report. Inputs are taken "
+    "from the "
     "latest step with the right output type unless given. project_status shows the step "
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "
     "with read_file, use dataset_info and the summaries of the steps. Imports and analyses of "
@@ -50,11 +53,11 @@ constexpr std::array<std::string_view, 8> kHiddenAnalysisMethods = {
     "view_rename", "view_delete", "list_operations", "object_add"};
 
 /// Methods that change nothing: no project, no file, no state of the GUI.
-constexpr std::array<std::string_view, 16> kReadOnlyMethods = {
-    "project_status",  "objects",      "results",        "step_telemetry",
-    "list_operations", "dataset_info", "histogram",      "list_files",
-    "view_slice",      "view_objects", "view_list",      "view_image",
-    "browse",          "read_file",    "import_preview", "wait"};
+constexpr std::array<std::string_view, 17> kReadOnlyMethods = {
+    "project_status", "objects",     "results",    "step_telemetry", "list_operations",
+    "dataset_info",   "histogram",   "list_files", "view_slice",     "view_objects",
+    "view_list",      "view_image",  "browse",     "read_file",      "import_preview",
+    "wait",           "cad_features"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
 constexpr std::array<std::string_view, 1> kDestructiveMethods = {"view_delete"};
@@ -64,8 +67,8 @@ constexpr std::array<std::string_view, 4> kIdempotentMethods = {"project_open", 
                                                                 "view_set", "cancel"};
 
 /// Output types whose files are resources: results small enough to read, unlike datasets.
-constexpr std::array<std::string_view, 4> kResourceOutputTypes = {"report", "porosity",
-                                                                  "comparison", "pose"};
+constexpr std::array<std::string_view, 5> kResourceOutputTypes = {
+    "report", "porosity", "comparison", "pose", "measurement"};
 
 template <std::size_t N>
 bool contains(const std::array<std::string_view, N>& names, std::string_view name) {
@@ -159,6 +162,47 @@ const std::vector<Prompt>& prompts() {
        "4. Check the alignment with view_objects and report the deviations: share within "
        "tolerance, largest deviations and where they are.\n"
        "Quote the numbers of the comparison step; do not estimate them."},
+      {"first_article_inspection",
+       "First article inspection of a CT scan against its drawing: characteristics measured on "
+       "the scan with datums and tolerances, and the first article report.",
+       Json::array(
+           {{{"name", "scan"},
+             {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},
+             {"required", true}},
+            {{"name", "cad"},
+             {"description", "CAD model as STL in mm, in the coordinates of the drawing"},
+             {"required", true}},
+            {{"name", "plan"},
+             {"description",
+              "Inspection plan (JSON): elements, datums and characteristics with tolerances; "
+              "or the characteristics of the drawing in words"},
+             {"required", false}},
+            {{"name", "order"},
+             {"description",
+              "Order data (JSON): supplier, customer, part, drawing revision, reason"},
+             {"required", false}},
+            {{"name", "project"},
+             {"description", "Project directory; default: next to the scan"},
+             {"required", false}}}),
+       "Make the first article inspection report of the CT scan {scan} against the CAD model "
+       "{cad} with VoxelSieve.\n"
+       "1. Open or create the project {project} (next to the scan if none is given) and import "
+       "the scan; extract the surface with run_surface.\n"
+       "2. Align the CAD model to the scan with run_compare_cad (cad_path {cad}) and check the "
+       "alignment with view_objects.\n"
+       "3. Inspection plan: {plan}. If there is none or it only lists the characteristics in "
+       "words, call cad_features on {cad} and build the plan (see the description of "
+       "run_measure): one element per feature with its 'at' point, the datums of the drawing in "
+       "order (alignment.datums), and every characteristic with its balloon number, nominal "
+       "value and tolerance. Never invent tolerances: leave characteristics without a "
+       "tolerance unrated and say so.\n"
+       "4. Run run_measure with the plan. Elements that could not be measured have a message; "
+       "fix their 'at' point or search_mm and measure again.\n"
+       "5. Run run_first_article_report with the order {order}; list the fields reported as "
+       "missing so they can be filled in.\n"
+       "6. Summarise the decision and every characteristic out of tolerance with nominal, "
+       "actual value and deviation, quoting the measurement, not estimates. The report from "
+       "VoxelSieve is the result; the final approval belongs to the customer."},
       {"first_look", "A first look at a CT scan: size, voxel size, grey values and three slices.",
        Json::array({{{"name", "scan"},
                      {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},

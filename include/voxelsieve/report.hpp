@@ -103,7 +103,23 @@ void addComparison(nlohmann::json& data, const std::filesystem::path& dir,
 /// sections {{^name}}...{{/name}}, {{.}} for the current element and {{! comments }}.
 [[nodiscard]] std::string renderTemplate(std::string_view text, const nlohmann::json& data);
 
-/// The built-in report template (German, A4, print to PDF from the browser).
+/// The built-in report template (A4, print to PDF from the browser).
 [[nodiscard]] std::string_view defaultReportTemplate();
+
+/// Everything a first article inspection report template can use (ADR 0027): the order (supplier,
+/// customer, part, submission, approval) completed with "not given" for missing mandatory fields,
+/// the characteristics of the measurement written by writeMeasurement in `measurement_dir`
+/// formatted for print, the measured elements, the alignment, the decision (conforming, not
+/// conforming, incomplete) and the balloon views (images.measurement_1, images.measurement_2).
+/// `porosity` is null or the reportData of a porosity analysis (with addPartImages): its results,
+/// its evaluation against the acceptance limits, which counts for the decision, and its views go
+/// into data.porosity and images. `warnings` receives one line per missing mandatory field.
+[[nodiscard]] nlohmann::json firstArticleData(const nlohmann::json& order,
+                                              const std::filesystem::path& measurement_dir,
+                                              const nlohmann::json& porosity = nullptr,
+                                              std::vector<std::string>* warnings = nullptr);
+
+/// The built-in first article inspection report template (A4).
+[[nodiscard]] std::string_view defaultFirstArticleTemplate();
 
 }  // namespace voxelsieve

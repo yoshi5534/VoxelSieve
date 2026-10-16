@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **First article inspection report**: the new operation `measure` measures the characteristics
+  of a drawing on the scan (sizes, distances, angles, form, orientation, position and profile
+  with their tolerances) on elements found on the CAD model, aligned on the datums of the drawing
+  (3-2-1, RPS) or by best fit. `first_article_report` writes the report with cover sheet,
+  characteristic list, ballooned views and decision; `cad_features` lists the planes, cylinders
+  and spheres of a CAD model with a picture, and the MCP prompt `first_article_inspection` walks
+  an AI assistant through it (ADR 0027).
+
 - **Histogram with a suggested number of materials**: the new tool `histogram` shows the grey
   values of a dataset as numbers and a picture, with the air threshold and one material per
   peak above it. The material segmentation takes `materials` 0 to use that suggestion, with the

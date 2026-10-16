@@ -380,6 +380,31 @@ The layout is a template: `vs-report --print-template > my_template.html` prints
 `{{#list}}...{{/list}}`, `{{^name}}...{{/name}}`); `report.json` in the output shows all available
 data. See `docs/adr/0007-inspection-report.md`.
 
+## Dimensional measurement and first article report
+
+The operation `measure` measures the characteristics of a drawing on the scanned surface, with the
+CAD model placed by a nominal-actual comparison (`compare_cad` or `compare_objects`). An
+inspection plan in the coordinates of the CAD model (`examples/first_article_plan.json`) names
+the elements by a point on them: planes, cylinders, spheres and points are found on the CAD
+model, fitted to the scanned surface by least squares, and the part is aligned on its datums
+(3-2-1, RPS) or kept at the best fit. Characteristics are sizes (diameter, radius, distance,
+angle, coordinate), form (flatness, cylindricity, sphericity), orientation (parallelism,
+perpendicularity), position, profile and the deviation of a point, each with its balloon number,
+nominal value and tolerance. The GUI method `cad_features` lists the regular geometry of a CAD
+model with a picture, so that a plan can be written without a CAD system.
+
+`first_article_report` writes the first article inspection report: a cover sheet (supplier,
+customer, part, drawing and revision, reason for the submission, from
+`examples/first_article_order.json`), the decision, the list of characteristics with nominal
+value, tolerance, actual value and result, views of the CAD model with the characteristic numbers
+as balloons in red and green, the measured elements and, when the project has them, the
+nominal-actual comparison and the porosity with its acceptance limits. Like the test report it is
+one HTML file from a replaceable template (`vs-report --print-first-article-template`), plus
+`report.json` and `characteristics.csv`. Fits are least squares, not minimum zone; see
+`docs/adr/0027-dimensional-measurement.md` for the method and its limits.
+
+![First article inspection report of the sample hub: characteristics and ballooned views](docs/images/first-article-report.png)
+
 ## Projects, operations and plugins
 
 The library records work as a project: a directory with `project.json` and one directory per step.
@@ -526,7 +551,8 @@ Imports and analyses of large scans can take longer than a client waits for one 
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
 `objects`, `results`, `object_select`, `dataset_info`, `histogram` (grey values with the
-threshold and a suggested number of materials), `view_slice` (a slice as an image, with pores and
+threshold and a suggested number of materials), `cad_features` (planes, cylinders and spheres of
+a CAD model with a picture, for inspection plans), `view_slice` (a slice as an image, with pores and
 zones), `view_objects` (also in the colours of the materials), `import_preview`, `step_telemetry`, `list_files`, `read_file`
 (text files, and PNG pictures as images), `browse`, `wait`, `cancel` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). To keep the choice
@@ -539,12 +565,13 @@ schemas come from the operations, errors come back as tool errors with the reaso
 operations report progress.
 
 Resources: the result files of the project's steps (`report.html`, `report.json`,
-`porosity.json`, the projection pictures, comparison results) are listed as
+`porosity.json`, the projection pictures, comparison and measurement results) are listed as
 `voxelsieve://step/<id>/<output>/<file>`, so a client can attach them to the conversation.
 Datasets are never sent over the protocol, only their metadata and these results.
 
 Prompts: `porosity_check` (porosity against an inspection order, with report),
-`compare_with_cad` (nominal-actual comparison) and `first_look` (size, voxel size, three slices)
+`compare_with_cad` (nominal-actual comparison), `first_article_inspection` (characteristics of
+a drawing measured on the scan, with the first article report) and `first_look` (size, voxel size, three slices)
 walk a model through the usual inspections.
 
 ## Contributing

@@ -1,0 +1,15 @@
+{
+  "report": {"number": "FAI-2026-001", "date": "2026-10-16"},
+  "supplier": {"name": "Example Foundry Ltd.", "address": "1 Casting Road, Example Town",
+               "code": "S-1234"},
+  "customer": {"name": "Example Vehicles Inc.", "plant": "Plant 2"},
+  "order": {"number": "PO-45678", "test_date": "2026-10-15"},
+  "part": {"material": "EN AC-AlSi7Mg0.3", "serial": "Batch 2026-41, part 1",
+           "process": "Sand casting, machined"},
+  "submission": {"reason": "New part", "quantity": 1, "delivery_note": "DN-9876"},
+  "scan": {"device": "Example CT system", "voltage_kv": 220, "current_ua": 300},
+  "uncertainty": "Not determined for this part; the voxel size limits the resolution.",
+  "approval": {"inspector": "A. Inspector", "approver": "B. Approver",
+               "approver_role": "Head of quality"},
+  "notes": "Measured on the CT scan of the delivered first article."
+}

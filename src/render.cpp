@@ -12,6 +12,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "detail/png.hpp"
@@ -36,6 +37,109 @@ Vec normalized(const Vec& a) {
 Vec toVec(const std::array<float, 3>& p) { return {p[0], p[1], p[2]}; }
 Vec toColor(const std::array<std::uint8_t, 3>& c) {
   return {c[0] / 255.0, c[1] / 255.0, c[2] / 255.0};
+}
+
+/// 5x7 pixel font for labels: one row per entry, the highest of the five bits on the left.
+using Glyph = std::array<std::uint8_t, 7>;
+
+Glyph glyph(char c) {
+  static constexpr std::array<Glyph, 10> kDigits{{
+      {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E},  // 0
+      {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},  // 1
+      {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},  // 2
+      {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},  // 3
+      {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},  // 4
+      {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},  // 5
+      {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},  // 6
+      {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},  // 7
+      {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},  // 8
+      {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},  // 9
+  }};
+  static constexpr std::array<Glyph, 26> kLetters{{
+      {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // A
+      {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},  // B
+      {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},  // C
+      {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C},  // D
+      {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F},  // E
+      {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10},  // F
+      {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F},  // G
+      {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // H
+      {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E},  // I
+      {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},  // J
+      {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11},  // K
+      {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},  // L
+      {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11},  // M
+      {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11},  // N
+      {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // O
+      {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10},  // P
+      {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D},  // Q
+      {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // R
+      {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E},  // S
+      {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},  // T
+      {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // U
+      {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},  // V
+      {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A},  // W
+      {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},  // X
+      {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04},  // Y
+      {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},  // Z
+  }};
+  if (c >= '0' && c <= '9') {
+    return kDigits[static_cast<std::size_t>(c - '0')];
+  }
+  if (c >= 'a' && c <= 'z') {
+    c = static_cast<char>(c - 'a' + 'A');
+  }
+  if (c >= 'A' && c <= 'Z') {
+    return kLetters[static_cast<std::size_t>(c - 'A')];
+  }
+  if (c == '.') {
+    return {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C};
+  }
+  if (c == '-') {
+    return {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
+  }
+  return {};
+}
+
+/// Blends `color` with coverage `alpha` into pixel (x, y) when it lies in the image.
+void blendPixel(RenderImage& image, int x, int y, const std::array<std::uint8_t, 3>& color,
+                double alpha) {
+  if (x < 0 || y < 0 || x >= image.width || y >= image.height || alpha <= 0.0) {
+    return;
+  }
+  const auto i = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width) +
+                  static_cast<std::size_t>(x)) *
+                 static_cast<std::size_t>(image.channels);
+  const double a = std::min(alpha, 1.0);
+  for (std::size_t c = 0; c < 3; ++c) {
+    image.pixels[i + c] = static_cast<std::uint8_t>(
+        std::lround((1.0 - a) * image.pixels[i + c] + a * static_cast<double>(color[c])));
+  }
+  if (image.channels == 4) {
+    image.pixels[i + 3] = static_cast<std::uint8_t>(
+        std::lround(std::max(static_cast<double>(image.pixels[i + 3]), 255.0 * a)));
+  }
+}
+
+/// Anti-aliased line of the given width.
+void drawLine(RenderImage& image, double x0, double y0, double x1, double y1, double width,
+              const std::array<std::uint8_t, 3>& color) {
+  const double dx = x1 - x0;
+  const double dy = y1 - y0;
+  const double length2 = dx * dx + dy * dy;
+  const int lo_x = static_cast<int>(std::floor(std::min(x0, x1) - width));
+  const int hi_x = static_cast<int>(std::ceil(std::max(x0, x1) + width));
+  const int lo_y = static_cast<int>(std::floor(std::min(y0, y1) - width));
+  const int hi_y = static_cast<int>(std::ceil(std::max(y0, y1) + width));
+  for (int y = lo_y; y <= hi_y; ++y) {
+    for (int x = lo_x; x <= hi_x; ++x) {
+      const double px = x + 0.5 - x0;
+      const double py = y + 0.5 - y0;
+      const double t = length2 > 0.0 ? std::clamp((px * dx + py * dy) / length2, 0.0, 1.0) : 0.0;
+      const double d = std::hypot(px - t * dx, py - t * dy);
+      blendPixel(image, x, y, color, 0.5 * width + 0.5 - d);
+    }
+  }
 }
 
 /// One layer of samples: nearest (or farthest) depth with the normal and colour there.
@@ -460,6 +564,75 @@ void writePng(const RenderImage& image, const std::filesystem::path& file) {
   if (!out) {
     throw std::runtime_error("Cannot write " + file.string());
   }
+}
+
+void drawBalloon(RenderImage& image, double x, double y, double anchor_x, double anchor_y,
+                 const std::string& text, int scale) {
+  constexpr std::array<std::uint8_t, 3> kInk{29, 29, 31};
+  constexpr std::array<std::uint8_t, 3> kPaper{255, 255, 255};
+  const int s = std::max(scale, 1);
+  const double glyph_w = 6.0 * s;  // 5 pixels and a gap
+  const double text_w = glyph_w * static_cast<double>(text.size()) - s;
+  const double text_h = 7.0 * s;
+  const double radius = 0.5 * std::max(text_h, text_w) + 2.5 * s;
+  if (std::hypot(anchor_x - x, anchor_y - y) > radius) {
+    drawLine(image, x, y, anchor_x, anchor_y, 0.6 * s, kInk);
+    // A dot at the anchor.
+    for (int py = static_cast<int>(anchor_y - 2 * s); py <= static_cast<int>(anchor_y + 2 * s);
+         ++py) {
+      for (int px = static_cast<int>(anchor_x - 2 * s); px <= static_cast<int>(anchor_x + 2 * s);
+           ++px) {
+        blendPixel(image, px, py, kInk,
+                   1.5 * s + 0.5 - std::hypot(px + 0.5 - anchor_x, py + 0.5 - anchor_y));
+      }
+    }
+  }
+  // Circle with an outline, wide enough for the text.
+  const double half_w = std::max(radius, 0.5 * text_w + 3.0 * s);
+  const auto inside = [&](double px, double py) {
+    // Rounded box: a circle stretched horizontally for long labels.
+    const double ex = std::max(std::abs(px - x) - (half_w - radius), 0.0);
+    return std::hypot(ex, py - y);
+  };
+  for (int py = static_cast<int>(y - radius - 2); py <= static_cast<int>(y + radius + 2); ++py) {
+    for (int px = static_cast<int>(x - half_w - 2); px <= static_cast<int>(x + half_w + 2); ++px) {
+      const double d = inside(px + 0.5, py + 0.5);
+      blendPixel(image, px, py, kInk, radius + 0.5 - d);
+      blendPixel(image, px, py, kPaper, radius - 0.6 * s + 0.5 - d);
+    }
+  }
+  const double left = x - 0.5 * text_w;
+  const double top = y - 0.5 * text_h;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const Glyph g = glyph(text[i]);
+    for (int row = 0; row < 7; ++row) {
+      for (int col = 0; col < 5; ++col) {
+        if ((g[static_cast<std::size_t>(row)] >> (4 - col) & 1U) == 0U) {
+          continue;
+        }
+        const int x0 =
+            static_cast<int>(std::lround(left + glyph_w * static_cast<double>(i))) + col * s;
+        const int y0 = static_cast<int>(std::lround(top)) + row * s;
+        for (int dy = 0; dy < s; ++dy) {
+          for (int dx = 0; dx < s; ++dx) {
+            blendPixel(image, x0 + dx, y0 + dy, kInk, 1.0);
+          }
+        }
+      }
+    }
+  }
+}
+
+std::vector<std::array<double, 2>> projectToImage(const RenderScene& scene, const RenderView& view,
+                                                  std::span<const std::array<double, 3>> points) {
+  const Camera camera = makeCamera(scene, view, view.width, view.height);
+  std::vector<std::array<double, 2>> out;
+  out.reserve(points.size());
+  for (const auto& p : points) {
+    const Vec q = camera.project(p);
+    out.push_back({q[0], q[1]});
+  }
+  return out;
 }
 
 }  // namespace voxelsieve

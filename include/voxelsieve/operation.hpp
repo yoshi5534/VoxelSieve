@@ -24,7 +24,8 @@ inline constexpr const char* kMaterials = "materials";    // material volume (AD
 inline constexpr const char* kMaterialMeshes = "material_meshes";  // one STL in mm per material
 inline constexpr const char* kMesh = "mesh";  // triangle mesh as STL in mm (ADR 0018)
 inline constexpr const char* kPose = "pose";  // directory with pose.json: objects moved (ADR 0018)
-inline constexpr const char* kDiconde = "diconde";  // DICONDE series of a scan (ADR 0024)
+inline constexpr const char* kDiconde = "diconde";          // DICONDE series of a scan (ADR 0024)
+inline constexpr const char* kMeasurement = "measurement";  // measured characteristics (ADR 0027)
 }  // namespace artifact
 
 struct PortInfo {
