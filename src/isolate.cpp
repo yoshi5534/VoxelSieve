@@ -224,7 +224,9 @@ IsolateInfo isolatePart(const Dataset& dataset, const std::filesystem::path& dir
     const std::int64_t erosion = (options.separate_voxels + cells.size - 1) / cells.size;
     std::vector<std::uint16_t> next(marks.size(), 0);
     for (auto& mark : marks) {
-      mark |= (mark & kMaterial) != 0 ? kCore : 0;
+      if ((mark & kMaterial) != 0) {
+        mark |= kCore;
+      }
     }
     for (std::int64_t step = 0; step < erosion; ++step) {
       tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
