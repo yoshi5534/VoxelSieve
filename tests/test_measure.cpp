@@ -140,11 +140,13 @@ TEST(MeasureObjects, MeasuresEnclosedAirAndFilters) {
 
   const auto file = std::filesystem::temp_directory_path() / "voxelsieve_measure.csv";
   writeObjectsCsv(file, voids);
-  std::ifstream in(file);
   std::string header;
   std::string row;
-  std::getline(in, header);
-  std::getline(in, row);
+  {
+    std::ifstream in(file);  // closed before the file is removed (Windows)
+    std::getline(in, header);
+    std::getline(in, row);
+  }
   EXPECT_TRUE(header.starts_with("object,material,material_name,voxels,volume_mm3"));
   EXPECT_TRUE(row.starts_with("1,0,\"Enclosed air\",384,"));
   std::filesystem::remove(file);
