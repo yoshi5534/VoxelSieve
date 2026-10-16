@@ -477,6 +477,16 @@ TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   EXPECT_NEAR(
       view.at("bounds_max_mm").at(0).get<double>() - view.at("bounds_min_mm").at(0).get<double>(),
       6.0, 0.3);
+  // Cut open along x: about half of the triangles stay, the cut ones clipped at the plane.
+  const Json cut = gui.call("view_objects", {{"materials", true},
+                                             {"width", 200},
+                                             {"height", 160},
+                                             {"cut_axis", "x"},
+                                             {"cut_keep", "above"}});
+  EXPECT_LT(cut.at("triangles_shown").get<double>(), 0.7 * view.at("triangles_shown").get<double>());
+  EXPECT_GT(cut.at("triangles_shown").get<double>(), 0.3 * view.at("triangles_shown").get<double>());
+  EXPECT_THROW((void)gui.call("view_objects", {{"cut_axis", "x"}, {"cut_mm", -1e6}}),
+               std::invalid_argument);
   EXPECT_THROW((void)gui.call("view_objects", {{"materials", true}, {"material_ids", {7}}}),
                std::invalid_argument);
 

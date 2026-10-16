@@ -90,6 +90,47 @@ std::vector<std::uint8_t> histogramPng(const std::vector<std::uint64_t>& counts,
   return detail::encodePng(kWidth, kHeight, 3, rgb);
 }
 
+/// Removes the part of `mesh` (and its vertex colours) on one side of the plane where coordinate
+/// `axis` is `position`: what lies above it when `keep_below`, else below. Triangles across the
+/// plane are clipped along it.
+void cutMesh(IndexedMesh& mesh, std::vector<std::array<std::uint8_t, 3>>& colors, std::size_t axis,
+             float position, bool keep_below) {
+  const auto inside = [&](const std::array<float, 3>& p) {
+    return keep_below ? p[axis] <= position : p[axis] >= position;
+  };
+  IndexedMesh out;
+  std::vector<std::array<std::uint8_t, 3>> out_colors;
+  out.points = mesh.points;
+  out_colors = colors;
+  for (const auto& t : mesh.triangles) {
+    // Sutherland-Hodgman against one plane: at most four corners, so one or two triangles.
+    std::vector<std::uint32_t> polygon;
+    for (std::size_t k = 0; k < 3; ++k) {
+      const std::uint32_t a = t[k];
+      const std::uint32_t b = t[(k + 1) % 3];
+      const bool a_in = inside(out.points[a]);
+      const bool b_in = inside(out.points[b]);
+      if (a_in) {
+        polygon.push_back(a);
+      }
+      if (a_in != b_in) {
+        const auto& p = out.points[a];
+        const auto& q = out.points[b];
+        const float f = (position - p[axis]) / (q[axis] - p[axis]);
+        out.points.push_back({p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1]),
+                              p[2] + f * (q[2] - p[2])});
+        out_colors.push_back(colors[a]);
+        polygon.push_back(static_cast<std::uint32_t>(out.points.size() - 1));
+      }
+    }
+    for (std::size_t k = 2; k < polygon.size(); ++k) {
+      out.triangles.push_back({polygon[0], polygon[k - 1], polygon[k]});
+    }
+  }
+  mesh = std::move(out);
+  colors = std::move(out_colors);
+}
+
 /// The files of a step output (a directory or a single file) with their sizes, at most
 /// kMaxListedFiles; empty when the output is gone.
 Json outputFiles(const std::filesystem::path& root) {
@@ -451,8 +492,8 @@ std::vector<GuiMethod> Gui::methods() const {
        "colour (listed in the result): meshes as their triangles, volumes as their extracted "
        "surface or, before a surface step, as the box they fill. With materials, volumes with a "
        "material segmentation show the surface of each material in its colour instead; choose "
-       "material_ids to look at inner materials alone. Shows whether an alignment worked; z is "
-       "up in the image.",
+       "material_ids to look at inner materials alone, and cut_axis to cut the scene open. Shows "
+       "whether an alignment worked; z is up in the image.",
        objectSchema(
            {{"objects",
              {{"type", "array"},
@@ -479,7 +520,20 @@ std::vector<GuiMethod> Gui::methods() const {
             {"material_ids",
              {{"type", "array"},
               {"items", {{"type", "integer"}, {"minimum", 1}}},
-              {"description", "With materials: the materials to show; default: all"}}}})},
+              {"description", "With materials: the materials to show; default: all"}}},
+            {"cut_axis",
+             {{"type", "string"},
+              {"enum", {"x", "y", "z"}},
+              {"description",
+               "Cuts the scene open with a plane normal to this global axis, to look inside"}}},
+            {"cut_mm",
+             {{"type", "number"},
+              {"description", "With cut_axis: where the plane lies; default: the scene's middle"}}},
+            {"cut_keep",
+             {{"type", "string"},
+              {"enum", {"below", "above"}},
+              {"default", "below"},
+              {"description", "With cut_axis: the side of the plane that stays"}}}})},
       {"step_telemetry",
        "Time and resources a step used: wall time, CPU time and busy cores, peak memory (own "
        "and mapped file pages), bytes read and written and page faults, per phase, with hints "
@@ -1210,8 +1264,16 @@ Json Gui::viewObjects(const Json& params) const {
                       {"color", color},
                       {"triangles", shape.mesh->triangles.size()}});
   }
+  if (params.contains("cut_axis")) {
+    const auto axis = static_cast<std::size_t>(params.at("cut_axis").get<std::string>()[0] - 'x');
+    const double position = params.contains("cut_mm") ? params.at("cut_mm").get<double>()
+                                                       : 0.5 * (low[axis] + high[axis]);
+    cutMesh(scene, colors, axis, static_cast<float>(position),
+            params.at("cut_keep").get<std::string>() == "below");
+  }
   if (scene.triangles.empty()) {
-    throw std::invalid_argument("Nothing to show: the chosen materials have no voxels");
+    throw std::invalid_argument(
+        "Nothing to show: the chosen materials have no voxels, or the cut leaves nothing");
   }
   RenderScene render_scene;
   render_scene.mesh = &scene;
@@ -1227,7 +1289,8 @@ Json Gui::viewObjects(const Json& params) const {
       detail::encodePng(static_cast<std::uint32_t>(image.width),
                         static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
   return {
-      {"objects", listed},      {"bounds_min_mm", low},
+      {"objects", listed},      {"triangles_shown", scene.triangles.size()},
+      {"bounds_min_mm", low},
       {"bounds_max_mm", high},  {"width", image.width},
       {"height", image.height}, {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
