@@ -63,6 +63,9 @@ struct ProjectObject {
   RigidTransform pose;
   /// The steps that moved the object, in order.
   std::vector<int> moved_by;
+  /// Colour chosen for the object as #rrggbb (the `color` parameter of the step that created it),
+  /// or empty for the colour of its place in the list.
+  std::string color;
 };
 
 /// The object a new step belongs to (ADR 0018).

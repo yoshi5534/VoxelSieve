@@ -39,7 +39,8 @@ constexpr const char* kInstructions =
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "
     "with read_file, use dataset_info and the summaries of the steps. Imports and analyses of "
     "large scans can take minutes to hours: give run_ tools background: true and call wait "
-    "until done is true; cancel stops the operation. The result files of the steps (report, "
+    "until done is true; cancel stops the operation. pipeline runs several operations in one call. "
+    "The result files of the steps (report, "
     "porosity results, their pictures) are also resources.";
 
 /// Methods hidden in the analysis profile, so a model chooses among fewer tools: those that only

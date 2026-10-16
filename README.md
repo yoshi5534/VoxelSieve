@@ -466,10 +466,13 @@ checkerboard, CAD models as their cut lines.
 When a scan shows more than the part, such as the holder it stands in, "Isolate part"
 (`isolate_part`) writes a dataset without voxels outside a region (a box in voxels) and without
 every object but the largest ones, so segmentation, porosity and volumes see the part alone (ADR
-0026). Objects that touch are one object; the region crops them apart. The material segmentation
-finds the number of materials itself with `materials` 0, one per peak of the histogram, which the
-method `histogram` shows with its suggestion; "Material meshes" (`material_meshes`) exports the
-surface of each material as an STL.
+0026). Objects that touch are separated by eroding them apart and growing them back
+(`separate_voxels`), and cut planes and a cylinder cut away what a box cannot. The material
+segmentation finds the number of materials itself with `materials` 0, one per peak of the
+histogram or per shoulder and tail a Gaussian mixture finds, which the method `histogram` shows
+with its suggestion and the share of voxels at class boundaries; `view_slice` with
+`preview_thresholds` previews the classes. "Material meshes" (`material_meshes`) exports the
+surface of each material as an STL and adds it as an object in the material's colour.
 
 ![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
 
@@ -522,13 +525,15 @@ inspection report with the example order", or "Show me slice 400 of the latest d
 pores". A client can cancel a running import or analysis; it stops at its next progress report.
 Imports and analyses of large scans can take longer than a client waits for one call: with
 `background: true` a `run_<operation>` tool returns at once, `wait` follows the operation (up to
-50 s per call) and gives its step when it is done, and `cancel` stops it.
+50 s per call) and gives its step when it is done, and `cancel` stops it. `pipeline` runs several
+operations one after the other in one call, for example import, `isolate_part`,
+`segment_materials` and `material_meshes`.
 
 Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
 `objects`, `results`, `object_select`, `dataset_info`, `histogram` (grey values with the
 threshold and a suggested number of materials), `view_slice` (a slice as an image, with pores and
 zones), `view_objects` (also in the colours of the materials), `import_preview`, `step_telemetry`, `list_files`, `read_file`
-(text files, and PNG pictures as images), `browse`, `wait`, `cancel` and one `run_<operation>` per
+(text files, and PNG pictures as images), `browse`, `wait`, `cancel`, `pipeline` and one `run_<operation>` per
 operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). To keep the choice
 small for a model, the methods that keep the browser UI's saved views (`view_set`, `view_save`,
 `view_list`, `view_image`, `view_rename`, `view_delete`), `list_operations` (tools/list already

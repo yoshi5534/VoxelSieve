@@ -499,15 +499,32 @@ TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
                                              {"height", 160},
                                              {"cut_axis", "x"},
                                              {"cut_keep", "above"}});
-  EXPECT_LT(cut.at("triangles_shown").get<double>(), 0.7 * view.at("triangles_shown").get<double>());
-  EXPECT_GT(cut.at("triangles_shown").get<double>(), 0.3 * view.at("triangles_shown").get<double>());
+  EXPECT_LT(cut.at("triangles_shown").get<double>(),
+            0.7 * view.at("triangles_shown").get<double>());
+  EXPECT_GT(cut.at("triangles_shown").get<double>(),
+            0.3 * view.at("triangles_shown").get<double>());
   EXPECT_THROW((void)gui.call("view_objects", {{"cut_axis", "x"}, {"cut_mm", -1e6}}),
                std::invalid_argument);
   EXPECT_THROW((void)gui.call("view_objects", {{"materials", true}, {"material_ids", {7}}}),
                std::invalid_argument);
 
+  // Moved first, so the mesh objects show where the volume is.
+  (void)gui.call("run_move", {{"objects", {"o1"}}, {"translation_mm", {10.0, 0.0, 0.0}}});
   const Json exported = gui.call("run_material_meshes", {});
   ASSERT_EQ(exported.at("status"), "done");
+  // Each mesh became an object in its material's colour, at the volume's pose.
+  ASSERT_EQ(exported.at("followed_by").size(), 1U);
+  EXPECT_EQ(exported.at("followed_by").at(0).at("operation"), "add_mesh");
+  const Json objects = gui.call("objects", {}).at("objects");
+  ASSERT_EQ(objects.size(), 2U);
+  EXPECT_EQ(objects.at(1).at("kind"), "mesh");
+  EXPECT_EQ(objects.at(1).at("color"), "#20a0ff");
+  EXPECT_EQ(objects.at(1).at("name"), exported.at("summary").at("meshes").at(0).at("name"));
+  EXPECT_EQ(objects.at(1).at("pose"), objects.at(0).at("pose"));
+  EXPECT_DOUBLE_EQ(objects.at(1).at("pose").at(3).get<double>(), 10.0);
+  EXPECT_TRUE(objects.at(0).at("color").is_null());
+  const Json shown = gui.call("view_objects", {{"objects", {objects.at(1).at("id")}}});
+  EXPECT_EQ(shown.at("objects").at(0).at("color"), Json::array({32, 160, 255}));
   const Json& mesh = exported.at("summary").at("meshes").at(0);
   const Json files = gui.call("list_files", {{"step", exported.at("id")}});
   const auto stl = std::filesystem::path(files.at("path").get<std::string>()) /
@@ -596,11 +613,11 @@ TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
   const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), isolated.at("id"));
   // Planes, a cylinder and separation as parameters.
-  const Json cut = gui.call(
-      "run_isolate_part",
-      {{"cut_planes", Json::array({{{"point", {0, 0, 10}}, {"normal", {0, 0, -1}}}})},
-       {"cylinder", {{"axis", "z"}, {"center", {30, 25}}, {"radius", 1000}}},
-       {"separate_voxels", 1}});
+  const Json cut =
+      gui.call("run_isolate_part",
+               {{"cut_planes", Json::array({{{"point", {0, 0, 10}}, {"normal", {0, 0, -1}}}})},
+                {"cylinder", {{"axis", "z"}, {"center", {30, 25}}, {"radius", 1000}}},
+                {"separate_voxels", 1}});
   ASSERT_EQ(cut.at("status"), "done");
   EXPECT_LT(cut.at("summary").at("active_voxels").get<std::int64_t>(),
             summary.at("active_voxels").get<std::int64_t>());
@@ -930,6 +947,39 @@ TEST_F(GuiTest, OperationsRunInTheBackgroundUntilDoneOrCancelled) {
   const Json steps = gui.call("project_status", {}).at("steps");
   ASSERT_EQ(steps.size(), 2U);
   EXPECT_EQ(steps[1].at("status"), "failed");
+
+  // A pipeline runs its steps one after the other, in the background as well.
+  const Json pipeline = gui.call(
+      "pipeline", {{"steps",
+                    {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                     {{"operation", "material_meshes"}, {"params", {{"add_objects", false}}}}}}});
+  EXPECT_EQ(pipeline.at("status"), "done");
+  ASSERT_EQ(pipeline.at("steps").size(), 2U);
+  EXPECT_EQ(pipeline.at("steps").at(1).at("operation"), "material_meshes");
+  EXPECT_EQ(gui.call("objects", {}).at("objects").size(), 1U);  // no mesh objects
+  (void)gui.call("pipeline",
+                 {{"steps",
+                   {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                    {{"operation", "material_meshes"}}}},
+                  {"background", true}});
+  waited = gui.call("wait", {{"seconds", 50}});
+  for (int i = 0; i < 20 && !waited.at("done").get<bool>(); ++i) {
+    waited = gui.call("wait", {{"seconds", 50}});
+  }
+  ASSERT_TRUE(waited.at("done"));
+  EXPECT_EQ(waited.at("result").at("status"), "done");
+  EXPECT_EQ(waited.at("result").at("steps").size(), 3U);  // with the mesh object
+  // It stops at the first failure and gives the steps done until then.
+  const Json failed = gui.call(
+      "pipeline", {{"steps",
+                    {{{"operation", "segment_materials"}, {"params", {{"materials", 1}}}},
+                     {{"operation", "material_meshes"}, {"params", {{"material_ids", {9}}}}},
+                     {{"operation", "segment_materials"}}}}});
+  EXPECT_EQ(failed.at("status"), "failed");
+  EXPECT_EQ(failed.at("failed_operation"), "material_meshes");
+  EXPECT_EQ(failed.at("steps").size(), 1U);
+  EXPECT_THROW(gui.call("pipeline", {{"steps", {{{"operation", "nope"}}}}}), std::invalid_argument);
+  EXPECT_FALSE(gui.call("wait", {{"seconds", 0}}).contains("running"));
 
   // A GUI that goes away stops its background operation.
   {

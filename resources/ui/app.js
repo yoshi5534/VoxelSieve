@@ -1211,7 +1211,7 @@ function renderResultsStage(panel) {
     const earlier = group.results.filter((result) => !result.current).reverse();
     const active = group.object && group.object.id === state.status.active_object;
     const section = el('section', { className: 'result-group' },
-      el('h2', {}, group.object ? [objectSwatch(group.index), ' ', group.object.name] : 'Project',
+      el('h2', {}, group.object ? [objectSwatch(group.index, group.object.color), ' ', group.object.name] : 'Project',
         active ? el('span', { className: 'badge' }, 'active') : null,
         el('span', { className: 'hint' }, ' · ' + group.results.length +
           (group.results.length === 1 ? ' result' : ' results'))),
@@ -1488,7 +1488,7 @@ function sliceObjectsCard(viewer, dataset) {
   }
   // Tiles and lines are fetched again when either object moves or the other's data changes.
   viewer.setLayers(others.map(({ object, index }) => ({
-    id: object.id, kind: object.kind, color: objectColor(index), source: object.source.step,
+    id: object.id, kind: object.kind, color: objectColor(index, object.color), source: object.source.step,
     version: [objectKey(object), object.pose.join(','), base?.pose.join(',') ?? ''].join('|'),
   })));
   if (!others.length) return [];
@@ -1498,7 +1498,7 @@ function sliceObjectsCard(viewer, dataset) {
       title: object.kind === 'volume' ? 'Show this volume in the slice'
         : 'Show where this mesh cuts the slice' });
     const item = el('div', { className: 'slice-object' },
-      el('label', { title: object.id }, show, objectSwatch(index), ' ', object.name,
+      el('label', { title: object.id }, show, objectSwatch(index, object.color), ' ', object.name,
         object.kind === 'mesh' ? el('span', { className: 'hint' }, ' cut lines') : null));
     if (object.kind === 'volume') {
       const mode = el('select', { title: 'Blended in its colour, or every other square' },
@@ -2150,9 +2150,9 @@ function objectKey(object) {
     (object.kind === 'volume' ? surfaceStepOf(object.id) ?? 'box' : 'mesh');
 }
 
-function objectSwatch(index) {
+function objectSwatch(index, color) {
   return el('span', { className: 'swatch', style: 'background: rgb(' +
-    objectColor(index).join(',') + ')' });
+    objectColor(index, color).join(',') + ')' });
 }
 
 /// The objects with their place in the global coordinate system; a click chooses the active
@@ -2165,7 +2165,7 @@ function objectTable(objects) {
     el('tbody', {}, objects.map((object, index) => el('tr', {
       className: object.id === active ? 'active' : null,
     },
-    el('td', {}, objectSwatch(index)),
+    el('td', {}, objectSwatch(index, object.color)),
     el('td', { title: object.id }, object.name),
     el('td', {}, object.kind === 'volume' ? 'Volume' : 'Mesh'),
     el('td', {}, [3, 7, 11].map((i) => formatNumber(Math.round(object.pose[i] * 1000) / 1000))
@@ -2296,8 +2296,8 @@ function renderSceneView(panel) {
       describe();
       scheduleViewSave();
     });
-    return el('label', { className: 'group', title: object.id }, box, objectSwatch(index),
-      object.name);
+    return el('label', { className: 'group', title: object.id }, box,
+      objectSwatch(index, object.color), object.name);
   });
   const tools = el('div', { className: 'viewer-tools' }, visibility,
     el('button', { onclick: () => scene.reset() }, 'Reset view'));

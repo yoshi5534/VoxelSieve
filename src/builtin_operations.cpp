@@ -1182,21 +1182,30 @@ class MaterialMeshes final : public Operation {
         "one binary STL in mm per material, in the coordinates of the dataset (like the surface "
         "step's surface.stl), for CAD, 3D printing or other viewers. A material's surface is the "
         "boundary between its voxels and all others, so inner materials get closed meshes too. "
-        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds.";
+        "Large volumes are meshed from every 2nd, 4th, ... voxel until max_triangles holds. "
+        "With add_objects (the default, when run as run_material_meshes), each mesh then also "
+        "becomes an object of the project in its material's colour and at the pose of the "
+        "segmented volume, so view_objects, alignment and comparison can use the materials "
+        "one by one.";
     info_.inputs = {{"materials", artifact::kMaterials, "Material segmentation"}};
     info_.outputs = {{"meshes", artifact::kMaterialMeshes, "One STL per material"}};
-    info_.parameters = {
-        {"type", "object"},
-        {"properties",
-         {{"material_ids",
-           {{"type", "array"},
-            {"items", {{"type", "integer"}, {"minimum", 1}}},
-            {"description", "Materials to export; default: all"}}},
-          {"max_triangles",
-           {{"type", "integer"},
-            {"minimum", 0},
-            {"default", 2000000},
-            {"description", "Triangles per material at most; 0: full resolution"}}}}}};
+    info_.parameters = {{"type", "object"},
+                        {"properties",
+                         {{"material_ids",
+                           {{"type", "array"},
+                            {"items", {{"type", "integer"}, {"minimum", 1}}},
+                            {"description", "Materials to export; default: all"}}},
+                          {"max_triangles",
+                           {{"type", "integer"},
+                            {"minimum", 0},
+                            {"default", 2000000},
+                            {"description", "Triangles per material at most; 0: full resolution"}}},
+                          {"add_objects",
+                           {{"type", "boolean"},
+                            {"default", true},
+                            {"description",
+                             "Add each mesh as an object of the project, named and coloured like "
+                             "its material"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1239,8 +1248,15 @@ class MaterialMeshes final : public Operation {
       }
       const std::string file = "material_" + std::to_string(material.id) + "_" + name + ".stl";
       writeStl(dir / file, mesh);
+      std::string color = "#";
+      for (const std::uint8_t channel : material.color) {
+        constexpr std::string_view kHex = "0123456789abcdef";
+        color += kHex[channel >> 4U];
+        color += kHex[channel & 15U];
+      }
       meshes.push_back({{"id", material.id},
                         {"name", material.name},
+                        {"color", color},
                         {"file", file},
                         {"triangles", mesh.triangles.size()}});
       context.progress(static_cast<double>(i + 1) / static_cast<double>(ids.size()));
@@ -1570,7 +1586,20 @@ class AddMesh final : public Operation {
     info_.parameters = {
         {"type", "object"},
         {"properties",
-         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}}}},
+         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "STL file in mm"}}},
+          {"color",
+           {{"type", "string"},
+            {"pattern", "^#[0-9a-fA-F]{6}$"},
+            {"description",
+             "Colour of the object in views as #rrggbb; default: by its place in the list"}}},
+          {"pose",
+           {{"type", "array"},
+            {"items", {{"type", "number"}}},
+            {"minItems", 12},
+            {"maxItems", 16},
+            {"description",
+             "Pose of the new object, object to global coordinates, as a row-major 3x4 or 4x4 "
+             "matrix in mm; default: the coordinates of the file"}}}}},
         {"required", {"path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
@@ -1589,6 +1618,13 @@ class AddMesh final : public Operation {
                       {"bounds_min_mm", bounds.min},
                       {"bounds_max_mm", bounds.max},
                       {"volume_mm3", meshVolumeMm3(mesh)}};
+    if (context.params.contains("pose")) {
+      // The object starts at this pose instead of the identity.
+      const RigidTransform pose =
+          RigidTransform::fromMatrix(context.params.at("pose").get<std::vector<double>>());
+      result.summary[kMovedObjectsKey] = Json::array({context.object});
+      result.summary[kMotionKey] = pose.matrix();
+    }
     return result;
   }
 
@@ -1686,7 +1722,7 @@ class MoveObjects final : public Operation {
     info_.description =
         "Moves objects together in the global coordinate system of the project by a rigid "
         "motion: a rotation about an axis through a centre, then a translation. Alternatively "
-        "`pose` places one object at a given pose. Moves apply on top of the earlier ones, in "
+        "`pose` places objects at a given pose. Moves apply on top of the earlier ones, in "
         "order; undo takes them back. The data is not touched.";
     info_.outputs = {{"pose", artifact::kPose, "The motion and the new poses (pose.json)"}};
     info_.parameters = {
@@ -1708,8 +1744,9 @@ class MoveObjects final : public Operation {
             {"minItems", 12},
             {"maxItems", 16},
             {"description",
-             "New pose of a single object, object to global coordinates, as a row-major 3x4 or "
-             "4x4 matrix in mm; replaces the rotation and translation"}}}}},
+             "New pose of the objects (which must share one pose, such as a single object), "
+             "object to global coordinates, as a row-major 3x4 or 4x4 matrix in mm; replaces "
+             "the rotation and translation"}}}}},
         {"required", {"objects"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
@@ -1719,8 +1756,11 @@ class MoveObjects final : public Operation {
     const auto ids = movedObjects(context);
     RigidTransform motion;
     if (p.contains("pose")) {
-      if (ids.size() != 1) {
-        throw std::invalid_argument("'pose' places exactly one object");
+      const auto current = entryPose(objectEntry(context, ids.front())).matrix();
+      for (const std::string& id : ids) {
+        if (entryPose(objectEntry(context, id)).matrix() != current) {
+          throw std::invalid_argument("'pose' places objects that share one pose");
+        }
       }
       motion = RigidTransform::fromMatrix(p.at("pose").get<std::vector<double>>())
                    .after(entryPose(objectEntry(context, ids.front())).inverse());

@@ -19,7 +19,12 @@
 - **Materials in 3D over MCP, and as meshes**: `view_objects` with `materials` draws each
   material of a segmented volume as a surface in its colour (`material_ids` picks some), and the
   new operation `material_meshes` exports one STL per material. `view_objects` can cut the
-  scene open with a plane (`cut_axis`, `cut_mm`, `cut_keep`).
+  scene open with a plane (`cut_axis`, `cut_mm`, `cut_keep`). The material meshes become
+  objects of the project in the materials' colours, at the pose of the segmented volume; objects
+  can have a colour of their own (`color` of `add_mesh`).
+
+- **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
+  in the background as well, and stops at the first failure.
 
 - **Voxel size of more TIFF stacks**: the pixel size is now also read from OME-XML image
   descriptions and from inch resolutions that are not printing defaults; the import summary says
