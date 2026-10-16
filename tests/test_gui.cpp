@@ -579,6 +579,15 @@ TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
   // Later steps of the object take the isolated dataset.
   const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), isolated.at("id"));
+  // Planes, a cylinder and separation as parameters.
+  const Json cut = gui.call(
+      "run_isolate_part",
+      {{"cut_planes", Json::array({{{"point", {0, 0, 10}}, {"normal", {0, 0, -1}}}})},
+       {"cylinder", {{"axis", "z"}, {"center", {30, 25}}, {"radius", 1000}}},
+       {"separate_voxels", 1}});
+  ASSERT_EQ(cut.at("status"), "done");
+  EXPECT_LT(cut.at("summary").at("active_voxels").get<std::int64_t>(),
+            summary.at("active_voxels").get<std::int64_t>());
 }
 
 TEST_F(GuiTest, ViewsAreRestoredWhenTheProjectIsOpenedAgain) {

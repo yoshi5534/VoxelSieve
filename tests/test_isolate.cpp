@@ -34,8 +34,8 @@ bool part(std::int64_t x, std::int64_t y, std::int64_t z) {
 }
 
 /// A part, a holder `gap` voxels beside it (x from 60 + gap, 10 voxels thick) and a speck of
-/// debris, in noise.
-Volume16 makeScan(std::int64_t gap) {
+/// debris, in noise; with `neck`, a bar of 2 x 2 voxels joins holder and part.
+Volume16 makeScan(std::int64_t gap, bool neck = false) {
   Volume16 scan{{kSize, kSize, kSize}, VoxelSize{0.1}};
   std::mt19937 rng(3);
   std::normal_distribution<double> noise(0.0, 500.0);
@@ -44,7 +44,8 @@ Volume16 makeScan(std::int64_t gap) {
       for (std::int64_t x = 0; x < kSize; ++x) {
         double value = kAir;
         const bool debris = in(x, 5, 8) && in(y, 80, 83) && in(z, 80, 83);
-        if (part(x, y, z) || debris) {
+        const bool bar = neck && in(x, 60, 60 + gap) && in(y, 39, 41) && in(z, 39, 41);
+        if (part(x, y, z) || debris || bar) {
           value = kPart;
         } else if (in(x, 60 + gap, 70 + gap) && in(y, 20, 60) && in(z, 0, 60)) {
           value = kHolder;
@@ -155,6 +156,48 @@ TEST_F(IsolateTest, RegionSeparatesATouchingHolder) {
   options.keep_objects = 0;
   (void)isolatePart(input, dir_ / "region", options);
   EXPECT_TRUE(Dataset::open(dir_ / "region").sample(0, {6, 81, 81}).has_value());
+}
+
+TEST_F(IsolateTest, ErosionSeparatesObjectsJoinedByANeck) {
+  const Dataset input = sieve(makeScan(12, true));
+  // Joined by the bar, part and holder are one object.
+  (void)isolatePart(input, dir_ / "joined");
+  EXPECT_TRUE(Dataset::open(dir_ / "joined").sample(0, {77, 40, 40}).has_value());
+
+  IsolateOptions options;
+  options.separate_voxels = 2;
+  const IsolateInfo info = isolatePart(input, dir_ / "separated", options);
+  EXPECT_EQ(info.objects, 2);  // part and holder; the debris erodes away
+  const Dataset separated = Dataset::open(dir_ / "separated");
+  EXPECT_FALSE(separated.sample(0, {77, 40, 40}).has_value());  // holder
+  EXPECT_TRUE(separated.sample(0, {21, 21, 21}).has_value());   // the part's corner grows back
+  const std::int64_t material = materialVoxels(separated);
+  EXPECT_GE(material, partVoxels());
+  EXPECT_LE(material, partVoxels() + 4 * 6);  // at most a stub of the bar
+}
+
+TEST_F(IsolateTest, PlanesAndACylinderCutAway) {
+  const Dataset input = sieve(makeScan(0));
+  IsolateOptions options;
+  options.cut_planes = {{{59.5, 0.0, 0.0}, {1.0, 0.0, 0.0}}};  // everything at x > 59.5 goes
+  (void)isolatePart(input, dir_ / "plane", options);
+  const Dataset cut = Dataset::open(dir_ / "plane");
+  EXPECT_EQ(materialVoxels(cut), partVoxels());
+  EXPECT_FALSE(cut.sample(0, {62, 40, 40}).has_value());
+
+  // A cylinder along z around the part keeps neither the debris nor the far end of the holder.
+  IsolateOptions tube;
+  tube.keep_objects = 0;
+  tube.cylinder = RegionCylinder{2, {40.0, 40.0}, 30.0};
+  (void)isolatePart(input, dir_ / "cylinder", tube);
+  const Dataset inside = Dataset::open(dir_ / "cylinder");
+  EXPECT_TRUE(inside.sample(0, {21, 21, 30}).has_value());
+  EXPECT_FALSE(inside.sample(0, {6, 81, 81}).has_value());
+  EXPECT_FALSE(inside.sample(0, {69, 22, 30}).has_value());
+
+  IsolateOptions bad;
+  bad.cut_planes = {{{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}};
+  EXPECT_THROW((void)isolatePart(input, dir_ / "bad", bad), std::invalid_argument);
 }
 
 TEST_F(IsolateTest, RejectsBadOptions) {

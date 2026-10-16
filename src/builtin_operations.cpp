@@ -1429,8 +1429,9 @@ class IsolatePart final : public Operation {
         "than the largest ones, such as a holder, a support or loose debris that the scan also "
         "shows, become outside air, so material segmentation, porosity, surfaces and volumes "
         "see the part alone. An object is material connected across faces, with its voids. "
-        "Objects that touch stay one object: crop them apart with the region first. Later "
-        "steps of the object use the new dataset.";
+        "Objects that touch are one object unless separate_voxels splits them at a thin neck; "
+        "cut planes and a cylinder cut them apart where they touch broadly. Later steps of the "
+        "object use the new dataset.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset to isolate the part in"}};
     info_.outputs = {{"dataset", artifact::kDataset, "Dataset with the part alone"}};
     info_.parameters = {
@@ -1454,6 +1455,49 @@ class IsolatePart final : public Operation {
             {"minimum", 0},
             {"default", 1},
             {"description", "Keep the largest objects, 1: only the largest; 0: all objects"}}},
+          {"separate_voxels",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Separates touching objects, such as a holder glued to the part, where they meet "
+             "through a neck thinner than about twice this many voxels (erosion, then growing "
+             "back within the material); 0: only air separates objects"}}},
+          {"cut_planes",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"point",
+                 {{"type", "array"},
+                  {"items", {{"type", "number"}}},
+                  {"minItems", 3},
+                  {"maxItems", 3},
+                  {"description", "A point of the plane, in voxels (x, y, z)"}}},
+                {"normal",
+                 {{"type", "array"},
+                  {"items", {{"type", "number"}}},
+                  {"minItems", 3},
+                  {"maxItems", 3},
+                  {"description", "Points to the side that is removed"}}}}},
+              {"required", {"point", "normal"}}}},
+            {"description",
+             "Planes that remove what lies on their normal's side, such as everything below a "
+             "holder: point [0, 0, 120] with normal [0, 0, -1] removes all below z = 120. "
+             "Several planes approximate a curved cut"}}},
+          {"cylinder",
+           {{"type", "object"},
+            {"properties",
+             {{"axis", {{"type", "string"}, {"enum", {"x", "y", "z"}}, {"default", "z"}}},
+              {"center",
+               {{"type", "array"},
+                {"items", {{"type", "number"}}},
+                {"minItems", 2},
+                {"maxItems", 2},
+                {"description", "Centre in the two other axes, in voxels (x, y for axis z)"}}},
+              {"radius", {{"type", "number"}, {"exclusiveMinimum", 0}}}}},
+            {"required", {"center", "radius"}},
+            {"description", "Keep only the inside of this cylinder, such as a part in a tube"}}},
           {"threshold",
            {{"type", "number"},
             {"description",
@@ -1476,6 +1520,17 @@ class IsolatePart final : public Operation {
       options.region = region;
     }
     options.keep_objects = p.at("keep_objects").get<int>();
+    options.separate_voxels = p.at("separate_voxels").get<int>();
+    for (const Json& plane : p.value("cut_planes", Json::array())) {
+      options.cut_planes.push_back({plane.at("point").get<std::array<double, 3>>(),
+                                    plane.at("normal").get<std::array<double, 3>>()});
+    }
+    if (p.contains("cylinder")) {
+      const Json& cylinder = p.at("cylinder");
+      options.cylinder = RegionCylinder{cylinder.value("axis", std::string("z"))[0] - 'x',
+                                        cylinder.at("center").get<std::array<double, 2>>(),
+                                        cylinder.at("radius").get<double>()};
+    }
     if (p.contains("threshold")) {
       options.threshold = p.at("threshold").get<float>();
     }

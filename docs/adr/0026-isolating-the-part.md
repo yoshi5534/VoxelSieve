@@ -46,3 +46,15 @@ later steps take the new dataset, as after denoising (ADR 0025).
 - Memory is about 3 bytes per cell (counts and marks), at most about 400 MB.
 - Masks of other shapes (cylinders, painted regions) and splitting touching objects (watershed)
   are not covered; they would add further ways of choosing cells to keep.
+
+## Amendment (2026-10-16): touching objects
+
+A holder glued to a fish stayed with it, so objects that touch need more than a box:
+
+- **Cut planes** remove what lies on the side of their normal (several approximate a curved
+  cut), and a **cylinder** along a volume axis keeps only its inside. Both apply like the box,
+  voxel by voxel.
+- **Separation** (`separate_voxels`): the material cells are eroded by that many voxels (in whole
+  cells) before objects are found, so necks thinner than about twice that no longer join them;
+  the kept cores then grow back by as much, but only into material. Objects smaller than the
+  erosion vanish with it. A watershed split of objects touching broadly is still open.
