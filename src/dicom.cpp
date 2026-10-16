@@ -4,6 +4,7 @@
 // clang-format off
 #include <dcmtk/config/osconfig.h>
 #include <dcmtk/dcmdata/dctk.h>
+#include <dcmtk/dcmdata/dcistrmb.h>
 #include <dcmtk/dcmdata/dcrledrg.h>
 // clang-format on
 #include <tbb/parallel_for.h>
@@ -21,6 +22,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/zip.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -74,6 +76,81 @@ struct SliceHeader {
 
 OFFilename fileName(const std::filesystem::path& path) { return {path.string().c_str()}; }
 
+/// Where the slice files are: on disk, or entries of a ZIP archive named archive/entry.
+class DicomFiles {
+ public:
+  DicomFiles() = default;
+  explicit DicomFiles(const std::filesystem::path& archive)
+      : archive_(archive), zip_(std::make_unique<detail::ZipArchive>(archive)) {
+    for (const auto& entry : zip_->entries()) {
+      const std::filesystem::path name(entry.name);
+      const std::string base = name.filename().string();
+      if (entry.name.ends_with('/') || base.empty() || base.starts_with(".") ||
+          entry.name.starts_with("__MACOSX/")) {
+        continue;
+      }
+      const std::string extension = lowerExtension(name);
+      if (extension.empty() || extension == ".dcm" || extension == ".dicom" ||
+          extension == ".dic" || extension == ".ima") {
+        candidates_.push_back(archive / name);
+        entries_.emplace(candidates_.back().string(), entry);
+      }
+    }
+  }
+
+  [[nodiscard]] const std::filesystem::path& archive() const { return archive_; }
+  [[nodiscard]] const std::vector<std::filesystem::path>& candidates() const { return candidates_; }
+
+  /// Loads a slice file, up to its pixel data with `header_only`.
+  [[nodiscard]] OFCondition load(DcmFileFormat& file, const std::filesystem::path& path,
+                                 bool header_only) const {
+    if (!zip_) {
+      return header_only ? file.loadFileUntilTag(fileName(path), EXS_Unknown, EGL_noChange,
+                                                 DCM_MaxReadLength, ERM_autoDetect, DCM_PixelData)
+                         : file.loadFile(fileName(path), EXS_Unknown, EGL_noChange,
+                                         DCM_MaxReadLength, ERM_autoDetect);
+    }
+    const std::vector<std::uint8_t> bytes = content(path);
+    // Read in full from memory: a buffer cannot load large elements later.
+    constexpr Uint32 kWholeElements = 0xFFFFFFFFU;
+    DcmInputBufferStream stream;
+    stream.setBuffer(bytes.data(), static_cast<offile_off_t>(bytes.size()));
+    stream.setEos();
+    file.transferInit();
+    const OFCondition status =
+        header_only
+            ? file.readUntilTag(stream, EXS_Unknown, EGL_noChange, kWholeElements, DCM_PixelData)
+            : file.read(stream, EXS_Unknown, EGL_noChange, kWholeElements);
+    file.transferEnd();
+    return status;
+  }
+
+  /// The bytes of a slice file.
+  [[nodiscard]] std::vector<std::uint8_t> content(const std::filesystem::path& path) const {
+    if (!zip_) {
+      std::ifstream in(path, std::ios::binary);
+      return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+    const auto entry = entries_.find(path.string());
+    if (entry == entries_.end()) {
+      throw std::runtime_error("Not in " + archive_.string() + ": " + path.string());
+    }
+    return zip_->read(entry->second);
+  }
+
+  void releasePages() const {
+    if (zip_) {
+      zip_->releasePages();
+    }
+  }
+
+ private:
+  std::filesystem::path archive_;
+  std::unique_ptr<detail::ZipArchive> zip_;
+  std::vector<std::filesystem::path> candidates_;
+  std::unordered_map<std::string, detail::ZipArchive::Entry> entries_;
+};
+
 std::optional<double> getDouble(DcmItem& item, const DcmTagKey& tag, unsigned long index = 0) {
   Float64 value = 0.0;
   if (item.findAndGetFloat64(tag, value, index).good()) {
@@ -83,11 +160,9 @@ std::optional<double> getDouble(DcmItem& item, const DcmTagKey& tag, unsigned lo
 }
 
 /// The header of a slice, or nothing when DCMTK cannot read the file or it holds no image.
-std::optional<SliceHeader> readHeader(const std::filesystem::path& path) {
+std::optional<SliceHeader> readHeader(const DicomFiles& files, const std::filesystem::path& path) {
   DcmFileFormat file;
-  if (file.loadFileUntilTag(fileName(path), EXS_Unknown, EGL_noChange, DCM_MaxReadLength,
-                            ERM_autoDetect, DCM_PixelData)
-          .bad()) {
+  if (files.load(file, path, true).bad()) {
     return std::nullopt;
   }
   DcmDataset& data = *file.getDataset();
@@ -201,6 +276,7 @@ std::once_flag codecs_registered;
 
 struct DicomStackSource::Impl {
   DicomStackOptions options;
+  DicomFiles source;
   std::vector<SliceHeader> slices;  // in slice order
   std::vector<std::filesystem::path> files;
   std::vector<std::pair<std::string, std::size_t>> other_series;
@@ -223,7 +299,7 @@ struct DicomStackSource::Impl {
 void DicomStackSource::Impl::open(const std::vector<std::filesystem::path>& candidates) {
   std::vector<std::optional<SliceHeader>> headers(candidates.size());
   tbb::parallel_for(std::size_t{0}, candidates.size(),
-                    [&](std::size_t i) { headers[i] = readHeader(candidates[i]); });
+                    [&](std::size_t i) { headers[i] = readHeader(source, candidates[i]); });
   std::map<std::string, std::vector<SliceHeader>> series;
   for (auto& header : headers) {
     if (header) {
@@ -319,9 +395,7 @@ std::vector<std::uint16_t> DicomStackSource::Impl::decode(const SliceHeader& hea
   std::call_once(codecs_registered, [] { DcmRLEDecoderRegistration::registerCodecs(); });
   const std::string name = header.path.filename().string();
   DcmFileFormat file;
-  if (const OFCondition status = file.loadFile(fileName(header.path), EXS_Unknown, EGL_noChange,
-                                               DCM_MaxReadLength, ERM_autoDetect);
-      status.bad()) {
+  if (const OFCondition status = source.load(file, header.path, false); status.bad()) {
     throw std::runtime_error("Cannot read " + header.path.string() + ": " + status.text());
   }
   DcmDataset& data = *file.getDataset();
@@ -415,6 +489,12 @@ DicomStackSource::DicomStackSource(const std::filesystem::path& path,
         candidates.push_back(file);
       }
     }
+  } else if (std::filesystem::is_regular_file(path) && lowerExtension(path) == ".zip") {
+    impl_->source = DicomFiles(path);
+    candidates = impl_->source.candidates();
+    if (candidates.empty()) {
+      throw std::runtime_error("No DICOM files in " + path.string());
+    }
   } else if (std::filesystem::is_regular_file(path)) {
     candidates.push_back(path);
   } else {
@@ -460,6 +540,7 @@ void DicomStackSource::releaseMemory() const {
   const std::lock_guard lock(impl_->mutex);
   impl_->cached.clear();
   impl_->lru.clear();
+  impl_->source.releasePages();
 }
 
 void DicomStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
@@ -489,6 +570,12 @@ RigidTransform DicomStackSource::filePose() const { return impl_->pose; }
 
 const std::vector<std::filesystem::path>& DicomStackSource::files() const { return impl_->files; }
 
+const std::filesystem::path& DicomStackSource::archive() const { return impl_->source.archive(); }
+
+std::vector<std::uint8_t> DicomStackSource::fileContent(std::size_t index) const {
+  return impl_->source.content(impl_->files.at(index));
+}
+
 const std::string& DicomStackSource::seriesUid() const { return impl_->slices.front().series; }
 
 const std::vector<std::pair<std::string, std::size_t>>& DicomStackSource::otherSeries() const {
@@ -513,6 +600,27 @@ bool isDicomFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   std::array<char, 132> head{};
   return in.read(head.data(), head.size()) && std::string_view(head.data() + 128, 4) == "DICM";
+}
+
+bool isDicomArchive(const std::filesystem::path& path) {
+  if (lowerExtension(path) != ".zip") {
+    return false;
+  }
+  try {
+    const detail::ZipArchive zip(path);
+    bool dicom = false;
+    for (const auto& entry : zip.entries()) {
+      const std::string extension = lowerExtension(std::filesystem::path(entry.name));
+      if (extension == ".tif" || extension == ".tiff") {
+        return false;
+      }
+      dicom = dicom || extension == ".dcm" || extension == ".dicom" || extension == ".dic" ||
+              extension == ".ima";
+    }
+    return dicom;
+  } catch (const std::exception&) {
+    return false;
+  }
 }
 
 bool containsDicom(const std::filesystem::path& dir) {

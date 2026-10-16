@@ -141,12 +141,23 @@ class Gui {
                                                   std::int64_t index,
                                                   const std::string& object) const;
 
+  /// Remembers the project last created, opened or saved in `file`, so that a GUI started later
+  /// (an MCP client restarts its server for every session) can reopen it with reopenProject.
+  void setProjectMemory(const std::filesystem::path& file);
+  /// Opens the remembered project when none is open and it still exists inside the allowed
+  /// directories; returns its directory, or nothing.
+  std::optional<std::filesystem::path> reopenProject();
+
   /// Asks a running operation to stop at its next check.
   void cancel() { cancel_ = true; }
 
  private:
   /// Throws std::invalid_argument when allowed roots are set and `path` is outside all of them.
   void checkAllowedPath(const std::filesystem::path& path) const;
+  /// Writes the open project's directory to project_memory_, if set.
+  void rememberProject() const;
+  /// Checks every path parameter of a call of `method`.
+  void checkAllowedPaths(const std::string& method, const nlohmann::json& params) const;
   Project& project();
   [[nodiscard]] const Project& project() const;
   nlohmann::json status() const;
@@ -158,12 +169,35 @@ class Gui {
     std::map<std::string, ArtifactRef> inputs;
     StepTarget target;
     std::optional<Project> working;
+    // Part of the progress of a sequence this run covers.
+    double offset = 0.0;
+    double share = 1.0;
+  };
+  /// An operation to run, with its parameters as the run_ methods take them.
+  struct RunRequest {
+    std::string operation;
+    nlohmann::json params;
   };
   /// Runs `operation` and returns its step; with "background": true in `params`, starts it on
   /// background_ and returns at once.
   nlohmann::json runOperation(const std::string& operation, nlohmann::json params,
                               const std::function<void(double)>& progress);
-  /// Runs a prepared operation and makes its project copy the project, also when it fails.
+  /// Runs operations one after the other while no other may start (the pipeline method, and an
+  /// operation with the steps that follow it, such as material_meshes adding its objects). With
+  /// `pipeline`, returns every step and a failure as a result instead of throwing.
+  nlohmann::json runSequence(std::vector<RunRequest> requests, bool background, bool pipeline,
+                             const std::function<void(double)>& progress);
+  /// Checks a request against the current project and copies the project for it; needs mutex_.
+  PreparedRun prepareRun(RunRequest request);
+  nlohmann::json executeSequence(PreparedRun first, std::vector<RunRequest> rest,
+                                 const std::function<void(double)>& progress, bool pipeline);
+  /// Steps that follow a finished one by themselves; needs mutex_.
+  [[nodiscard]] std::vector<RunRequest> followUps(const nlohmann::json& step) const;
+  /// Ends a sequence: no operation runs any more.
+  void releaseRun();
+  /// Runs a prepared operation and makes its project copy the project, also when it fails; then
+  /// no operation runs any more when it failed (and stays running for the next step of a
+  /// sequence otherwise).
   nlohmann::json executeRun(PreparedRun& run, const std::function<void(double)>& progress);
   /// The wait method: waits up to `seconds` until no operation runs; needs mutex_ not held.
   nlohmann::json waitForOperation(double seconds);
@@ -218,6 +252,7 @@ class Gui {
   std::vector<std::string> plugin_messages_;
   std::vector<std::filesystem::path> allowed_roots_;  // canonical
   std::optional<Project> project_;
+  std::filesystem::path project_memory_;
   std::atomic<bool> cancel_ = false;
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_

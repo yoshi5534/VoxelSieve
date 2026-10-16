@@ -290,9 +290,9 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 22U);
+  EXPECT_EQ(registry.all().size(), 23U);
   EXPECT_NE(registry.find("import_tiff"), nullptr);
-  EXPECT_NE(registry.find("measure"), nullptr);
+  EXPECT_NE(registry.find("measure_dimensions"), nullptr);
   EXPECT_NE(registry.find("first_article_report"), nullptr);
   EXPECT_NE(registry.find("denoise"), nullptr);
   EXPECT_NE(registry.find("isolate_part"), nullptr);

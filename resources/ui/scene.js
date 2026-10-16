@@ -9,7 +9,11 @@
 const OBJECT_COLORS = [[196, 200, 207], [230, 150, 60], [90, 160, 230], [120, 190, 110],
   [200, 110, 170], [220, 200, 80]];
 
-function objectColor(index) {
+/// The colour an object was given as #rrggbb, else the one of its place in the list.
+function objectColor(index, color) {
+  if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) {
+    return [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+  }
   return OBJECT_COLORS[index % OBJECT_COLORS.length];
 }
 
@@ -490,7 +494,7 @@ class SceneViewer {
     for (const { object, mesh } of this.visible()) {
       if (!mesh.buffers) this.upload(mesh);
       gl.uniformMatrix4fv(uniform('model'), false, this.modelMatrix(object.pose, mesh.scale));
-      gl.uniform3fv(uniform('baseColor'), objectColor(object.index).map((c) => c / 255));
+      gl.uniform3fv(uniform('baseColor'), objectColor(object.index, object.color).map((c) => c / 255));
       const box = mesh.shape === 'box';
       gl.uniform1i(uniform('shaded'), box ? 0 : 1);
       gl.bindVertexArray(mesh.vao);

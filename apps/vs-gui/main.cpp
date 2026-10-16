@@ -15,6 +15,7 @@
 #endif
 
 #include <atomic>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -55,7 +56,10 @@ Options:
   --tools <profile>     Tools offered over MCP: analysis (default) leaves out the methods
                         that keep the browser UI's saved views, list_operations and
                         object_add; all offers every method
-  --project <dir>       Open this project at start; created if the directory has no project
+  --project <dir>       Open this project at start; created if the directory has no project.
+                        Without it, --mcp reopens the project used last (so a client that
+                        restarts the server for every chat finds it open again)
+  --no-reopen           Start --mcp without a project
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
                         PATH) are loaded too
@@ -68,6 +72,7 @@ struct Options {
   std::string host = "127.0.0.1";
   unsigned short port = 8410;
   std::optional<std::filesystem::path> project;
+  bool reopen = true;
   std::vector<std::filesystem::path> plugins;
   std::vector<std::filesystem::path> roots;
 };
@@ -107,6 +112,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.port = static_cast<unsigned short>(port);
     } else if (arg == "--project") {
       options.project = next();
+    } else if (arg == "--no-reopen") {
+      options.reopen = false;
     } else if (arg == "--plugins") {
       options.plugins.emplace_back(next());
     } else if (arg.starts_with("-")) {
@@ -116,6 +123,31 @@ std::optional<Options> parse(int argc, char** argv) {
     }
   }
   return options;
+}
+
+/// Where vs-gui remembers the project used last: in the user's local application data, or
+/// nowhere when the environment names no home.
+std::filesystem::path projectMemoryFile() {
+  const auto variable = [](const char* name) -> std::filesystem::path {
+    const char* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe): before any thread
+    return value != nullptr && *value != '\0' ? std::filesystem::path(value)
+                                              : std::filesystem::path();
+  };
+#ifdef _WIN32
+  const std::filesystem::path base = variable("LOCALAPPDATA");
+  return base.empty() ? base : base / "VoxelSieve" / "last_project.json";
+#elif defined(__APPLE__)
+  const std::filesystem::path home = variable("HOME");
+  return home.empty()
+             ? home
+             : home / "Library" / "Application Support" / "VoxelSieve" / "last_project.json";
+#else
+  std::filesystem::path base = variable("XDG_STATE_HOME");
+  if (base.empty() && !variable("HOME").empty()) {
+    base = variable("HOME") / ".local" / "state";
+  }
+  return base.empty() ? base : base / "voxelsieve" / "last_project.json";
+#endif
 }
 
 #ifdef _WIN32
@@ -166,10 +198,15 @@ int main(int argc, char** argv) {
     for (const std::string& message : gui.pluginMessages()) {
       std::cerr << "vs-gui: " << message << "\n";
     }
+    gui.setProjectMemory(projectMemoryFile());
     if (options->project) {
       const bool exists = std::filesystem::exists(*options->project / "project.json");
       (void)gui.call(exists ? "project_open" : "project_create",
                      {{"path", options->project->string()}});
+    } else if (options->mcp && options->reopen) {
+      if (const auto reopened = gui.reopenProject()) {
+        std::cerr << "vs-gui: reopened the project used last, " << reopened->string() << "\n";
+      }
     }
     if (options->mcp) {
 #ifdef _WIN32

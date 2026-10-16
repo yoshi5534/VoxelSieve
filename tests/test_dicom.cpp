@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <zip.h>
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,7 @@
 namespace voxelsieve {
 namespace {
 
+using Json = nlohmann::json;
 using testing::DicomSliceSpec;
 using testing::writeDicomSlice;
 
@@ -144,6 +146,55 @@ TEST_F(DicomTest, ReadsSignedSlicesInPositionOrder) {
   EXPECT_NEAR(corner[1], -3.0 + 2 * 0.25, 1e-6);
   EXPECT_NEAR(corner[2], 40.0 - 3 * 0.5, 1e-6);
   EXPECT_EQ(source.files().front().filename(), "img3.dcm");
+}
+
+/// Packs the files of `dir` into a ZIP archive under `folder/`, deflated.
+std::filesystem::path zipDirectory(const std::filesystem::path& dir, const std::string& folder,
+                                   const std::filesystem::path& file) {
+  int error = 0;
+  zip_t* archive = zip_open(file.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &error);
+  EXPECT_NE(archive, nullptr);
+  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    zip_source_t* source = zip_source_file(archive, entry.path().string().c_str(), 0, -1);
+    const std::string name = folder + "/" + entry.path().filename().string();
+    EXPECT_GE(zip_file_add(archive, name.c_str(), source, ZIP_FL_ENC_UTF_8), 0);
+  }
+  // Not a slice: a note next to the slices.
+  const std::string note = "scanned on Tuesday";
+  zip_source_t* text = zip_source_buffer(archive, note.data(), note.size(), 0);
+  EXPECT_GE(zip_file_add(archive, "readme.txt", text, ZIP_FL_ENC_UTF_8), 0);
+  EXPECT_EQ(zip_close(archive), 0);
+  return file;
+}
+
+TEST_F(DicomTest, ReadsStacksInsideZipArchives) {
+  const std::filesystem::path stack = writeTiltedStack();
+  const std::filesystem::path zip = zipDirectory(stack, "series", dir_ / "scan.zip");
+  EXPECT_TRUE(isDicomArchive(zip));
+  const DicomStackSource unpacked(stack);
+  const DicomStackSource packed(zip);
+  EXPECT_EQ(packed.dims(), kDims);
+  EXPECT_EQ(packed.archive(), zip);
+  EXPECT_EQ(packed.files().front(), zip / "series" / "img3.dcm");
+  EXPECT_NEAR(packed.voxelSize()[2], 0.8, 1e-9);
+  EXPECT_NEAR(packed.voxelSize().slice_thickness_mm, 0.6, 1e-9);
+  EXPECT_EQ(packed.filePose().matrix(), unpacked.filePose().matrix());
+  EXPECT_EQ(readAll(packed), readAll(unpacked));
+  EXPECT_EQ(packed.fileContent(0).size(), std::filesystem::file_size(unpacked.files().front()));
+  EXPECT_FALSE(isDicomArchive(dir_ / "missing.zip"));
+
+  // The GUI imports it straight from the archive.
+  Gui gui;
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported = gui.call("run_import_dicom", {{"path", zip.string()}, {"brick_size", 16}});
+  EXPECT_EQ(imported.at("status"), "done");
+  EXPECT_EQ(imported.at("summary").at("dims"), Json(kDims));
+  const Json browsed = gui.call("browse", {{"path", dir_.string()}});
+  bool listed = false;
+  for (const Json& entry : browsed.at("entries")) {
+    listed = listed || (entry.at("name") == "scan.zip" && entry.at("kind") == "dicom");
+  }
+  EXPECT_TRUE(listed);
 }
 
 std::int32_t twelveBitValue(std::int64_t x, std::int64_t y, std::int64_t z) {

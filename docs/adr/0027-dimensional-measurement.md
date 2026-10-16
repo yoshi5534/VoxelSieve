@@ -15,9 +15,9 @@ system driving VoxelSieve over MCP could therefore not produce such a report.
 
 ## Decision
 
-`measure.hpp` measures an inspection plan on the surface mask (ADR 0009) of a scan, with the CAD
+`dimensional.hpp` measures an inspection plan on the surface mask (ADR 0009) of a scan, with the CAD
 model placed by a comparison; `writeMeasurement` writes `measurement.json`, `characteristics.csv`
-and two views with balloons. The operation `measure` wraps it; `first_article_report` writes the
+and two views with balloons. The operation `measure_dimensions` wraps it; `first_article_report` writes the
 report; the GUI method `cad_features` lists the geometry of a CAD model so that a client can name
 elements without knowing triangle ids.
 
@@ -63,7 +63,7 @@ elements without knowing triangle ids.
 
 - An MCP client can go from a scan and a CAD model to a first article report on its own:
   `cad_features` shows the nominal elements with ids and a picture, the client writes the plan
-  from the drawing's characteristics, `run_measure` and `run_first_article_report` do the rest.
+  from the drawing's characteristics, `run_measure_dimensions` and `run_first_article_report` do the rest.
   The MCP prompt `first_article_inspection` describes that sequence.
 - Limits that the report and the documentation state rather than hide: fits are least squares,
   not minimum zone (form values can be somewhat larger than a minimum-zone evaluation);

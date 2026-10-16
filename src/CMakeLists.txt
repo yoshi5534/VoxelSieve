@@ -48,6 +48,7 @@ add_library(voxelsieve SHARED
   dataset_reader.cpp
   denoise.cpp
   isolate.cpp
+  measure.cpp
   diconde.cpp
   dicom.cpp
   detail/blocks.cpp
@@ -59,7 +60,7 @@ add_library(voxelsieve SHARED
   source.cpp
   surface.cpp
   compare.cpp
-  measure.cpp
+  dimensional.cpp
   render.cpp
   synthetic.cpp
   telemetry.cpp

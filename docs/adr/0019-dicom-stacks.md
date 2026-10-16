@@ -55,3 +55,12 @@ the other imports; the file browser marks DICOM files and directories with DICOM
   and zlib (already built for Boost and libzip, now used directly).
 - Signed DICOM scans are stored with grey = sample + 32768; thresholds and histograms of these
   datasets are in grey values, like those of float TIFF stacks.
+
+## Amendment (2026-10-16): ZIP archives and gaps
+
+A ZIP archive of slices is read like a directory: libzip inflates each entry (checked against its
+CRC, ADR 0016) and DCMTK parses it from memory, so nothing is extracted to disk and a damaged
+entry fails the import instead of yielding a wrong slice. Slices thinner than their spacing are
+recorded as before (ADR 0012) and now also reported as a warning of the import;
+`interpolate_slices` (`InterpolatedSource`) fills the gaps with slices interpolated linearly
+between the measured ones, an estimate that the warning names as such.

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -26,6 +27,7 @@ constexpr std::uint8_t kMaterial = 1;
 constexpr std::uint8_t kSeen = 2;
 constexpr std::uint8_t kKept = 4;
 constexpr std::uint8_t kOutside = 8;
+constexpr std::uint8_t kCore = 16;  // material left after the erosion that separates objects
 
 /// The search grid: cells of `size` level-0 voxels per axis.
 struct Cells {
@@ -71,14 +73,45 @@ struct Cells {
   }
 };
 
-bool inside(const Box& box, const openvdb::Coord& c) {
-  return c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] && c.y() < box.max[1] &&
-         c.z() >= box.min[2] && c.z() < box.max[2];
-}
+/// What isolatePart keeps at most: the box, cut by the planes and the cylinder.
+struct Region {
+  Box box;
+  std::vector<CutPlane> planes;
+  std::optional<RegionCylinder> cylinder;
+
+  [[nodiscard]] bool contains(const openvdb::Coord& c) const {
+    if (!(c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] && c.y() < box.max[1] &&
+          c.z() >= box.min[2] && c.z() < box.max[2])) {
+      return false;
+    }
+    const std::array<double, 3> p{static_cast<double>(c.x()), static_cast<double>(c.y()),
+                                  static_cast<double>(c.z())};
+    for (const CutPlane& plane : planes) {
+      double side = 0.0;
+      for (std::size_t a = 0; a < 3; ++a) {
+        side += (p[a] - plane.point[a]) * plane.normal[a];
+      }
+      if (side > 0.0) {
+        return false;
+      }
+    }
+    if (cylinder) {
+      const auto axis = static_cast<std::size_t>(cylinder->axis);
+      const std::size_t u = axis == 0 ? 1 : 0;
+      const std::size_t v = axis == 2 ? 1 : 2;
+      const double du = p[u] - cylinder->center[0];
+      const double dv = p[v] - cylinder->center[1];
+      if (du * du + dv * dv > cylinder->radius * cylinder->radius) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
 
 /// Material voxels per cell, saturating at the largest uint16 value.
 std::vector<std::uint16_t> countMaterial(const Dataset& dataset, const Cells& cells,
-                                         const Box& region, float threshold) {
+                                         const Region& region, float threshold) {
   std::vector<std::uint16_t> counts(cells.count(), 0);
   dataset.forEachGrid(0, [&](const Index3& /*brick*/, const auto& grid) {
     for (auto it = grid.cbeginValueOn(); it; ++it) {
@@ -88,7 +121,7 @@ std::vector<std::uint16_t> countMaterial(const Dataset& dataset, const Cells& ce
       openvdb::CoordBBox bbox;
       it.getBoundingBox(bbox);  // one voxel, or every voxel of a tile
       for (auto c = bbox.begin(); c; ++c) {
-        if (!inside(region, *c)) {
+        if (!region.contains(*c)) {
           continue;
         }
         // Cells can straddle bricks, which run in parallel.
@@ -112,11 +145,25 @@ IsolateInfo isolatePart(const Dataset& dataset, const std::filesystem::path& dir
   if (options.keep_objects < 0 || options.max_cells < 1) {
     throw std::invalid_argument("keep_objects must not be negative and max_cells positive");
   }
-  const Box region = options.region.value_or(Box{{0, 0, 0}, data.dims});
+  if (options.separate_voxels < 0) {
+    throw std::invalid_argument("separate_voxels must not be negative");
+  }
+  const Region region{options.region.value_or(Box{{0, 0, 0}, data.dims}), options.cut_planes,
+                      options.cylinder};
   for (std::size_t a = 0; a < 3; ++a) {
-    if (region.min[a] < 0 || region.max[a] > data.dims[a] || region.min[a] >= region.max[a]) {
+    if (region.box.min[a] < 0 || region.box.max[a] > data.dims[a] ||
+        region.box.min[a] >= region.box.max[a]) {
       throw std::invalid_argument("The region must be a non-empty box inside the volume");
     }
+  }
+  for (const CutPlane& plane : options.cut_planes) {
+    if (plane.normal == std::array<double, 3>{0.0, 0.0, 0.0}) {
+      throw std::invalid_argument("A cut plane needs a normal");
+    }
+  }
+  if (options.cylinder && (options.cylinder->axis < 0 || options.cylinder->axis > 2 ||
+                           !(options.cylinder->radius > 0.0))) {
+    throw std::invalid_argument("The cylinder needs an axis 0 to 2 and a positive radius");
   }
   const float threshold = options.threshold.value_or(data.threshold);
 
@@ -172,23 +219,58 @@ IsolateInfo isolatePart(const Dataset& dataset, const std::filesystem::path& dir
       }
       return voxels;
     };
+    // With separation, objects are found in the core of the material: what is left after
+    // eroding it, so that necks thinner than twice the erosion no longer connect objects.
+    const std::int64_t erosion = (options.separate_voxels + cells.size - 1) / cells.size;
+    std::vector<std::uint16_t> next(marks.size(), 0);
+    for (auto& mark : marks) {
+      if ((mark & kMaterial) != 0) {
+        mark |= kCore;
+      }
+    }
+    for (std::int64_t step = 0; step < erosion; ++step) {
+      tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
+        bool core = (marks[i] & kCore) != 0;
+        cells.forNeighbours(i, [&](std::size_t n) { core = core && (marks[n] & kCore) != 0; });
+        next[i] = core ? 1 : 0;
+      });
+      tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
+        if (next[i] == 0) {
+          marks[i] &= static_cast<std::uint8_t>(~kCore);
+        }
+      });
+    }
     for (std::size_t i = 0; i < marks.size(); ++i) {
-      if (marks[i] == kMaterial) {
-        objects.push_back({grow(i, kMaterial, kSeen), i});
+      if ((marks[i] & (kCore | kSeen)) == kCore) {
+        objects.push_back({grow(i, kCore, kSeen), i});
       }
     }
     info.objects = static_cast<std::int64_t>(objects.size());
     std::ranges::sort(objects, std::greater<>(), &Object::material_voxels);
     objects.resize(std::min(objects.size(), static_cast<std::size_t>(options.keep_objects)));
     for (const Object& object : objects) {
-      (void)grow(object.seed, kMaterial, kKept);
+      (void)grow(object.seed, kCore, kKept);
       info.kept_material_voxels.push_back(object.material_voxels);
+    }
+    // The kept cores grow back by the erosion, but only within the material.
+    for (std::int64_t step = 0; step < erosion; ++step) {
+      tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
+        bool kept = (marks[i] & kKept) != 0;
+        if ((marks[i] & kMaterial) != 0) {
+          cells.forNeighbours(i, [&](std::size_t n) { kept = kept || (marks[n] & kKept) != 0; });
+        }
+        next[i] = kept ? 1 : 0;
+      });
+      tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
+        if (next[i] != 0) {
+          marks[i] |= kKept;
+        }
+      });
     }
 
     // The dataset's margin of air and a voxel around the kept objects, in whole cells, so that
     // their surface keeps the voxels of partial volume and the air the sieve keeps around a part.
     const std::int64_t steps = (data.margin_voxels + 1 + cells.size - 1) / cells.size;
-    std::vector<std::uint16_t>& next = counts;  // the counts are no longer needed
     for (std::int64_t step = 0; step < steps; ++step) {
       tbb::parallel_for(std::size_t{0}, marks.size(), [&](std::size_t i) {
         bool kept = (marks[i] & kKept) != 0;
@@ -238,7 +320,7 @@ IsolateInfo isolatePart(const Dataset& dataset, const std::filesystem::path& dir
             for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++i) {
               const openvdb::Coord c(static_cast<openvdb::Int32>(x), static_cast<openvdb::Int32>(y),
                                      static_cast<openvdb::Int32>(z));
-              if (!inside(region, c) ||
+              if (!region.contains(c) ||
                   (!marks.empty() && (marks[cells.ofVoxel(c)] & kOutside) != 0)) {
                 values[i] = removed;
               }
