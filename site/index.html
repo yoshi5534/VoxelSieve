@@ -33,7 +33,7 @@
         and its internal voids, and stores the result as a sparse
         <a href="https://www.openvdb.org/">OpenVDB</a> dataset. On top of it: porosity analysis,
         inspection reports after BDG&nbsp;P&nbsp;202, nominal-actual comparison with the CAD model,
-        a browser UI and an MCP server for AI assistants. Scans larger than memory work, streamed
+        dimensional measurement with first article reports, a browser UI and an MCP server for AI assistants. Scans larger than memory work, streamed
         out of core.</p>
       <p class="actions">
         <a class="btn primary" href="https://github.com/yoshi5534/VoxelSieve/blob/main/docs/quickstart.md">Quickstart</a>
@@ -70,6 +70,23 @@
         scheme) and writes an HTML report to print as PDF.</p>
     </article>
     <article>
+      <h3>Dimensional measurement</h3>
+      <p>Measures the characteristics of a drawing on the scan: planes, cylinders and spheres found
+        on the CAD model, datums 3-2-1 or RPS, sizes, form, orientation, position and profile
+        against their tolerances.</p>
+    </article>
+    <article>
+      <h3>First article report</h3>
+      <p>Cover sheet, characteristic list with nominal, tolerance, actual value and OK/NOK, and
+        views of the part with the balloon numbers, made by an AI assistant from scan and CAD
+        model.</p>
+    </article>
+    <article>
+      <h3>Denoising</h3>
+      <p>Non-local means against the measured noise of the scan, or a learned model trained on the
+        noisy scan alone, into a new dataset that keeps the part.</p>
+    </article>
+    <article>
       <h3>Nominal-actual</h3>
       <p>Aligns the CAD model (STL) to the scanned surface, from any pose, and measures the signed
         deviation of every surface point, with statistics and a coloured mesh.</p>
@@ -99,6 +116,11 @@
     <figcaption>Inspection report: evaluation per zone.</figcaption>
   </figure>
   <figure class="wide">
+    <img src="images/first-article-report.png" width="1031" height="1205" loading="lazy"
+         alt="First article inspection report of a wheel hub: cover sheet, characteristic list with one characteristic out of tolerance, and two views of the part with balloon numbers">
+    <figcaption>First article report: characteristics measured on the scan, out of tolerance in red.</figcaption>
+  </figure>
+  <figure class="wide">
     <img src="images/volume-view.png" width="1400" height="1000" loading="lazy"
          alt="3D view of a cast bell housing with pores and loosened zones inside the translucent volume">
     <figcaption>3D view: pores and loosened zones inside the translucent part.</figcaption>
@@ -121,7 +143,8 @@
       <h2>Works with AI assistants</h2>
       <p><code>vs-gui --mcp</code> serves VoxelSieve over the Model Context Protocol. An
         assistant such as Claude Desktop or Claude Code can create projects, run the analyses,
-        look at slices and write the report.</p>
+        look at slices and write the report, up to a first article inspection report from a scan
+        and its CAD model.</p>
       <p>It runs on your computer: the scans stay where they are, and the assistant only receives
         results such as pore lists, measurements, slice pictures and reports.</p>
     </div>
