@@ -384,9 +384,10 @@ Json browse(const std::filesystem::path& requested) {
       entry["directory"] = true;
     } else {
       const auto sidecar = rawSidecarPath(path);
-      entry["kind"] = isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
-                      : isGzippedXmlFile(path)                           ? "gzipped_xml"
-                      : isDicomFile(path)                                ? "dicom"
+      entry["kind"] = isDicomArchive(path)                                 ? "dicom"
+                      : isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
+                      : isGzippedXmlFile(path)                             ? "gzipped_xml"
+                      : isDicomFile(path)                                  ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
                           : "file";

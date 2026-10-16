@@ -202,6 +202,28 @@ TEST_F(VoxelSizeTest, SurfaceMeshHasTheTrueShape) {
               0.02 * phantomMaterialVolumeMm3(spec));
 }
 
+TEST(InterpolatedSource, BlendsNeighbouringSlices) {
+  Volume16 volume;
+  volume.dims = {2, 1, 3};
+  volume.voxel_size = VoxelSize(0.1, 0.1, 0.4);
+  volume.voxel_size.slice_thickness_mm = 0.2;
+  volume.data = {0, 100, 400, 500, 800, 900};
+  const MemorySource base(volume);
+  const InterpolatedSource source(base, 4);
+  EXPECT_EQ(source.dims(), (std::array<std::int64_t, 3>{2, 1, 9}));
+  EXPECT_DOUBLE_EQ(source.voxelSize()[2], 0.1);
+  EXPECT_DOUBLE_EQ(source.voxelSize().slice_thickness_mm, 0.0);
+  std::vector<std::uint16_t> all(18);
+  source.readRegion({{0, 0, 0}, {2, 1, 9}}, all);
+  EXPECT_EQ(all, (std::vector<std::uint16_t>{0, 100, 100, 200, 200, 300, 300, 400, 400, 500, 500,
+                                             600, 600, 700, 700, 800, 800, 900}));
+  // A region inside matches the whole.
+  std::vector<std::uint16_t> part(3);
+  source.readRegion({{1, 0, 5}, {2, 1, 8}}, part);
+  EXPECT_EQ(part, (std::vector<std::uint16_t>{600, 700, 800}));
+  EXPECT_THROW(InterpolatedSource(base, 0), std::invalid_argument);
+}
+
 TEST_F(VoxelSizeTest, GuiImportsVoxelSizesPerAxis) {
   PhantomSpec spec = anisotropicPhantom();
   spec.dims = {64, 64, 32};
@@ -225,6 +247,24 @@ TEST_F(VoxelSizeTest, GuiImportsVoxelSizesPerAxis) {
   EXPECT_EQ(info.at("slice_thickness_mm"), 0.12);
   const Json slice = gui.call("view_slice", {{"axis", "x"}});
   EXPECT_EQ(slice.at("pixel_size_mm"), Json::array({0.1, 0.2}));
+  // The gap between the slices is a warning that offers interpolation.
+  const Json& warnings = imported.at("summary").at("warnings");
+  ASSERT_EQ(warnings.size(), 1U);
+  EXPECT_NE(warnings.at(0).get<std::string>().find("40 %"), std::string::npos);
+  EXPECT_NE(warnings.at(0).get<std::string>().find("interpolate_slices (2"), std::string::npos);
+
+  // Interpolated: twice the slices at half the pitch, no gap left, the same part.
+  const Json interpolated = gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
+                                                        {"dims", spec.dims},
+                                                        {"voxel_size_mm", {0.1, 0.1, 0.2}},
+                                                        {"slice_thickness_mm", 0.12},
+                                                        {"interpolate_slices", 2},
+                                                        {"brick_size", 32}});
+  EXPECT_EQ(interpolated.at("summary").at("dims"), Json::array({64, 64, 63}));
+  EXPECT_EQ(interpolated.at("summary").at("voxel_size_mm"), 0.1);  // cubes now
+  EXPECT_FALSE(interpolated.at("summary").contains("slice_thickness_mm"));
+  EXPECT_NE(interpolated.at("summary").at("warnings").at(0).get<std::string>().find("filled"),
+            std::string::npos);
   EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()},
                                            {"dims", spec.dims},
                                            {"voxel_size_mm", {0.1, 0.2}}}),

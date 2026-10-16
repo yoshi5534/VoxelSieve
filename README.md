@@ -139,14 +139,18 @@ end; `--no-staging` reads the slices directly, which is much slower for large st
 
 ```sh
 ./build/release/apps/vs-sieve/vs-sieve dicom/ --out scan.vsieve          # a directory of slices
+./build/release/apps/vs-sieve/vs-sieve dicom.zip --out scan.vsieve       # the same in a ZIP archive
 ```
 
-A directory of DICOM slices is read with DCMTK (`voxelsieve::DicomStackSource`, ADR 0019):
+A directory of DICOM slices, or a ZIP archive of them (read without extracting it, each entry
+checked against its CRC), is read with DCMTK (`voxelsieve::DicomStackSource`, ADR 0019):
 uncompressed or RLE, with or without preamble, sorted along the slice normal by their position.
 Voxel size and pose come from the files. Signed samples are shifted by 32768 and, with the
 rescale slope and intercept, recorded as the value mapping, so no value is lost. When a directory
 holds several series, the largest is read and the others are printed. In the GUI this is the
-operation `import_dicom`.
+operation `import_dicom`. When the slices are thinner than their spacing, or much farther apart
+than the pixels, the import summary warns (`warnings`), and `interpolate_slices` (all imports)
+fills the gaps with slices interpolated between the measured ones.
 
 ### DICONDE
 

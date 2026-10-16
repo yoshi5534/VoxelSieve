@@ -33,7 +33,8 @@ struct DicomStackOptions {
 
 class DicomStackSource final : public VolumeSource {
  public:
-  /// A directory of slice files (not searched recursively) or a single slice file.
+  /// A directory of slice files (not searched recursively), a single slice file, or a ZIP
+  /// archive of slice files (in any of its folders), read without extracting it.
   explicit DicomStackSource(const std::filesystem::path& path,
                             const DicomStackOptions& options = {});
   /// The slices of one stack, in any order.
@@ -62,6 +63,10 @@ class DicomStackSource final : public VolumeSource {
   [[nodiscard]] RigidTransform filePose() const;
   /// The slice files in slice order (z = 0 first).
   [[nodiscard]] const std::vector<std::filesystem::path>& files() const;
+  /// The ZIP archive the files are in (they are named archive/entry), or empty.
+  [[nodiscard]] const std::filesystem::path& archive() const;
+  /// The bytes of the file `index` of files(), also from inside the archive.
+  [[nodiscard]] std::vector<std::uint8_t> fileContent(std::size_t index) const;
   [[nodiscard]] const std::string& seriesUid() const;
   /// Series that were found besides the one read, with their slice counts.
   [[nodiscard]] const std::vector<std::pair<std::string, std::size_t>>& otherSeries() const;
@@ -79,6 +84,10 @@ class DicomStackSource final : public VolumeSource {
 /// Whether `path` looks like a DICOM file: the "DICM" marker after the preamble, or one of the
 /// usual extensions (.dcm, .dicom, .dic, .ima) for files written without a preamble.
 [[nodiscard]] bool isDicomFile(const std::filesystem::path& path);
+
+/// Whether `path` is a ZIP archive of DICOM files (named .dcm, .dicom, .dic or .ima) and no TIFF
+/// files.
+[[nodiscard]] bool isDicomArchive(const std::filesystem::path& path);
 
 /// Whether a directory holds files that look like DICOM slices.
 [[nodiscard]] bool containsDicom(const std::filesystem::path& dir);

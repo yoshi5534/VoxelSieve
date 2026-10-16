@@ -23,6 +23,13 @@
   objects of the project in the materials' colours, at the pose of the segmented volume; objects
   can have a colour of their own (`color` of `add_mesh`).
 
+- **Gaps between slices**: imports warn in their summary (`warnings`) when the slices are thinner
+  than their spacing, much farther apart than the pixels, or the voxel size was only assumed, and
+  `interpolate_slices` fills the gaps with linearly interpolated slices.
+
+- **DICOM from ZIP archives**: `import_dicom` and `vs-sieve` read a ZIP archive of DICOM slices
+  directly, without extracting it.
+
 - **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
   in the background as well, and stops at the first failure.
 

@@ -80,6 +80,56 @@ void MemorySource::readRegion(const Box& box, std::span<std::uint16_t> out) cons
   copyRows(volume_.data.data(), volume_.dims, box, out);
 }
 
+InterpolatedSource::InterpolatedSource(const VolumeSource& base, int factor)
+    : base_(base), factor_(factor) {
+  if (factor < 1) {
+    throw std::invalid_argument("The interpolation factor must be at least 1");
+  }
+}
+
+std::array<std::int64_t, 3> InterpolatedSource::dims() const {
+  auto dims = base_.dims();
+  dims[2] = (dims[2] - 1) * factor_ + 1;
+  return dims;
+}
+
+VoxelSize InterpolatedSource::voxelSize() const {
+  VoxelSize size = base_.voxelSize();
+  if (factor_ > 1) {
+    size.pitch_mm[2] /= static_cast<double>(factor_);
+    size.slice_thickness_mm = 0.0;
+  }
+  return size;
+}
+
+void InterpolatedSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
+  checkRegion(box, dims(), out);
+  if (factor_ == 1) {
+    base_.readRegion(box, out);
+    return;
+  }
+  // The base slices around the region, read at once, then blended per output slice.
+  const std::int64_t first = box.min[2] / factor_;
+  const std::int64_t last = std::min(base_.dims()[2] - 1, (box.max[2] - 1 + factor_ - 1) / factor_);
+  Box read = box;
+  read.min[2] = first;
+  read.max[2] = last + 1;
+  std::vector<std::uint16_t> slices(static_cast<std::size_t>(read.voxelCount()));
+  base_.readRegion(read, slices);
+  const auto plane = static_cast<std::size_t>(box.size(0) * box.size(1));
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    const std::int64_t below = z / factor_;
+    const double t = static_cast<double>(z - below * factor_) / static_cast<double>(factor_);
+    const auto* low = slices.data() + static_cast<std::size_t>(below - first) * plane;
+    const auto* high = t > 0.0 ? low + plane : low;
+    auto* target = out.data() + static_cast<std::size_t>(z - box.min[2]) * plane;
+    for (std::size_t i = 0; i < plane; ++i) {
+      target[i] = static_cast<std::uint16_t>(
+          std::lround((1.0 - t) * static_cast<double>(low[i]) + t * static_cast<double>(high[i])));
+    }
+  }
+}
+
 struct MappedRawSource::Mapping {
   boost::iostreams::mapped_file_source file;
 };

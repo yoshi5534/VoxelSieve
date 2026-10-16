@@ -136,6 +136,63 @@ void addVoxelSizeParameters(Json& properties, const std::string& default_text) {
       {"description",
        "Slice thickness in mm when the slices are thinner than their spacing (a gap between "
        "slices); recorded, measurements use the spacing"}};
+  properties["interpolate_slices"] = {
+      {"type", "integer"},
+      {"minimum", 1},
+      {"maximum", 16},
+      {"default", 1},
+      {"description",
+       "Slices per slice spacing, the ones between interpolated linearly: 2 halves the pitch "
+       "along z. Fills the gaps between slices thinner than their spacing and makes long voxels "
+       "closer to cubes; the interpolated grey values are estimates"}};
+}
+
+/// Warnings about the voxel size of an import, also logged: an assumed size, gaps between
+/// slices and long voxels, with what interpolate_slices would do about them.
+Json voxelSizeWarnings(const VoxelSize& scanned, int factor, bool assumed,
+                       const OperationContext& context) {
+  Json warnings = Json::array();
+  const auto mm = [](double value) {
+    std::ostringstream text;
+    text << std::setprecision(4) << value << " mm";
+    return text.str();
+  };
+  if (assumed) {
+    warnings.push_back(
+        "The files give no voxel size, so 1 mm was assumed: lengths, areas and volumes are wrong "
+        "until the import is repeated with voxel_size_mm.");
+  }
+  const double spacing = scanned.pitch_mm[2];
+  const double pixel = std::max(scanned.pitch_mm[0], scanned.pitch_mm[1]);
+  if (scanned.slice_thickness_mm > 0.0 && scanned.slice_thickness_mm < spacing) {
+    const double unscanned = 100.0 * (1.0 - scanned.slice_thickness_mm / spacing);
+    std::string text = "The slices are " + mm(scanned.slice_thickness_mm) + " thick but " +
+                       mm(spacing) + " apart, so " + std::to_string(std::lround(unscanned)) +
+                       " % of the volume along z was not scanned. ";
+    if (factor > 1) {
+      text += "The gaps were filled by linear interpolation (interpolate_slices " +
+              std::to_string(factor) + "); grey values between the slices are estimates.";
+    } else {
+      const auto suggested = std::max<long>(2, std::lround(std::ceil(spacing / pixel)));
+      text +=
+          "Lengths and volumes use the spacing; to fill the gaps, import again with "
+          "interpolate_slices (" +
+          std::to_string(std::min<long>(16, suggested)) +
+          " gives about cubic voxels), knowing that the filled values are estimates.";
+    }
+    warnings.push_back(text);
+  } else if (factor == 1 && spacing > 2.0 * pixel) {
+    const auto ratio = std::lround(spacing / pixel);
+    warnings.push_back("The slices are " + mm(spacing) + " apart, " + std::to_string(ratio) +
+                       " times the pixel size: surfaces and small structures look stepped along "
+                       "z. interpolate_slices " +
+                       std::to_string(std::min<long>(16, ratio)) +
+                       " makes the voxels about cubic, with interpolated grey values.");
+  }
+  for (const Json& warning : warnings) {
+    context.log("Warning: " + warning.get<std::string>());
+  }
+  return warnings;
 }
 
 /// Voxel size from the parameters, if given; the slice thickness alone keeps `fallback`.
@@ -279,7 +336,7 @@ class ImportRaw final : public Operation {
     }
     std::uint64_t header_bytes = 0;
     const auto opened = openRawVolume(path, layout, &header_bytes);
-    const VolumeSource& source = *opened;
+    const InterpolatedSource source(*opened, p.at("interpolate_slices").get<int>());
     if (header_bytes > 0) {
       context.log("Skipped a header of " + std::to_string(header_bytes) + " bytes");
     }
@@ -302,6 +359,8 @@ class ImportRaw final : public Operation {
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
     result.summary["header_bytes"] = header_bytes;
+    result.summary["warnings"] = voxelSizeWarnings(
+        opened->voxelSize(), p.at("interpolate_slices").get<int>(), false, context);
     return result;
   }
 
@@ -379,7 +438,9 @@ class ImportTiff final : public Operation {
       tiff.voxel_size = TiffStackSource(p.at("path").get<std::string>(), tiff).voxelSize();
     }
     tiff.voxel_size = voxelSizeParameter(p, tiff.voxel_size);
-    const TiffStackSource source(p.at("path").get<std::string>(), tiff);
+    const TiffStackSource stack(p.at("path").get<std::string>(), tiff);
+    const TiffStackSource& source = stack;
+    const InterpolatedSource sieved(stack, p.at("interpolate_slices").get<int>());
     if (!source.folder().empty()) {
       context.log("Slices from " + source.folder());
     }
@@ -409,7 +470,7 @@ class ImportTiff final : public Operation {
     options.value_type = valueTypeOption(p);
     options.progress = datasetProgress(context);
     options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info = writeDataset(sieved, context.output_dir / "dataset.vsieve", options);
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -419,6 +480,9 @@ class ImportTiff final : public Operation {
     result.summary["voxel_size_from"] = p.contains("voxel_size_mm") ? "parameters"
                                         : source.fileVoxelSize()    ? "files"
                                                                     : "assumed";
+    result.summary["warnings"] =
+        voxelSizeWarnings(source.voxelSize(), p.at("interpolate_slices").get<int>(),
+                          !p.contains("voxel_size_mm") && !source.fileVoxelSize(), context);
     if (source.isFloat()) {
       result.summary["value_range"] = source.valueRange();
       result.summary["clipped_values"] = source.clippedValues();
@@ -503,13 +567,17 @@ void logDicom(const DicomStackSource& source, const OperationContext& context) {
 
 /// Writes the dataset of a DICOM stack and describes it.
 OperationResult sieveDicom(const DicomStackSource& source, const RigidTransform& pose,
-                           const OperationContext& context) {
+                           bool assumed_voxel_size, const OperationContext& context) {
+  const int factor = context.params.value("interpolate_slices", 1);
   const DatasetInfo info =
-      writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
+      writeDataset(InterpolatedSource(source, factor), context.output_dir / "dataset.vsieve",
+                   sieveOptions(context));
   OperationResult result;
   result.outputs["dataset"] = "dataset.vsieve";
   result.summary = datasetSummary(info);
   result.summary["slices"] = source.dims()[2];
+  result.summary["warnings"] =
+      voxelSizeWarnings(source.voxelSize(), factor, assumed_voxel_size, context);
   result.summary["bits_stored"] = source.bitsStored();
   result.summary["signed"] = source.isSigned();
   placeObject(context, pose, result.summary);
@@ -561,7 +629,9 @@ class ImportDicom final : public Operation {
          {{"path",
            {{"type", "string"},
             {"format", "path"},
-            {"description", "Directory of slices, or one slice file"}}},
+            {"description",
+             "Directory of slices, one slice file, or a ZIP archive of slices (read without "
+             "extracting it)"}}},
           {"series",
            {{"type", "string"},
             {"description",
@@ -590,7 +660,8 @@ class ImportDicom final : public Operation {
     }
     context.log(describeDims(source.dims()) + " voxels, voxel size " +
                 describe(source.voxelSize()));
-    OperationResult result = sieveDicom(source, source.filePose(), context);
+    OperationResult result = sieveDicom(source, source.filePose(),
+                                        !dicom.voxel_size && !source.fileVoxelSize(), context);
     result.summary["series"] = source.seriesUid();
     addDicondeSummary(source, context, result.summary);
     return result;
@@ -688,7 +759,7 @@ class ImportGzippedXml final : public Operation {
         from_files && describe(*from_files) != describe(volume.voxel_size)) {
       context.log("Voxel size of the project used; the files give " + describe(*from_files));
     }
-    OperationResult result = sieveDicom(source, volume.pose, context);
+    OperationResult result = sieveDicom(source, volume.pose, false, context);
     result.summary["volume"] = volume.name;
     result.summary["format"] = volume.format;
     result.summary["not_imported"] = project.other_files.size();
