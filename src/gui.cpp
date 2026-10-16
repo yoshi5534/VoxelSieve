@@ -117,8 +117,8 @@ void cutMesh(IndexedMesh& mesh, std::vector<std::array<std::uint8_t, 3>>& colors
         const auto& p = out.points[a];
         const auto& q = out.points[b];
         const float f = (position - p[axis]) / (q[axis] - p[axis]);
-        out.points.push_back({p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1]),
-                              p[2] + f * (q[2] - p[2])});
+        out.points.push_back(
+            {p[0] + f * (q[0] - p[0]), p[1] + f * (q[1] - p[1]), p[2] + f * (q[2] - p[2])});
         out_colors.push_back(colors[a]);
         polygon.push_back(static_cast<std::uint32_t>(out.points.size() - 1));
       }
@@ -550,10 +550,16 @@ std::vector<GuiMethod> Gui::methods() const {
       {"histogram",
        "Grey-value histogram of a dataset (its active voxels: the part, its voids and a thin "
        "margin of air) with the air threshold and a suggested number of materials: one per "
-       "peak above the threshold, with the thresholds in the valleys between them. Comes with "
-       "a picture (logarithmic scale, threshold in red, the suggested materials in their "
-       "colours). run_segment_materials with materials 0 uses the same suggestion, counted at "
-       "full resolution; to choose differently, pass materials and material_thresholds.",
+       "clear peak above the threshold, with the thresholds in the valleys between them, or "
+       "more when a Gaussian mixture fitted to the histogram also finds classes that show only "
+       "as a shoulder or a tail (clear_peaks counts the peaks alone, mixture lists the classes "
+       "with grey value, spread and share). ambiguous_fraction is the share of the voxels whose "
+       "class is uncertain (below 90 % probability): the voxels at class boundaries, a measure "
+       "of how much a segmentation depends on noise. Comes with a picture (logarithmic scale, "
+       "threshold in red, the suggested materials in their colours). To preview the classes "
+       "before segmenting, pass material_thresholds as preview_thresholds to view_slice. "
+       "run_segment_materials with materials 0 uses the same suggestion, counted at full "
+       "resolution; to choose differently, pass materials and material_thresholds.",
        [] {
          Json properties = artifactProperties();
          properties["level"] = {
@@ -599,6 +605,14 @@ std::vector<GuiMethod> Gui::methods() const {
              {"type", "integer"},
              {"description",
               "Material segmentation for the overlay; default: the latest of this dataset"}};
+         properties["preview_thresholds"] = {
+             {"type", "array"},
+             {"items", {{"type", "number"}}},
+             {"description",
+              "Preview of a material segmentation without running it: voxels above the air "
+              "threshold are coloured by the class these ascending grey values give (material 1 "
+              "below the first, 2 up to the second, ...), for example histogram's "
+              "material_thresholds. Replaces the materials overlay"}};
          properties["objects"] = {
              {"type", "array"},
              {"items", {{"type", "string"}}},
@@ -1155,6 +1169,11 @@ Json Gui::histogram(const Json& params) const {
   }
   std::vector<float> starts{info.threshold};
   starts.insert(starts.end(), suggestion.thresholds.begin(), suggestion.thresholds.end());
+  Json mixture = Json::array();
+  for (const MixtureComponent& component : suggestion.components) {
+    mixture.push_back(
+        {{"mean", component.mean}, {"sigma", component.sigma}, {"share", component.weight}});
+  }
   const std::vector<std::uint8_t> png =
       histogramPng(counts, static_cast<double>(low), bin_width, info.threshold, starts);
   Json json = {{"step", ref.step},
@@ -1167,8 +1186,11 @@ Json Gui::histogram(const Json& params) const {
                {"bin_width", bin_width},
                {"counts", counts},
                {"suggested_materials", std::max<std::size_t>(1, suggestion.peaks.size())},
+               {"clear_peaks", suggestion.clear_peaks},
                {"material_peaks", suggestion.peaks},
                {"material_thresholds", suggestion.thresholds},
+               {"mixture", mixture},
+               {"ambiguous_fraction", suggestion.ambiguous_fraction},
                {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
   if (!info.value_mapping.isIdentity()) {
     json["value_mapping"] = {{"offset", info.value_mapping.offset},
@@ -1267,7 +1289,7 @@ Json Gui::viewObjects(const Json& params) const {
   if (params.contains("cut_axis")) {
     const auto axis = static_cast<std::size_t>(params.at("cut_axis").get<std::string>()[0] - 'x');
     const double position = params.contains("cut_mm") ? params.at("cut_mm").get<double>()
-                                                       : 0.5 * (low[axis] + high[axis]);
+                                                      : 0.5 * (low[axis] + high[axis]);
     cutMesh(scene, colors, axis, static_cast<float>(position),
             params.at("cut_keep").get<std::string>() == "below");
   }
@@ -1288,11 +1310,13 @@ Json Gui::viewObjects(const Json& params) const {
   const auto png =
       detail::encodePng(static_cast<std::uint32_t>(image.width),
                         static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
-  return {
-      {"objects", listed},      {"triangles_shown", scene.triangles.size()},
-      {"bounds_min_mm", low},
-      {"bounds_max_mm", high},  {"width", image.width},
-      {"height", image.height}, {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
+  return {{"objects", listed},
+          {"triangles_shown", scene.triangles.size()},
+          {"bounds_min_mm", low},
+          {"bounds_max_mm", high},
+          {"width", image.width},
+          {"height", image.height},
+          {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
 }
 
 std::pair<std::shared_ptr<const Dataset>, std::shared_ptr<const PorosityResult>> Gui::openView(
@@ -1507,6 +1531,15 @@ Json Gui::viewSlice(const Json& params) const {
   }
   const auto& dims = levels[static_cast<std::size_t>(request.level)].dims;
   request.size = {dims[static_cast<std::size_t>(u)], dims[static_cast<std::size_t>(v)]};
+  std::vector<float> preview;
+  if (params.contains("preview_thresholds")) {
+    preview = params.at("preview_thresholds").get<std::vector<float>>();
+    if (!std::ranges::is_sorted(preview)) {
+      throw std::invalid_argument("preview_thresholds must ascend");
+    }
+    materials.reset();
+    materials_step.reset();
+  }
   const SliceImage image = readSlice(*dataset, request, porosity.get(), materials.get());
 
   float low = 0.0F;
@@ -1535,11 +1568,20 @@ Json Gui::viewSlice(const Json& params) const {
       color = {channel(0.35F * g + 165.0F), channel(0.35F * g + 25.0F), channel(0.35F * g + 25.0F)};
     } else if (image.overlay[i] == static_cast<std::uint8_t>(SliceOverlay::kZone)) {
       color = {channel(0.5F * g + 125.0F), channel(0.5F * g + 100.0F), channel(0.4F * g)};
-    } else if (materials && image.overlay[i] > static_cast<std::uint8_t>(SliceOverlay::kMaterial)) {
-      // Materials in their colour, half covering the grey value.
-      const auto id = static_cast<std::size_t>(image.overlay[i] -
-                                               static_cast<std::uint8_t>(SliceOverlay::kMaterial));
-      const auto& tint = materials->info().materials.at(id - 1).color;
+    } else if (!params.contains("preview_thresholds") || image.grey[i] <= info.threshold) {
+      if (materials && image.overlay[i] > static_cast<std::uint8_t>(SliceOverlay::kMaterial)) {
+        // Materials in their colour, half covering the grey value.
+        const auto id = static_cast<std::size_t>(
+            image.overlay[i] - static_cast<std::uint8_t>(SliceOverlay::kMaterial));
+        const auto& tint = materials->info().materials.at(id - 1).color;
+        for (std::size_t c = 0; c < 3; ++c) {
+          color[c] = channel(0.5F * g + 0.5F * static_cast<float>(tint[c]));
+        }
+      }
+    } else {
+      // The class the preview thresholds give, in the colour a segmentation would use.
+      const auto id = 1 + std::ranges::upper_bound(preview, image.grey[i]) - preview.begin();
+      const auto tint = detail::materialColor(static_cast<int>(id));
       for (std::size_t c = 0; c < 3; ++c) {
         color[c] = channel(0.5F * g + 0.5F * static_cast<float>(tint[c]));
       }
@@ -1576,6 +1618,16 @@ Json Gui::viewSlice(const Json& params) const {
       legend.push_back({{"id", material.id}, {"name", material.name}, {"color", material.color}});
     }
     result["materials"] = legend;
+  }
+  if (params.contains("preview_thresholds")) {
+    Json legend = Json::array();
+    for (std::size_t m = 0; m <= preview.size(); ++m) {
+      const int id = static_cast<int>(m) + 1;
+      legend.push_back({{"id", id},
+                        {"lower", m == 0 ? info.threshold : preview[m - 1]},
+                        {"color", detail::materialColor(id)}});
+    }
+    result["preview"] = legend;
   }
   return result;
 }

@@ -448,8 +448,24 @@ TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
   // The scan is one material, a box with lunkers.
   EXPECT_EQ(histogram.at("suggested_materials"), 1);
   EXPECT_TRUE(histogram.at("material_thresholds").empty());
+  EXPECT_LE(histogram.at("clear_peaks").get<int>(), 1);
+  ASSERT_EQ(histogram.at("mixture").size(), 1U);
+  EXPECT_NEAR(histogram.at("mixture").at(0).at("share").get<double>(), 1.0, 0.01);
+  EXPECT_GE(histogram.at("ambiguous_fraction").get<double>(), 0.0);
   EXPECT_EQ(histogram.at("image").at("mime_type"), "image/png");
   EXPECT_EQ(gui.call("histogram", {{"level", 1}}).at("level"), 1);
+
+  // A preview of two classes split at the material's peak, before segmenting.
+  const auto peak = histogram.at("material_peaks").at(0).get<float>();
+  const Json preview =
+      gui.call("view_slice", {{"preview_thresholds", Json::array({peak})}, {"max_pixels", 64}});
+  ASSERT_EQ(preview.at("preview").size(), 2U);
+  EXPECT_EQ(preview.at("preview").at(1).at("lower").get<float>(), peak);
+  EXPECT_TRUE(preview.at("materials_step").is_null());
+  const Json plain = gui.call("view_slice", {{"max_pixels", 64}});
+  EXPECT_NE(preview.at("image").at("base64"), plain.at("image").at("base64"));
+  EXPECT_THROW((void)gui.call("view_slice", {{"preview_thresholds", Json::array({2.0, 1.0})}}),
+               std::invalid_argument);
   EXPECT_THROW((void)gui.call("histogram", {{"level", 99}}), std::invalid_argument);
 
   const Json segmented = gui.call("run_segment_materials", {{"materials", 0}});
