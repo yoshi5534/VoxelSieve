@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Docker image in the MCP registry entry**: the `server.json` attached to each release also
+  lists the image on ghcr.io, run with `--mcp` on the scan directory mounted at `/data`, once the
+  image is published (`PUBLISH_IMAGE`).
+
 - **First article inspection report**: the new operation `measure_dimensions` measures the
   characteristics of a drawing on the scan (sizes, distances, angles, form, orientation, position
   and profile with their tolerances) on elements found on the CAD model, aligned on the datums of

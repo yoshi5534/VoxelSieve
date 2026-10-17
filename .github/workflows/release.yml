@@ -207,13 +207,15 @@ jobs:
 
   registry:
     # server.json for the official MCP registry: the three bundles of this release with their
-    # download links and SHA-256 hashes. Without a tag (pull requests, branch runs) the links name
-    # the tag the version would get, so the file can be checked.
+    # download links and SHA-256 hashes, and the Docker image when it is pushed (PUBLISH_IMAGE).
+    # Without a tag (pull requests, branch runs) the links name the tag the version would get, so
+    # the file can be checked.
     name: MCP registry entry
     needs: package
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      PUBLISH_IMAGE: ${{ vars.PUBLISH_IMAGE }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -238,6 +240,30 @@ jobs:
               '. + [{registryType: "mcpb", identifier: $url, fileSha256: $sha, transport: {type: "stdio"}}]' \
               <<< "$packages")"
           done
+          # The image starts the browser UI by default; MCP clients run it with --mcp on the
+          # scan directory mounted at /data.
+          if [[ "$PUBLISH_IMAGE" == "true" ]]; then
+            packages="$(jq -c --arg image "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/voxelsieve:$version" '. + [{
+              registryType: "oci",
+              identifier: $image,
+              runtimeHint: "docker",
+              transport: {type: "stdio"},
+              runtimeArguments: [
+                {type: "named", name: "--mount", value: "type=bind,src={scan_dir},dst=/data",
+                 description: "Directory with the CT scans; VoxelSieve reads and writes only there",
+                 isRequired: true,
+                 variables: {scan_dir: {description: "Directory with the CT scans",
+                                        format: "filepath", isRequired: true}}},
+                {type: "named", name: "--user", value: "{uid_gid}",
+                 description: "User and group id that may write to the scan directory (id -u):(id -g)",
+                 variables: {uid_gid: {description: "For example 1000:1000", default: "1000:1000"}}}
+              ],
+              packageArguments: [
+                {type: "positional", value: "--mcp"},
+                {type: "positional", value: "/data"}
+              ]
+            }]' <<< "$packages")"
+          fi
           jq -n --arg version "$version" --argjson packages "$packages" '{
             "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
             name: "io.github.yoshi5534/voxelsieve",
