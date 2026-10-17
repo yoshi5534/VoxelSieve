@@ -125,7 +125,8 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   EXPECT_GT(compute.at("cores_used").get<double>(), 0.0);
 
   const double memory_peak = phase(record, "memory").at("peak_rss_mb").get<double>();
-  EXPECT_GE(memory_peak, phase(record, "compute").at("peak_rss_mb").get<double>() + 90.0);
+  // Windows may trim a few pages of the 96 MiB block from the working set while it is written.
+  EXPECT_GE(memory_peak, phase(record, "compute").at("peak_rss_mb").get<double>() + 80.0);
   EXPECT_GE(record.at("total").at("peak_rss_mb").get<double>(), memory_peak);
   if (record.at("system").at("peak_per_phase").get<bool>()) {
     // The high-water mark restarts at each phase, so the write phase does not see the block.
