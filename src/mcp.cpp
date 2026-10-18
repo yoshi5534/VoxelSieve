@@ -77,9 +77,36 @@ bool contains(const std::array<std::string_view, N>& names, std::string_view nam
   return std::ranges::find(names, name) != names.end();
 }
 
+/// Words that a tool title writes in capitals.
+constexpr std::array<std::string_view, 6> kTitleAcronyms = {"cad",  "dicom", "diconde",
+                                                            "tiff", "xml",   "raw"};
+
+/// Human-readable title of a tool, from its name: "run_compare_cad" becomes "Compare CAD".
+std::string toolTitle(const std::string& name) {
+  std::string_view rest = name;
+  if (rest.starts_with("run_")) {
+    rest.remove_prefix(4);
+  }
+  std::string title;
+  while (!rest.empty()) {
+    const std::size_t end = std::min(rest.find('_'), rest.size());
+    std::string word(rest.substr(0, end));
+    if (contains(kTitleAcronyms, word)) {
+      std::ranges::transform(word, word.begin(),
+                             [](char c) { return static_cast<char>(c - 'a' + 'A'); });
+    } else if (title.empty() && word[0] >= 'a' && word[0] <= 'z') {
+      word[0] = static_cast<char>(word[0] - 'a' + 'A');
+    }
+    title += title.empty() ? word : " " + word;
+    rest.remove_prefix(std::min(end + 1, rest.size()));
+  }
+  return title;
+}
+
 Json toolAnnotations(const std::string& name) {
   const bool read_only = contains(kReadOnlyMethods, name);
-  Json annotations = {{"readOnlyHint", read_only}, {"openWorldHint", false}};
+  Json annotations = {
+      {"title", toolTitle(name)}, {"readOnlyHint", read_only}, {"openWorldHint", false}};
   if (!read_only) {
     annotations["destructiveHint"] = contains(kDestructiveMethods, name);
     annotations["idempotentHint"] = contains(kIdempotentMethods, name);
@@ -474,6 +501,7 @@ std::optional<Json> McpServer::handle(const Json& message) {
       for (const GuiMethod& tool : gui_.methods()) {
         if (offered(tool.name)) {
           tools.push_back({{"name", tool.name},
+                           {"title", toolTitle(tool.name)},
                            {"description", tool.description},
                            {"inputSchema", tool.parameters},
                            {"annotations", toolAnnotations(tool.name)}});

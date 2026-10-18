@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Tool titles for MCP clients**: every MCP tool has a readable `title`, also in its
+  annotations next to `readOnlyHint` and `destructiveHint`, as the Claude directory asks.
+
 - **`~` and new directories for `vs-gui`**: a leading `~` in the directories, `--project` and
   `--plugins` stands for the home directory, and directories that do not exist yet are created.
   MCP clients start the server without a shell, so the Claude plugin can now default to
