@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Release tags with a capital V**: the packages workflow also takes the version from a tag such
+  as `V0.5.2`; before, it stopped without building packages.
+
 - **Tool titles for MCP clients**: every MCP tool has a readable `title`, also in its
   annotations next to `readOnlyHint` and `destructiveHint`, as the Claude directory asks.
 

@@ -7,7 +7,7 @@ name: Packages
 # packages and the sample data are attached to it, with server.json, the entry of the bundles for
 # the official MCP registry; otherwise they are workflow artifacts. Publishing stays a manual
 # step: the image is pushed to ghcr.io only for a release and only once the repository variable
-# PUBLISH_IMAGE is true, and the registry entry is published by hand with mcp-publisher. All packages carry the version of the release tag (v0.3.1 gives
+# PUBLISH_IMAGE is true, and the registry entry is published by hand with mcp-publisher. All packages carry the version of the release tag (v0.3.1 or V0.3.1 gives
 # voxelsieve-0.3.1-*). Run by hand with a tag, the workflow rebuilds that release's packages and
 # replaces the ones attached to it.
 on:
@@ -71,7 +71,7 @@ jobs:
         id: version
         run: |
           if [[ -n "$TAG" ]]; then
-            version="${TAG#v}"
+            version="${TAG#[vV]}"
           else
             version="$(sed -n 's/^  set(VOXELSIEVE_VERSION \([0-9.]*\))$/\1/p' CMakeLists.txt)"
           fi
