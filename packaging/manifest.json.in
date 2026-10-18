@@ -10,6 +10,7 @@
   "documentation": "https://github.com/yoshi5534/VoxelSieve#readme",
   "repository": { "type": "git", "url": "https://github.com/yoshi5534/VoxelSieve" },
   "license": "Apache-2.0",
+  "icon": "icon.png",
   "keywords": ["ct", "computed tomography", "porosity", "inspection", "openvdb"],
   "server": {
     "type": "binary",

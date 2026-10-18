@@ -182,6 +182,14 @@ add_test(NAME sample_data
           -DORDER=${PROJECT_SOURCE_DIR}/examples/inspection_order.json
           -DOUT=${CMAKE_CURRENT_BINARY_DIR}/samples/voxelsieve-samples.zip
           -P ${PROJECT_SOURCE_DIR}/packaging/make-samples.cmake)
+# A root given as ~/... is the home directory's, and created when missing (the default of the
+# Claude plugin); browse without a path lists the first root.
+add_test(NAME vs_gui_home_root
+  COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:vs-gui> "-DARGS=--mcp;--no-reopen;~/VoxelSieve"
+          -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/mcp_browse.jsonl -P ${CMAKE_CURRENT_SOURCE_DIR}/run_with_input.cmake)
+set_tests_properties(vs_gui_home_root PROPERTIES
+                     ENVIRONMENT "HOME=${CMAKE_CURRENT_BINARY_DIR}/fake_home;USERPROFILE=${CMAKE_CURRENT_BINARY_DIR}/fake_home"
+                     PASS_REGULAR_EXPRESSION "fake_home[/\\\\]+VoxelSieve")
 add_test(NAME vs_gui_rejects_arguments COMMAND vs-gui --bogus)
 set_tests_properties(vs_gui_rejects_arguments PROPERTIES WILL_FAIL TRUE)
 

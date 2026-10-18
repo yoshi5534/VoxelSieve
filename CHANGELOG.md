@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`~` and new directories for `vs-gui`**: a leading `~` in the directories, `--project` and
+  `--plugins` stands for the home directory, and directories that do not exist yet are created.
+  MCP clients start the server without a shell, so the Claude plugin can now default to
+  `~/VoxelSieve`. The MCP bundle has an icon.
+
 - **Docker image in the MCP registry entry**: the `server.json` attached to each release also
   lists the image on ghcr.io, run with `--mcp` on the scan directory mounted at `/data`, once the
   image is published (`PUBLISH_IMAGE`).

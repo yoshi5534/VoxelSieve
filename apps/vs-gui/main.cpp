@@ -46,7 +46,9 @@ the prompts porosity_check, compare_with_cad and first_look walk through typical
 
 Directories given after the options are the only places the GUI reads data from and keeps
 projects in (with everything below them); without any, every path is allowed. Give the
-directories with your scans when an AI client drives the GUI.
+directories with your scans when an AI client drives the GUI. A directory that does not exist
+yet is created, and a leading ~ stands for the home directory (also in --project and --plugins),
+since MCP clients start the server without a shell that would expand it.
 
 Options:
   --port <n>            Port of the browser UI (default 8410, 0 picks a free one)
@@ -76,6 +78,23 @@ struct Options {
   std::vector<std::filesystem::path> plugins;
   std::vector<std::filesystem::path> roots;
 };
+
+/// `path` with a leading `~` replaced by the home directory: HOME, or USERPROFILE on Windows.
+std::filesystem::path expandHome(const std::string& path) {
+  if (path != "~" && !path.starts_with("~/") && !path.starts_with("~\\")) {
+    return path;
+  }
+#ifdef _WIN32
+  const char* home = std::getenv("USERPROFILE");  // NOLINT(concurrency-mt-unsafe): no threads yet
+#else
+  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe): no threads yet
+#endif
+  if (home == nullptr || *home == '\0') {
+    throw std::invalid_argument("No home directory to expand " + path);
+  }
+  return path.size() <= 2 ? std::filesystem::path(home)
+                          : std::filesystem::path(home) / path.substr(2);
+}
 
 std::optional<Options> parse(int argc, char** argv) {
   Options options;
@@ -111,15 +130,15 @@ std::optional<Options> parse(int argc, char** argv) {
       }
       options.port = static_cast<unsigned short>(port);
     } else if (arg == "--project") {
-      options.project = next();
+      options.project = expandHome(next());
     } else if (arg == "--no-reopen") {
       options.reopen = false;
     } else if (arg == "--plugins") {
-      options.plugins.emplace_back(next());
+      options.plugins.push_back(expandHome(next()));
     } else if (arg.starts_with("-")) {
       throw std::invalid_argument("Unknown argument " + std::string(arg));
     } else {
-      options.roots.emplace_back(arg);
+      options.roots.push_back(expandHome(std::string(arg)));
     }
   }
   return options;
@@ -193,6 +212,9 @@ int main(int argc, char** argv) {
     auto plugin_dirs = voxelsieve::pluginPathFromEnvironment();
     plugin_dirs.insert(plugin_dirs.end(), options->plugins.begin(), options->plugins.end());
     voxelsieve::Gui gui(plugin_dirs);
+    for (const auto& root : options->roots) {
+      std::filesystem::create_directories(root);
+    }
     gui.setAllowedRoots(options->roots);
     // stdout carries the protocol; everything else goes to stderr.
     for (const std::string& message : gui.pluginMessages()) {
