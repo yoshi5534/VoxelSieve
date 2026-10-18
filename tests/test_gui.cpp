@@ -738,6 +738,11 @@ TEST_F(GuiTest, McpServesToolsOverJsonRpc) {
     EXPECT_NE(tool.at("name"), "list_operations");
     EXPECT_NE(tool.at("name"), "object_add");
     EXPECT_FALSE(tool.at("annotations").at("openWorldHint"));
+    EXPECT_FALSE(tool.at("title").get<std::string>().empty());
+    EXPECT_EQ(tool.at("annotations").at("title"), tool.at("title"));
+    if (tool.at("name") == "run_compare_cad") {
+      EXPECT_EQ(tool.at("title"), "Compare CAD");
+    }
     if (tool.at("name") == "dataset_info") {
       EXPECT_TRUE(tool.at("annotations").at("readOnlyHint"));
     }
