@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/slice.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/volume.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -132,6 +134,26 @@ TEST(SuggestMaterials, FindsShouldersAndTails) {
   EXPECT_EQ(suggestMaterials(shoulder, 4500.0F, 1).peaks.size(), 1U);
 }
 
+TEST(SuggestMaterials, SplitsClassesInTheValleyBetweenThem) {
+  // A composite: a small resin peak with a tail of partial volume toward the air, and a large
+  // fibre bundle peak with a shoulder of denser bundles. The mixture finds three classes, but the
+  // resin and the bundles are split where the histogram has its valley, not where a wide and a
+  // narrow Gaussian are equally likely.
+  std::vector<std::uint64_t> histogram(65536, 0);
+  addPeak(histogram, 1000.0, 1200.0, 5e7);   // air
+  addPeak(histogram, 9000.0, 500.0, 1.1e6);  // resin
+  addPeak(histogram, 7000.0, 1800.0, 2e5);   // its partial-volume tail
+  addPeak(histogram, 12000.0, 400.0, 6e6);   // bundles
+  addPeak(histogram, 12700.0, 400.0, 2e6);   // denser bundles
+  const MaterialSuggestion suggestion = suggestMaterials(histogram, 4500.0F);
+  EXPECT_EQ(suggestion.clear_peaks, 2);
+  ASSERT_EQ(suggestion.valleys.size(), 1U);
+  EXPECT_GT(suggestion.valleys[0], 9800.0F);
+  EXPECT_LT(suggestion.valleys[0], 11000.0F);
+  ASSERT_GE(suggestion.thresholds.size(), 1U);
+  EXPECT_FLOAT_EQ(suggestion.thresholds[0], suggestion.valleys[0]);
+}
+
 TEST_F(MaterialsTest, SuggestsTheMaterialsFromTheHistogram) {
   const Scene scene = makeScene();
   DatasetOptions sieve;
@@ -168,6 +190,48 @@ double enclosedVolume(const IndexedMesh& mesh) {
               6.0;
   }
   return volume;
+}
+
+TEST_F(MaterialsTest, SplitsUnequalClassesInTheValley) {
+  // Fibre bundles with resin layers between them, 1 : 9 in volume. The split with the fewest
+  // misclassified voxels moves toward the smaller class, by sigma^2 / contrast * ln(1 / 9); the
+  // default split in the valley of the histogram finds it, Otsu stays near the middle.
+  constexpr std::int64_t kN = 96;
+  constexpr double kResin = 8000.0;
+  constexpr double kBundle = 12000.0;
+  constexpr double kSigma = 900.0;
+  Volume16 grey({kN, kN, kN}, VoxelSize{0.1});
+  std::mt19937 rng(5);
+  std::normal_distribution<double> noise(0.0, kSigma);
+  std::int64_t resin = 0;
+  std::int64_t part = 0;
+  for (std::int64_t z = 0; z < kN; ++z) {
+    for (std::int64_t y = 0; y < kN; ++y) {
+      for (std::int64_t x = 0; x < kN; ++x) {
+        double value = 1000.0;
+        if (x >= 8 && x < 88 && y >= 8 && y < 88 && z >= 8 && z < 88) {
+          const bool layer = y % 20 < 2;
+          value = layer ? kResin : kBundle;
+          resin += layer ? 1 : 0;
+          ++part;
+        }
+        grey.data[grey.index(x, y, z)] =
+            static_cast<std::uint16_t>(std::clamp(value + noise(rng), 0.0, 65535.0));
+      }
+    }
+  }
+  DatasetOptions sieve;
+  sieve.threshold = kThreshold;
+  (void)writeDataset(MemorySource(grey), dir_ / "dataset", sieve);
+  const Dataset dataset = Dataset::open(dir_ / "dataset");
+  SegmentationOptions options;
+  options.grow_steps = 0;
+  const MaterialVolumeInfo info = segmentMaterials(dataset, dir_ / "materials", options);
+  ASSERT_EQ(info.materials.size(), 2U);
+  const double share = static_cast<double>(resin) / static_cast<double>(part);
+  const double best = 0.5 * (kResin + kBundle) +
+                      kSigma * kSigma / (kBundle - kResin) * std::log(share / (1.0 - share));
+  EXPECT_NEAR(info.materials[1].lower, best, 200.0);
 }
 
 TEST_F(MaterialsTest, MeshesEachMaterial) {

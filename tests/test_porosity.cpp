@@ -5,13 +5,18 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <numbers>
+#include <random>
 #include <string>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/source.hpp"
 #include "voxelsieve/synthetic.hpp"
+#include "voxelsieve/volume.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -165,6 +170,82 @@ TEST_F(PorosityTest, LoosenedZonesMatchGroundTruth) {
   EXPECT_NEAR(found, truth.void_volume_mm3, 0.15 * truth.void_volume_mm3);
   EXPECT_NEAR(result.porosity(), truth.void_volume_mm3 / 512.0,
               0.15 * truth.void_volume_mm3 / 512.0);
+}
+
+// A composite in the manner of a woven laminate: fibre bundles in a darker resin. The fibre
+// content and so the grey value of each bundle differs by up to 1.5 %, and one bundle holds a
+// sphere loosened by 10 % unresolved voids.
+TEST_F(PorosityTest, DarkerMaterialOfACompositeIsNoZone) {
+  constexpr std::int64_t kSize = 96;
+  constexpr double kAir = 1000.0;
+  constexpr double kResin = 8000.0;
+  constexpr double kBundle = 12000.0;
+  constexpr double kVoidFraction = 0.1;
+  constexpr double kRadius = 10.0;  // voxels
+  const std::array<double, 3> centre{52.0, 31.0, 31.0};
+  Volume16 grey({kSize, kSize, kSize}, VoxelSize{0.1});
+  std::mt19937 rng(11);
+  std::normal_distribution<double> noise(0.0, 600.0);
+  const auto inside = [](std::int64_t v, std::int64_t lo, std::int64_t hi) {
+    return v >= lo && v < hi;
+  };
+  for (std::int64_t z = 0; z < kSize; ++z) {
+    for (std::int64_t y = 0; y < kSize; ++y) {
+      for (std::int64_t x = 0; x < kSize; ++x) {
+        double value = kAir;
+        if (inside(x, 16, 80) && inside(y, 16, 80) && inside(z, 16, 80)) {
+          value = kResin;
+          const int layer = inside(z, 20, 42) ? 0 : inside(z, 48, 72) ? 1 : -1;
+          const int column = inside(y, 18, 44) ? 0 : inside(y, 50, 76) ? 1 : -1;
+          if (layer >= 0 && column >= 0) {
+            value = kBundle * (1.0 + 0.015 * std::sin(1.7 * (2 * layer + column) + 0.4));
+            const double d =
+                std::hypot(static_cast<double>(x) - centre[0], static_cast<double>(y) - centre[1],
+                           static_cast<double>(z) - centre[2]);
+            if (d < kRadius) {
+              value -= kVoidFraction * (value - kAir);
+            }
+          }
+        }
+        grey.data[grey.index(x, y, z)] =
+            static_cast<std::uint16_t>(std::clamp(value + noise(rng), 0.0, 65535.0));
+      }
+    }
+  }
+  DatasetOptions sieve;
+  sieve.threshold = 4500.0F;
+  sieve.brick_size = 32;
+  (void)writeDataset(MemorySource(grey), dir_ / "scan.vsieve", sieve);
+  const Dataset dataset = Dataset::open(dir_ / "scan.vsieve");
+  SegmentationOptions segmentation;
+  segmentation.material_thresholds = {10000.0F};
+  (void)segmentMaterials(dataset, dir_ / "materials", segmentation);
+  const MaterialVolume materials = MaterialVolume::open(dir_ / "materials");
+
+  // As one material, the resin is lower than the bundles everywhere: a zone of the size of the
+  // resin's share.
+  const PorosityResult single = analyzePorosity(dataset);
+  EXPECT_GT(single.zoneVoidVolumeMm3(), 2.0);
+
+  PorosityOptions options;
+  options.materials = &materials;
+  const PorosityResult result = analyzePorosity(dataset, options);
+  ASSERT_EQ(result.material_levels.size(), 2U);
+  EXPECT_NEAR(result.material_levels.at(1), kResin, 100.0);
+  EXPECT_NEAR(result.material_levels.at(2), kBundle, 0.02 * kBundle);
+  ASSERT_EQ(result.zones.size(), 1U);
+  const PorosityZone& zone = result.zones.front();
+  EXPECT_LT(distance(zone.center_voxels, centre), 3.0);
+  const double truth =
+      kVoidFraction * 4.0 / 3.0 * std::numbers::pi * kRadius * kRadius * kRadius * 1e-3;  // mm^3
+  EXPECT_NEAR(zone.void_volume_mm3, truth, 0.25 * truth);
+  EXPECT_TRUE(result.pores.empty());
+  // The part volume no longer counts the resin as void.
+  EXPECT_NEAR(result.part_volume_mm3, 6.4 * 6.4 * 6.4, 0.01 * 6.4 * 6.4 * 6.4);
+
+  // The levels per material survive saving and loading.
+  savePorosityResult(result, dir_ / "result");
+  EXPECT_EQ(loadPorosityResult(dir_ / "result").material_levels, result.material_levels);
 }
 
 TEST_F(PorosityTest, WritesJsonImagesAndVdb) {

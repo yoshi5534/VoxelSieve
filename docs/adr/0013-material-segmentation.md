@@ -84,3 +84,20 @@ neighbouring components are equally likely. `ambiguous_fraction`, the share of t
 most likely class has a probability below 90 %, measures how much a segmentation with these
 classes depends on noise. `view_slice` with `preview_thresholds` colours a slice by such classes
 before a segmentation runs.
+
+## Amendment (2026-10-19): splits in the valley
+
+On a scan of a woven carbon fibre laminate (15 µm, resin pockets 11 % of the part next to fibre
+bundles, denoised) the default split of two classes by multi-level Otsu came out at grey value
+143, inside the bundle peak, where the valley of the histogram lies at 138; and the mixture with
+`materials` 0 put the resin's threshold at 145, because a wide component (the resin peak with the
+partial-volume tail toward the air) and a narrow one are equally likely far from the valley. Two
+changes:
+
+- Without `material_thresholds`, a segmentation with as many classes as the histogram has clear
+  peaks splits them in the valleys (`MaterialSuggestion::valleys`); Otsu remains for the other
+  cases. For two Gaussian classes of unequal volume the valley lies near the split with the
+  fewest misclassified voxels, which moves toward the smaller class; Otsu stays near the middle.
+- When the mixture's classes are suggested, the threshold between two classes with exactly one
+  clear valley between them is that valley; only classes without one (a shoulder) are split
+  where their components are equally likely.

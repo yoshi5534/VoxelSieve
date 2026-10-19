@@ -780,7 +780,10 @@ class Porosity final : public Operation {
     info_.description =
         "Finds pores and zones of loosened microstructure; writes the result, projection images "
         "and a VDB file with pores and zones.";
-    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to analyse"}};
+    info_.inputs = {
+        {"dataset", artifact::kDataset, "Dataset to analyse"},
+        {"materials", artifact::kMaterials,
+         "Material segmentation: each material is compared with its own grey value", true}};
     info_.outputs = {{"porosity", artifact::kPorosity, "Analysis result"}};
     info_.parameters = {
         {"type", "object"},
@@ -788,7 +791,14 @@ class Porosity final : public Operation {
          {{"min_pore_voxels", {{"type", "integer"}, {"minimum", 1}, {"default", 3}}},
           {"zone_sigma", {{"type", "number"}, {"minimum", 0}, {"default", 5.0}}},
           {"min_zone_void_fraction",
-           {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"default", 0.01}}}}}};
+           {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"default", 0.01}}},
+          {"per_material",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description",
+             "With a material segmentation of the dataset: compare each material with its own "
+             "grey value, so a darker material (resin between fibre bundles, a light alloy) is "
+             "no zone of loosened microstructure"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -799,6 +809,16 @@ class Porosity final : public Operation {
     options.zone_sigma = p.at("zone_sigma").get<double>();
     options.min_zone_void_fraction = p.at("min_zone_void_fraction").get<double>();
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    std::optional<MaterialVolume> materials;
+    if (const auto it = context.inputs.find("materials");
+        it != context.inputs.end() && p.value("per_material", true)) {
+      materials = MaterialVolume::open(it->second);
+      if (materials->info().dims != dataset.info().dims) {
+        throw std::invalid_argument(
+            "The material segmentation is of a volume with other dimensions than the dataset");
+      }
+      options.materials = &*materials;
+    }
     const PorosityResult porosity = analyzePorosity(dataset, options);
     context.progress(0.8);
     const TelemetryPhase phase("write results");
@@ -814,7 +834,8 @@ class Porosity final : public Operation {
                       {"zones", porosity.zones.size()},
                       {"zone_void_volume_mm3", porosity.zoneVoidVolumeMm3()},
                       {"part_volume_mm3", porosity.part_volume_mm3},
-                      {"porosity", porosity.porosity()}};
+                      {"porosity", porosity.porosity()},
+                      {"per_material", options.materials != nullptr}};
     return result;
   }
 
@@ -1173,7 +1194,8 @@ class SegmentMaterials final : public Operation {
         "Splits the part into materials by grey value: a voxel is material when it and enough "
         "of its neighbours are above the air threshold (noise spikes go, walls one voxel thin "
         "stay), material grows into touching voxels above a lower threshold, and the classes are "
-        "separated by thresholds (multi-level Otsu unless given). With materials 0 the classes "
+        "separated by thresholds (unless given: the valleys between the peaks of the histogram "
+        "when it has one per class, else multi-level Otsu). With materials 0 the classes "
         "are found in the histogram: one per peak above the air threshold, split in the valleys "
         "between them (the histogram tool shows the suggestion first). Writes a material volume "
         "with volumes per material; the slice view shows the materials in colour.";
@@ -1194,7 +1216,8 @@ class SegmentMaterials final : public Operation {
            {{"type", "array"},
             {"items", {{"type", "number"}}},
             {"description",
-             "Thresholds between the classes (materials - 1, ascending); default: Otsu"}}},
+             "Thresholds between the classes (materials - 1, ascending); default: the valleys "
+             "between the histogram's peaks when it has one per class, else Otsu"}}},
           {"min_neighbours",
            {{"type", "integer"},
             {"minimum", 1},

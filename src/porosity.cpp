@@ -41,6 +41,27 @@ constexpr int kMaxBelowInMaterialBlock = kBlockVoxels / 16;
 /// and the unsharpness of the scan, so they describe neither the material nor a zone. On faces
 /// that run obliquely through the blocks they would otherwise darken whole blocks.
 constexpr int kSurfaceBandVoxels = 3;
+/// Material ids a segmentation may use for the reference per material.
+constexpr std::size_t kMaxMaterials = 8;
+/// Material voxels per material id (index 0 unused) of one 8^3 block.
+using MaterialCounts = std::array<std::uint16_t, kMaxMaterials + 1>;
+
+/// Whether nearly all material voxels of `counts` are of material `id`, apart from a few voids
+/// and noise.
+bool holdsOnly(const MaterialCounts& counts, std::size_t id) {
+  int total = 0;
+  for (std::size_t m = 1; m <= kMaxMaterials; ++m) {
+    total += counts[m];
+  }
+  return total > 0 && counts[id] >= total - total / 16;
+}
+
+/// Index of voxel `c` in a region of `box` read x fastest.
+std::size_t regionIndex(const Box& box, const Coord& c) {
+  return static_cast<std::size_t>((c.x() - box.min[0]) +
+                                  box.size(0) *
+                                      ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])));
+}
 
 Coord blockOf(const Coord& voxel) { return {voxel.x() >> 3, voxel.y() >> 3, voxel.z() >> 3}; }
 
@@ -92,6 +113,8 @@ struct BlockSums {
   double sum = 0.0;
   double sum_sq = 0.0;
   double band_above_air = 0.0;
+  /// With a material segmentation: the materials of the voxels outside the band.
+  MaterialCounts materials{};
 };
 
 /// Everything the first streaming pass collects.
@@ -230,17 +253,14 @@ std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Co
   return components;
 }
 
-/// Material grey value as a function of the depth below the surface, which follows cupping from
-/// beam hardening: median of the block means at each depth. Loosened zones are local and cover
-/// only a small part of each depth, so the median ignores them.
+/// Depth of every block inside the part below the surface, in voxels.
 ///
 /// Depth is measured at block resolution but with sub-block precision: each block's part fraction
 /// (voxels that are neither removed nor outside air) places the surface between block centres,
 /// and depth grows by one block per step inside.
-class MaterialReference {
+class BlockDepth {
  public:
-  MaterialReference(const Scan& scan, const std::map<Coord, int>& outside,
-                    const std::map<Coord, BlockStats>& material, double fallback) {
+  BlockDepth(const Scan& scan, const std::map<Coord, int>& outside) {
     const auto fraction = [&](const Coord& block) {
       int part = 0;
       if (scan.solid.contains(block)) {
@@ -301,12 +321,31 @@ class MaterialReference {
         }
       }
     }
+  }
 
+  /// Depth of `block`; 0 for blocks outside the part.
+  [[nodiscard]] double at(const Coord& block) const {
+    const auto it = depth_.find(block);
+    return it == depth_.end() ? 0.0 : it->second;
+  }
+  [[nodiscard]] bool contains(const Coord& block) const { return depth_.contains(block); }
+
+ private:
+  std::map<Coord, double> depth_;
+};
+
+/// Grey value of one material as a function of the depth below the surface, which follows
+/// cupping from beam hardening: median of the block means at each depth. Loosened zones are local
+/// and cover only a small part of each depth, so the median ignores them.
+class DepthLevels {
+ public:
+  DepthLevels(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
+              double fallback) {
     // Median per depth bin; bins with too few blocks are skipped and interpolated over.
     std::map<int, std::vector<float>> per_bin;
     for (const auto& [block, stats] : material) {
-      if (const auto it = depth_.find(block); it != depth_.end()) {
-        per_bin[static_cast<int>(it->second / kBinVoxels)].push_back(stats.mean);
+      if (depth.contains(block)) {
+        per_bin[static_cast<int>(depth.at(block) / kBinVoxels)].push_back(stats.mean);
       }
     }
     for (auto& [bin, means] : per_bin) {
@@ -317,12 +356,22 @@ class MaterialReference {
     if (levels_.empty()) {
       levels_[0.0] = fallback;
     }
+    // Spread of the block means around the level (median absolute deviation, scaled to a
+    // standard deviation): noise, and the variation of the material itself.
+    std::vector<float> deviations;
+    for (const auto& [block, stats] : material) {
+      if (depth.contains(block)) {
+        deviations.push_back(static_cast<float>(std::abs(stats.mean - at(depth.at(block)))));
+      }
+    }
+    spread_ = kMadToSigma * median(std::move(deviations));
   }
 
-  /// Material level for the block containing `voxel`, interpolated linearly in depth.
-  [[nodiscard]] double at(const Coord& voxel) const {
-    const auto it = depth_.find(blockOf(voxel));
-    const double depth = it == depth_.end() ? 0.0 : it->second;
+  /// Standard deviation of the means of the blocks of this material around its level.
+  [[nodiscard]] double spread() const { return spread_; }
+
+  /// Level at `depth` voxels below the surface, interpolated linearly.
+  [[nodiscard]] double at(double depth) const {
     const auto upper = levels_.lower_bound(depth);
     if (upper == levels_.begin()) {
       // Above the first bin, toward the surface: cupping is steepest here, so extrapolate.
@@ -344,9 +393,170 @@ class MaterialReference {
  private:
   static constexpr double kBinVoxels = 2.0;
   static constexpr std::size_t kMinBlocks = 4;
-  std::map<Coord, double> depth_;
+  static constexpr double kMadToSigma = 1.4826;
   std::map<double, double> levels_;  // bin centre depth -> material level
+  double spread_ = 0.0;
 };
+
+/// Expected grey value of material at each block: the level by depth of the one material, or with
+/// a material segmentation the mix of the levels of the materials in the block.
+class MaterialReference {
+ public:
+  MaterialReference(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
+                    double fallback)
+      : depth_(depth) {
+    levels_.emplace_back(depth, material, fallback);
+  }
+
+  /// One level by depth per material id, from the blocks of `material` that hold that material
+  /// only (`counts`, or `restricted` for the voxels of a block that describe it); `fallbacks`
+  /// (grey value per id) where a material has no such blocks at any depth.
+  MaterialReference(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
+                    const std::map<Coord, MaterialCounts>& counts,
+                    const std::map<Coord, MaterialCounts>& restricted,
+                    const std::array<double, kMaxMaterials + 1>& fallbacks, double fallback)
+      : depth_(depth), counts_(&counts) {
+    levels_.emplace_back(depth, material, fallback);
+    for (std::size_t id = 1; id <= kMaxMaterials; ++id) {
+      std::map<Coord, BlockStats> pure;
+      for (const auto& [block, stats] : material) {
+        const auto own = restricted.find(block);
+        if (own != restricted.end()) {
+          if (holdsOnly(own->second, id)) {
+            pure.emplace(block, stats);
+          }
+        } else if (const auto it = counts.find(block);
+                   it != counts.end() && holdsOnly(it->second, id)) {
+          pure.emplace(block, stats);
+        }
+      }
+      levels_.emplace_back(depth, pure, fallbacks[id]);
+    }
+  }
+
+  /// Material level for the block containing `voxel`.
+  [[nodiscard]] double at(const Coord& voxel) const { return at(voxel, countsOf(blockOf(voxel))); }
+
+  /// Material level for the block containing `voxel` when its voxels hold `counts` of each
+  /// material (for example only those outside the surface band).
+  [[nodiscard]] double at(const Coord& voxel, const MaterialCounts* counts) const {
+    const double depth = depth_.at(blockOf(voxel));
+    if (counts != nullptr && counts_ != nullptr) {
+      double sum = 0.0;
+      int count = 0;
+      for (std::size_t id = 1; id <= kMaxMaterials; ++id) {
+        if ((*counts)[id] > 0) {
+          sum += (*counts)[id] * levels_[id].at(depth);
+          count += (*counts)[id];
+        }
+      }
+      if (count > 0) {
+        return sum / count;
+      }
+    }
+    return levels_.front().at(depth);
+  }
+
+  /// With a material segmentation: standard deviation of the block means of the materials
+  /// `counts` around their levels, weighted like the level; 0 without.
+  [[nodiscard]] double spread(const MaterialCounts* counts) const {
+    if (counts_ == nullptr) {
+      return 0.0;
+    }
+    double sum = 0.0;
+    int count = 0;
+    for (std::size_t id = 1; counts != nullptr && id <= kMaxMaterials; ++id) {
+      sum += (*counts)[id] * levels_[id].spread();
+      count += (*counts)[id];
+    }
+    return count > 0 ? sum / count : levels_.front().spread();
+  }
+
+  /// Materials of `block` with a material segmentation; nullptr without or outside the material.
+  [[nodiscard]] const MaterialCounts* countsOf(const Coord& block) const {
+    if (counts_ == nullptr) {
+      return nullptr;
+    }
+    const auto it = counts_->find(block);
+    return it == counts_->end() ? nullptr : &it->second;
+  }
+
+ private:
+  const BlockDepth& depth_;
+  const std::map<Coord, MaterialCounts>* counts_ = nullptr;
+  std::vector<DepthLevels> levels_;  // all material, then per material id
+};
+
+/// Material voxels per block and the grey value per material of `materials`, which must have the
+/// dataset's dimensions.
+struct MaterialScan {
+  std::map<Coord, MaterialCounts> counts;
+  std::array<double, kMaxMaterials + 1> mean{};  // grey value per material id
+};
+
+MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materials) {
+  const MaterialVolumeInfo& info = materials.info();
+  if (info.dims != dataset.info().dims) {
+    throw std::invalid_argument("The material volume does not have the dataset's dimensions");
+  }
+  for (const Material& material : info.materials) {
+    if (material.id < 1 || material.id > static_cast<int>(kMaxMaterials)) {
+      throw std::invalid_argument("Porosity takes material ids 1 to " +
+                                  std::to_string(kMaxMaterials));
+    }
+  }
+  struct Partial {
+    std::map<Coord, MaterialCounts> counts;
+    std::array<double, kMaxMaterials + 1> sum{};
+    std::array<double, kMaxMaterials + 1> n{};
+  };
+  tbb::combinable<Partial> partials;
+  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
+    const Box box = dataset.brickBox(0, brick);
+    std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
+    // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+    tbb::this_task_arena::isolate([&] { materials.readRegion(box, ids); });
+    Partial brick_partial;
+    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+      MaterialCounts counts{};
+      bool any = false;
+      for (auto it = leaf->cbeginValueOn(); it; ++it) {
+        const Coord c = it.getCoord();
+        const std::size_t id = ids[regionIndex(box, c)];
+        if (id == 0 || id > kMaxMaterials) {
+          continue;
+        }
+        ++counts[id];
+        brick_partial.sum[id] += *it;
+        ++brick_partial.n[id];
+        any = true;
+      }
+      if (any) {
+        brick_partial.counts.emplace(blockOf(leaf->origin()), counts);
+      }
+    }
+    Partial& local = partials.local();
+    local.counts.merge(brick_partial.counts);
+    for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
+      local.sum[id] += brick_partial.sum[id];
+      local.n[id] += brick_partial.n[id];
+    }
+  });
+  MaterialScan scan;
+  std::array<double, kMaxMaterials + 1> sum{};
+  std::array<double, kMaxMaterials + 1> n{};
+  partials.combine_each([&](Partial& local) {
+    scan.counts.merge(local.counts);
+    for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
+      sum[id] += local.sum[id];
+      n[id] += local.n[id];
+    }
+  });
+  for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
+    scan.mean[id] = n[id] > 0.0 ? sum[id] / n[id] : 0.0;
+  }
+  return scan;
+}
 
 std::array<double, 3> toArray(const Coord& c) {
   return {static_cast<double>(c.x()), static_cast<double>(c.y()), static_cast<double>(c.z())};
@@ -434,6 +644,12 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   std::optional<TelemetryPhase> phase(std::in_place, "scan bricks");
   const Scan scan = scanBricks(dataset);
   phase.reset();
+  std::optional<MaterialScan> material_scan;
+  if (options.materials != nullptr) {
+    phase.emplace("materials");
+    material_scan = scanMaterials(dataset, *options.materials);
+    phase.reset();
+  }
   phase.emplace("pores and zones");
   std::map<Coord, int> outside;
   auto band = openvdb::BoolGrid::create(false);
@@ -488,8 +704,15 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
   }
   tbb::combinable<std::map<Coord, BlockSums>> partial_sums;
-  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
-    auto& local = partial_sums.local();
+  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
+    const Box box = dataset.brickBox(0, brick);
+    std::vector<std::uint8_t> ids;
+    if (options.materials != nullptr) {
+      ids.resize(static_cast<std::size_t>(box.voxelCount()));
+      // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+      tbb::this_task_arena::isolate([&] { options.materials->readRegion(box, ids); });
+    }
+    std::map<Coord, BlockSums> brick_sums;
     const auto band_in_brick = band->getConstAccessor();
     const auto shells_in_brick = all_shells->getConstAccessor();
     for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
@@ -510,10 +733,17 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
           sums.sum += value;
           sums.sum_sq += value * value;
           ++sums.count;
+          if (!ids.empty()) {
+            const std::size_t id = ids[regionIndex(box, c)];
+            if (id >= 1 && id <= kMaxMaterials) {
+              ++sums.materials[id];
+            }
+          }
         }
       }
-      local[block] = sums;
+      brick_sums[block] = sums;
     }
+    partial_sums.local().merge(brick_sums);
   });
   std::map<Coord, BlockSums> block_sums;
   partial_sums.combine_each([&](const std::map<Coord, BlockSums>& local) {
@@ -547,7 +777,44 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   }
   result.material_level = static_cast<float>(means.empty() ? info.threshold : median(means));
   result.noise_sigma = std::sqrt(median(variances));
-  const MaterialReference reference(scan, outside, material_blocks, result.material_level);
+  const BlockDepth depth(scan, outside);
+  // The materials of the voxels outside the band and the pore shells, for the blocks restricted
+  // to those.
+  std::map<Coord, MaterialCounts> restricted_materials;
+  if (material_scan) {
+    for (const auto& [block, sums] : block_sums) {
+      restricted_materials.emplace(block, sums.materials);
+    }
+  }
+  const auto reference_counts = [&](const Coord& block) -> const MaterialCounts* {
+    const auto it = material_scan->counts.find(block);
+    return it == material_scan->counts.end() ? nullptr : &it->second;
+  };
+  const auto materials_of = [&](const Coord& block) -> const MaterialCounts* {
+    if (const auto it = restricted_materials.find(block); it != restricted_materials.end()) {
+      return &it->second;
+    }
+    return material_scan ? reference_counts(block) : nullptr;
+  };
+  const MaterialReference reference =
+      material_scan
+          ? MaterialReference(depth, material_blocks, material_scan->counts, restricted_materials,
+                              material_scan->mean, result.material_level)
+          : MaterialReference(depth, material_blocks, result.material_level);
+  if (material_scan) {
+    for (const Material& material : options.materials->info().materials) {
+      std::vector<float> pure;
+      for (const auto& [block, stats] : material_blocks) {
+        if (const MaterialCounts* counts = materials_of(block);
+            counts != nullptr && holdsOnly(*counts, static_cast<std::size_t>(material.id))) {
+          pure.push_back(stats.mean);
+        }
+      }
+      result.material_levels[material.id] = static_cast<float>(
+          pure.empty() ? material_scan->mean[static_cast<std::size_t>(material.id)]
+                       : median(std::move(pure)));
+    }
+  }
 
   // Pore volumes from the grey values of the pore and its shell.
   Dataset::Sampler grey(dataset, 0);
@@ -589,8 +856,9 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   auto flagged = openvdb::BoolGrid::create(false);
   auto flagged_acc = flagged->getAccessor();
   for (const auto& [block, stats] : scan.blocks) {
-    const double material =
-        reference.at(Coord(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock));
+    const Coord block_origin(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock);
+    const MaterialCounts* materials = material_scan ? materials_of(block) : nullptr;
+    const double material = reference.at(block_origin, materials);
     const double contrast = material - air;
     if (contrast <= 0.0) {
       continue;
@@ -615,7 +883,14 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
     deficits[block] = deficit;
     const double n = counted;
-    const double sigma = result.noise_sigma * std::sqrt(n) / kBlockVoxels / contrast;
+    // Noise of the block mean, and with several materials the variation of the materials
+    // themselves beyond that noise: the fibre content of a fibre bundle varies from block to
+    // block, and so does its grey value, without any void.
+    const double noise = result.noise_sigma * std::sqrt(n) / kBlockVoxels;
+    const double spread = reference.spread(materials);
+    const double variation =
+        std::max(0.0, spread * spread - result.noise_sigma * result.noise_sigma / kBlockVoxels);
+    const double sigma = std::sqrt(noise * noise + variation) / contrast;
     if (deficit > std::max(options.min_zone_void_fraction, options.zone_sigma * sigma)) {
       flagged_acc.setValueOn(block);
     }
@@ -771,9 +1046,14 @@ nlohmann::json toJson(const PorosityResult& result) {
                      {"bounds_min", zone.bounds.min},
                      {"bounds_max", zone.bounds.max}});
   }
+  nlohmann::json material_levels = nlohmann::json::array();
+  for (const auto& [id, level] : result.material_levels) {
+    material_levels.push_back({{"id", id}, {"level", level}});
+  }
   return {{"voxel_size_mm", v},
           {"air_level", result.air_level},
           {"material_level", result.material_level},
+          {"material_levels", material_levels},
           {"noise_sigma", result.noise_sigma},
           {"part_volume_mm3", result.part_volume_mm3},
           {"pore_volume_mm3", result.poreVolumeMm3()},
@@ -1003,6 +1283,9 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
   result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
   result.air_level = json.at("air_level").get<float>();
   result.material_level = json.at("material_level").get<float>();
+  for (const auto& level : json.value("material_levels", nlohmann::json::array())) {
+    result.material_levels[level.at("id").get<int>()] = level.at("level").get<float>();
+  }
   result.noise_sigma = json.at("noise_sigma").get<double>();
   result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
   for (const nlohmann::json& item : json.at("pores")) {

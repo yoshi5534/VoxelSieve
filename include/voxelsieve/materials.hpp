@@ -4,9 +4,9 @@
 // is above the air threshold and enough of its 26 neighbours are too, which removes isolated
 // noise spikes but keeps walls one voxel thin; material then grows into touching voxels above a
 // lower threshold (hysteresis). Each material voxel gets the class of the mean grey value of the
-// material voxels around it, split by thresholds between the classes (multi-level Otsu by
-// default). The result is a material volume: sparse integer bricks with the dataset's layout
-// plus materials.json.
+// material voxels around it, split by thresholds between the classes (by default the valleys
+// between the histogram's peaks, else multi-level Otsu). The result is a material volume: sparse
+// integer bricks with the dataset's layout plus materials.json.
 
 #include <array>
 #include <cstdint>
@@ -48,8 +48,9 @@ struct SegmentationOptions {
   /// (hysteresis), which closes gaps that noise tears into walls.
   float grow_fraction = 0.5F;
   int grow_steps = 1;
-  /// Thresholds between the material classes (materials - 1, ascending); default: multi-level
-  /// Otsu over the grey values above the air threshold.
+  /// Thresholds between the material classes (materials - 1, ascending); default: the valleys
+  /// between the peaks when the histogram has one clear peak per class (suggestMaterials), else
+  /// multi-level Otsu over the grey values above the air threshold.
   std::vector<float> material_thresholds;
   /// Names and colours of the classes in class order, for example as defined in the histogram
   /// of the GUI; a class without one is "Material <id>" in the default colour.
@@ -156,6 +157,9 @@ struct MaterialSuggestion {
   std::vector<float> thresholds;
   /// Clear peaks of the histogram; fewer than the classes when shoulders or tails add some.
   int clear_peaks = 0;
+  /// Lowest points of the smoothed histogram between neighbouring clear peaks (clear_peaks - 1,
+  /// ascending). A threshold between two classes with a valley between them lies there.
+  std::vector<float> valleys;
   /// The Gaussian mixture with one component per class (grey values), empty without voxels.
   std::vector<MixtureComponent> components;
   /// Share of the voxels above the air threshold whose class is uncertain: the most likely

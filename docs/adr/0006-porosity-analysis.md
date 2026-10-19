@@ -70,3 +70,28 @@ blocks near the surface. Memory grows with the voids and the part surface, not w
   becomes a problem.
 - The analysis assumes one material. Multi-material parts need a reference per material, which
   fits the depth bins as an additional key.
+
+## Amendment (2026-10-19): a reference per material
+
+On a woven carbon fibre laminate the resin pockets between the fibre bundles are darker than the
+bundles, and as one material they came out as one zone of loosened microstructure over the whole
+part (4.3 % "porosity" in a part without voids). `PorosityOptions::materials` takes a material
+segmentation of the dataset (ADR 0013); the operation `porosity` wires the latest one as an
+optional input (`per_material`, default true, turns it off) and `vs-porosity` takes
+`--materials`.
+
+- **Levels per material.** Each material gets its own level by depth, from the blocks whose
+  material voxels are nearly all of that material (all but a sixteenth). A block's reference is
+  the mix of the levels of the materials of its voxels, counted over the voxels that also enter
+  its deficit (outside the surface band and the pore shells), so a resin skin at the surface does
+  not lower the reference of the bundle behind it. The levels go into `porosity.json` as
+  `material_levels`.
+- **Variation of the material.** The grey value of a fibre bundle follows its fibre content,
+  which varies from bundle to bundle without any void. The detection limit therefore also counts
+  the spread of the block means of the block's materials around their levels (median absolute
+  deviation), beyond what the noise explains. Without a segmentation nothing changes.
+- **Limits.** Unresolved voids that lower a material below the threshold between two classes
+  move its voxels into the darker class and are not seen as a zone; at a fibre content that
+  varies by ±1.5 %, zones need about 5 % void to stand out. On the laminate, the zone void fell
+  from 33 mm³ to 0.23 mm³, all of it in the dark arc of a cone beam artefact at the end of the
+  scanned range.
