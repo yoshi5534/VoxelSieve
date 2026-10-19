@@ -3,10 +3,12 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -52,6 +54,12 @@ struct PorosityOptions {
   double zone_sigma = 5.0;
   /// Zones with fewer flagged blocks are ignored.
   std::int64_t min_zone_blocks = 2;
+  /// Material segmentation of the dataset (ADR 0013), not owned; must have the dataset's
+  /// dimensions. With it, every material gets its own level by depth and a block is compared with
+  /// the mix of the materials of its voxels, so the darker of two materials (resin between the
+  /// fibre bundles of a composite, a light alloy next to steel) is no zone. Without it, the part
+  /// is one material.
+  const MaterialVolume* materials = nullptr;
 };
 
 struct PorosityResult {
@@ -59,6 +67,9 @@ struct PorosityResult {
   float air_level = 0.0F;
   /// Global material grey value (median of fully material block means).
   float material_level = 0.0F;
+  /// With a material segmentation: grey value per material id (median of the means of blocks of
+  /// that material only).
+  std::map<int, float> material_levels;
   /// Standard deviation of the grey value within material (noise).
   double noise_sigma = 0.0;
   /// Volume enclosed by the outer surface of the part, voids included.

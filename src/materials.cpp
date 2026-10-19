@@ -132,10 +132,18 @@ Json toJson(const MaterialVolumeInfo& info) {
   return json;
 }
 
-/// Material thresholds from the grey values above the air threshold.
+/// Material thresholds from the grey values above the air threshold: the valleys between the
+/// peaks when the histogram has one clear peak per class, else multi-level Otsu. Otsu moves the
+/// threshold into the larger class when the classes differ much in size (resin pockets next to
+/// fibre bundles), the valley does not.
 std::vector<float> estimateMaterialThresholds(const Dataset& dataset, float air_threshold,
                                               int classes) {
   std::vector<std::uint64_t> histogram = datasetHistogram(dataset, 0);
+  const MaterialSuggestion suggestion = suggestMaterials(histogram, air_threshold, kMaxMaterials);
+  if (suggestion.clear_peaks == classes &&
+      suggestion.valleys.size() == static_cast<std::size_t>(classes - 1)) {
+    return suggestion.valleys;
+  }
   const auto first = static_cast<std::size_t>(
       std::clamp(std::floor(air_threshold) + 1.0F, 0.0F, static_cast<float>(histogram.size())));
   std::fill(histogram.begin(), histogram.begin() + static_cast<std::ptrdiff_t>(first), 0);
@@ -408,6 +416,7 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
     }
   }
   suggestion.clear_peaks = static_cast<int>(peaks.size());
+  suggestion.valleys = suggestion.thresholds;
 
   // Shoulders and tails: Gaussian mixtures with 1 to max_materials components, the one with the
   // lowest Bayesian information criterion. Classes from it replace the peaks when it finds more.
@@ -443,10 +452,20 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
     suggestion.thresholds.clear();
     for (std::size_t c = 0; c < fit.components.size(); ++c) {
       suggestion.peaks.push_back(grey(fit.components[c].mean + offset));
-      if (c > 0) {
-        suggestion.thresholds.push_back(
-            grey(mixtureBoundary(fit.components[c - 1], fit.components[c]) + offset));
+      if (c == 0) {
+        continue;
       }
+      // Real peaks are not Gaussian: a wide component (a peak with a tail of partial volume)
+      // next to a narrow one puts the equal-likelihood point far from the valley between them.
+      // Where the histogram has a valley between two classes, the class boundary is there.
+      const float low = suggestion.peaks[c - 1];
+      const float high = suggestion.peaks[c];
+      const auto inside = [&](float v) { return v > low && v < high; };
+      const auto between = std::ranges::count_if(suggestion.valleys, inside);
+      const auto valley = std::ranges::find_if(suggestion.valleys, inside);
+      suggestion.thresholds.push_back(
+          between == 1 ? *valley
+                       : grey(mixtureBoundary(fit.components[c - 1], fit.components[c]) + offset));
     }
   };
   if (fits.empty()) {

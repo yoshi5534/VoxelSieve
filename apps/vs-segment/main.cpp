@@ -31,14 +31,16 @@ constexpr std::string_view kUsage = R"(Usage: vs-segment <dataset> --out <dir> [
 Splits the part in a dataset written by vs-sieve into materials by grey value and writes a
 material volume (materials.json and one integer brick per dataset brick). A voxel is material
 when it and enough of its neighbours are above the air threshold, which removes noise spikes but
-keeps walls one voxel thin; the classes are separated by thresholds (multi-level Otsu unless
-given). With --model, a learned model (.vsm, tools/models) decides instead.
+keeps walls one voxel thin; the classes are separated by thresholds (unless given: the valleys
+between the peaks of the histogram when it has one per class, else multi-level Otsu). With
+--model, a learned model (.vsm, tools/models) decides instead.
 
 Options:
   --out <dir>             Material volume to write (required)
   --materials <n>         Number of material classes, 1 to 8 (default 2)
   --threshold <value>     Air threshold (default: the dataset's)
-  --thresholds <a,b,..>   Thresholds between the classes (default: multi-level Otsu)
+  --thresholds <a,b,..>   Thresholds between the classes (default: valleys between the peaks,
+                          else multi-level Otsu)
   --min-neighbours <n>    Voxels of the 3^3 neighbourhood above the threshold (default 6)
   --grow <n>              Hysteresis steps into voxels above the lower threshold (default 1)
   --grow-fraction <f>     Lower threshold between air level (0) and threshold (1) (default 0.5)

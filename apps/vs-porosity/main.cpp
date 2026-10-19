@@ -12,6 +12,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -29,6 +30,8 @@ Options:
   --min-pore <voxels>     Smallest pore reported (default 3)
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
+  --materials <dir>       Material volume of the dataset (vs-segment): each material is compared
+                          with its own grey value, so a darker material is no zone
   --cache <MB>            Brick cache size (default 1024)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
@@ -37,6 +40,7 @@ Options:
 struct Options {
   std::filesystem::path dataset;
   std::filesystem::path out;
+  std::filesystem::path materials;
   voxelsieve::PorosityOptions porosity;
   std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
@@ -64,6 +68,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.porosity.zone_sigma = std::stod(next());
     } else if (arg == "--zone-min") {
       options.porosity.min_zone_void_fraction = std::stod(next());
+    } else if (arg == "--materials") {
+      options.materials = next();
     } else if (arg == "--cache") {
       options.cache_mb = std::stoull(next());
     } else if (!arg.starts_with("-") && options.dataset.empty()) {
@@ -91,7 +97,13 @@ int main(int argc, char** argv) {
     const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
     const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
-    const auto result = voxelsieve::analyzePorosity(dataset, options->porosity);
+    std::optional<voxelsieve::MaterialVolume> materials;
+    voxelsieve::PorosityOptions porosity = options->porosity;
+    if (!options->materials.empty()) {
+      materials = voxelsieve::MaterialVolume::open(options->materials);
+      porosity.materials = &*materials;
+    }
+    const auto result = voxelsieve::analyzePorosity(dataset, porosity);
     const auto analysed = std::chrono::steady_clock::now();
 
     std::filesystem::create_directories(options->out);
@@ -108,8 +120,11 @@ int main(int argc, char** argv) {
               << " mm^3 void\n"
               << "porosity           " << 100.0 * result.porosity() << " %\n"
               << std::setprecision(2) << "material level     " << result.material_level
-              << " (noise " << result.noise_sigma << ")\n"
-              << "time               analyse "
+              << " (noise " << result.noise_sigma << ")\n";
+    for (const auto& [id, level] : result.material_levels) {
+      std::cout << "  material " << id << "       " << level << "\n";
+    }
+    std::cout << "time               analyse "
               << std::chrono::duration<double>(analysed - start).count() << " s, write "
               << std::chrono::duration<double>(written - analysed).count() << " s\n";
     voxelsieve::reportTelemetry(telemetry, options->telemetry);
