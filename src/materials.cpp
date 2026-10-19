@@ -460,10 +460,9 @@ MaterialSuggestion suggestMaterials(const std::vector<std::uint64_t>& histogram,
       // Where the histogram has a valley between two classes, the class boundary is there.
       const float low = suggestion.peaks[c - 1];
       const float high = suggestion.peaks[c];
-      const auto between = std::ranges::count_if(
-          suggestion.valleys, [&](float valley) { return valley > low && valley < high; });
-      const auto valley = std::ranges::find_if(
-          suggestion.valleys, [&](float valley) { return valley > low && valley < high; });
+      const auto inside = [&](float v) { return v > low && v < high; };
+      const auto between = std::ranges::count_if(suggestion.valleys, inside);
+      const auto valley = std::ranges::find_if(suggestion.valleys, inside);
       suggestion.thresholds.push_back(
           between == 1 ? *valley
                        : grey(mixtureBoundary(fit.components[c - 1], fit.components[c]) + offset));
