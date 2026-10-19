@@ -29,6 +29,7 @@
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/model.hpp"
 #include "voxelsieve/operation.hpp"
+#include "voxelsieve/orientation.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/preview.hpp"
 #include "voxelsieve/project.hpp"
@@ -836,6 +837,99 @@ class Porosity final : public Operation {
                       {"part_volume_mm3", porosity.part_volume_mm3},
                       {"porosity", porosity.porosity()},
                       {"per_material", options.materials != nullptr}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class FibreOrientation final : public Operation {
+ public:
+  FibreOrientation() {
+    info_.id = "fibre_orientation";
+    info_.title = "Fibre orientation";
+    info_.description =
+        "Directions of the fibres of a fibre-reinforced part from the structure tensor of the "
+        "grey values, one per block, grouped into fibre families (warp and weft of a fabric, the "
+        "plies of a laminate) with their share. With a material segmentation only the fibre "
+        "material counts (by default the one with the highest grey value, such as the fibre "
+        "bundles next to the resin). Writes orientation.json, slices coloured by direction and a "
+        "VDB file with the directions.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to analyse"},
+                    {"materials", artifact::kMaterials,
+                     "Material segmentation: only the fibre material is analysed", true}};
+    info_.outputs = {{"orientation", artifact::kFibreOrientation, "Fibre directions"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"block_size",
+           {{"type", "integer"},
+            {"minimum", 4},
+            {"maximum", 128},
+            {"default", 16},
+            {"description", "Edge in voxels of the blocks that get one direction each"}}},
+          {"families",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 6},
+            {"default", 2},
+            {"description",
+             "Number of fibre families: 2 for a woven fabric, one per ply direction of a "
+             "laminate"}}},
+          {"material",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Material id of the fibres in the segmentation; 0: the one with the highest grey "
+             "value"}}},
+          {"smoothing_sigma",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 4},
+            {"default", 1.0},
+            {"description", "Gaussian smoothing in voxels before the gradients"}}},
+          {"min_coherence",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"default", 0.1},
+            {"description", "Blocks less directional than this are left out of the families"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    OrientationOptions options;
+    options.block_size = p.at("block_size").get<int>();
+    options.families = p.at("families").get<int>();
+    options.material = p.at("material").get<int>();
+    options.smoothing_sigma = p.at("smoothing_sigma").get<double>();
+    options.min_coherence = p.at("min_coherence").get<double>();
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    std::optional<MaterialVolume> materials;
+    if (const auto it = context.inputs.find("materials"); it != context.inputs.end()) {
+      materials = MaterialVolume::open(it->second);
+      options.materials = &*materials;
+    }
+    const OrientationResult orientation = analyzeOrientation(dataset, options);
+    context.progress(0.9);
+    const TelemetryPhase phase("write results");
+    writeOrientationResult(dataset, orientation, context.output_dir / "orientation");
+    OperationResult result;
+    result.outputs["orientation"] = "orientation";
+    Json families = Json::array();
+    for (const FibreFamily& family : orientation.families) {
+      families.push_back({{"id", family.id},
+                          {"direction", family.direction},
+                          {"fraction", family.fraction},
+                          {"spread_deg", family.spread_deg}});
+    }
+    result.summary = {{"material", orientation.material},
+                      {"blocks", orientation.blocks.size()},
+                      {"mean_coherence", orientation.mean_coherence},
+                      {"families", families}};
     return result;
   }
 
@@ -2576,6 +2670,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportDicom>());
   registry.add(std::make_shared<ImportGzippedXml>());
   registry.add(std::make_shared<Porosity>());
+  registry.add(std::make_shared<FibreOrientation>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<MaterialMeshes>());

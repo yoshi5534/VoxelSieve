@@ -27,7 +27,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     measurement: elements found on the CAD model, fitted to the scan, datum alignment and
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
-  - `porosity.hpp` pores and loosened zones in a dataset, with JSON, PNG and VDB output
+  - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
+    PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
+    the structure tensor (ADR 0028)
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
     its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
     any per-voxel processing that keeps the part
