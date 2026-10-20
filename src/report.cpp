@@ -14,6 +14,7 @@
 #include "detail/png.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/slice.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -121,6 +122,30 @@ std::string formatSigned(double value, int decimals) {
     return text;
   }
   return (value < 0.0 ? "−" : "+") + text;
+}
+
+/// Numbers the sections of the report that come after the results and depend on what it holds.
+void numberSections(Json& data) {
+  int next = 7;
+  Json section = Json::object();
+  for (const char* name : {"materials", "fibres", "comparison"}) {
+    if (data.contains(name)) {
+      section[name] = next++;
+    }
+  }
+  section["assessment"] = next;
+  data["section"] = section;
+}
+
+/// Angle in degrees between two directions, whatever their sign.
+double axialAngleDeg(const std::array<double, 3>& a, const std::array<double, 3>& b) {
+  const double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const double norm = std::sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) *
+                                (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]));
+  if (norm <= 0.0) {
+    throw std::invalid_argument("A fibre direction must not be zero");
+  }
+  return std::acos(std::clamp(std::abs(dot) / norm, 0.0, 1.0)) * 180.0 / std::numbers::pi;
 }
 
 std::string hexColor(const std::array<std::uint8_t, 3>& c) {
@@ -517,6 +542,14 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
   data["images"] = {{"x", dataUri(image_dir / "projection_x.png")},
                     {"y", dataUri(image_dir / "projection_y.png")},
                     {"z", dataUri(image_dir / "projection_z.png")}};
+  if (!result.material_levels.empty()) {
+    Json levels = Json::object();
+    for (const auto& [id, level] : result.material_levels) {
+      levels[std::to_string(id)] = formatNumber(level, 0);
+    }
+    data["analysis"]["material_levels"] = levels;
+  }
+  numberSections(data);
   return data;
 }
 
@@ -626,6 +659,250 @@ void addComparison(Json& data, const std::filesystem::path& dir, const std::stri
   data["images"]["deviation_2"] = dataUri(dir / "deviation_view_2.png");
   data["images"]["deviation_histogram"] =
       deviationHistogramSvg(d.at("histogram").get<std::vector<double>>(), tolerance, range);
+  numberSections(data);
+}
+
+namespace {
+
+/// Slice through the middle of `dataset` normal to `axis` with the material classes blended
+/// over the grey values, from the coarsest level that still has 900 pixels along its longer side.
+RenderImage materialSlice(const Dataset& dataset, const MaterialVolume& materials, int axis) {
+  const DatasetInfo& info = dataset.info();
+  const auto [u, v] = sliceAxes(axis);
+  int level = 0;
+  while (level + 1 < static_cast<int>(info.levels.size()) &&
+         (std::max(info.dims[u], info.dims[v]) >> (level + 1)) >= 900) {
+    ++level;
+  }
+  SliceRequest request;
+  request.axis = axis;
+  request.index = info.dims[axis] / 2;
+  request.level = level;
+  const std::int64_t step = std::int64_t{1} << level;
+  request.size = {(info.dims[u] + step - 1) / step, (info.dims[v] + step - 1) / step};
+  const SliceImage slice = readSlice(dataset, request, nullptr, &materials);
+
+  std::vector<float> material_values;
+  for (const float g : slice.grey) {
+    if (g > info.threshold) {
+      material_values.push_back(g);
+    }
+  }
+  const float low = info.air_level;
+  float high = low + 1.0F;
+  if (!material_values.empty()) {
+    const auto top =
+        material_values.begin() +
+        static_cast<std::ptrdiff_t>(0.995 * static_cast<double>(material_values.size()));
+    std::nth_element(material_values.begin(), top, material_values.end());
+    high = std::max(high, *top);
+  }
+  std::map<int, std::array<std::uint8_t, 3>> colors;
+  for (const Material& material : materials.info().materials) {
+    colors[material.id] = material.color;
+  }
+  RenderImage image;
+  image.width = static_cast<int>(slice.width);
+  image.height = static_cast<int>(slice.height);
+  image.pixels.resize(static_cast<std::size_t>(slice.width * slice.height) * 3);
+  for (std::size_t i = 0; i < slice.grey.size(); ++i) {
+    const double grey = 255.0 * std::clamp((slice.grey[i] - low) / (high - low), 0.0F, 1.0F);
+    const int overlay = slice.overlay[i];
+    const int first_material = static_cast<int>(SliceOverlay::kMaterial);
+    const auto color =
+        overlay > first_material ? colors.find(overlay - first_material) : colors.end();
+    for (std::size_t c = 0; c < 3; ++c) {
+      const double value = color == colors.end()
+                               ? grey
+                               : 0.55 * grey + 0.45 * color->second[c] * (grey / 255.0 + 0.5);
+      image.pixels[3 * i + c] = static_cast<std::uint8_t>(std::clamp(value, 0.0, 255.0));
+    }
+  }
+  return image;
+}
+
+Json readJsonFile(const std::filesystem::path& file) {
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("Cannot read " + file.string());
+  }
+  return Json::parse(in);
+}
+
+std::string percentText(double fraction) { return formatNumber(100.0 * fraction, 1) + " %"; }
+
+}  // namespace
+
+void addMaterials(Json& data, const std::filesystem::path& dir, const Dataset* dataset) {
+  const MaterialVolume materials = MaterialVolume::open(dir);
+  const MaterialVolumeInfo& info = materials.info();
+  double total = 0.0;
+  for (const Material& material : info.materials) {
+    total += material.volume_mm3;
+  }
+  const Json levels = data.contains("analysis")
+                          ? data["analysis"].value("material_levels", Json::object())
+                          : Json::object();
+  Json classes = Json::array();
+  for (std::size_t i = 0; i < info.materials.size(); ++i) {
+    const Material& material = info.materials[i];
+    std::string range = "from " + formatNumber(material.lower, 1);
+    if (i + 1 < info.materials.size()) {
+      range =
+          formatNumber(material.lower, 1) + " to " + formatNumber(info.materials[i + 1].lower, 1);
+    }
+    Json row = {{"id", material.id},
+                {"name", material.name},
+                {"color", hexColor(material.color)},
+                {"grey_values", info.model.empty() ? range : "learned model"},
+                {"volume", formatNumber(material.volume_mm3, 2)},
+                {"share", percentText(total > 0.0 ? material.volume_mm3 / total : 0.0)}};
+    if (const auto level = levels.find(std::to_string(material.id)); level != levels.end()) {
+      row["porosity_level"] = *level;
+    }
+    classes.push_back(row);
+  }
+  data["materials"] = {
+      {"method", info.model.empty()
+                     ? "grey value thresholds on the locally averaged grey value, air below " +
+                           formatNumber(info.air_threshold, 1)
+                     : "learned model " + info.model},
+      {"classes", classes},
+      {"volume", formatNumber(total, 1) + " mm³"},
+      {"per_material_porosity", !levels.empty()}};
+  if (dataset != nullptr) {
+    if (dataset->info().dims != info.dims) {
+      throw std::invalid_argument("The material volume does not match the dataset");
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+      data["images"][std::string("materials_") + "xyz"[axis]] =
+          dataUri(materialSlice(*dataset, materials, axis));
+    }
+  }
+  numberSections(data);
+}
+
+void addFibreOrientation(Json& data, const std::filesystem::path& dir, const Json& order) {
+  const Json o = readJsonFile(dir / "orientation.json");
+  const auto direction_text = [](const std::array<double, 3>& d) {
+    return formatSigned(d[0], 3) + ", " + formatSigned(d[1], 3) + ", " + formatSigned(d[2], 3);
+  };
+  std::vector<std::array<double, 3>> directions;
+  std::vector<double> fractions;
+  Json families = Json::array();
+  for (const Json& family : o.at("families")) {
+    const auto d = family.at("direction").get<std::array<double, 3>>();
+    directions.push_back(d);
+    fractions.push_back(family.at("fraction").get<double>());
+    std::string axes;
+    for (int a = 0; a < 3; ++a) {
+      std::array<double, 3> axis{};
+      axis[static_cast<std::size_t>(a)] = 1.0;
+      axes += std::string(a > 0 ? ", " : "") + "xyz"[a] + " " +
+              formatNumber(axialAngleDeg(d, axis), 1) + "°";
+    }
+    families.push_back({{"id", family.at("id")},
+                        {"direction", direction_text(d)},
+                        {"angles", axes},
+                        {"share", percentText(family.at("fraction").get<double>())},
+                        {"spread", formatNumber(family.at("spread_deg").get<double>(), 1) + "°"},
+                        {"blocks", family.at("blocks")}});
+  }
+  const auto voxel_size = o.at("voxel_size_mm").get<VoxelSize>();
+  const int block = o.at("block_size").get<int>();
+  const int material = o.value("material", 0);
+  std::string material_name = material == 0 ? "all material above the air threshold"
+                                            : "material " + std::to_string(material);
+  if (data.contains("materials")) {
+    for (const Json& c : data["materials"]["classes"]) {
+      if (c.value("id", 0) == material) {
+        material_name = c.at("name").get<std::string>();
+      }
+    }
+  }
+  std::string block_text = formatNumber(block * voxel_size[0], 2);
+  if (!voxel_size.isotropic()) {
+    block_text += " × " + formatNumber(block * voxel_size[1], 2) + " × " +
+                  formatNumber(block * voxel_size[2], 2);
+  }
+  std::string eigenvalues;
+  for (const double value : o.at("tensor_eigenvalues")) {
+    eigenvalues += (eigenvalues.empty() ? "" : " / ") + formatNumber(value, 3);
+  }
+  data["fibres"] = {{"block", std::to_string(block) + " voxels (" + block_text + " mm)"},
+                    {"material", material_name},
+                    {"blocks", o.value("analysed_blocks", 0)},
+                    {"coherence", formatNumber(o.value("mean_coherence", 0.0), 2)},
+                    {"eigenvalues", eigenvalues},
+                    {"families", families}};
+  for (const char axis : {'x', 'y', 'z'}) {
+    data["images"][std::string("orientation_") + axis] =
+        dataUri(dir / (std::string("orientation_") + axis + ".png"));
+  }
+
+  const Json required = order.is_object() && order.contains("fibres")
+                            ? order["fibres"].value("families", Json::array())
+                            : Json::array();
+  if (!required.empty()) {
+    if (directions.empty()) {
+      throw std::invalid_argument("The fibre orientation found no fibre families to evaluate");
+    }
+    Json criteria = Json::array();
+    bool passed = true;
+    const auto add = [&](const std::string& label, const std::string& measured,
+                         const std::string& limit, bool ok) {
+      criteria.push_back({{"label", label},
+                          {"measured", measured},
+                          {"limit", limit},
+                          {"passed", ok},
+                          {"verdict", ok ? "passed" : "failed"}});
+      passed = passed && ok;
+    };
+    for (const Json& family : required) {
+      const auto nominal = family.at("direction").get<std::array<double, 3>>();
+      const std::string name = family.value("name", "Fibre family " + direction_text(nominal));
+      std::size_t best = 0;
+      for (std::size_t i = 1; i < directions.size(); ++i) {
+        if (axialAngleDeg(directions[i], nominal) < axialAngleDeg(directions[best], nominal)) {
+          best = i;
+        }
+      }
+      const double angle = axialAngleDeg(directions[best], nominal);
+      if (family.contains("tolerance_deg")) {
+        const double tolerance = family.at("tolerance_deg").get<double>();
+        add(name + ": deviation of the direction", formatNumber(angle, 1) + "°",
+            "≤ " + formatNumber(tolerance, 1) + "°", angle <= tolerance);
+      }
+      const double share = 100.0 * fractions[best];
+      if (family.contains("min_share_percent")) {
+        const double limit = family.at("min_share_percent").get<double>();
+        add(name + ": share", formatNumber(share, 1) + " %", "≥ " + formatNumber(limit, 1) + " %",
+            share >= limit);
+      }
+      if (family.contains("max_share_percent")) {
+        const double limit = family.at("max_share_percent").get<double>();
+        add(name + ": share", formatNumber(share, 1) + " %", "≤ " + formatNumber(limit, 1) + " %",
+            share <= limit);
+      }
+    }
+    const Json block_json = {{"name", "Fibre orientation"},
+                             {"region", "fibre families of the " + material_name},
+                             {"criteria", criteria},
+                             {"passed", passed},
+                             {"verdict", passed ? "passed" : "failed"}};
+    if (!data.contains("evaluation")) {
+      data["evaluation"] = {
+          {"guideline", order["fibres"].value("guideline", std::string("the inspection order"))},
+          {"zones", Json::array()},
+          {"passed", true}};
+    }
+    Json& evaluation = data["evaluation"];
+    evaluation["zones"].push_back(block_json);
+    evaluation["passed"] = evaluation.value("passed", true) && passed;
+    evaluation["verdict"] = evaluation["passed"].get<bool>() ? "The requirements are met."
+                                                             : "The requirements are not met.";
+  }
+  numberSections(data);
 }
 
 namespace {

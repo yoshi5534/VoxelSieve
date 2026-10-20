@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include "voxelsieve/dataset.hpp"
+#include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
@@ -97,6 +99,23 @@ void addPartImages(nlohmann::json& data, const SurfaceMask& surface, const Poros
 /// names the CAD model in the report; empty takes cad_path from compare.json.
 void addComparison(nlohmann::json& data, const std::filesystem::path& dir,
                    const std::string& cad_name = {});
+
+/// Adds a material segmentation (ADR 0013) in `dir`: the classes with their grey values, volume
+/// and share of the segmented volume (data.materials) and, with `dataset`, a slice through the
+/// middle along each axis with the classes coloured over the grey values (images.materials_x,
+/// images.materials_y, images.materials_z; one pixel per voxel of the level shown).
+void addMaterials(nlohmann::json& data, const std::filesystem::path& dir,
+                  const Dataset* dataset = nullptr);
+
+/// Adds a fibre orientation written by writeOrientationResult in `dir` (ADR 0028): the families
+/// with direction, angles to the axes, share and spread, the orientation tensor (data.fibres) and
+/// the slices coloured by direction (images.orientation_x, _y, _z). The fibre families required
+/// by the "fibres" section of `order` are each compared with the measured family closest to
+/// their direction: the angle between them against `tolerance_deg` and the share against
+/// `min_share_percent` and `max_share_percent`. These criteria join data.evaluation as a block of
+/// their own and count for its verdict.
+void addFibreOrientation(nlohmann::json& data, const std::filesystem::path& dir,
+                         const nlohmann::json& order);
 
 /// Renders a template with a subset of Mustache: {{name}} (HTML-escaped), {{{name}}} (raw),
 /// dotted names, sections {{#name}}...{{/name}} over lists, objects and true values, inverted

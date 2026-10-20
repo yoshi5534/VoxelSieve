@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Report for fibre composites**: the report step takes a material segmentation and a fibre
+  orientation as well. The report then lists the materials with their shares and slices coloured
+  by material, and the fibre families with direction, share and spread; a `fibres` section in
+  the inspection order sets a direction tolerance and a share range per family, which count for
+  the verdict. Sections after the results are numbered by what the report holds.
+
 - **Fibre orientation**: the new operation `fibre_orientation` finds the direction of the fibres
   of a composite block by block from the structure tensor of the grey values, groups the blocks
   into fibre families (warp and weft of a fabric, the plies of a laminate) with their share and

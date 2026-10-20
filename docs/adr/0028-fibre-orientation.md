@@ -48,3 +48,11 @@ from the gradient structure tensor; the operation `fibre_orientation` wraps it.
   the spread and share make visible. Choosing the count automatically is left open.
 - Fibre volume content per family, waviness along a bundle and the comparison with the nominal
   layup of a ply book are not covered yet.
+
+## Amendment (2026-10-20): fibre orientation in the report
+
+The report step takes a fibre orientation (and a material segmentation) as optional inputs. The
+inspection order gets a `fibres` section with the required families: nominal direction,
+direction tolerance and share range. Each required family is compared with the measured family
+closest to its direction; the criteria form a block of their own in the assessment and count for
+its verdict.
