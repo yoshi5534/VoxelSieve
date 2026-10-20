@@ -34,6 +34,7 @@ assistant, using sample data. The tools:
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
+| `vs-battery` | battery cell → housing, electrode layers, anode overhang, particles, voids, report |
 | `vs-gui` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
 | `vs-phantom` | simple box phantom with analytic ground truth |
@@ -420,6 +421,31 @@ one HTML file from a replaceable template (`vs-report --print-first-article-temp
 `docs/adr/0027-dimensional-measurement.md` for the method and its limits.
 
 ![First article inspection report of the sample hub: characteristics and ballooned views](docs/images/first-article-report.png)
+
+## Battery cells
+
+`vs-battery` (operation `battery_inspection`) inspects a lithium-ion cell, cylindrical (wound
+electrodes in a can) or stacked (pouch, prismatic): diameter, out-of-roundness, dents and wall of
+the housing per cross-section, the core, the number and pitch of the electrode layers and gaps
+between them, the anode overhang at every edge of the electrode stack layer by layer, the
+unevenness of the electrode edges, and metal particles and gas voids between the layers. With
+`--order examples/battery_order.json` (operation `battery_report`) it writes a test report that
+assesses the cell against the requirements of the order: overhang, layer count, dimensions,
+roundness, wall, gaps, particles and voids.
+
+```sh
+vs-battery --cell cylindrical --out cell --extension 3 1 0.35 40 100   # synthetic cell, defect
+vs-sieve cell.raw --out cell.vsieve
+vs-battery cell.vsieve --out cell_result --order examples/battery_order.json
+```
+
+The synthetic cell's fourth cathode turn sticks out at the top over 60°; the report finds it in
+that layer and angle:
+
+![Anode overhang per edge in the battery cell report, with the section of the smallest overhang](docs/images/battery-report.png)
+
+The cell axis or stack normal must lie along a volume axis. See
+`docs/adr/0029-battery-cell-inspection.md` for the method and its limits.
 
 ## Projects, operations and plugins
 

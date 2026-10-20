@@ -1,10 +1,13 @@
 #include "voxelsieve/report.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <numbers>
 #include <span>
@@ -1080,6 +1083,432 @@ nlohmann::json firstArticleData(const nlohmann::json& order,
                                                                : "open"}};
   data["images"]["measurement_1"] = dataUri(measurement_dir / "measurement_view_1.png");
   data["images"]["measurement_2"] = dataUri(measurement_dir / "measurement_view_2.png");
+  return data;
+}
+
+namespace {
+
+/// A length in mm with three decimals, or "–" where nothing was measured.
+std::string mmText(const Json& value) {
+  return value.is_number() ? formatNumber(value.get<double>(), 3) + " mm" : "–";
+}
+
+/// The same without the unit, for table columns that name it in the header.
+std::string numberText(const Json& value) {
+  return value.is_number() ? formatNumber(value.get<double>(), 3) : "–";
+}
+
+std::string signedText(const Json& value) {
+  return value.is_number() ? formatSigned(value.get<double>(), 3) : "–";
+}
+
+/// Colours of the edges in the overhang chart, in a fixed order.
+constexpr std::array<std::string_view, 4> kEdgeColors = {"#2a78d6", "#eb6834", "#1baf7a",
+                                                         "#eda100"};
+
+/// Smallest overhang per section of every edge, as SVG: one series per edge over the angle
+/// (cylindrical) or the position along the edge (stacked), with the required minimum dashed.
+std::string overhangChartSvg(const Json& battery, const Json& limit) {
+  constexpr double kWidth = 640.0;
+  constexpr double kHeight = 230.0;
+  constexpr double kLeft = 52.0;
+  constexpr double kRight = 520.0;
+  constexpr double kTop = 12.0;
+  constexpr double kBottom = 190.0;
+  const bool cylindrical = battery.at("type") == "cylindrical";
+  const std::string key = cylindrical ? "angle_deg" : "position_mm";
+  // Per edge: section -> smallest overhang.
+  std::vector<std::map<double, double>> series(battery.at("edges").size());
+  double xmin = std::numeric_limits<double>::infinity();
+  double xmax = -xmin;
+  double ymin = limit.is_number() ? limit.get<double>() : xmin;
+  double ymax = limit.is_number() ? limit.get<double>() : -xmin;
+  for (const Json& sample : battery.at("overhang")) {
+    const auto edge = sample.at("edge").get<std::size_t>();
+    const double x = sample.at(key).get<double>();
+    const double y = sample.at("overhang_mm").get<double>();
+    auto& points = series.at(edge);
+    const auto it = points.find(x);
+    points[x] = it == points.end() ? y : std::min(it->second, y);
+    xmin = std::min(xmin, x);
+    xmax = std::max(xmax, x);
+    ymin = std::min(ymin, y);
+    ymax = std::max(ymax, y);
+  }
+  if (!std::isfinite(xmin) || !std::isfinite(ymin)) {
+    return {};
+  }
+  if (cylindrical) {
+    xmin = 0.0;
+    xmax = 360.0;
+  }
+  if (xmax <= xmin) {
+    xmax = xmin + 1.0;
+  }
+  // Round ticks: steps of 1, 2 or 5 times a power of ten, zero included.
+  ymin = std::min(ymin, 0.0);
+  ymax = std::max(ymax, ymin + 0.05);
+  const double raw_step = (ymax - ymin) / 4.0;
+  const double magnitude = std::pow(10.0, std::floor(std::log10(raw_step)));
+  double step = 10.0 * magnitude;
+  for (const double f : {1.0, 2.0, 5.0}) {
+    if (f * magnitude >= raw_step) {
+      step = f * magnitude;
+      break;
+    }
+  }
+  ymin = std::floor(ymin / step) * step;
+  ymax = std::ceil(ymax / step) * step;
+  const int ticks = static_cast<int>(std::lround((ymax - ymin) / step));
+  const auto px = [&](double x) { return kLeft + (x - xmin) / (xmax - xmin) * (kRight - kLeft); };
+  const auto py = [&](double y) { return kBottom - (y - ymin) / (ymax - ymin) * (kBottom - kTop); };
+  std::ostringstream svg;
+  svg.setf(std::ios::fixed);
+  svg.precision(2);
+  svg << R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 )" << kWidth << ' ' << kHeight
+      << R"(" role="img" aria-label="Smallest anode overhang per section and edge" )"
+      << R"(font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#52514e">)";
+  // Recessive grid with five values on the overhang axis; zero darker.
+  for (int i = 0; i <= ticks; ++i) {
+    const double y = ymin + step * i;
+    svg << R"(<line x1=")" << kLeft << R"(" x2=")" << kRight << R"(" y1=")" << py(y) << R"(" y2=")"
+        << py(y) << R"(" stroke="#e4e3df"/>)" << R"(<text x=")" << kLeft - 6 << R"(" y=")"
+        << py(y) + 3 << R"(" text-anchor="end">)"
+        << (std::abs(y) < 0.5 * step ? std::string("0") : formatSigned(y, step < 0.1 ? 2 : 1))
+        << "</text>";
+  }
+  svg << R"(<line x1=")" << kLeft << R"(" x2=")" << kRight << R"(" y1=")" << py(0.0) << R"(" y2=")"
+      << py(0.0) << R"(" stroke="#8a8984"/>)";
+  for (int i = 0; i <= 4; ++i) {
+    const double x = xmin + (xmax - xmin) * i / 4.0;
+    svg << R"(<text x=")" << px(x) << R"(" y=")" << kBottom + 14 << R"(" text-anchor="middle">)"
+        << formatNumber(x, cylindrical ? 0 : 1) << (cylindrical ? "°" : "") << "</text>";
+  }
+  svg << R"(<text x=")" << 0.5 * (kLeft + kRight) << R"(" y=")" << kBottom + 32
+      << R"(" text-anchor="middle">)"
+      << (cylindrical ? "Angle around the cell axis" : "Position along the edge in mm") << "</text>"
+      << R"(<text x="12" y=")" << 0.5 * (kTop + kBottom)
+      << R"(" text-anchor="middle" transform="rotate(-90 12 )" << 0.5 * (kTop + kBottom)
+      << R"x()">Smallest overhang in mm</text>)x";
+  if (limit.is_number()) {
+    const double y = py(limit.get<double>());
+    svg << R"(<line x1=")" << kLeft << R"(" x2=")" << kRight << R"(" y1=")" << y << R"(" y2=")" << y
+        << R"(" stroke="#b3261e" stroke-width="1.5" stroke-dasharray="5 4"/>)" << R"(<text x=")"
+        << kRight + 8 << R"(" y=")" << y + 3 << R"(" fill="#b3261e">minimum )"
+        << formatNumber(limit.get<double>(), 2) << " mm</text>";
+  }
+  const Json& edges = battery.at("edges");
+  for (std::size_t e = 0; e < series.size(); ++e) {
+    const std::string color(kEdgeColors[e % kEdgeColors.size()]);
+    const std::string name = edges[e].at("name").get<std::string>();
+    std::string path;
+    for (const auto& [x, y] : series[e]) {
+      path += (path.empty() ? "M" : " L") + formatNumber(px(x), 2) + " " + formatNumber(py(y), 2);
+    }
+    if (series[e].size() > 1) {
+      svg << R"(<path d=")" << path << R"(" fill="none" stroke=")" << color
+          << R"(" stroke-width="2" stroke-linejoin="round"/>)";
+    }
+    for (const auto& [x, y] : series[e]) {
+      svg << R"(<circle cx=")" << px(x) << R"(" cy=")" << py(y) << R"(" r="3" fill=")" << color
+          << R"(" stroke="#fcfcfb" stroke-width="1"><title>)" << name << ": " << formatSigned(y, 3)
+          << " mm at " << formatNumber(x, cylindrical ? 0 : 2) << (cylindrical ? "°" : " mm")
+          << "</title></circle>";
+    }
+    // Legend on the right, text in ink, the swatch carries the colour.
+    const double ly = kTop + 8.0 + 16.0 * static_cast<double>(e);
+    svg << R"(<rect x=")" << kRight + 8 << R"(" y=")" << ly - 7
+        << R"(" width="10" height="10" rx="2" fill=")" << color << R"("/><text x=")" << kRight + 24
+        << R"(" y=")" << ly + 2 << R"(" fill="#0b0b0b">)" << name << "</text>";
+  }
+  svg << "</svg>";
+  return svg.str();
+}
+
+/// One finding (particle or void) for the tables.
+Json findingRow(const Json& f, bool cylindrical) {
+  const auto c = f.at("center_mm").get<std::array<double, 3>>();
+  Json row = {{"id", f.at("id")},
+              {"position", formatMm(c)},
+              {"size", formatNumber(f.at("size_mm").get<double>(), 3)},
+              {"diameter", formatNumber(f.at("equivalent_diameter_mm").get<double>(), 3)},
+              {"volume", formatNumber(f.at("volume_mm3").get<double>(), 6)},
+              {"grey_value", formatNumber(f.at("grey_value").get<double>(), 0)}};
+  row["in_cell"] = cylindrical ? "r " + formatNumber(f.value("radius_mm", 0.0), 2) + " mm, " +
+                                     formatNumber(f.value("angle_deg", 0.0), 0) + "°"
+                               : formatNumber(f.value("normal_mm", 0.0), 2) + " mm";
+  return row;
+}
+
+}  // namespace
+
+nlohmann::json batteryReportData(const nlohmann::json& order,
+                                 const std::filesystem::path& battery_dir,
+                                 std::vector<std::string>* warnings) {
+  const Json b = readJsonFile(battery_dir / "battery.json");
+  Json data = order.is_object() ? order : Json::object();
+  completeMandatory(data, kMandatoryFields, warnings);
+  data["software"] = {{"name", "VoxelSieve"}, {"version", VOXELSIEVE_VERSION}};
+  const bool cylindrical = b.at("type") == "cylindrical";
+  const auto voxel_size = b.at("voxel_size_mm").get<VoxelSize>();
+  const std::string axis(1, "xyz"[b.at("axis").get<int>()]);
+  const Json& levels = b.at("levels");
+  const auto level = [&](const char* name) {
+    return levels.at(name).is_number() ? formatNumber(levels.at(name).get<double>(), 0) : "–";
+  };
+  data["analysis"] = {
+      {"voxel_size", voxelSizeText(voxel_size)},
+      {"levels", "air " + level("air") + ", gaps " + level("gap") + ", anode " + level("anode") +
+                     ", cathode " + level("cathode") + ", housing " + level("housing")},
+      {"particle_threshold", formatNumber(b.at("particle_threshold").get<double>(), 0)},
+      {"void_threshold", formatNumber(b.at("void_threshold").get<double>(), 0)},
+      {"sections", b.at("sections").size()},
+      {"overhang_samples", b.at("overhang").size()}};
+
+  const auto size = b.at("outer_size_mm").get<std::array<double, 3>>();
+  Json cell = {{"type", cylindrical ? "cylindrical, wound electrodes"
+                                    : "stacked electrodes (pouch or prismatic)"},
+               {"axis", axis},
+               {"outer_size", formatNumber(size[0], 3) + " × " + formatNumber(size[1], 3) + " × " +
+                                  formatNumber(size[2], 3) + " mm (x × y × z)"},
+               {"length", mmText(b.at("length_mm"))},
+               {"cathode_layers", b.at("cathode_layers")},
+               {"anode_layers", b.at("anode_layers")},
+               {"pitch", mmText(b.at("pitch_mm"))},
+               {"min_wall", mmText(b.at("min_wall_mm"))},
+               {"gaps", b.at("gaps").size()},
+               {"distinct", levels.value("electrodes_distinct", false)},
+               {"cylindrical", cylindrical}};
+  if (cylindrical) {
+    cell["diameter"] = mmText(b.at("outer_mean_mm"));
+    cell["out_of_roundness"] = mmText(b.at("max_out_of_roundness_mm"));
+    cell["dent"] = mmText(b.at("max_dent_mm"));
+    cell["core_out_of_roundness"] = mmText(b.at("max_core_out_of_roundness_mm"));
+  } else {
+    cell["thickness"] = mmText(b.at("outer_min_size_mm")) + " to " +
+                        mmText(b.at("outer_max_size_mm")) + ", mean " +
+                        mmText(b.at("outer_mean_mm"));
+  }
+  Json sections = Json::array();
+  for (const Json& s : b.at("sections")) {
+    Json row = {{"outer", numberText(s.at("outer_mm"))},
+                {"wall", numberText(s.at("min_wall_mm"))},
+                {"stack", numberText(s.at("stack_mm"))},
+                {"layers", std::to_string(s.at("cathode_layers").get<int>()) + " / " +
+                               std::to_string(s.at("anode_layers").get<int>())},
+                {"pitch", numberText(s.at("pitch_mm"))}};
+    if (cylindrical) {
+      row["position"] = axis + " " + formatNumber(s.at("position_mm").get<double>(), 2);
+      row["out_of_roundness"] = numberText(s.at("out_of_roundness_mm"));
+      row["core"] = numberText(s.at("core_diameter_mm"));
+    } else {
+      const auto pos = s.at("position_mm").get<std::array<double, 2>>();
+      row["position"] = formatNumber(pos[0], 2) + ", " + formatNumber(pos[1], 2);
+    }
+    sections.push_back(row);
+  }
+  cell["sections"] = sections;
+  Json edges = Json::array();
+  const Json& samples = b.at("overhang");
+  for (const Json& e : b.at("edges")) {
+    Json row = {{"name", e.at("name")},
+                {"samples", e.at("samples")},
+                {"min", signedText(e.at("min_mm"))},
+                {"mean", signedText(e.at("mean_mm"))},
+                {"max", signedText(e.at("max_mm"))},
+                {"std", numberText(e.at("std_mm"))},
+                {"cathode_spread", numberText(e.at("cathode_edge_spread_mm"))},
+                {"anode_spread", numberText(e.at("anode_edge_spread_mm"))}};
+    if (const auto worst = e.at("worst").get<std::int64_t>(); worst >= 0) {
+      const Json& w = samples.at(static_cast<std::size_t>(worst));
+      row["worst"] = "layer " + std::to_string(w.at("layer").get<int>() + 1) + ", " +
+                     (cylindrical ? formatNumber(w.at("angle_deg").get<double>(), 0) + "°"
+                                  : formatNumber(w.at("position_mm").get<double>(), 2) + " mm");
+    }
+    const std::string name = e.at("name").get<std::string>();  // "z max"
+    const std::string file = "overhang_" + name.substr(0, 1) + "_" + name.substr(2) + ".png";
+    row["image"] = dataUri(battery_dir / file);
+    edges.push_back(row);
+  }
+  cell["edges"] = edges;
+  data["battery"] = cell;
+  const Json limit = order.is_object() && order.contains("battery")
+                         ? order["battery"].value("min_overhang_mm", Json())
+                         : Json();
+  data["images"]["cross_section"] = dataUri(battery_dir / "cross_section.png");
+  data["images"]["longitudinal"] = dataUri(battery_dir / "longitudinal.png");
+  data["images"]["overhang_chart"] = overhangChartSvg(b, limit);
+
+  Json particles = Json::array();
+  for (const Json& f : b.at("particles")) {
+    if (particles.size() < kMaxListedPores) {
+      particles.push_back(findingRow(f, cylindrical));
+    }
+  }
+  Json voids = Json::array();
+  for (const Json& f : b.at("voids")) {
+    if (voids.size() < kMaxListedPores) {
+      voids.push_back(findingRow(f, cylindrical));
+    }
+  }
+  data["particles"] = {{"count", b.at("particles").size()},
+                       {"listed", particles},
+                       {"any", !particles.empty()},
+                       {"more", b.at("particles").size() > particles.size()}};
+  data["voids"] = {{"count", b.at("voids").size()},
+                   {"listed", voids},
+                   {"any", !voids.empty()},
+                   {"more", b.at("voids").size() > voids.size()}};
+  data["warnings"] = b.value("warnings", Json::array());
+  data["has_warnings"] = !data["warnings"].empty();
+
+  // Requirements of the order.
+  if (order.is_object() && order.contains("battery")) {
+    const Json& r = order["battery"];
+    Json criteria = Json::array();
+    bool passed = true;
+    const auto add = [&](const std::string& label, const Json& measured,
+                         const std::string& limit_text, const std::function<bool(double)>& ok,
+                         int decimals, const char* unit) {
+      const bool known = measured.is_number();
+      const bool good = known && ok(measured.get<double>());
+      criteria.push_back({{"label", label},
+                          {"measured", known ? formatNumber(measured.get<double>(), decimals) + unit
+                                             : "not measured"},
+                          {"limit", limit_text},
+                          {"passed", good},
+                          {"verdict", good ? "passed" : (known ? "failed" : "not measured")}});
+      passed = passed && good;
+    };
+    const auto at_least = [&](const char* key, const std::string& label, const Json& measured,
+                              int decimals, const char* unit) {
+      if (r.contains(key)) {
+        const double l = r.at(key).get<double>();
+        add(
+            label, measured, "≥ " + formatNumber(l, decimals) + unit,
+            [l](double v) { return v >= l; }, decimals, unit);
+      }
+    };
+    const auto at_most = [&](const char* key, const std::string& label, const Json& measured,
+                             int decimals, const char* unit) {
+      if (r.contains(key)) {
+        const double l = r.at(key).get<double>();
+        add(
+            label, measured, "≤ " + formatNumber(l, decimals) + unit,
+            [l](double v) { return v <= l; }, decimals, unit);
+      }
+    };
+    const auto nominal = [&](const char* key, const std::string& label, const Json& measured) {
+      if (!r.contains(key)) {
+        return;
+      }
+      const Json& spec = r.at(key);
+      if (spec.contains("nominal")) {
+        const double n = spec.at("nominal").get<double>();
+        const double t = spec.value("tolerance", 0.0);
+        add(
+            label, measured, formatNumber(n, 3) + " ± " + formatNumber(t, 3) + " mm",
+            [n, t](double v) { return std::abs(v - n) <= t; }, 3, " mm");
+      }
+      if (spec.contains("min")) {
+        const double l = spec.at("min").get<double>();
+        add(
+            label, measured, "≥ " + formatNumber(l, 3) + " mm", [l](double v) { return v >= l; }, 3,
+            " mm");
+      }
+      if (spec.contains("max")) {
+        const double l = spec.at("max").get<double>();
+        add(
+            label, measured, "≤ " + formatNumber(l, 3) + " mm", [l](double v) { return v <= l; }, 3,
+            " mm");
+      }
+    };
+    at_least("min_overhang_mm", "Smallest anode overhang, all edges", b.at("min_overhang_mm"), 3,
+             " mm");
+    if (r.contains("max_overhang_mm")) {
+      double largest = -std::numeric_limits<double>::infinity();
+      for (const Json& e : b.at("edges")) {
+        if (e.at("max_mm").is_number()) {
+          largest = std::max(largest, e.at("max_mm").get<double>());
+        }
+      }
+      at_most("max_overhang_mm", "Largest anode overhang, all edges",
+              std::isfinite(largest) ? Json(largest) : Json(), 3, " mm");
+    }
+    if (r.contains("max_edge_spread_mm")) {
+      double spread = -std::numeric_limits<double>::infinity();
+      for (const Json& e : b.at("edges")) {
+        for (const char* k : {"cathode_edge_spread_mm", "anode_edge_spread_mm"}) {
+          if (e.at(k).is_number()) {
+            spread = std::max(spread, e.at(k).get<double>());
+          }
+        }
+      }
+      at_most("max_edge_spread_mm", "Unevenness of the electrode edges",
+              std::isfinite(spread) ? Json(spread) : Json(), 3, " mm");
+    }
+    if (r.contains("cathode_layers")) {
+      const Json& spec = r.at("cathode_layers");
+      const int lo = spec.is_object() ? spec.value("min", 0) : spec.get<int>();
+      const int hi = spec.is_object() ? spec.value("max", 1 << 20) : spec.get<int>();
+      const std::string text = lo == hi ? std::to_string(lo)
+                               : spec.contains("max")
+                                   ? std::to_string(lo) + " to " + std::to_string(hi)
+                                   : "≥ " + std::to_string(lo);
+      add(
+          cylindrical ? "Cathode layers (turns) per radius" : "Cathode layers",
+          b.at("cathode_layers"), text, [lo, hi](double v) { return v >= lo && v <= hi; }, 0, "");
+    }
+    nominal("diameter_mm", "Outer diameter", b.at("outer_mean_mm"));
+    nominal("length_mm", cylindrical ? "Length" : "Thickness at the middle", b.at("length_mm"));
+    if (r.contains("thickness_mm")) {
+      const Json& spec = r.at("thickness_mm");
+      if (spec.contains("max")) {
+        const double l = spec.at("max").get<double>();
+        add(
+            "Largest thickness", b.at("outer_max_size_mm"), "≤ " + formatNumber(l, 3) + " mm",
+            [l](double v) { return v <= l; }, 3, " mm");
+      }
+      if (spec.contains("min")) {
+        const double l = spec.at("min").get<double>();
+        add(
+            "Smallest thickness", b.at("outer_min_size_mm"), "≥ " + formatNumber(l, 3) + " mm",
+            [l](double v) { return v >= l; }, 3, " mm");
+      }
+    }
+    if (r.contains("max_swelling_mm")) {
+      const Json& lo = b.at("outer_min_size_mm");
+      const Json& hi = b.at("outer_max_size_mm");
+      at_most("max_swelling_mm", "Thickness variation (swelling)",
+              lo.is_number() && hi.is_number() ? Json(hi.get<double>() - lo.get<double>()) : Json(),
+              3, " mm");
+    }
+    at_most("max_out_of_roundness_mm", "Out-of-roundness of the housing",
+            b.at("max_out_of_roundness_mm"), 3, " mm");
+    at_most("max_dent_mm", "Largest dent of the housing", b.at("max_dent_mm"), 3, " mm");
+    at_least("min_wall_mm", "Thinnest housing wall", b.at("min_wall_mm"), 3, " mm");
+    at_most("max_core_out_of_roundness_mm", "Out-of-roundness of the core",
+            b.at("max_core_out_of_roundness_mm"), 3, " mm");
+    at_most("max_gaps", "Gaps between the layers", Json(b.at("gaps").size()), 0, "");
+    const auto largest = [&](const char* list) {
+      double extent = 0.0;
+      for (const Json& f : b.at(list)) {
+        extent = std::max(extent, f.at("size_mm").get<double>());
+      }
+      return Json(extent);
+    };
+    at_most("max_particles", "Foreign particles", Json(b.at("particles").size()), 0, "");
+    at_most("max_particle_size_mm", "Largest foreign particle", largest("particles"), 3, " mm");
+    at_most("max_voids", "Gas voids", Json(b.at("voids").size()), 0, "");
+    at_most("max_void_size_mm", "Largest gas void", largest("voids"), 3, " mm");
+    if (!criteria.empty()) {
+      data["evaluation"] = {
+          {"guideline", r.value("guideline", std::string("the inspection order"))},
+          {"criteria", criteria},
+          {"passed", passed},
+          {"verdict", passed ? "The requirements are met." : "The requirements are not met."}};
+    }
+  }
   return data;
 }
 

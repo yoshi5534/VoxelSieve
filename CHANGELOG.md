@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Battery cells**: the new tool `vs-battery` and operation `battery_inspection` inspect a
+  cylindrical or stacked (pouch, prismatic) lithium-ion cell: housing diameter, roundness, dents
+  and wall, the core, electrode layer count, pitch and gaps, the anode overhang at every edge
+  layer by layer, foreign particles and gas voids, with sections as images. `battery_report`
+  (`vs-battery --order`) writes a test report with an overhang chart and an assessment against
+  the requirements of the order (`examples/battery_order.json`). `vs-battery --cell` writes
+  synthetic cells with known geometry (ADR 0029).
+
 - **Report for fibre composites**: the report step takes a material segmentation and a fibre
   orientation as well. The report then lists the materials with their shares and slices coloured
   by material, and the fibre families with direction, share and spread; a `fibres` section in

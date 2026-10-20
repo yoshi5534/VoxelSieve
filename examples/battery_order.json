@@ -1,0 +1,41 @@
+{
+  "report": { "number": "TR-2026-0101", "date": "2026-10-20" },
+  "laboratory": { "name": "Example CT Testing Lab", "address": "1 Sample Street, 12345 Exampletown" },
+  "customer": { "name": "Example Cell Manufacturing Ltd", "address": "9 Electrode Way, 54321 Anodeville" },
+  "order": { "number": "B-0815", "received": "2026-10-14", "test_date": "2026-10-16" },
+  "part": {
+    "name": "Cylindrical cell, synthetic example",
+    "drawing": "Cell specification CS-001 rev. A",
+    "material": "NMC cathode, graphite anode",
+    "serial": "Lot 2026-42, cell 3",
+    "condition": "formed, not cycled",
+    "state_of_charge": "30 %"
+  },
+  "scan": {
+    "device": "Example system 225 kV",
+    "voltage_kv": 180,
+    "current_ua": 120,
+    "filter": "1.0 mm Cu",
+    "detector": "Flat panel detector 2048 × 2048",
+    "projections": 2400,
+    "exposure_ms": 700,
+    "reconstruction": "filtered back projection (FDK)"
+  },
+  "method": { "deviations": "" },
+  "uncertainty": "overhang ±0.5 voxel, layer positions ±0.3 voxel (estimated on synthetic cells)",
+  "battery": {
+    "guideline": "cell specification CS-001",
+    "min_overhang_mm": 0.1,
+    "max_overhang_mm": 1.0,
+    "max_edge_spread_mm": 0.4,
+    "cathode_layers": { "min": 6, "max": 6 },
+    "max_out_of_roundness_mm": 0.2,
+    "min_wall_mm": 0.1,
+    "max_gaps": 0,
+    "max_particles": 0,
+    "max_particle_size_mm": 0.05,
+    "max_voids": 2,
+    "max_void_size_mm": 0.3
+  },
+  "approval": { "inspector": "M. Example", "approver": "E. Sample", "approver_role": "Head of laboratory" }
+}

@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battery cell test report {{report.number}}</title>
+{{! VoxelSieve battery cell report template (ADR 0029). Placeholders use a Mustache subset, see
+    include/voxelsieve/report.hpp. The structure follows the report contents of ISO/IEC 17025
+    (7.8) and the test report of ISO 15708-3; the requirements come from order.battery. Copy this
+    file with "vs-battery --print-template" to adapt it to your own layout. }}
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  :root { --ink: #1d1d1f; --muted: #5f6368; --line: #c9ccd1; --ok: #1e7a3c; --nok: #b3261e; }
+  * { box-sizing: border-box; }
+  body { font: 10pt/1.4 "Helvetica Neue", Arial, sans-serif; color: var(--ink); margin: 0 auto;
+         max-width: 190mm; padding: 12px; background: #fff; }
+  header { display: flex; justify-content: space-between; align-items: flex-start;
+           border-bottom: 2px solid var(--ink); padding-bottom: 6px; margin-bottom: 12px; }
+  header h1 { font-size: 18pt; margin: 0; }
+  header .lab { text-align: right; color: var(--muted); font-size: 9pt; }
+  h2 { font-size: 11.5pt; margin: 16px 0 6px; border-bottom: 1px solid var(--line);
+       padding-bottom: 2px; break-after: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; }
+  th, td { text-align: left; vertical-align: top; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; }
+  table.fields th { width: 42%; font-weight: normal; color: var(--muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr { break-inside: avoid; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .nok { color: var(--nok); font-weight: 600; }
+  .verdict { border: 2px solid currentColor; padding: 6px 10px; margin: 8px 0; font-size: 11pt; }
+  .images { display: flex; flex-wrap: wrap; gap: 8px; }
+  .images figure { margin: 0; flex: 1 1 30%; min-width: 150px; }
+  .images img { width: 100%; image-rendering: pixelated; border: 1px solid var(--line); }
+  .renders { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+  .renders figure { margin: 0; flex: 1 1 45%; min-width: 220px; break-inside: avoid; }
+  .renders img { width: 100%; height: auto; display: block; border: 1px solid var(--line); }
+  .swatch { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border: 1px solid var(--line); }
+  .histogram { margin: 4px 0 0; }
+  .histogram svg { display: block; width: 100%; height: auto; max-height: 62mm; }
+  figcaption, .note { color: var(--muted); font-size: 8.5pt; }
+  .signatures { display: flex; gap: 24px; margin-top: 28px; }
+  .signatures div { flex: 1; border-top: 1px solid var(--ink); padding-top: 4px; font-size: 9pt; }
+  section { break-inside: avoid-page; }
+  td:first-child { white-space: nowrap; }
+  .chart { margin: 4px 0 0; }
+  .chart svg { display: block; width: 100%; height: auto; max-height: 70mm; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Battery cell test report</h1>
+    <div>No. {{report.number}} of {{report.date}}</div>
+  </div>
+  <div class="lab">{{laboratory.name}}<br>{{laboratory.address}}</div>
+</header>
+
+<section>
+<h2>1 Order</h2>
+<table class="fields">
+  <tr><th>Customer</th><td>{{customer.name}}{{#customer.address}}, {{customer.address}}{{/customer.address}}</td></tr>
+  <tr><th>Order number</th><td>{{order.number}}</td></tr>
+  {{#order.received}}<tr><th>Date of receipt of the test item</th><td>{{order.received}}</td></tr>{{/order.received}}
+  <tr><th>Date of test</th><td>{{order.test_date}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>2 Test item</h2>
+<table class="fields">
+  <tr><th>Designation</th><td>{{part.name}}</td></tr>
+  <tr><th>Drawing number / cell specification</th><td>{{part.drawing}}</td></tr>
+  <tr><th>Cell chemistry</th><td>{{part.material}}</td></tr>
+  <tr><th>Serial number / batch</th><td>{{part.serial}}</td></tr>
+  {{#part.condition}}<tr><th>Condition on receipt</th><td>{{part.condition}}</td></tr>{{/part.condition}}
+  {{#part.state_of_charge}}<tr><th>State of charge</th><td>{{part.state_of_charge}}</td></tr>{{/part.state_of_charge}}
+  <tr><th>Cell type</th><td>{{battery.type}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>3 Test method</h2>
+<table class="fields">
+  <tr><th>Method</th><td>Industrial computed tomography according to ISO 15708</td></tr>
+  <tr><th>Evaluation</th><td>Battery cell inspection (housing, electrode layers, anode overhang, foreign particles, gas voids) with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Deviations from the method</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}none{{/method.deviations}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4 Test equipment and acquisition parameters</h2>
+<table class="fields">
+  <tr><th>CT system</th><td>{{scan.device}}</td></tr>
+  <tr><th>Tube voltage</th><td>{{scan.voltage_kv}} kV</td></tr>
+  <tr><th>Tube current</th><td>{{scan.current_ua}} µA</td></tr>
+  <tr><th>Pre-filter</th><td>{{scan.filter}}</td></tr>
+  {{#scan.detector}}<tr><th>Detector</th><td>{{scan.detector}}</td></tr>{{/scan.detector}}
+  <tr><th>Number of projections</th><td>{{scan.projections}}</td></tr>
+  <tr><th>Exposure time</th><td>{{scan.exposure_ms}} ms</td></tr>
+  <tr><th>Reconstruction</th><td>{{scan.reconstruction}}</td></tr>
+  <tr><th>Voxel size</th><td>{{analysis.voxel_size}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>5 Evaluation parameters and detection limits</h2>
+<table class="fields">
+  <tr><th>Grey value levels</th><td>{{analysis.levels}}</td></tr>
+  <tr><th>Electrode layers</th><td>Peaks of grey value profiles across the layers, averaged along the layers against noise; {{analysis.sections}} sections for housing and layers</td></tr>
+  <tr><th>Anode overhang</th><td>Ends of each cathode layer and its anode neighbours followed through sections across the edges of the electrode stack, {{analysis.overhang_samples}} measured layer ends</td></tr>
+  <tr><th>Foreign particles / gas voids</th><td>In the electrode stack, brighter than {{analysis.particle_threshold}} / darker than {{analysis.void_threshold}}</td></tr>
+  <tr><th>Measurement uncertainty</th><td>{{uncertainty}}</td></tr>
+</table>
+</section>
+
+<section>
+<h2>6 Cell and housing</h2>
+<table class="fields">
+  <tr><th>Cell axis / stack normal</th><td>{{battery.axis}}</td></tr>
+  <tr><th>Outer size</th><td>{{battery.outer_size}}</td></tr>
+  {{#battery.cylindrical}}
+  <tr><th>Outer diameter (mean of fitted circles)</th><td>{{battery.diameter}}</td></tr>
+  <tr><th>Length</th><td>{{battery.length}}</td></tr>
+  <tr><th>Out-of-roundness / largest dent</th><td>{{battery.out_of_roundness}} / {{battery.dent}}</td></tr>
+  <tr><th>Out-of-roundness of the core</th><td>{{battery.core_out_of_roundness}}</td></tr>
+  {{/battery.cylindrical}}
+  {{^battery.cylindrical}}
+  <tr><th>Thickness</th><td>{{battery.thickness}}</td></tr>
+  {{/battery.cylindrical}}
+  <tr><th>Thinnest housing wall</th><td>{{battery.min_wall}}</td></tr>
+  <tr><th>Electrode layers (cathode / anode)</th><td>{{battery.cathode_layers}} / {{battery.anode_layers}}{{#battery.cylindrical}} per radius{{/battery.cylindrical}}, pitch {{battery.pitch}}</td></tr>
+  <tr><th>Gaps between layers</th><td>{{battery.gaps}}</td></tr>
+</table>
+{{^battery.distinct}}<p class="note">Anode and cathode layers could not be told apart; the anode overhang was not measured.</p>{{/battery.distinct}}
+<div class="renders">
+  <figure><img src="{{{images.cross_section}}}" alt="Cross-section"><figcaption>Cross-section{{#battery.cylindrical}} normal to the cell axis{{/battery.cylindrical}}{{^battery.cylindrical}} across the layers{{/battery.cylindrical}} with the layers, particles and voids marked</figcaption></figure>
+  <figure><img src="{{{images.longitudinal}}}" alt="Longitudinal section"><figcaption>Longitudinal section through the middle</figcaption></figure>
+</div>
+<p class="note">Lengths in mm. Stack: {{#battery.cylindrical}}diameter over the outermost electrode layer{{/battery.cylindrical}}{{^battery.cylindrical}}thickness from the first to the last electrode layer{{/battery.cylindrical}}; layers: cathode / anode layers crossed.</p>
+<table>
+  <tr><th>Section at mm</th><th class="num">{{#battery.cylindrical}}Outer Ø{{/battery.cylindrical}}{{^battery.cylindrical}}Thickness{{/battery.cylindrical}}</th>{{#battery.cylindrical}}<th class="num">Out-of-roundness</th><th class="num">Core Ø</th>{{/battery.cylindrical}}<th class="num">Wall</th><th class="num">Stack</th><th class="num">Layers C / A</th><th class="num">Pitch</th></tr>
+  {{#battery.sections}}<tr><td>{{position}}</td><td class="num">{{outer}}</td>{{#battery.cylindrical}}<td class="num">{{out_of_roundness}}</td><td class="num">{{core}}</td>{{/battery.cylindrical}}<td class="num">{{wall}}</td><td class="num">{{stack}}</td><td class="num">{{layers}}</td><td class="num">{{pitch}}</td></tr>
+  {{/battery.sections}}
+</table>
+</section>
+
+<section>
+<h2>7 Anode overhang</h2>
+<p>Overhang: distance by which the anode reaches beyond the cathode at an edge of the electrode stack; negative where the cathode sticks out.</p>
+<table>
+  <tr><th>Edge</th><th class="num">Layer ends</th><th class="num">Smallest mm</th><th class="num">Mean mm</th><th class="num">Largest mm</th><th class="num">Std. dev. mm</th><th class="num">Edge spread C / A mm</th><th>Smallest at</th></tr>
+  {{#battery.edges}}<tr><td>{{name}}</td><td class="num">{{samples}}</td><td class="num">{{min}}</td><td class="num">{{mean}}</td><td class="num">{{max}}</td><td class="num">{{std}}</td><td class="num">{{cathode_spread}} / {{anode_spread}}</td><td>{{worst}}</td></tr>
+  {{/battery.edges}}
+</table>
+{{#images.overhang_chart}}
+<figure class="chart">{{{images.overhang_chart}}}<figcaption>Smallest overhang per section and edge{{#battery.cylindrical}} over the angle around the cell axis{{/battery.cylindrical}}; dashed: required minimum</figcaption></figure>
+{{/images.overhang_chart}}
+<div class="renders">
+  {{#battery.edges}}{{#image}}<figure><img src="{{{image}}}" alt="Section with the smallest overhang at {{name}}"><figcaption>Section with the smallest overhang at {{name}}, electrode ends marked</figcaption></figure>{{/image}}{{/battery.edges}}
+</div>
+<p class="note">Edge spread: largest minus smallest position of the cathode or anode ends at an edge, a measure of telescoping or shifted sheets.</p>
+</section>
+
+<section>
+<h2>8 Foreign particles and gas voids</h2>
+<p>Foreign particles: {{particles.count}}. Gas voids: {{voids.count}}.{{#particles.more}} The tables list the largest.{{/particles.more}}{{^particles.more}}{{#voids.more}} The tables list the largest.{{/voids.more}}{{/particles.more}}</p>
+{{#particles.any}}
+<table>
+  <tr><th>Particle</th><th>Position x, y, z in mm</th><th>In the cell</th><th class="num">Extent mm</th><th class="num">Sphere Ø mm</th><th class="num">Volume mm³</th><th class="num">Grey value</th></tr>
+  {{#particles.listed}}<tr><td>{{id}}</td><td>{{position}}</td><td>{{in_cell}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{volume}}</td><td class="num">{{grey_value}}</td></tr>
+  {{/particles.listed}}
+</table>
+{{/particles.any}}
+{{#voids.any}}
+<table>
+  <tr><th>Void</th><th>Position x, y, z in mm</th><th>In the cell</th><th class="num">Extent mm</th><th class="num">Sphere Ø mm</th><th class="num">Volume mm³</th><th class="num">Grey value</th></tr>
+  {{#voids.listed}}<tr><td>{{id}}</td><td>{{position}}</td><td>{{in_cell}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{volume}}</td><td class="num">{{grey_value}}</td></tr>
+  {{/voids.listed}}
+</table>
+{{/voids.any}}
+<p class="note">In the cell: radius and angle about the cell axis, or position along the stack normal.</p>
+{{#has_warnings}}
+<h2>Notes on the evaluation</h2>
+<ul>{{#warnings}}<li>{{.}}</li>{{/warnings}}</ul>
+{{/has_warnings}}
+</section>
+
+<section>
+<h2>9 Assessment</h2>
+{{#evaluation}}
+<p>Assessment according to {{guideline}}.</p>
+<table>
+  <tr><th>Characteristic</th><th class="num">Finding</th><th class="num">Requirement</th><th>Result</th></tr>
+  {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
+  {{/criteria}}
+</table>
+<div class="verdict {{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</div>
+{{/evaluation}}
+{{^evaluation}}
+<p>No requirements were given; the report contains the findings only.</p>
+{{/evaluation}}
+<p class="note">The results relate only to the item tested. This report shall not be reproduced except in full
+without the approval of the testing laboratory.</p>
+</section>
+
+<section class="signatures">
+  <div>Inspector: {{approval.inspector}}</div>
+  <div>Approved by: {{approval.approver}}{{#approval.approver_role}}, {{approval.approver_role}}{{/approval.approver_role}}</div>
+  <div>Date: {{report.date}}</div>
+</section>
+
+</body>
+</html>

@@ -4,8 +4,8 @@
 # that is how the release packages are made (.github/workflows/release.yml).
 
 set(VOXELSIEVE_PROGRAMS
-  vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve vs-gui
-  vs-surface vs-synth)
+  vs-battery vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve
+  vs-gui vs-surface vs-synth)
 
 install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
   RUNTIME_DEPENDENCY_SET voxelsieve_runtime
@@ -13,7 +13,7 @@ install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES examples/inspection_order.json examples/first_article_plan.json
-              examples/first_article_order.json DESTINATION ${CMAKE_INSTALL_DATADIR}/voxelsieve/examples)
+              examples/first_article_order.json examples/battery_order.json DESTINATION ${CMAKE_INSTALL_DATADIR}/voxelsieve/examples)
 install(FILES LICENSE NOTICE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/voxelsieve)
 
 if(VOXELSIEVE_INSTALL_RUNTIME_DEPS)

@@ -29,7 +29,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
     PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
-    the structure tensor (ADR 0028)
+    the structure tensor (ADR 0028); `battery.hpp` battery cell inspection (housing, electrode
+    layers, anode overhang, particles, voids; ADR 0029) and `cells.hpp` synthetic cells for it
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
     its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
     any per-voxel processing that keeps the part
@@ -54,8 +55,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order
-  and an example plugin (`examples/plugins/histogram`)
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
+  a battery cell order and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 

@@ -38,7 +38,8 @@ constexpr const char* kInstructions =
     "existing dataset), run_porosity, run_report with the inspection order. A first article "
     "inspection against a drawing: run_surface, run_compare_cad, cad_features to find the "
     "nominal elements, run_measure_dimensions with the inspection plan, "
-    "run_first_article_report. Inputs are taken from the "
+    "run_first_article_report. A battery cell: run_battery_inspection, run_battery_report with "
+    "the order. Inputs are taken from the "
     "latest step with the right output type unless given. project_status shows the step "
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "
     "with read_file, use dataset_info and the summaries of the steps. Imports and analyses of "
@@ -69,9 +70,14 @@ constexpr std::array<std::string_view, 4> kIdempotentMethods = {"project_open", 
                                                                 "view_set", "cancel"};
 
 /// Output types whose files are resources: results small enough to read, unlike datasets.
-constexpr std::array<std::string_view, 7> kResourceOutputTypes = {
-    "report",           "porosity", "comparison", "pose", "measurements", "dimensional_measurement",
-    "fibre_orientation"};
+constexpr std::array<std::string_view, 8> kResourceOutputTypes = {"report",
+                                                                  "porosity",
+                                                                  "comparison",
+                                                                  "pose",
+                                                                  "measurements",
+                                                                  "dimensional_measurement",
+                                                                  "fibre_orientation",
+                                                                  "battery"};
 
 template <std::size_t N>
 bool contains(const std::array<std::string_view, N>& names, std::string_view name) {
@@ -235,6 +241,32 @@ const std::vector<Prompt>& prompts() {
        "6. Summarise the decision and every characteristic out of tolerance with nominal, "
        "actual value and deviation, quoting the measurement, not estimates. The report from "
        "VoxelSieve is the result; the final approval belongs to the customer."},
+      {"battery_cell_inspection",
+       "Inspection of a battery cell: housing, electrode layers, anode overhang, foreign "
+       "particles and gas voids, and the test report.",
+       Json::array(
+           {{{"name", "scan"},
+             {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},
+             {"required", true}},
+            {{"name", "order"},
+             {"description",
+              "Order (JSON) with the requirements in battery: minimum overhang, layer count, "
+              "dimensions, particles, voids"},
+             {"required", false}},
+            {{"name", "project"},
+             {"description", "Project directory; default: next to the scan"},
+             {"required", false}}}),
+       "Inspect the battery cell in the CT scan {scan} with VoxelSieve.\n"
+       "1. Open or create the project {project} (next to the scan if none is given) and import "
+       "the scan.\n"
+       "2. Look at the middle slices with view_slice: cylindrical or stacked (pouch, prismatic), "
+       "is the cell axis along a volume axis, are anode and cathode layers told apart?\n"
+       "3. Run run_battery_inspection; give cell_type or axis only when the detection is wrong, "
+       "and cathode_brighter false when the anode layers are the brighter ones.\n"
+       "4. Run run_battery_report with the order {order}; list the fields reported as missing.\n"
+       "5. Summarise the smallest anode overhang per edge with its layer and position, the "
+       "layer count, gaps, deformation of the housing, particles and voids, and every "
+       "requirement that is not met, quoting the results of the steps, not estimates."},
       {"first_look", "A first look at a CT scan: size, voxel size, grey values and three slices.",
        Json::array({{{"name", "scan"},
                      {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},

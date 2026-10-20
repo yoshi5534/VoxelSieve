@@ -141,4 +141,17 @@ void addFibreOrientation(nlohmann::json& data, const std::filesystem::path& dir,
 /// The built-in first article inspection report template (A4).
 [[nodiscard]] std::string_view defaultFirstArticleTemplate();
 
+/// Everything a battery cell inspection report template can use (ADR 0029): the order completed
+/// with "not given" for missing mandatory fields, the results of a battery inspection written by
+/// writeBatteryResult in `battery_dir` formatted for print (data.battery, data.particles,
+/// data.voids), its images as data URIs and the overhang chart as SVG (data.images), and the
+/// evaluation against the requirements in order.battery (data.evaluation). `warnings` receives one
+/// line per missing mandatory field.
+[[nodiscard]] nlohmann::json batteryReportData(const nlohmann::json& order,
+                                               const std::filesystem::path& battery_dir,
+                                               std::vector<std::string>* warnings = nullptr);
+
+/// The built-in battery cell inspection report template (A4).
+[[nodiscard]] std::string_view defaultBatteryReportTemplate();
+
 }  // namespace voxelsieve
