@@ -1,6 +1,6 @@
-// vs-battery: inspects a battery cell in a sieved dataset (housing and deformation, electrode
-// layers, anode overhang, foreign particles, gas voids), or writes a synthetic cell scan with
-// known geometry to try it on.
+// vs-battery: inspects a battery cell in a sieved dataset or in section images (housing and
+// deformation, electrode layers, anode overhang, foreign particles, gas voids), or writes a
+// synthetic cell scan with known geometry to try it on.
 
 #include <array>
 #include <cctype>
@@ -30,6 +30,7 @@
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-battery <dataset> --out <dir> [options]
+       vs-battery --images <zip|folder> --out <dir> [--image-cell <name>] [options]
        vs-battery --cell <cylindrical|stacked> --out <prefix> [cell options]
        vs-battery --print-template > my_battery_template.html
 
@@ -40,6 +41,17 @@ Inspects the battery cell in a dataset written by vs-sieve and writes to <dir>:
   longitudinal.png          along the cell axis through the middle
   overhang_<edge>.png       the section with the smallest anode overhang at each edge
   report.html, report.json  with --order: the test report, assessed against order.battery
+
+Section images instead of a volume (cylindrical cells): a folder or ZIP archive with a folder
+per cell holding axial_images/<angle>.png (longitudinal sections through the axis, the top row
+at the high end, the right half at the angle, the left half opposite) and
+radial_images/<position mm>.png (cross-sections). Without --image-cell every cell is inspected
+into <dir>/<cell>/, and <dir>/cells.csv and <dir>/cells.json summarise them.
+  --images <zip|folder>     Source of the section images
+  --image-cell <name>       Only this cell, written to <dir>
+  --list-cells              Print the cells in the source and exit
+  --pixel-size <mm>         Pixel edge length (default: from the positions of the cross-sections
+                            over the height of the longitudinal sections)
 
 Options:
   --out <dir>               Output directory (required)
@@ -93,6 +105,9 @@ struct Options {
   std::filesystem::path report_template;
   bool print_template = false;
   std::optional<voxelsieve::CellSpec> cell;
+  std::filesystem::path images;
+  std::string image_cell;
+  bool list_cells = false;
 };
 
 int axisOf(std::string_view name) {
@@ -175,6 +190,14 @@ std::optional<Options> parse(int argc, char** argv) {
       options.battery.min_particle_voxels = std::stoll(next());
     } else if (arg == "--min-void") {
       options.battery.min_void_voxels = std::stoll(next());
+    } else if (arg == "--images") {
+      options.images = next();
+    } else if (arg == "--image-cell") {
+      options.image_cell = next();
+    } else if (arg == "--list-cells") {
+      options.list_cells = true;
+    } else if (arg == "--pixel-size") {
+      options.battery.image_pixel_mm = std::stod(next());
     } else if (arg == "--cache") {
       options.cache_mb = std::stoull(next());
     } else if (arg == "--cell") {
@@ -227,8 +250,13 @@ std::optional<Options> parse(int argc, char** argv) {
       throw std::invalid_argument("Unknown option: " + std::string(arg));
     }
   }
-  if (options.out.empty() || synthetic == !options.dataset.empty()) {
-    throw std::invalid_argument("--out and either a dataset or --cell are required");
+  if (!options.images.empty() && options.list_cells) {
+    return options;
+  }
+  const int sources =
+      (synthetic ? 1 : 0) + (options.dataset.empty() ? 0 : 1) + (options.images.empty() ? 0 : 1);
+  if (options.out.empty() || sources != 1) {
+    throw std::invalid_argument("--out and one of a dataset, --images or --cell are required");
   }
   if (synthetic) {
     if (overhang) {
@@ -282,6 +310,147 @@ std::string mm(double value) {
   return text.str();
 }
 
+void printResult(const voxelsieve::BatteryResult& result, std::chrono::duration<double> time) {
+  const bool cylindrical = result.type == voxelsieve::CellType::kCylindrical;
+  std::cout << "cell               " << (cylindrical ? "cylindrical" : "stacked") << ", axis "
+            << "xyz"[result.axis] << '\n'
+            << "outer size         " << mm(result.outer_size_mm[0]) << " x "
+            << mm(result.outer_size_mm[1]) << " x " << mm(result.outer_size_mm[2]) << '\n';
+  if (cylindrical) {
+    std::cout << "diameter           " << mm(result.outer_mean_mm) << ", out of round "
+              << mm(result.max_out_of_roundness_mm) << '\n';
+  } else {
+    std::cout << "thickness          " << mm(result.outer_min_size_mm) << " to "
+              << mm(result.outer_max_size_mm) << '\n';
+  }
+  std::cout << "wall               " << mm(result.min_wall_mm) << " (thinnest)\n"
+            << "layers             " << result.cathode_layers << " cathode, " << result.anode_layers
+            << " anode, pitch " << mm(result.pitch_mm) << '\n';
+  for (const auto& edge : result.edges) {
+    std::cout << "overhang " << std::left << std::setw(10) << edge.name << std::right
+              << mm(edge.min_mm) << " min, " << mm(edge.mean_mm) << " mean, " << edge.samples
+              << " samples\n";
+  }
+  std::cout << "gaps               " << result.gaps.size() << '\n'
+            << "particles          " << result.particles.size() << '\n'
+            << "voids              " << result.voids.size() << '\n'
+            << "time               " << time.count() << " s\n";
+  for (const auto& warning : result.warnings) {
+    std::cerr << "warning: " << warning << '\n';
+  }
+}
+
+void writeReport(const Options& options, const std::filesystem::path& out, bool verbose = true) {
+  const nlohmann::json order = nlohmann::json::parse(readFile(options.order));
+  std::vector<std::string> missing;
+  nlohmann::json data = voxelsieve::batteryReportData(order, out, &missing);
+  const std::string report_template = options.report_template.empty()
+                                          ? std::string(voxelsieve::defaultBatteryReportTemplate())
+                                          : readFile(options.report_template);
+  std::ofstream(out / "report.html", std::ios::binary)
+      << voxelsieve::renderTemplate(report_template, data);
+  data.erase("images");
+  for (auto& edge : data.at("battery").at("edges")) {
+    edge.erase("image");
+  }
+  voxelsieve::writeJson(out / "report.json", data);
+  if (!verbose) {
+    return;
+  }
+  for (const auto& field : missing) {
+    std::cerr << "warning: " << field << '\n';
+  }
+  if (data.contains("evaluation")) {
+    std::cout << "assessment         " << data.at("evaluation").at("verdict").get<std::string>()
+              << '\n';
+  }
+  std::cout << "report             " << (out / "report.html").string() << '\n';
+}
+
+std::string csvNumber(double value) {
+  if (!std::isfinite(value)) {
+    return "";
+  }
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(4) << value;
+  return text.str();
+}
+
+/// Every cell of the image source into its own folder, with a summary of all.
+void inspectAllCells(const Options& options) {
+  const std::vector<std::string> cells = voxelsieve::listCellImages(options.images);
+  if (cells.empty()) {
+    throw std::invalid_argument("No cells with section images in " + options.images.string());
+  }
+  std::filesystem::create_directories(options.out);
+  std::ofstream csv(options.out / "cells.csv", std::ios::binary);
+  csv << "cell,status,diameter_mm,length_mm,cathode_layers,pitch_mm";
+  for (const char* edge : {"z_min", "z_max"}) {
+    csv << ",overhang_" << edge << "_min_mm,overhang_" << edge << "_mean_mm,overhang_" << edge
+        << "_samples";
+  }
+  csv << ",particles,largest_particle_mm,voids,largest_void_mm,gaps,warnings\n";
+  nlohmann::json summary = nlohmann::json::array();
+  int failed = 0;
+  for (std::size_t n = 0; n < cells.size(); ++n) {
+    const std::string& cell = cells[n];
+    std::cout << "[" << n + 1 << "/" << cells.size() << "] " << cell << ": " << std::flush;
+    const auto start = std::chrono::steady_clock::now();
+    try {
+      const voxelsieve::BatteryResult result = voxelsieve::analyzeBatteryImages(
+          voxelsieve::readCellImages(options.images, cell), options.battery);
+      const std::filesystem::path out = options.out / cell;
+      voxelsieve::writeBatteryResult(result, out);
+      if (!options.order.empty()) {
+        writeReport(options, out, false);
+      }
+      const auto largest = [](const std::vector<voxelsieve::CellFinding>& list) {
+        return list.empty() ? 0.0 : list.front().size_mm;
+      };
+      csv << cell << ",ok," << csvNumber(result.outer_mean_mm) << "," << csvNumber(result.length_mm)
+          << "," << result.cathode_layers << "," << csvNumber(result.pitch_mm);
+      nlohmann::json edges = nlohmann::json::object();
+      for (const auto& edge : result.edges) {
+        csv << "," << csvNumber(edge.samples > 0 ? edge.min_mm : NAN) << ","
+            << csvNumber(edge.samples > 0 ? edge.mean_mm : NAN) << "," << edge.samples;
+        edges[edge.name] = {{"min_mm", edge.samples > 0 ? nlohmann::json(edge.min_mm) : nullptr},
+                            {"mean_mm", edge.samples > 0 ? nlohmann::json(edge.mean_mm) : nullptr},
+                            {"samples", edge.samples}};
+      }
+      csv << "," << result.particles.size() << "," << csvNumber(largest(result.particles)) << ","
+          << result.voids.size() << "," << csvNumber(largest(result.voids)) << ","
+          << result.gaps.size() << "," << result.warnings.size() << "\n";
+      summary.push_back({{"cell", cell},
+                         {"status", "ok"},
+                         {"diameter_mm", result.outer_mean_mm},
+                         {"length_mm", result.length_mm},
+                         {"cathode_layers", result.cathode_layers},
+                         {"pitch_mm", result.pitch_mm},
+                         {"overhang", edges},
+                         {"particles", result.particles.size()},
+                         {"voids", result.voids.size()},
+                         {"gaps", result.gaps.size()},
+                         {"warnings", result.warnings}});
+      std::cout << "overhang";
+      for (const auto& edge : result.edges) {
+        std::cout << " " << edge.name << " " << (edge.samples > 0 ? mm(edge.min_mm) : "-");
+      }
+      std::cout << ", " << result.particles.size() << " particles, " << result.voids.size()
+                << " voids ("
+                << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+                << " s)\n";
+    } catch (const std::exception& error) {
+      ++failed;
+      std::cout << "failed: " << error.what() << '\n';
+      csv << cell << ",failed" << std::string(16, ',') << "\n";
+      summary.push_back({{"cell", cell}, {"status", "failed"}, {"error", error.what()}});
+    }
+  }
+  voxelsieve::writeJson(options.out / "cells.json", summary);
+  std::cout << "cells              " << cells.size() << " (" << failed << " failed)\n"
+            << "summary            " << (options.out / "cells.csv").string() << '\n';
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -298,64 +467,31 @@ int main(int argc, char** argv) {
     if (const auto& cell = options->cell) {
       return writeCell(*cell, *options);
     }
+    if (!options->images.empty() && options->list_cells) {
+      for (const std::string& name : voxelsieve::listCellImages(options->images)) {
+        std::cout << name << '\n';
+      }
+      return 0;
+    }
     voxelsieve::Telemetry telemetry("vs-battery");
     const voxelsieve::TelemetryScope scope(telemetry);
-    const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
-    const auto result = voxelsieve::analyzeBattery(dataset, options->battery);
-    voxelsieve::writeBatteryResult(result, options->out);
-    const auto done = std::chrono::steady_clock::now();
-
-    const bool cylindrical = result.type == voxelsieve::CellType::kCylindrical;
-    std::cout << "cell               " << (cylindrical ? "cylindrical" : "stacked") << ", axis "
-              << "xyz"[result.axis] << '\n'
-              << "outer size         " << mm(result.outer_size_mm[0]) << " x "
-              << mm(result.outer_size_mm[1]) << " x " << mm(result.outer_size_mm[2]) << '\n';
-    if (cylindrical) {
-      std::cout << "diameter           " << mm(result.outer_mean_mm) << ", out of round "
-                << mm(result.max_out_of_roundness_mm) << '\n';
+    if (!options->images.empty() && options->image_cell.empty()) {
+      inspectAllCells(*options);
     } else {
-      std::cout << "thickness          " << mm(result.outer_min_size_mm) << " to "
-                << mm(result.outer_max_size_mm) << '\n';
-    }
-    std::cout << "wall               " << mm(result.min_wall_mm) << " (thinnest)\n"
-              << "layers             " << result.cathode_layers << " cathode, "
-              << result.anode_layers << " anode, pitch " << mm(result.pitch_mm) << '\n';
-    for (const auto& edge : result.edges) {
-      std::cout << "overhang " << std::left << std::setw(10) << edge.name << std::right
-                << mm(edge.min_mm) << " min, " << mm(edge.mean_mm) << " mean, " << edge.samples
-                << " samples\n";
-    }
-    std::cout << "gaps               " << result.gaps.size() << '\n'
-              << "particles          " << result.particles.size() << '\n'
-              << "voids              " << result.voids.size() << '\n'
-              << "time               " << std::chrono::duration<double>(done - start).count()
-              << " s\n";
-    for (const auto& warning : result.warnings) {
-      std::cerr << "warning: " << warning << '\n';
-    }
-    if (!options->order.empty()) {
-      const nlohmann::json order = nlohmann::json::parse(readFile(options->order));
-      std::vector<std::string> missing;
-      nlohmann::json data = voxelsieve::batteryReportData(order, options->out, &missing);
-      const std::string report_template =
-          options->report_template.empty() ? std::string(voxelsieve::defaultBatteryReportTemplate())
-                                           : readFile(options->report_template);
-      std::ofstream(options->out / "report.html", std::ios::binary)
-          << voxelsieve::renderTemplate(report_template, data);
-      data.erase("images");
-      for (auto& edge : data.at("battery").at("edges")) {
-        edge.erase("image");
+      const auto start = std::chrono::steady_clock::now();
+      voxelsieve::BatteryResult result;
+      if (options->images.empty()) {
+        const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+        result = voxelsieve::analyzeBattery(dataset, options->battery);
+      } else {
+        result = voxelsieve::analyzeBatteryImages(
+            voxelsieve::readCellImages(options->images, options->image_cell), options->battery);
       }
-      voxelsieve::writeJson(options->out / "report.json", data);
-      for (const auto& field : missing) {
-        std::cerr << "warning: " << field << '\n';
+      voxelsieve::writeBatteryResult(result, options->out);
+      printResult(result, std::chrono::steady_clock::now() - start);
+      if (!options->order.empty()) {
+        writeReport(*options, options->out);
       }
-      if (data.contains("evaluation")) {
-        std::cout << "assessment         " << data.at("evaluation").at("verdict").get<std::string>()
-                  << '\n';
-      }
-      std::cout << "report             " << (options->out / "report.html").string() << '\n';
     }
     voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;

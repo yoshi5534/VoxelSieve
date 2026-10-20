@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -56,6 +57,11 @@ struct CellSpec {
   std::uint16_t air_value = 1000;
   /// Electrolyte in the separator and every gap inside the housing.
   std::uint16_t electrolyte_value = 6000;
+  /// Separator with electrolyte between the electrodes, where the cathodes face the anodes;
+  /// unset: the electrolyte value. A value near the anode's hides the anode in the winding, as
+  /// hard carbon or graphite anodes are in many scans, while it still stands out beyond the
+  /// cathode ends.
+  std::optional<std::uint16_t> separator_value;
   std::uint16_t anode_value = 11000;
   std::uint16_t cathode_value = 22000;
   std::uint16_t housing_value = 40000;

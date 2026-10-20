@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <numbers>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "detail/png.hpp"
 #include "voxelsieve/battery.hpp"
 #include "voxelsieve/cells.hpp"
 #include "voxelsieve/dataset.hpp"
@@ -133,6 +136,159 @@ TEST_F(BatteryTest, InspectsACylindricalCell) {
   EXPECT_NE(html.find("data:image/png;base64,"), std::string::npos);
   EXPECT_NE(html.find("The requirements are not met."), std::string::npos);
   EXPECT_EQ(html.find("{{"), std::string::npos);
+}
+
+// Anodes as dark as the separator between the layers, as hard carbon or graphite often are: only
+// the cathodes stand out in the winding, the anodes only beyond the cathode ends, where the cell
+// holds less electrolyte. The third cathode turn reaches 0.1 mm further at the top.
+TEST_F(BatteryTest, FindsTheOverhangOfAnodesHiddenInTheWinding) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.noise_sigma = 500.0;
+  spec.anode_value = 7000;
+  spec.separator_value = 7000;
+  spec.electrolyte_value = 3000;
+  spec.extensions.push_back({2, 1, 0.0, 360.0, 0.1});
+  const Dataset dataset = sieve(spec);
+
+  const BatteryResult result = analyzeBattery(dataset);
+  EXPECT_EQ(result.type, CellType::kCylindrical);
+  EXPECT_FALSE(result.levels.electrodes_distinct);
+  EXPECT_EQ(result.cathode_layers, spec.turns);
+  ASSERT_EQ(result.edges.size(), 2U);
+  const BatteryEdge& bottom = edgeOf(result, 2, 0);
+  const BatteryEdge& top = edgeOf(result, 2, 1);
+  EXPECT_GT(bottom.samples, 100);
+  EXPECT_NEAR(bottom.mean_mm, 0.3, 0.04);
+  EXPECT_NEAR(top.min_mm, 0.2, 0.05);
+  EXPECT_EQ(result.overhang[static_cast<std::size_t>(top.worst)].layer, 2);
+  EXPECT_TRUE(result.particles.empty());
+  EXPECT_TRUE(result.voids.empty());
+}
+
+/// The synthetic cell as section images: cross-sections every fourth slice (and the last), named
+/// by their position from `offset_mm`, and longitudinal sections every 5 degrees through the
+/// axis, sampled bilinearly.
+CellImages cellImages(const CellSpec& spec, double offset_mm) {
+  const CellSource source(spec);
+  const auto [nx, ny, nz] = spec.dims;
+  std::vector<std::uint16_t> volume(static_cast<std::size_t>(nx * ny * nz));
+  source.readRegion(Box{{0, 0, 0}, spec.dims}, volume);
+  const auto voxel = [&](std::int64_t x, std::int64_t y, std::int64_t z) {
+    x = std::clamp<std::int64_t>(x, 0, nx - 1);
+    y = std::clamp<std::int64_t>(y, 0, ny - 1);
+    return static_cast<double>(volume[static_cast<std::size_t>(x + nx * (y + ny * z))]);
+  };
+  CellImages images;
+  images.cell = "synthetic";
+  for (std::int64_t z = 0; z < nz; z = z + 4 < nz || z == nz - 1 ? z + 4 : nz - 1) {
+    CellImage image{offset_mm + static_cast<double>(z) * spec.voxel_size[2], nx, ny, {}};
+    image.values.assign(volume.begin() + nx * ny * z, volume.begin() + nx * ny * (z + 1));
+    images.cross.push_back(std::move(image));
+  }
+  const double cx = 0.5 * static_cast<double>(nx - 1);
+  const double cy = 0.5 * static_cast<double>(ny - 1);
+  for (int degrees = 0; degrees < 180; degrees += 5) {
+    const double t = degrees * std::numbers::pi / 180.0;
+    CellImage image{static_cast<double>(degrees), nx, nz, {}};
+    image.values.resize(static_cast<std::size_t>(nx * nz));
+    for (std::int64_t row = 0; row < nz; ++row) {
+      const std::int64_t z = nz - 1 - row;
+      for (std::int64_t col = 0; col < nx; ++col) {
+        const double d = static_cast<double>(col) - cx;
+        const double x = cx + d * std::cos(t);
+        const double y = cy + d * std::sin(t);
+        const double fx = std::floor(x);
+        const double fy = std::floor(y);
+        const auto ix = static_cast<std::int64_t>(fx);
+        const auto iy = static_cast<std::int64_t>(fy);
+        const double u = x - fx;
+        const double v = y - fy;
+        const double value = (1.0 - v) * ((1.0 - u) * voxel(ix, iy, z) + u * voxel(ix + 1, iy, z)) +
+                             v * ((1.0 - u) * voxel(ix, iy + 1, z) + u * voxel(ix + 1, iy + 1, z));
+        image.values[static_cast<std::size_t>(col + nx * row)] =
+            static_cast<std::uint16_t>(std::lround(value));
+      }
+    }
+    images.longitudinal.push_back(std::move(image));
+  }
+  return images;
+}
+
+// The cylindrical cell of the first test given as section images instead of a volume.
+TEST_F(BatteryTest, InspectsACylindricalCellFromSectionImages) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.noise_sigma = 800.0;
+  spec.extensions.push_back({3, 1, 40.0, 100.0, 0.35});
+  const double r = spec.core_radius_mm + cellPitchMm(spec) * (4.0 + 200.0 / 360.0) + 0.05;
+  const double t = 200.0 * std::numbers::pi / 180.0;
+  spec.particles.push_back({{r * std::cos(t), r * std::sin(t), 0.3}, 0.08});
+  const CellImages images = cellImages(spec, -0.5);
+
+  const BatteryResult result = analyzeBatteryImages(images);
+  EXPECT_TRUE(result.from_images);
+  EXPECT_EQ(result.type, CellType::kCylindrical);
+  EXPECT_NEAR(result.voxel_size[0], spec.voxel_size[0], 1e-9);
+  EXPECT_TRUE(result.levels.electrodes_distinct);
+  EXPECT_EQ(result.cathode_layers, spec.turns);
+  EXPECT_NEAR(result.pitch_mm, cellPitchMm(spec), 0.01);
+  EXPECT_NEAR(result.outer_mean_mm, 2.0 * cellOuterRadiusMm(spec), 0.05);
+  EXPECT_NEAR(result.length_mm, cellOuterSizeMm(spec)[2], 0.03);
+  ASSERT_EQ(result.edges.size(), 2U);
+  const BatteryEdge& bottom = edgeOf(result, 2, 0);
+  const BatteryEdge& top = edgeOf(result, 2, 1);
+  EXPECT_GT(bottom.samples, 100);
+  EXPECT_NEAR(bottom.mean_mm, 0.3, 0.03);
+  EXPECT_NEAR(top.min_mm, -0.05, 0.03);
+  const OverhangSample& worst = result.overhang[static_cast<std::size_t>(top.worst)];
+  EXPECT_EQ(worst.layer, 3);
+  EXPECT_GE(worst.section, 40.0);
+  EXPECT_LE(worst.section, 100.0);
+  // The particle, seen in a cross-section and maybe in longitudinal sections, counts once.
+  ASSERT_EQ(result.particles.size(), 1U);
+  EXPECT_NEAR(result.particles[0].radius_mm, r, 0.06);
+  EXPECT_NEAR(result.particles[0].angle_deg, 200.0, 4.0);
+  EXPECT_TRUE(result.voids.empty());
+
+  writeBatteryResult(result, dir_ / "out");
+  EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / "overhang_z_max.png"));
+  const nlohmann::json order = {{"battery", {{"max_particles", 0}}}};
+  const std::string html =
+      renderTemplate(defaultBatteryReportTemplate(), batteryReportData(order, dir_ / "out"));
+  EXPECT_NE(html.find("Evaluated from section images"), std::string::npos);
+  EXPECT_EQ(html.find("{{"), std::string::npos);
+}
+
+// Section images in a folder per cell, 8-bit PNG files named by angle and position.
+TEST_F(BatteryTest, ReadsCellImagesFromAFolder) {
+  const auto write = [&](const std::filesystem::path& path, std::uint8_t value) {
+    std::filesystem::create_directories(path.parent_path());
+    const std::vector<std::uint8_t> pixels(6, value);
+    const std::vector<std::uint8_t> png = detail::encodePng(3, 2, 1, pixels);
+    std::ofstream(path, std::ios::binary)
+        .write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  };
+  for (const char* cell : {"cells/10", "cells/9"}) {
+    write(dir_ / cell / "axial_images" / "90.0.png", 90);
+    write(dir_ / cell / "axial_images" / "0.0.png", 1);
+    write(dir_ / cell / "radial_images" / "12.5.png", 125);
+    write(dir_ / cell / "radial_images" / "-0.5.png", 5);
+  }
+  write(dir_ / "cells" / "only_cross" / "radial_images" / "1.0.png", 10);
+  write(dir_ / "cells" / "9" / "notes.png", 0);
+
+  EXPECT_EQ(listCellImages(dir_), (std::vector<std::string>{"9", "10"}));
+  const CellImages images = readCellImages(dir_, "10");
+  EXPECT_EQ(images.cell, "10");
+  ASSERT_EQ(images.longitudinal.size(), 2U);
+  ASSERT_EQ(images.cross.size(), 2U);
+  EXPECT_EQ(images.longitudinal[0].position, 0.0);
+  EXPECT_EQ(images.longitudinal[1].position, 90.0);
+  EXPECT_EQ(images.cross[0].position, -0.5);
+  EXPECT_EQ(images.cross[1].position, 12.5);
+  EXPECT_EQ(images.cross[1].width, 3);
+  EXPECT_EQ(images.cross[1].height, 2);
+  EXPECT_EQ(images.cross[1].values, std::vector<std::uint16_t>(6, 125));
+  EXPECT_THROW((void)readCellImages(dir_, "11"), std::invalid_argument);
 }
 
 // A stack of five cathode sheets; the third reaches 0.2 mm further at high x.

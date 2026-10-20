@@ -444,6 +444,22 @@ that layer and angle:
 
 ![Anode overhang per edge in the battery cell report, with the section of the smallest overhang](docs/images/battery-report.png)
 
+Cylindrical cells given as section images instead of a volume are inspected as well: a folder
+or ZIP archive with a folder per cell holding `axial_images/<angle>.png` (longitudinal sections
+through the axis, the right half at the angle, the left half opposite, the top row at the high
+end) and `radial_images/<position mm>.png` (cross-sections). Housing and layers come from the
+cross-sections, the overhang from both halves of every longitudinal section, particles and voids
+from all images (operation `battery_images`). Without `--image-cell`, every cell is inspected
+and `cells.csv` summarises them:
+
+```sh
+vs-battery --images scans.zip --list-cells
+vs-battery --images scans.zip --out results --order examples/battery_order.json
+```
+
+The pixel size follows from the positions of the cross-sections over the height of the
+longitudinal sections unless `--pixel-size` gives it.
+
 The cell axis or stack normal must lie along a volume axis. See
 `docs/adr/0029-battery-cell-inspection.md` for the method and its limits.
 

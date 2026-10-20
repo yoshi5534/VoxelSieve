@@ -116,7 +116,8 @@ std::uint16_t cylindricalValue(const CellSpec& spec, const Vec& p) {
     const bool on = z >= -h - spec.overhang_mm[0] && z <= h + spec.overhang_mm[1];
     return on ? spec.anode_value : spec.electrolyte_value;
   }
-  return spec.electrolyte_value;
+  return std::abs(z) <= h ? spec.separator_value.value_or(spec.electrolyte_value)
+                          : spec.electrolyte_value;
 }
 
 std::uint16_t stackedValue(const CellSpec& spec, const Vec& p) {
@@ -177,7 +178,9 @@ std::uint16_t stackedValue(const CellSpec& spec, const Vec& p) {
                     p[1] <= hy + extension(spec, layer, 3, 0.0);
     return on ? spec.cathode_value : spec.electrolyte_value;
   }
-  return spec.electrolyte_value;
+  const bool facing = std::abs(p[0]) <= 0.5 * spec.cathode_size_mm[0] &&
+                      std::abs(p[1]) <= 0.5 * spec.cathode_size_mm[1];
+  return facing ? spec.separator_value.value_or(spec.electrolyte_value) : spec.electrolyte_value;
 }
 
 nlohmann::json spheresJson(const std::vector<CellSphere>& spheres) {

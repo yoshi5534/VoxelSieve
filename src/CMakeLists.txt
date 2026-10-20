@@ -44,6 +44,7 @@ add_library(voxelsieve SHARED
   preview.cpp
   orientation.cpp
   battery.cpp
+  battery_images.cpp
   cells.cpp
   porosity.cpp
   report.cpp
