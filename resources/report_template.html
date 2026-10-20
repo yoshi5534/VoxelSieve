@@ -35,6 +35,7 @@
   .renders { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
   .renders figure { margin: 0; flex: 1 1 45%; min-width: 220px; break-inside: avoid; }
   .renders img { width: 100%; height: auto; display: block; border: 1px solid var(--line); }
+  .swatch { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border: 1px solid var(--line); }
   .histogram { margin: 4px 0 0; }
   .histogram svg { display: block; width: 100%; height: auto; max-height: 62mm; }
   figcaption, .note { color: var(--muted); font-size: 8.5pt; }
@@ -78,7 +79,7 @@
 <h2>3 Test method</h2>
 <table class="fields">
   <tr><th>Method</th><td>Industrial computed tomography according to ISO 15708</td></tr>
-  <tr><th>Evaluation</th><td>Porosity analysis{{#comparison}} and nominal-actual comparison{{/comparison}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Evaluation</th><td>Porosity analysis{{#materials}}, material segmentation{{/materials}}{{#fibres}}, fibre orientation{{/fibres}}{{#comparison}}, nominal-actual comparison{{/comparison}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
   <tr><th>Deviations from the method</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}none{{/method.deviations}}</td></tr>
 </table>
 </section>
@@ -103,7 +104,7 @@
 <table class="fields">
   <tr><th>Grey value air / material</th><td>{{analysis.air_level}} / {{analysis.material_level}} (noise σ = {{analysis.noise_sigma}})</td></tr>
   <tr><th>Smallest evaluated pore</th><td>{{analysis.min_pore_voxels}} voxels ({{analysis.min_pore_volume}}, sphere diameter {{analysis.min_pore_diameter}})</td></tr>
-  <tr><th>Loosened microstructure</th><td>Blocks of {{analysis.zone_block}} edge length, from {{analysis.zone_min_porosity}} porosity and {{analysis.zone_sigma}} σ above the noise, material reference at the same depth below the surface</td></tr>
+  <tr><th>Loosened microstructure</th><td>Blocks of {{analysis.zone_block}} edge length, from {{analysis.zone_min_porosity}} porosity and {{analysis.zone_sigma}} σ above the noise, material reference at the same depth below the surface{{#analysis.material_levels}}, each material compared with its own grey value{{/analysis.material_levels}}</td></tr>
   <tr><th>Measurement uncertainty</th><td>{{uncertainty}}</td></tr>
 </table>
 </section>
@@ -149,9 +150,51 @@
 {{/has_zones}}
 </section>
 
+{{#materials}}
+<section>
+<h2>{{section.materials}} Materials</h2>
+<p>Segmentation by {{method}}; segmented volume {{volume}}.</p>
+<table>
+  <tr><th>Material</th><th>Grey values</th>{{#per_material_porosity}}<th class="num">Grey value level</th>{{/per_material_porosity}}<th class="num">Volume mm³</th><th class="num">Share</th></tr>
+  {{#classes}}<tr><td><span class="swatch" style="background: {{color}}"></span>{{name}}</td><td>{{grey_values}}</td>{{#per_material_porosity}}<td class="num">{{porosity_level}}</td>{{/per_material_porosity}}<td class="num">{{volume}}</td><td class="num">{{share}}</td></tr>
+  {{/classes}}
+</table>
+{{#images.materials_z}}
+<div class="images">
+  <figure><img src="{{{images.materials_z}}}" alt="Materials, slice normal to z"><figcaption>Slice normal to z through the middle</figcaption></figure>
+  <figure><img src="{{{images.materials_y}}}" alt="Materials, slice normal to y"><figcaption>Slice normal to y through the middle</figcaption></figure>
+  <figure><img src="{{{images.materials_x}}}" alt="Materials, slice normal to x"><figcaption>Slice normal to x through the middle</figcaption></figure>
+</div>
+<p class="note">Materials coloured as in the table over the grey values.</p>
+{{/images.materials_z}}
+</section>
+{{/materials}}
+
+{{#fibres}}
+<section>
+<h2>{{section.fibres}} Fibre orientation</h2>
+<table class="fields">
+  <tr><th>Method</th><td>Structure tensor of the grey value gradients in blocks of {{block}}; the fibres run along the direction of least change. Analysed: {{material}}</td></tr>
+  <tr><th>Analysed blocks</th><td>{{blocks}}, mean coherence {{coherence}} (0: no preferred direction, 1: aligned)</td></tr>
+  <tr><th>Orientation tensor, eigenvalues</th><td>{{eigenvalues}}</td></tr>
+</table>
+<table>
+  <tr><th>Family</th><th>Direction x, y, z</th><th>Angle to the axes</th><th class="num">Share</th><th class="num">Spread</th></tr>
+  {{#families}}<tr><td>{{id}}</td><td>{{direction}}</td><td>{{angles}}</td><td class="num">{{share}}</td><td class="num">{{spread}}</td></tr>
+  {{/families}}
+</table>
+<div class="images">
+  <figure><img src="{{{images.orientation_z}}}" alt="Fibre directions, slice normal to z"><figcaption>Slice normal to z</figcaption></figure>
+  <figure><img src="{{{images.orientation_y}}}" alt="Fibre directions, slice normal to y"><figcaption>Slice normal to y</figcaption></figure>
+  <figure><img src="{{{images.orientation_x}}}" alt="Fibre directions, slice normal to x"><figcaption>Slice normal to x</figcaption></figure>
+</div>
+<p class="note">Fibres along x red, along y green, along z blue; paler blocks have less preferred direction. Share: of the analysed volume of the directional blocks. Spread: mean angle of the blocks of a family to its direction.</p>
+</section>
+{{/fibres}}
+
 {{#comparison}}
 <section>
-<h2>7 Nominal-actual comparison</h2>
+<h2>{{section.comparison}} Nominal-actual comparison</h2>
 <table class="fields">
   <tr><th>Nominal geometry (CAD)</th><td>{{cad}}</td></tr>
   <tr><th>Alignment</th><td>{{alignment}}, residual alignment deviation {{fit_rms}} (RMS)</td></tr>
@@ -182,12 +225,12 @@
 {{/comparison}}
 
 <section>
-<h2>{{#comparison}}8{{/comparison}}{{^comparison}}7{{/comparison}} Assessment</h2>
+<h2>{{section.assessment}} Assessment</h2>
 {{#evaluation}}
-<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}</p>
 {{#zones}}
 <table>
-  <tr><th colspan="4">{{name}}: {{region}}, part volume {{part_volume}}</th></tr>
+  <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}</th></tr>
   <tr><th>Characteristic</th><th class="num">Finding</th><th class="num">Limit</th><th>Result</th></tr>
   {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
   {{/criteria}}

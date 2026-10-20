@@ -1178,10 +1178,17 @@ class Report final : public Operation {
         "Evaluates the porosity result against the acceptance limits of the inspection order "
         "(BDG P 202 scheme) and writes report.html and report.json. With a surface, the report "
         "shows 3D views of the part and its pores; with a comparison, the nominal-actual "
-        "comparison with its views and histogram.";
-    info_.inputs = {{"porosity", artifact::kPorosity, "Porosity result"},
-                    {"surface", artifact::kSurface, "Surface for the 3D views of the part", true},
-                    {"comparison", artifact::kComparison, "Nominal-actual comparison", true}};
+        "comparison with its views and histogram. For fibre composites and other parts of "
+        "several materials, a material segmentation adds the materials with their shares and "
+        "coloured slices, and a fibre orientation the fibre families, evaluated against the "
+        "\"fibres\" requirements of the order (direction tolerance, share).";
+    info_.inputs = {
+        {"porosity", artifact::kPorosity, "Porosity result"},
+        {"surface", artifact::kSurface, "Surface for the 3D views of the part", true},
+        {"comparison", artifact::kComparison, "Nominal-actual comparison", true},
+        {"dataset", artifact::kDataset, "Dataset for the slices through the materials", true},
+        {"materials", artifact::kMaterials, "Material segmentation", true},
+        {"orientation", artifact::kFibreOrientation, "Fibre orientation", true}};
     info_.outputs = {{"report", artifact::kReport, "Report directory"}};
     info_.parameters = {
         {"type", "object"},
@@ -1222,6 +1229,18 @@ class Report final : public Operation {
         comparison != context.inputs.end()) {
       addComparison(data, comparison->second);
     }
+    if (const auto materials = context.inputs.find("materials");
+        materials != context.inputs.end()) {
+      std::optional<Dataset> dataset;
+      if (const auto it = context.inputs.find("dataset"); it != context.inputs.end()) {
+        dataset = Dataset::open(it->second);
+      }
+      addMaterials(data, materials->second, dataset ? &*dataset : nullptr);
+    }
+    if (const auto orientation = context.inputs.find("orientation");
+        orientation != context.inputs.end()) {
+      addFibreOrientation(data, orientation->second, order);
+    }
     phase.reset();
     phase.emplace("write report");
     const auto dir = context.output_dir / "report";
@@ -1236,8 +1255,8 @@ class Report final : public Operation {
     result.outputs["report"] = "report";
     result.summary = {{"evaluated_zones", evaluation.zones.size()},
                       {"missing_fields", warnings.size()}};
-    if (!zones.empty()) {
-      result.summary["passed"] = evaluation.passed();
+    if (data.contains("evaluation")) {
+      result.summary["passed"] = data["evaluation"].value("passed", true);
     }
     return result;
   }
@@ -2501,6 +2520,18 @@ class FirstArticleReport final : public Operation {
     if (const auto comparison = context.inputs.find("comparison");
         p.at("include_comparison").get<bool>() && comparison != context.inputs.end()) {
       addComparison(data, comparison->second);
+    }
+    if (const auto materials = context.inputs.find("materials");
+        materials != context.inputs.end()) {
+      std::optional<Dataset> dataset;
+      if (const auto it = context.inputs.find("dataset"); it != context.inputs.end()) {
+        dataset = Dataset::open(it->second);
+      }
+      addMaterials(data, materials->second, dataset ? &*dataset : nullptr);
+    }
+    if (const auto orientation = context.inputs.find("orientation");
+        orientation != context.inputs.end()) {
+      addFibreOrientation(data, orientation->second, order);
     }
     phase.reset();
     phase.emplace("write report");

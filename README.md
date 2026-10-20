@@ -375,6 +375,18 @@ figures, the coloured deviation from above and from below, and the histogram of 
 In the GUI, the report step takes the latest surface and comparison of the project when there
 are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
 
+For fibre composites and other parts of several materials, the report step in the GUI also takes
+the material segmentation (materials with grey values, volume and share, slices coloured by
+material) and the fibre orientation (fibre families with direction, share and spread, slices
+coloured by direction). A `fibres` section in the order sets requirements per fibre family, each
+compared with the measured family closest to its nominal direction:
+
+```json
+"fibres": { "families": [
+  { "name": "Warp", "direction": [0, 0, 1], "tolerance_deg": 5,
+    "min_share_percent": 40, "max_share_percent": 60 } ] }
+```
+
 ![3D views of the part and of its pores in the inspection report](docs/images/report-part-views.png)
 
 ![Nominal-actual comparison in the inspection report: key figures, coloured views and histogram](docs/images/report-comparison.png)
