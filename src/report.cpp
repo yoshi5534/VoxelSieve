@@ -668,7 +668,9 @@ namespace {
 /// over the grey values, from the coarsest level that still has 900 pixels along its longer side.
 RenderImage materialSlice(const Dataset& dataset, const MaterialVolume& materials, int axis) {
   const DatasetInfo& info = dataset.info();
-  const auto [u, v] = sliceAxes(axis);
+  const auto axes = sliceAxes(axis);
+  const auto u = static_cast<std::size_t>(axes[0]);
+  const auto v = static_cast<std::size_t>(axes[1]);
   int level = 0;
   while (level + 1 < static_cast<int>(info.levels.size()) &&
          (std::max(info.dims[u], info.dims[v]) >> (level + 1)) >= 900) {
@@ -676,7 +678,7 @@ RenderImage materialSlice(const Dataset& dataset, const MaterialVolume& material
   }
   SliceRequest request;
   request.axis = axis;
-  request.index = info.dims[axis] / 2;
+  request.index = info.dims[static_cast<std::size_t>(axis)] / 2;
   request.level = level;
   const std::int64_t step = std::int64_t{1} << level;
   request.size = {(info.dims[u] + step - 1) / step, (info.dims[v] + step - 1) / step};
