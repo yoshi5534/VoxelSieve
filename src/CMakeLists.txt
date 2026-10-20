@@ -40,6 +40,7 @@ add_library(voxelsieve SHARED
   parts.cpp
   phantom.cpp
   preview.cpp
+  orientation.cpp
   porosity.cpp
   report.cpp
   template.cpp

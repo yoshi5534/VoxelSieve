@@ -69,8 +69,9 @@ constexpr std::array<std::string_view, 4> kIdempotentMethods = {"project_open", 
                                                                 "view_set", "cancel"};
 
 /// Output types whose files are resources: results small enough to read, unlike datasets.
-constexpr std::array<std::string_view, 6> kResourceOutputTypes = {
-    "report", "porosity", "comparison", "pose", "measurements", "dimensional_measurement"};
+constexpr std::array<std::string_view, 7> kResourceOutputTypes = {
+    "report",           "porosity", "comparison", "pose", "measurements", "dimensional_measurement",
+    "fibre_orientation"};
 
 template <std::size_t N>
 bool contains(const std::array<std::string_view, N>& names, std::string_view name) {

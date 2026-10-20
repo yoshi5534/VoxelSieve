@@ -290,7 +290,8 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 23U);
+  EXPECT_EQ(registry.all().size(), 24U);
+  EXPECT_NE(registry.find("fibre_orientation"), nullptr);
   EXPECT_NE(registry.find("import_tiff"), nullptr);
   EXPECT_NE(registry.find("measure_dimensions"), nullptr);
   EXPECT_NE(registry.find("first_article_report"), nullptr);
@@ -313,6 +314,10 @@ TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   EXPECT_EQ(imported.summary.at("dims"), Json(scan.dims()));
   const Step porosity = project.run(registry, "porosity");
   EXPECT_EQ(porosity.summary.at("pores"), 2);
+  const Step orientation = project.run(registry, "fibre_orientation", {{"families", 1}});
+  EXPECT_GT(orientation.summary.at("blocks").get<int>(), 0);
+  EXPECT_TRUE(std::filesystem::exists(project.resolve({orientation.id, "orientation"}) /
+                                      "orientation.json"));
   const Json order = {{"part", {{"name", "Box"}}},
                       {"acceptance", {{"zones", {{{"name", "all"}, {"max_pore_size_mm", 0.1}}}}}}};
   const Step report = project.run(registry, "report", {{"order", order}});

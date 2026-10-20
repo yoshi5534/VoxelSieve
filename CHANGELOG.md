@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fibre orientation**: the new operation `fibre_orientation` finds the direction of the fibres
+  of a composite block by block from the structure tensor of the grey values, groups the blocks
+  into fibre families (warp and weft of a fabric, the plies of a laminate) with their share and
+  spread, and writes the orientation tensor, slices coloured by direction and a VDB file with the
+  directions. With a material segmentation only the fibre bundles count (ADR 0028).
+
+- **Porosity per material**: given a material segmentation, the porosity analysis compares each
+  material with its own grey value, so the resin between the fibre bundles of a composite or a
+  lighter insert is no longer taken for loosened zones. The material segmentation splits classes
+  in the valley of the histogram when the peaks are clear, instead of by Otsu.
+
 - **Tool titles for MCP clients**: every MCP tool has a readable `title`, also in its
   annotations next to `readOnlyHint` and `destructiveHint`, as the Claude directory asks.
 
