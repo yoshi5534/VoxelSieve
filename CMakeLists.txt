@@ -86,6 +86,7 @@ if(WIN32)
 endif()
 
 add_subdirectory(src)
+add_subdirectory(apps/vs-battery)
 add_subdirectory(apps/vs-phantom)
 add_subdirectory(apps/vs-porosity)
 add_subdirectory(apps/vs-report)

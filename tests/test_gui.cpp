@@ -890,7 +890,7 @@ TEST_F(GuiTest, McpSessionFindsThePoresOfASyntheticScan) {
   EXPECT_EQ(
       handle(request(12, "prompts/get", {{"name", "compare_with_cad"}})).at("error").at("code"),
       -32602);
-  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 4U);
+  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 5U);
   EXPECT_NE(handle(request(14, "prompts/get",
                            {{"name", "first_article_inspection"},
                             {"arguments", {{"scan", "part.raw"}, {"cad", "part.stl"}}}}))

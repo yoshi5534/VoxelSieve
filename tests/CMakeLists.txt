@@ -12,6 +12,7 @@ add_executable(voxelsieve_tests
   test_model.cpp
   test_phantom.cpp
   test_orientation.cpp
+  test_battery.cpp
   test_porosity.cpp
   test_preview.cpp
   test_alignment.cpp
@@ -134,6 +135,27 @@ set_tests_properties(vs_diconde_info_cli PROPERTIES DEPENDS vs_diconde_cli
                      PASS_REGULAR_EXPRESSION "component +Gearbox housing")
 add_test(NAME vs_report_cli_template COMMAND vs-report --print-template)
 set_tests_properties(vs_report_cli_template PROPERTIES PASS_REGULAR_EXPRESSION "Test report")
+# A synthetic wound cell whose cathode sticks out at one end, inspected and reported against the
+# example order.
+add_test(NAME vs_battery_cell_cli
+         COMMAND vs-battery --cell cylindrical --out ${CMAKE_CURRENT_BINARY_DIR}/cli_cell
+                 --extension 3 1 0.35 40 100)
+add_test(NAME vs_battery_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_cell.vsieve)
+set_tests_properties(vs_battery_cli_clean PROPERTIES FIXTURES_SETUP cli_battery)
+add_test(NAME vs_battery_cli_sieve
+         COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_cell.raw --brick-size 64
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_cell.vsieve)
+set_tests_properties(vs_battery_cli_sieve PROPERTIES DEPENDS vs_battery_cell_cli
+                     FIXTURES_REQUIRED cli_battery)
+add_test(NAME vs_battery_cli COMMAND vs-battery ${CMAKE_CURRENT_BINARY_DIR}/cli_cell.vsieve
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_battery
+         --order ${PROJECT_SOURCE_DIR}/examples/battery_order.json)
+set_tests_properties(vs_battery_cli PROPERTIES DEPENDS vs_battery_cli_sieve
+                     PASS_REGULAR_EXPRESSION "overhang z max +-0\\.0[0-9]+ mm min.*The requirements are not met")
+add_test(NAME vs_battery_cli_template COMMAND vs-battery --print-template)
+set_tests_properties(vs_battery_cli_template PROPERTIES
+                     PASS_REGULAR_EXPRESSION "Battery cell test report")
 
 add_test(NAME vs_synth_part_cli
          COMMAND vs-synth --part hub --scale 0.3 --voxel-size 0.2 --blur 0.1 --noise 300

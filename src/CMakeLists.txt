@@ -11,6 +11,8 @@ endfunction()
 voxelsieve_embed(VOXELSIEVE_REPORT_TEMPLATE ${PROJECT_SOURCE_DIR}/resources/report_template.html)
 voxelsieve_embed(VOXELSIEVE_FIRST_ARTICLE_TEMPLATE
                  ${PROJECT_SOURCE_DIR}/resources/first_article_template.html)
+voxelsieve_embed(VOXELSIEVE_BATTERY_TEMPLATE
+                 ${PROJECT_SOURCE_DIR}/resources/battery_report_template.html)
 configure_file(report_template.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp @ONLY)
 
 # The browser UI of vs-gui is compiled in the same way.
@@ -41,6 +43,8 @@ add_library(voxelsieve SHARED
   phantom.cpp
   preview.cpp
   orientation.cpp
+  battery.cpp
+  cells.cpp
   porosity.cpp
   report.cpp
   template.cpp

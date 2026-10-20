@@ -30,6 +30,8 @@ inline constexpr const char* kDimensionalMeasurement =
     "dimensional_measurement";  // characteristics of a drawing measured on a scan (ADR 0027)
 inline constexpr const char* kFibreOrientation =
     "fibre_orientation";  // directory with orientation.json, images and VDB (ADR 0028)
+inline constexpr const char* kBattery =
+    "battery";  // directory with battery.json and images of a cell inspection (ADR 0029)
 }  // namespace artifact
 
 struct PortInfo {
