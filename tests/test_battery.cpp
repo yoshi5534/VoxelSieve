@@ -285,14 +285,15 @@ TEST_F(BatteryTest, LeavesTabsAndTheInnermostTurnOutOfSectionImages) {
   BatteryOptions options;
   options.max_end_deviation_mm = 0.3;
   options.max_particle_size_mm = 0.4;
-  const BatteryResult result = analyzeBatteryImages(cellImages(spec, -0.5), options);
+  const CellImages images = cellImages(spec, -0.5);
+  const BatteryResult result = analyzeBatteryImages(images, options);
   const BatteryEdge& top = edgeOf(result, 2, 1);
   EXPECT_NEAR(top.min_mm, 0.3, 0.05);
   EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
     return w.find("are left out") != std::string::npos && w.find("tabs") != std::string::npos;
   }));
   // With the default limit the cathode end is left out because its neighbours end lower.
-  EXPECT_NEAR(edgeOf(analyzeBatteryImages(cellImages(spec, -0.5)), 2, 1).min_mm, 0.3, 0.05);
+  EXPECT_NEAR(edgeOf(analyzeBatteryImages(images), 2, 1).min_mm, 0.3, 0.05);
   EXPECT_TRUE(result.particles.empty());
   EXPECT_EQ(result.bright_structures, 1);
   ASSERT_EQ(result.voids.size(), 1U);
