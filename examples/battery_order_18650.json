@@ -1,0 +1,27 @@
+{
+  "report": { "number": "TR-2026-0102", "date": "2026-10-21" },
+  "laboratory": { "name": "Example CT Testing Lab", "address": "1 Sample Street, 12345 Exampletown" },
+  "customer": { "name": "Example customer", "address": "" },
+  "order": { "number": "B-0816", "received": "2026-10-21", "test_date": "2026-10-21" },
+  "part": {
+    "name": "Cylindrical cell 18650, sodium ion",
+    "drawing": "",
+    "material": "sodium-ion chemistry",
+    "serial": "",
+    "condition": "as delivered",
+    "state_of_charge": "unknown"
+  },
+  "scan": {
+    "device": "unknown, evaluated from published section images",
+    "reconstruction": "section images, 8 bit"
+  },
+  "method": { "deviations": "evaluated from longitudinal and cross-section images instead of a volume" },
+  "uncertainty": "overhang ±1 pixel (about 0.015 mm) where the anode end is resolved",
+  "battery": {
+    "guideline": "IEEE 1725-2021 minimum anode overhang; no dense particles",
+    "min_overhang_mm": 0.1,
+    "max_particles": 0,
+    "max_particle_size_mm": 0.06
+  },
+  "approval": { "inspector": "", "approver": "", "approver_role": "" }
+}

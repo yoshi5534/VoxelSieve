@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Battery overhang, tabs and particles at the can**: a cathode end more than half of
+  `max_end_deviation_mm` from its neighbouring layers in the same section, such as a tab bent
+  over the winding, is left out of the overhang with the layers next to it; an anode end that is
+  dark right at the cathode end is not resolved and no longer counts as zero overhang. Particles
+  are looked for only inside the outermost turn, so the can wall at the ends is no longer one, and
+  small bright pieces within a long bright structure count as part of it. New example order
+  `examples/battery_order_18650.json` with the IEEE 1725 minimum overhang of 0.1 mm.
+
 - **Battery overhang and voids on real cells**: layer ends more than `max_end_deviation_mm`
   (default 1 mm, `vs-battery --max-end-deviation`) from the median end of their edge, such as
   tabs and layers the tracking lost, are left out of the overhang with a warning, and an edge left
