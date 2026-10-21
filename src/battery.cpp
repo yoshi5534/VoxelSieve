@@ -8,15 +8,18 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <numbers>
 #include <numeric>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
 
+#include "detail/blocks.hpp"
 #include "detail/png.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -68,6 +71,55 @@ double nanMax(double a, double b) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Read access at full resolution: a dataset, or a volume made of images.
+
+struct VolumeInfo {
+  Index3 dims{};
+  VoxelSize voxel_size;
+  float air_level = 0.0F;
+  float threshold = 0.0F;
+  /// Indices along z of the planes that hold measured values, when not all do (cross-sections
+  /// given as images; the others repeat the nearest one). Empty: all.
+  std::vector<std::int64_t> planes;
+};
+
+/// Level 0 of a volume: the regions the analysis reads, with `fill` outside the volume.
+class VolumeView {
+ public:
+  using Reader = std::function<void(const Box&, std::span<float>, float)>;
+  VolumeView(VolumeInfo info, Reader reader) : info_(std::move(info)), reader_(std::move(reader)) {}
+
+  [[nodiscard]] const VolumeInfo& info() const { return info_; }
+  void readRegion(const Box& box, std::span<float> out, float fill) const {
+    reader_(box, out, fill);
+  }
+
+ private:
+  VolumeInfo info_;
+  Reader reader_;
+};
+
+/// The entry of the ascending `planes` nearest to `index`.
+std::int64_t nearestPlane(const std::vector<std::int64_t>& planes, std::int64_t index) {
+  const auto it = std::lower_bound(planes.begin(), planes.end(), index);
+  if (it == planes.end()) {
+    return planes.back();
+  }
+  if (it != planes.begin() && index - *std::prev(it) < *it - index) {
+    return *std::prev(it);
+  }
+  return *it;
+}
+
+VolumeView viewOf(const Dataset& dataset) {
+  const DatasetInfo& info = dataset.info();
+  return VolumeView({info.dims, info.voxel_size, info.air_level, info.threshold, {}},
+                    [&dataset](const Box& box, std::span<float> out, float fill) {
+                      dataset.readRegion(0, box, out, fill);
+                    });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Planes and profiles.
 
 /// A slice of level 0 normal to `axis`, over a range of the two other axes (u < v).
@@ -109,7 +161,7 @@ std::pair<int, int> planeAxes(int axis) {
   return axis == 0 ? std::pair{1, 2} : (axis == 1 ? std::pair{0, 2} : std::pair{0, 1});
 }
 
-Plane readPlane(const Dataset& dataset, int axis, std::int64_t index, const Index3& lo,
+Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const Index3& lo,
                 const Index3& hi, float fill) {
   const auto [u, v] = planeAxes(axis);
   Plane plane;
@@ -119,7 +171,7 @@ Plane readPlane(const Dataset& dataset, int axis, std::int64_t index, const Inde
   plane.v0 = lo[at(v)];
   plane.nu = hi[at(u)] - lo[at(u)];
   plane.nv = hi[at(v)] - lo[at(v)];
-  const VoxelSize& pitch = dataset.info().voxel_size;
+  const VoxelSize& pitch = volume.info().voxel_size;
   plane.pu = pitch[at(u)];
   plane.pv = pitch[at(v)];
   plane.fill = fill;
@@ -127,7 +179,7 @@ Plane readPlane(const Dataset& dataset, int axis, std::int64_t index, const Inde
   box.min[at(axis)] = index;
   box.max[at(axis)] = index + 1;
   plane.values.resize(at(box.voxelCount()));
-  dataset.readRegion(0, box, plane.values, fill);
+  volume.readRegion(box, plane.values, fill);
   return plane;
 }
 
@@ -466,6 +518,8 @@ struct Track {
   bool ended = false;
   double end = 0.0;  // row, sub-sample
   double across_end = 0.0;
+  std::vector<std::int64_t> path;  // across sample per row
+  std::vector<double> along;       // grey value on the track per row, smoothed
 };
 
 std::vector<Track> trackLayers(const SectionImage& image, const Classes& classes,
@@ -518,8 +572,9 @@ std::vector<Track> trackLayers(const SectionImage& image, const Classes& classes
       if (best_value >= end_level) {
         pos = best;  // follows the layer by at most one sample per row
       }
+      track.path.push_back(pos);
     }
-    const std::vector<double> smoothed = smooth3(along);
+    std::vector<double> smoothed = smooth3(along);
     for (std::int64_t s = 1; s + 1 < image.along; ++s) {
       if (smoothed[at(s)] < end_level && smoothed[at(s + 1)] < end_level) {
         const double before = smoothed[at(s - 1)];
@@ -530,7 +585,8 @@ std::vector<Track> trackLayers(const SectionImage& image, const Classes& classes
       }
     }
     track.across_end = static_cast<double>(pos);
-    tracks.push_back(track);
+    track.along = std::move(smoothed);
+    tracks.push_back(std::move(track));
   }
   return tracks;
 }
@@ -590,6 +646,174 @@ void overhangOfSection(const SectionImage& image, const std::vector<Track>& trac
   }
 }
 
+/// Overhang samples where only the cathode layers stand out in the winding, as with hard carbon
+/// or graphite anodes between metal oxide cathodes in a reconstruction with little contrast:
+/// every track is a cathode, and the anode is looked for in the middle between two neighbouring
+/// cathodes. Beyond the cathode ends the anode stands between darker electrolyte, and it ends
+/// where its grey value falls half way to that of the space beyond the cathode ends. Where the
+/// anode does not stand out there by `min_contrast`, as when the space beyond the cathodes is
+/// filled with other material, the pair is left out and `hidden` is set.
+void overhangBetweenCathodes(const SectionImage& image, const std::vector<Track>& tracks, int edge,
+                             double section, double min_contrast,
+                             std::vector<OverhangSample>& samples, bool& unfinished, bool& hidden) {
+  std::vector<double> spacing;
+  for (std::size_t t = 1; t < tracks.size(); ++t) {
+    spacing.push_back(tracks[t].start - tracks[t - 1].start);
+  }
+  const double usual = median(spacing);
+  if (!(usual > 2.0)) {
+    return;
+  }
+  // Windows in rows, relative to the layer pitch so that they mean the same at any resolution.
+  const auto half_width = std::max<std::int64_t>(1, std::lround(0.12 * usual));
+  const auto smoothing = std::max<std::int64_t>(1, std::lround(0.17 * usual));
+  const auto run = std::max<std::int64_t>(2, std::lround(0.2 * usual));
+  const auto probe = std::max<std::int64_t>(3, std::lround(0.3 * usual));
+  // Anode end per pair of neighbouring cathodes, in rows; NaN where not found.
+  std::vector<double> anode_end(tracks.size(), kNaN);
+  std::vector<double> anode_across(tracks.size(), kNaN);
+  int hidden_pairs = 0;
+  int seen_pairs = 0;
+  for (std::size_t t = 0; t + 1 < tracks.size(); ++t) {
+    const Track& a = tracks[t];
+    const Track& b = tracks[t + 1];
+    if (std::abs((b.start - a.start) - usual) > 0.4 * usual) {
+      continue;  // not neighbours in the winding
+    }
+    if (!a.ended || !b.ended) {
+      unfinished = true;
+      continue;
+    }
+    std::vector<double> mid(at(image.along), 0.0);
+    for (std::int64_t s = 0; s < image.along; ++s) {
+      const std::int64_t c = (a.path[at(s)] + b.path[at(s)]) / 2;
+      double sum = 0.0;
+      double count = 0.0;
+      for (std::int64_t k = std::max<std::int64_t>(0, c - half_width);
+           k <= std::min(image.valid_across - 1, c + half_width); ++k) {
+        sum += image.value(k, s);
+        count += 1.0;
+      }
+      mid[at(s)] = count > 0.0 ? sum / count : kNaN;
+    }
+    std::vector<double> smoothed(mid.size(), kNaN);
+    for (std::int64_t s = 0; s < image.along; ++s) {
+      double sum = 0.0;
+      double count = 0.0;
+      for (std::int64_t k = std::max<std::int64_t>(0, s - smoothing);
+           k <= std::min(image.along - 1, s + smoothing); ++k) {
+        sum += mid[at(k)];
+        count += 1.0;
+      }
+      smoothed[at(s)] = sum / count;
+    }
+    const auto first = static_cast<std::int64_t>(std::ceil(std::min(a.end, b.end)));
+    const auto last = static_cast<std::int64_t>(std::ceil(std::max(a.end, b.end)));
+    std::vector<double> anode_level;
+    std::vector<double> dark;
+    for (std::int64_t s = last + 1; s <= last + probe && s < image.along; ++s) {
+      anode_level.push_back(smoothed[at(s)]);
+    }
+    for (const Track* track : {&a, &b}) {
+      const auto end = static_cast<std::int64_t>(std::ceil(track->end));
+      for (std::int64_t s = end + 2; s <= end + 1 + probe && s < image.along; ++s) {
+        dark.push_back(track->along[at(s)]);
+      }
+    }
+    const double level = median(anode_level);
+    const double beyond = median(dark);
+    if (!(level - beyond >= min_contrast)) {
+      ++hidden_pairs;
+      continue;
+    }
+    ++seen_pairs;
+    const double end_level = 0.5 * (level + beyond);
+    for (std::int64_t s = std::max<std::int64_t>(first, 1); s + run < image.along; ++s) {
+      bool below = true;
+      for (std::int64_t k = s; k < s + run && below; ++k) {
+        below = smoothed[at(k)] < end_level;
+      }
+      if (below) {
+        const double before = smoothed[at(s - 1)];
+        const double frac = (before - end_level) / std::max(1e-9, before - smoothed[at(s)]);
+        anode_end[t] = static_cast<double>(s - 1) + std::clamp(frac, 0.0, 1.0);
+        anode_across[t] = 0.5 * static_cast<double>(a.path[at(s)] + b.path[at(s)]);
+        break;
+      }
+    }
+    if (std::isnan(anode_end[t])) {
+      unfinished = true;
+    }
+  }
+  // Hidden where the anode does not stand out between most pairs.
+  hidden = hidden_pairs > seen_pairs;
+  int layer = 0;
+  for (std::size_t t = 0; t < tracks.size(); ++t) {
+    const int this_layer = layer++;
+    if (!tracks[t].ended) {
+      continue;
+    }
+    double overhang = std::numeric_limits<double>::infinity();
+    std::size_t pair = tracks.size();
+    for (const std::size_t n : {t - 1, t}) {
+      if (n < tracks.size() && !std::isnan(anode_end[n])) {  // t - 1 wraps for t == 0
+        const double o = (anode_end[n] - tracks[t].end) * std::abs(image.along_step_mm);
+        if (o < overhang) {
+          overhang = o;
+          pair = n;
+        }
+      }
+    }
+    if (pair == tracks.size()) {
+      continue;
+    }
+    OverhangSample sample;
+    sample.edge = edge;
+    sample.section = section;
+    sample.layer = this_layer;
+    sample.across_mm = image.across_from_mm + tracks[t].start * image.across_step_mm;
+    sample.cathode_end_mm = image.along_from_mm + tracks[t].end * image.along_step_mm;
+    sample.anode_end_mm = image.along_from_mm + anode_end[pair] * image.along_step_mm;
+    sample.anode_across_mm = image.across_from_mm + anode_across[pair] * image.across_step_mm;
+    sample.overhang_mm = overhang;
+    samples.push_back(sample);
+  }
+}
+
+/// Overhang samples of one section across an edge, with the anode as its own layers where the
+/// electrodes differ in brightness, else between the cathodes.
+void sectionOverhang(const SectionImage& image, const BatteryLevels& levels,
+                     const BatteryOptions& options, int edge, double section,
+                     std::vector<OverhangSample>& samples, bool& unfinished, bool& hidden) {
+  Classes classes;
+  classes.distinct = levels.electrodes_distinct;
+  classes.split = 0.5 * (levels.anode + levels.cathode);
+  classes.low = std::min(levels.anode, levels.cathode);
+  classes.high = std::max(levels.anode, levels.cathode);
+  const std::vector<Track> tracks =
+      trackLayers(image, classes, options.cathode_brighter, levels.gap);
+  if (levels.electrodes_distinct) {
+    overhangOfSection(image, tracks, edge, section, samples, unfinished);
+  } else {
+    overhangBetweenCathodes(image, tracks, edge, section, 0.12 * (levels.cathode - levels.gap),
+                            samples, unfinished, hidden);
+  }
+}
+
+/// Warnings about layer ends that were not measured.
+void warnOverhang(BatteryResult& result, bool unfinished, const std::vector<int>& hidden_edges) {
+  if (unfinished) {
+    result.warnings.emplace_back(
+        "Some electrode layers did not end inside the analysed sections, or their neighbours "
+        "did not; their overhang is left out");
+  }
+  for (const int edge : hidden_edges) {
+    result.warnings.push_back("At " + result.edges[at(edge)].name +
+                              " the anode does not stand out from the material beyond the "
+                              "cathode ends in most sections; the overhang there is not measured");
+  }
+}
+
 void summarizeEdges(BatteryResult& result) {
   for (std::size_t e = 0; e < result.edges.size(); ++e) {
     BatteryEdge& edge = result.edges[e];
@@ -600,6 +824,7 @@ void summarizeEdges(BatteryResult& result) {
     double amin = kNaN;
     double amax = kNaN;
     double anode_sum = 0.0;
+    double cathode_sum = 0.0;
     edge.min_mm = kNaN;
     edge.max_mm = kNaN;
     for (std::size_t i = 0; i < result.overhang.size(); ++i) {
@@ -620,6 +845,7 @@ void summarizeEdges(BatteryResult& result) {
       amin = nanMin(amin, s.anode_end_mm);
       amax = nanMax(amax, s.anode_end_mm);
       anode_sum += s.anode_end_mm;
+      cathode_sum += s.cathode_end_mm;
     }
     if (edge.samples > 0) {
       const auto n = static_cast<double>(edge.samples);
@@ -628,9 +854,10 @@ void summarizeEdges(BatteryResult& result) {
       edge.cathode_edge_spread_mm = cmax - cmin;
       edge.anode_edge_spread_mm = amax - amin;
       edge.anode_edge_mm = anode_sum / n;
+      edge.cathode_edge_mm = cathode_sum / n;
     } else {
       edge.mean_mm = edge.std_mm = kNaN;
-      edge.anode_edge_mm = kNaN;
+      edge.anode_edge_mm = edge.cathode_edge_mm = kNaN;
     }
     result.min_overhang_mm = nanMin(result.min_overhang_mm, edge.min_mm);
   }
@@ -775,7 +1002,8 @@ Overview overview(const Dataset& dataset, const BatteryOptions& options,
 // ---------------------------------------------------------------------------------------------
 // Particles and voids.
 
-using InRegion = std::function<bool(const Index3&)>;
+/// Whether a voxel lies where particles (`bright`) or voids are looked for.
+using InRegion = std::function<bool(const Index3&, bool bright)>;
 
 std::vector<CellFinding> components(std::vector<std::pair<std::uint64_t, float>> voxels,
                                     const Index3& dims, const VoxelSize& pitch,
@@ -869,6 +1097,24 @@ std::vector<CellFinding> components(std::vector<std::pair<std::uint64_t, float>>
   return findings;
 }
 
+/// Moves bright components too large for particles out of the particles: tabs, foil ends and
+/// welds reach into the electrode stack. Numbers the rest from 1.
+void separateStructures(BatteryResult& result, const BatteryOptions& options) {
+  const auto large = [&](const CellFinding& f) { return f.size_mm > options.max_particle_size_mm; };
+  const auto n = std::count_if(result.particles.begin(), result.particles.end(), large);
+  result.bright_structures += n;
+  result.particles.erase(std::remove_if(result.particles.begin(), result.particles.end(), large),
+                         result.particles.end());
+  for (std::size_t i = 0; i < result.particles.size(); ++i) {
+    result.particles[i].id = static_cast<int>(i + 1);
+  }
+  if (n > 0) {
+    result.warnings.push_back(std::to_string(n) +
+                              " bright structures longer than the largest particle (tabs, foil "
+                              "ends, welds) are not counted as particles");
+  }
+}
+
 void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, BatteryResult& result,
                            const BatteryOptions& options) {
   const TelemetryPhase phase("particles and voids");
@@ -891,7 +1137,7 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
         }
         const auto c = it.getCoord();
         const Index3 v{c.x(), c.y(), c.z()};
-        if (!in_region(v)) {
+        if (!in_region(v, value >= particle)) {
           continue;
         }
         const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
@@ -922,6 +1168,7 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
       components(std::move(all_bright), dims, info.voxel_size, options.min_particle_voxels, true);
   result.voids =
       components(std::move(all_dark), dims, info.voxel_size, options.min_void_voxels, false);
+  separateStructures(result, options);
 }
 
 void setThresholds(BatteryResult& result, const BatteryOptions& options) {
@@ -1036,13 +1283,21 @@ struct CylinderData {
   /// Per section and angle: core radius and inner radius of the can wall.
   std::vector<std::vector<double>> core;
   std::vector<std::vector<double>> inner;
+  /// Per section and angle: radius of the innermost and outermost layer, NaN without layers.
+  std::vector<std::vector<double>> first_layer;
+  std::vector<std::vector<double>> last_layer;
+  double pitch = 0.0;               // between neighbouring layers, mm
   std::vector<double> section_pos;  // mm along the axis
   /// Centre line: centre = c0 + c1 * position along the axis.
   std::array<double, 2> c0{};
   std::array<double, 2> c1{};
   std::vector<LayerPoint> points;
+  /// Along the axis: the ends of the anodes (particles are looked for up to them) and of the
+  /// cathodes (voids).
   double electrode_low = kNaN;
   double electrode_high = kNaN;
+  double cathode_low = kNaN;
+  double cathode_high = kNaN;
 
   [[nodiscard]] std::array<double, 2> centre(double pos) const {
     return {c0[0] + c1[0] * pos, c0[1] + c1[1] * pos};
@@ -1076,10 +1331,10 @@ void fitCentreLine(CylinderData& data, const std::vector<BatterySection>& sectio
   }
 }
 
-void cylinderSections(const Dataset& dataset, const BatteryOptions& options, CylinderData& data,
+void cylinderSections(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result) {
   const TelemetryPhase phase("cross-sections");
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
   const auto lo = data.box.lo;
@@ -1114,10 +1369,13 @@ void cylinderSections(const Dataset& dataset, const BatteryOptions& options, Cyl
   data.inner.assign(at(n_sections), std::vector<double>(at(n_angles), kNaN));
   tbb::parallel_for(0, n_sections, [&](int k) {
     const double fraction = n_sections == 1 ? 0.5 : 0.2 + 0.6 * k / (n_sections - 1);
-    const auto index = static_cast<std::int64_t>(
+    auto index = static_cast<std::int64_t>(
         std::lround(static_cast<double>(lo[at(a)]) +
                     fraction * static_cast<double>(hi[at(a)] - lo[at(a)] - 1)));
-    planes[at(k)] = readPlane(dataset, a, index, lo, hi, info.air_level);
+    if (a == 2 && !info.planes.empty()) {
+      index = nearestPlane(info.planes, index);
+    }
+    planes[at(k)] = readPlane(volume, a, index, lo, hi, info.air_level);
     const Plane& plane = planes[at(k)];
     BatterySection& section = result.sections[at(k)];
     section.position_mm[0] = static_cast<double>(index) * pitch[at(a)];
@@ -1263,8 +1521,8 @@ void cylinderSections(const Dataset& dataset, const BatteryOptions& options, Cyl
   result.levels.housing = median(wall_peaks);
   if (!classes.distinct) {
     result.warnings.emplace_back(
-        "Anode and cathode layers have the same brightness: all layers are counted as cathode "
-        "layers and the overhang is not measured");
+        "Anode and cathode layers do not differ in brightness: the layers found are counted as "
+        "cathode layers, and the anode is looked for between them beyond the cathode ends");
   }
 
   std::vector<double> all_spacing;
@@ -1276,6 +1534,9 @@ void cylinderSections(const Dataset& dataset, const BatteryOptions& options, Cyl
     }
   }
   const double spacing_median = median(all_spacing);
+  data.pitch = spacing_median * data.step;
+  data.first_layer.assign(at(n_sections), std::vector<double>(at(n_angles), kNaN));
+  data.last_layer.assign(at(n_sections), std::vector<double>(at(n_angles), kNaN));
   for (int k = 0; k < n_sections; ++k) {
     BatterySection& section = result.sections[at(k)];
     std::vector<int> cathodes;
@@ -1288,6 +1549,8 @@ void cylinderSections(const Dataset& dataset, const BatteryOptions& options, Cyl
       const ProfileLayers layers = countLayers(ray.peaks);
       cathodes.push_back(layers.cathodes);
       anodes.push_back(layers.anodes);
+      data.first_layer[at(k)][at(j)] = layers.first * data.step;
+      data.last_layer[at(k)][at(j)] = layers.last * data.step;
       pitches.insert(pitches.end(), layers.cathode_spacing.begin(), layers.cathode_spacing.end());
       if (!std::isnan(layers.last)) {
         outermost.push_back(layers.last * data.step);
@@ -1330,15 +1593,50 @@ void cylinderSections(const Dataset& dataset, const BatteryOptions& options, Cyl
   fitCentreLine(data, result.sections);
 }
 
+/// Overhang samples of the sections across one edge of a cylindrical cell, one per angle (in
+/// degrees); keeps the section of the smallest overhang in `worst`.
+void edgeOverhang(std::vector<SectionImage>& images, const std::vector<double>& angles, int edge,
+                  const BatteryOptions& options, BatteryResult& result, bool& unfinished,
+                  std::vector<int>& hidden_edges, std::vector<SectionImage>& worst) {
+  const auto n = static_cast<int>(images.size());
+  std::vector<std::vector<OverhangSample>> per_angle(at(n));
+  std::vector<char> per_unfinished(at(n), 0);
+  std::vector<char> per_hidden(at(n), 0);
+  tbb::parallel_for(0, n, [&](int j) {
+    bool open = false;
+    bool hide = false;
+    sectionOverhang(images[at(j)], result.levels, options, edge, angles[at(j)], per_angle[at(j)],
+                    open, hide);
+    per_unfinished[at(j)] = open ? 1 : 0;
+    per_hidden[at(j)] = hide ? 1 : 0;
+  });
+  int hidden_sections = 0;
+  for (int j = 0; j < n; ++j) {
+    result.overhang.insert(result.overhang.end(), per_angle[at(j)].begin(), per_angle[at(j)].end());
+    unfinished = unfinished || per_unfinished[at(j)] != 0;
+    hidden_sections += per_hidden[at(j)];
+  }
+  if (2 * hidden_sections > n) {
+    hidden_edges.push_back(edge);
+  }
+  std::int64_t worst_index = -1;
+  double worst_value = std::numeric_limits<double>::infinity();
+  for (const OverhangSample& s : result.overhang) {
+    if (s.edge == edge && s.overhang_mm < worst_value) {
+      worst_value = s.overhang_mm;
+      worst_index = std::find(angles.begin(), angles.end(), s.section) - angles.begin();
+    }
+  }
+  worst.push_back(worst_index >= 0 && worst_index < n ? std::move(images[at(worst_index)])
+                                                      : SectionImage{});
+}
+
 /// Sections across both ends of a cylindrical cell, one per angle, from a quarter of the length
 /// inside the cell outwards to the end of the can.
-void cylinderOverhang(const Dataset& dataset, const BatteryOptions& options, CylinderData& data,
+void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result, std::vector<SectionImage>& worst) {
-  if (!result.levels.electrodes_distinct) {
-    return;
-  }
   const TelemetryPhase phase("overhang");
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
   const int n_angles = std::max(1, options.overhang_sections);
@@ -1358,6 +1656,7 @@ void cylinderOverhang(const Dataset& dataset, const BatteryOptions& options, Cyl
   const std::int64_t length = hi[at(a)] - lo[at(a)];
   const std::int64_t depth = std::max<std::int64_t>(8, length / 4);
   bool unfinished = false;
+  std::vector<int> hidden_edges;
   for (int side = 0; side < 2; ++side) {
     const int edge = static_cast<int>(result.edges.size());
     result.edges.push_back({a, side, edgeName(a, side)});
@@ -1390,7 +1689,7 @@ void cylinderOverhang(const Dataset& dataset, const BatteryOptions& options, Cyl
         [&](const tbb::blocked_range<std::int64_t>& range) {
           for (std::int64_t s = range.begin(); s != range.end(); ++s) {
             const std::int64_t index = start + (side == 0 ? -s : s);
-            const Plane plane = readPlane(dataset, a, index, lo, hi, info.air_level);
+            const Plane plane = readPlane(volume, a, index, lo, hi, info.air_level);
             const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
             for (int j = 0; j < n_angles; ++j) {
               const double angle = 2.0 * kPi * j / n_angles;
@@ -1410,41 +1709,100 @@ void cylinderOverhang(const Dataset& dataset, const BatteryOptions& options, Cyl
             }
           }
         });
-    std::vector<std::vector<OverhangSample>> per_angle(at(n_angles));
-    std::vector<char> per_unfinished(at(n_angles), 0);
-    const double split = 0.5 * (result.levels.anode + result.levels.cathode);
-    Classes classes;
-    classes.distinct = true;
-    classes.split = split;
-    classes.low = std::min(result.levels.anode, result.levels.cathode);
-    classes.high = std::max(result.levels.anode, result.levels.cathode);
-    tbb::parallel_for(0, n_angles, [&](int j) {
-      const std::vector<Track> tracks =
-          trackLayers(images[at(j)], classes, options.cathode_brighter, result.levels.gap);
-      bool open = false;
-      overhangOfSection(images[at(j)], tracks, edge, 360.0 * j / n_angles, per_angle[at(j)], open);
-      per_unfinished[at(j)] = open ? 1 : 0;
-    });
+    std::vector<double> angles(at(n_angles));
     for (int j = 0; j < n_angles; ++j) {
-      result.overhang.insert(result.overhang.end(), per_angle[at(j)].begin(),
-                             per_angle[at(j)].end());
-      unfinished = unfinished || per_unfinished[at(j)] != 0;
+      angles[at(j)] = 360.0 * j / n_angles;
     }
-    // Keep the section of the smallest overhang for its image.
-    std::int64_t worst_index = -1;
-    double worst_value = std::numeric_limits<double>::infinity();
-    for (const OverhangSample& s : result.overhang) {
-      if (s.edge == edge && s.overhang_mm < worst_value) {
-        worst_value = s.overhang_mm;
-        worst_index = std::lround(s.section / 360.0 * n_angles) % n_angles;
+    edgeOverhang(images, angles, edge, options, result, unfinished, hidden_edges, worst);
+  }
+  warnOverhang(result, unfinished, hidden_edges);
+}
+
+/// Takes the measured ends of the electrodes along the axis, or well inside the can, clear of
+/// the tabs and the cap, where they were not measured.
+void cylinderEnds(CylinderData& data, const BatteryResult& result) {
+  for (const BatteryEdge& edge : result.edges) {
+    if (edge.samples > 0) {
+      (edge.side == 0 ? data.electrode_low : data.electrode_high) = edge.anode_edge_mm;
+      // Voids inside the shortest cathode, clear of the electrolyte beyond the cathode ends.
+      (edge.side == 0 ? data.cathode_low : data.cathode_high) =
+          edge.cathode_edge_mm + (edge.side == 0 ? 1.0 : -1.0) * edge.cathode_edge_spread_mm;
+    }
+  }
+  const double low = result.bounds_min_mm[at(data.axis)] + 0.1 * result.length_mm;
+  const double high = result.bounds_max_mm[at(data.axis)] - 0.1 * result.length_mm;
+  data.cathode_low = std::isnan(data.cathode_low) ? low : data.cathode_low;
+  data.cathode_high = std::isnan(data.cathode_high) ? high : data.cathode_high;
+  data.electrode_low = std::isnan(data.electrode_low) ? data.cathode_low : data.electrode_low;
+  data.electrode_high = std::isnan(data.electrode_high) ? data.cathode_high : data.electrode_high;
+}
+
+/// Where particles and voids are looked for in a cylindrical cell: in the winding, between the
+/// electrode ends along the axis.
+InRegion cylinderRegion(const CylinderData& data, const VoxelSize& pitch) {
+  const double margin = 2.0 * pitch[at(data.axis)];
+  const auto n_angles = static_cast<double>(data.core.front().size());
+  return [data, margin, pitch, n_angles](const Index3& v, bool bright) {
+    const auto pos = static_cast<double>(v[at(data.axis)]) * pitch[at(data.axis)];
+    const double from = bright ? data.electrode_low : data.cathode_low;
+    const double to = bright ? data.electrode_high : data.cathode_high;
+    if (pos < from + margin || pos > to - margin) {
+      return false;
+    }
+    const auto c = data.centre(pos);
+    const auto du = static_cast<double>(v[at(data.u)]) * pitch[at(data.u)] - c[0];
+    const auto dv = static_cast<double>(v[at(data.v)]) * pitch[at(data.v)] - c[1];
+    const double r = std::hypot(du, dv);
+    double angle = std::atan2(dv, du);
+    if (angle < 0.0) {
+      angle += 2.0 * kPi;
+    }
+    const auto bins = static_cast<std::size_t>(n_angles);
+    const auto bin = static_cast<std::size_t>(std::lround(angle / (2.0 * kPi) * n_angles)) % bins;
+    std::size_t k = 0;
+    for (std::size_t i = 1; i < data.section_pos.size(); ++i) {
+      if (std::abs(data.section_pos[i] - pos) < std::abs(data.section_pos[k] - pos)) {
+        k = i;
       }
     }
-    worst.push_back(worst_index >= 0 ? std::move(images[at(worst_index)]) : SectionImage{});
-  }
-  if (unfinished) {
-    result.warnings.emplace_back(
-        "Some electrode layers did not end inside the analysed sections, or their neighbours "
-        "did not; their overhang is left out");
+    // Between the innermost and the outermost layer at this angle, where there are layers; a
+    // particle may sit half a layer pitch outside them. Voids not in the first and last turn,
+    // where the electrolyte at the start and end of the strips looks like gas.
+    const double first = data.first_layer[k][bin];
+    const double last = data.last_layer[k][bin];
+    const double slack = bright ? 0.5 * data.pitch : -data.pitch;
+    const double lo = std::isnan(first) ? data.core[k][bin] + 2.0 * data.step : first - slack;
+    const double hi = std::isnan(last) ? data.inner[k][bin] - 2.0 * data.step : last + slack;
+    return r > lo && r < hi && r < data.inner[k][bin] - 2.0 * data.step;
+  };
+}
+
+/// Radius and angle (cylindrical) or position along the normal (stacked) of the findings.
+void placeFindings(BatteryResult& result) {
+  for (auto* list : {&result.particles, &result.voids}) {
+    for (CellFinding& f : *list) {
+      if (result.type == CellType::kCylindrical) {
+        const auto [u, v] = planeAxes(result.axis);
+        double best = std::numeric_limits<double>::infinity();
+        std::array<double, 2> c{};
+        for (const BatterySection& s : result.sections) {
+          const double d = std::abs(s.position_mm[0] - f.center_mm[at(result.axis)]);
+          if (d < best) {
+            best = d;
+            c = s.center_mm;
+          }
+        }
+        const double du = f.center_mm[at(u)] - c[0];
+        const double dv = f.center_mm[at(v)] - c[1];
+        f.radius_mm = std::hypot(du, dv);
+        f.angle_deg = std::atan2(dv, du) * 180.0 / kPi;
+        if (f.angle_deg < 0.0) {
+          f.angle_deg += 360.0;
+        }
+      } else {
+        f.radius_mm = f.center_mm[at(result.axis)];
+      }
+    }
   }
 }
 
@@ -1464,9 +1822,9 @@ struct StackData {
 
 /// Mean profile along the normal over a (2w+1)² column at (iu, iv); `noise` receives its noise
 /// from the spread within the column.
-std::vector<double> stackProfile(const Dataset& dataset, const StackData& data, std::int64_t iu,
+std::vector<double> stackProfile(const VolumeView& volume, const StackData& data, std::int64_t iu,
                                  std::int64_t iv, int w, double& noise) {
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   Box box;
   box.min = data.box.lo;
   box.max = data.box.hi;
@@ -1475,7 +1833,7 @@ std::vector<double> stackProfile(const Dataset& dataset, const StackData& data, 
   box.min[at(data.v)] = std::max<std::int64_t>(0, iv - w);
   box.max[at(data.v)] = std::min(info.dims[at(data.v)], iv + w + 1);
   std::vector<float> values(at(box.voxelCount()));
-  dataset.readRegion(0, box, values, info.air_level);
+  volume.readRegion(box, values, info.air_level);
   const std::int64_t len = box.size(at(data.n));
   std::vector<double> profile(at(len), 0.0);
   std::vector<double> sum_sq(at(len), 0.0);
@@ -1499,10 +1857,10 @@ std::vector<double> stackProfile(const Dataset& dataset, const StackData& data, 
   return profile;
 }
 
-void stackSections(const Dataset& dataset, const BatteryOptions& options, StackData& data,
+void stackSections(const VolumeView& volume, const BatteryOptions& options, StackData& data,
                    BatteryResult& result) {
   const TelemetryPhase phase("profiles");
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const auto air = static_cast<double>(info.air_level);
   const auto threshold = static_cast<double>(info.threshold);
@@ -1532,7 +1890,7 @@ void stackSections(const Dataset& dataset, const BatteryOptions& options, StackD
         std::lround(static_cast<double>(lo[at(data.v)]) +
                     fv * static_cast<double>(hi[at(data.v)] - lo[at(data.v)] - 1)));
     Profile& profile = profiles[at(k)];
-    profile.values = stackProfile(dataset, data, iu, iv, options.average_voxels, profile.noise);
+    profile.values = stackProfile(volume, data, iu, iv, options.average_voxels, profile.noise);
     profile.low = firstBand(profile.values, threshold, air, wall_window);
     std::vector<double> reversed(profile.values.rbegin(), profile.values.rend());
     profile.high = firstBand(reversed, threshold, air, wall_window);
@@ -1590,8 +1948,8 @@ void stackSections(const Dataset& dataset, const BatteryOptions& options, StackD
   result.levels.housing = median(wall_peaks);
   if (!classes.distinct) {
     result.warnings.emplace_back(
-        "Anode and cathode layers have the same brightness: all layers are counted as cathode "
-        "layers and the overhang is not measured");
+        "Anode and cathode layers do not differ in brightness: the layers found are counted as "
+        "cathode layers, and the anode is looked for between them beyond the cathode ends");
   }
   std::vector<double> all_spacing;
   for (Profile& profile : profiles) {
@@ -1633,13 +1991,13 @@ void stackSections(const Dataset& dataset, const BatteryOptions& options, StackD
 }
 
 /// Sections across the four edges of a stack, from the middle of the cell outwards.
-void stackOverhang(const Dataset& dataset, const BatteryOptions& options, StackData& data,
+void stackOverhang(const VolumeView& volume, const BatteryOptions& options, StackData& data,
                    BatteryResult& result, std::vector<SectionImage>& worst) {
-  if (!result.levels.electrodes_distinct || std::isnan(data.first_layer)) {
+  if (std::isnan(data.first_layer)) {
     return;
   }
   const TelemetryPhase phase("overhang");
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int per_edge = std::max(3, options.overhang_sections / 4);
   const double step_n = pitch[at(data.n)];
@@ -1649,10 +2007,8 @@ void stackOverhang(const Dataset& dataset, const BatteryOptions& options, StackD
   const auto n_hi = std::min<std::int64_t>(
       info.dims[at(data.n)],
       static_cast<std::int64_t>(std::ceil((data.last_layer + margin) / step_n)) + 1);
-  Classes classes;
-  classes.distinct = true;
-  classes.split = 0.5 * (result.levels.anode + result.levels.cathode);
   bool unfinished = false;
+  std::vector<int> hidden_edges;
   for (const int axis : {data.u, data.v}) {
     const int other = axis == data.u ? data.v : data.u;
     for (int side = 0; side < 2; ++side) {
@@ -1679,7 +2035,7 @@ void stackOverhang(const Dataset& dataset, const BatteryOptions& options, StackD
         box.min[at(other)] = std::max<std::int64_t>(0, io - options.average_voxels);
         box.max[at(other)] = std::min(info.dims[at(other)], io + options.average_voxels + 1);
         std::vector<float> values(at(box.voxelCount()));
-        dataset.readRegion(0, box, values, info.air_level);
+        volume.readRegion(box, values, info.air_level);
         SectionImage& image = images[at(j)];
         image.across = n_hi - n_lo;
         image.along = rows;
@@ -1705,13 +2061,18 @@ void stackOverhang(const Dataset& dataset, const BatteryOptions& options, StackD
       });
       std::vector<std::vector<OverhangSample>> per_section(at(per_edge));
       std::vector<char> open(at(per_edge), 0);
+      std::vector<char> hidden(at(per_edge), 0);
       tbb::parallel_for(0, per_edge, [&](int j) {
-        const std::vector<Track> tracks =
-            trackLayers(images[at(j)], classes, options.cathode_brighter, result.levels.gap);
         bool o = false;
-        overhangOfSection(images[at(j)], tracks, edge, positions[at(j)], per_section[at(j)], o);
+        bool h = false;
+        sectionOverhang(images[at(j)], result.levels, options, edge, positions[at(j)],
+                        per_section[at(j)], o, h);
         open[at(j)] = o ? 1 : 0;
+        hidden[at(j)] = h ? 1 : 0;
       });
+      if (2 * std::count(hidden.begin(), hidden.end(), 1) > per_edge) {
+        hidden_edges.push_back(edge);
+      }
       std::int64_t worst_index = -1;
       double worst_value = std::numeric_limits<double>::infinity();
       for (int j = 0; j < per_edge; ++j) {
@@ -1728,18 +2089,14 @@ void stackOverhang(const Dataset& dataset, const BatteryOptions& options, StackD
       worst.push_back(worst_index >= 0 ? std::move(images[at(worst_index)]) : SectionImage{});
     }
   }
-  if (unfinished) {
-    result.warnings.emplace_back(
-        "Some electrode layers did not end inside the analysed sections, or their neighbours "
-        "did not; their overhang is left out");
-  }
+  warnOverhang(result, unfinished, hidden_edges);
 }
 
 /// Outer size of the cell along `axis` on a line through `through` (level-0 voxel), averaged
 /// over a small column: between the outer half-height edges of the housing at both ends.
-double outerExtentMm(const Dataset& dataset, const Overview& box, int axis, const Index3& through,
+double outerExtentMm(const VolumeView& volume, const Overview& box, int axis, const Index3& through,
                      int w) {
-  const DatasetInfo& info = dataset.info();
+  const VolumeInfo& info = volume.info();
   Box line;
   for (std::size_t a = 0; a < 3; ++a) {
     if (static_cast<int>(a) == axis) {
@@ -1751,7 +2108,7 @@ double outerExtentMm(const Dataset& dataset, const Overview& box, int axis, cons
     }
   }
   std::vector<float> values(at(line.voxelCount()));
-  dataset.readRegion(0, line, values, info.air_level);
+  volume.readRegion(line, values, info.air_level);
   const std::int64_t len = line.size(at(axis));
   std::vector<double> profile(at(len), 0.0);
   const Index3 size{line.size(0), line.size(1), line.size(2)};
@@ -1773,6 +2130,29 @@ double outerExtentMm(const Dataset& dataset, const Overview& box, int axis, cons
   const Band high = firstBand(reversed, threshold, air, window);
   const double extent = (static_cast<double>(len - 1) - high.outer - low.outer) * pitch;
   return std::isnan(extent) ? static_cast<double>(len) * pitch : extent;
+}
+
+/// Outer size of a cylindrical cell across (from `cross`) and along the axis through the
+/// winding, between the core and the wall (from `along`).
+void cylinderOuterSize(const VolumeView& cross, const VolumeView& along, const CylinderData& data,
+                       BatteryResult& result) {
+  const VoxelSize& pitch = cross.info().voxel_size;
+  const int a = data.axis;
+  const BatterySection& mid = result.sections[result.sections.size() / 2];
+  Index3 through{};
+  through[at(a)] = static_cast<std::int64_t>(std::lround(mid.position_mm[0] / pitch[at(a)]));
+  through[at(data.u)] =
+      static_cast<std::int64_t>(std::lround(mid.center_mm[0] / pitch[at(data.u)]));
+  through[at(data.v)] =
+      static_cast<std::int64_t>(std::lround(mid.center_mm[1] / pitch[at(data.v)]));
+  result.outer_size_mm[at(data.u)] = outerExtentMm(cross, data.box, data.u, through, 1);
+  result.outer_size_mm[at(data.v)] = outerExtentMm(cross, data.box, data.v, through, 1);
+  const double r = 0.5 * (data.core[result.sections.size() / 2].front() +
+                          data.inner[result.sections.size() / 2].front());
+  through[at(data.u)] =
+      static_cast<std::int64_t>(std::lround((mid.center_mm[0] + r) / pitch[at(data.u)]));
+  result.outer_size_mm[at(a)] = outerExtentMm(along, data.box, a, through, 1);
+  result.length_mm = result.outer_size_mm[at(a)];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1918,12 +2298,14 @@ struct Extras {
   Overview box;
 };
 
-void renderImages(const Dataset& dataset, const Extras& extras, BatteryResult& result) {
+/// Renders the images: the cross-section from `cross`, the longitudinal section from `along`.
+void renderImages(const VolumeView& cross_view, const VolumeView& along, const Extras& extras,
+                  BatteryResult& result) {
   const TelemetryPhase phase("images");
-  const float air = dataset.info().air_level;
+  const float air = cross_view.info().air_level;
   std::int64_t stride = 1;
-  const Plane cross =
-      readPlane(dataset, extras.cross_axis, extras.cross_index, extras.box.lo, extras.box.hi, air);
+  const Plane cross = readPlane(cross_view, extras.cross_axis, extras.cross_index, extras.box.lo,
+                                extras.box.hi, air);
   BatteryImage image = planeImage("cross_section", cross, result.levels, stride);
   {
     const Canvas canvas{image};
@@ -1935,7 +2317,7 @@ void renderImages(const Dataset& dataset, const Extras& extras, BatteryResult& r
   markFindings(image, result, cross, stride);
   result.images.push_back(std::move(image));
   const Plane longitudinal =
-      readPlane(dataset, extras.long_axis, extras.long_index, extras.box.lo, extras.box.hi, air);
+      readPlane(along, extras.long_axis, extras.long_index, extras.box.lo, extras.box.hi, air);
   image = planeImage("longitudinal", longitudinal, result.levels, stride);
   markFindings(image, result, longitudinal, stride);
   result.images.push_back(std::move(image));
@@ -1948,6 +2330,7 @@ void renderImages(const Dataset& dataset, const Extras& extras, BatteryResult& r
 
 BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
   const DatasetInfo& info = dataset.info();
+  const VolumeView volume = viewOf(dataset);
   BatteryResult result;
   result.dims = info.dims;
   result.voxel_size = info.voxel_size;
@@ -1976,39 +2359,11 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
     data.axis = box.axis;
     std::tie(data.u, data.v) = planeAxes(box.axis);
     data.box = box;
-    cylinderSections(dataset, options, data, result);
-    {
-      const BatterySection& mid = result.sections[result.sections.size() / 2];
-      Index3 through{};
-      through[at(box.axis)] =
-          static_cast<std::int64_t>(std::lround(mid.position_mm[0] / pitch[at(box.axis)]));
-      through[at(data.u)] =
-          static_cast<std::int64_t>(std::lround(mid.center_mm[0] / pitch[at(data.u)]));
-      through[at(data.v)] =
-          static_cast<std::int64_t>(std::lround(mid.center_mm[1] / pitch[at(data.v)]));
-      result.outer_size_mm[at(data.u)] = outerExtentMm(dataset, box, data.u, through, 1);
-      result.outer_size_mm[at(data.v)] = outerExtentMm(dataset, box, data.v, through, 1);
-      // Along the axis through the winding, between the core and the wall.
-      const double r = 0.5 * (data.core[result.sections.size() / 2].front() +
-                              data.inner[result.sections.size() / 2].front());
-      through[at(data.u)] =
-          static_cast<std::int64_t>(std::lround((mid.center_mm[0] + r) / pitch[at(data.u)]));
-      result.outer_size_mm[at(box.axis)] = outerExtentMm(dataset, box, box.axis, through, 1);
-      result.length_mm = result.outer_size_mm[at(box.axis)];
-    }
-    cylinderOverhang(dataset, options, data, result, extras.worst);
+    cylinderSections(volume, options, data, result);
+    cylinderOuterSize(volume, volume, data, result);
+    cylinderOverhang(volume, options, data, result, extras.worst);
     summarizeEdges(result);
-    for (const BatteryEdge& edge : result.edges) {
-      if (edge.samples > 0) {
-        (edge.side == 0 ? data.electrode_low : data.electrode_high) = edge.anode_edge_mm;
-      }
-    }
-    if (std::isnan(data.electrode_low)) {
-      data.electrode_low = result.bounds_min_mm[at(box.axis)] + 0.1 * result.length_mm;
-    }
-    if (std::isnan(data.electrode_high)) {
-      data.electrode_high = result.bounds_max_mm[at(box.axis)] - 0.1 * result.length_mm;
-    }
+    cylinderEnds(data, result);
     extras.points = data.points;
     extras.cross_axis = box.axis;
     extras.cross_index = static_cast<std::int64_t>(std::lround(
@@ -2019,31 +2374,7 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
         0.5 * (result.bounds_min_mm[at(box.axis)] + result.bounds_max_mm[at(box.axis)]);
     extras.long_index =
         static_cast<std::int64_t>(std::lround(data.centre(centre_pos)[0] / pitch[at(data.u)]));
-    const double margin = 2.0 * pitch[at(box.axis)];
-    const auto n_angles = static_cast<double>(data.core.front().size());
-    in_region = [data, margin, pitch, n_angles](const Index3& v) {
-      const auto pos = static_cast<double>(v[at(data.axis)]) * pitch[at(data.axis)];
-      if (pos < data.electrode_low + margin || pos > data.electrode_high - margin) {
-        return false;
-      }
-      const auto c = data.centre(pos);
-      const auto du = static_cast<double>(v[at(data.u)]) * pitch[at(data.u)] - c[0];
-      const auto dv = static_cast<double>(v[at(data.v)]) * pitch[at(data.v)] - c[1];
-      const double r = std::hypot(du, dv);
-      double angle = std::atan2(dv, du);
-      if (angle < 0.0) {
-        angle += 2.0 * kPi;
-      }
-      const auto bins = static_cast<std::size_t>(n_angles);
-      const auto bin = static_cast<std::size_t>(std::lround(angle / (2.0 * kPi) * n_angles)) % bins;
-      std::size_t k = 0;
-      for (std::size_t i = 1; i < data.section_pos.size(); ++i) {
-        if (std::abs(data.section_pos[i] - pos) < std::abs(data.section_pos[k] - pos)) {
-          k = i;
-        }
-      }
-      return r > data.core[k][bin] + 2.0 * data.step && r < data.inner[k][bin] - 2.0 * data.step;
-    };
+    in_region = cylinderRegion(data, pitch);
   } else {
     StackData data;
     data.n = box.axis;
@@ -2053,16 +2384,16 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
     data.u = ep >= eq ? p : q;
     data.v = ep >= eq ? q : p;
     data.box = box;
-    stackSections(dataset, options, data, result);
+    stackSections(volume, options, data, result);
     {
       const Index3 through{(box.lo[0] + box.hi[0]) / 2, (box.lo[1] + box.hi[1]) / 2,
                            (box.lo[2] + box.hi[2]) / 2};
       for (int a = 0; a < 3; ++a) {
-        result.outer_size_mm[at(a)] = outerExtentMm(dataset, box, a, through, 1);
+        result.outer_size_mm[at(a)] = outerExtentMm(volume, box, a, through, 1);
       }
       result.length_mm = result.outer_size_mm[at(box.axis)];
     }
-    stackOverhang(dataset, options, data, result, extras.worst);
+    stackOverhang(volume, options, data, result, extras.worst);
     summarizeEdges(result);
     // The electrode stack: between the outermost layers, inside the anode edges.
     std::array<double, 6> limits{};
@@ -2071,20 +2402,25 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
       limits[2 * a] = result.bounds_min_mm[a] + inset;
       limits[2 * a + 1] = result.bounds_max_mm[a] - inset;
     }
+    std::array<double, 6> void_limits = limits;
     for (const BatteryEdge& edge : result.edges) {
       if (edge.samples > 0) {
-        limits[at(2 * edge.axis + edge.side)] =
-            edge.anode_edge_mm + (edge.side == 0 ? 2.0 : -2.0) * pitch[at(edge.axis)];
+        const double inwards = (edge.side == 0 ? 2.0 : -2.0) * pitch[at(edge.axis)];
+        limits[at(2 * edge.axis + edge.side)] = edge.anode_edge_mm + inwards;
+        void_limits[at(2 * edge.axis + edge.side)] = edge.cathode_edge_mm + inwards;
       }
     }
     if (!std::isnan(data.first_layer)) {
       limits[2 * at(data.n)] = data.first_layer - data.half_pitch;
       limits[at(2 * data.n + 1)] = data.last_layer + data.half_pitch;
+      void_limits[2 * at(data.n)] = data.first_layer;
+      void_limits[at(2 * data.n + 1)] = data.last_layer;
     }
-    in_region = [limits, pitch](const Index3& v) {
+    in_region = [limits, void_limits, pitch](const Index3& v, bool bright) {
+      const std::array<double, 6>& l = bright ? limits : void_limits;
       for (std::size_t a = 0; a < 3; ++a) {
         const auto mm = static_cast<double>(v[a]) * pitch[a];
-        if (mm < limits[2 * a] || mm > limits[2 * a + 1]) {
+        if (mm < l[2 * a] || mm > l[2 * a + 1]) {
           return false;
         }
       }
@@ -2098,33 +2434,535 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
   summarizeSections(result);
   setThresholds(result, options);
   findParticlesAndVoids(dataset, in_region, result, options);
-  // Positions of the findings in the cell.
-  for (auto* list : {&result.particles, &result.voids}) {
-    for (CellFinding& f : *list) {
-      if (result.type == CellType::kCylindrical) {
-        const auto [u, v] = planeAxes(result.axis);
-        double best = std::numeric_limits<double>::infinity();
-        std::array<double, 2> c{};
-        for (const BatterySection& s : result.sections) {
-          const double d = std::abs(s.position_mm[0] - f.center_mm[at(result.axis)]);
-          if (d < best) {
-            best = d;
-            c = s.center_mm;
+  placeFindings(result);
+  renderImages(volume, volume, extras, result);
+  return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cylindrical cells given as section images.
+
+/// The section images of a cell placed in a volume: x and y as in the cross-sections, z along
+/// the rows of the longitudinal sections from the bottom, all with the pixel size.
+struct ImageCell {
+  std::vector<const CellImage*> along;    // longitudinal sections, ascending angle
+  std::vector<const CellImage*> cross;    // cross-sections, ascending position
+  std::vector<std::int64_t> cross_index;  // z index of each cross-section
+  std::vector<std::size_t> nearest;       // per z index: the nearest cross-section
+  std::vector<double> axis_column;        // per longitudinal section: column of the axis
+  double pixel = 1.0;
+  Index3 dims{};
+  float air = 0.0F;
+  float threshold = 0.0F;
+
+  [[nodiscard]] std::int64_t height() const { return dims[2]; }
+};
+
+/// Column of the axis in a longitudinal section: the middle between the outer surfaces over the
+/// middle third of its rows.
+double axisColumn(const CellImage& image, float threshold) {
+  std::vector<double> centres;
+  const auto above = [&](std::int64_t row, std::int64_t col) {
+    return static_cast<float>(image.values[at(col + image.width * row)]) >= threshold;
+  };
+  for (std::int64_t row = image.height / 3; row < 2 * image.height / 3; row += 8) {
+    std::int64_t first = -1;
+    std::int64_t last = -1;
+    for (std::int64_t col = 0; col + 1 < image.width; ++col) {
+      if (above(row, col) && above(row, col + 1)) {
+        first = first < 0 ? col : first;
+        last = col + 1;
+      }
+    }
+    if (first >= 0) {
+      centres.push_back(0.5 * static_cast<double>(first + last));
+    }
+  }
+  if (centres.empty()) {
+    throw std::runtime_error("No cell found in the longitudinal section at " +
+                             std::to_string(image.position) + " degrees");
+  }
+  return median(centres);
+}
+
+ImageCell placeImages(const CellImages& images, const BatteryOptions& options,
+                      std::vector<std::string>& warnings) {
+  if (images.longitudinal.empty() || images.cross.size() < 2) {
+    throw std::invalid_argument(
+        "A cell given as images needs longitudinal sections and at least two cross-sections");
+  }
+  ImageCell cell;
+  for (const CellImage& image : images.longitudinal) {
+    cell.along.push_back(&image);
+  }
+  for (const CellImage& image : images.cross) {
+    cell.cross.push_back(&image);
+  }
+  std::sort(cell.along.begin(), cell.along.end(),
+            [](const CellImage* a, const CellImage* b) { return a->position < b->position; });
+  std::sort(cell.cross.begin(), cell.cross.end(),
+            [](const CellImage* a, const CellImage* b) { return a->position < b->position; });
+  const CellImage& first_along = *cell.along.front();
+  const CellImage& first_cross = *cell.cross.front();
+  for (const CellImage* image : cell.along) {
+    if (image->width != first_along.width || image->height != first_along.height) {
+      throw std::invalid_argument("The longitudinal sections differ in size");
+    }
+  }
+  for (const CellImage* image : cell.cross) {
+    if (image->width != first_cross.width || image->height != first_cross.height) {
+      throw std::invalid_argument("The cross-sections differ in size");
+    }
+  }
+  if (first_along.height < 16 || first_cross.width < 16 || first_cross.height < 16) {
+    throw std::invalid_argument("The section images are too small");
+  }
+  cell.dims = {first_cross.width, first_cross.height, first_along.height};
+  const double span = cell.cross.back()->position - cell.cross.front()->position;
+  if (options.image_pixel_mm) {
+    cell.pixel = *options.image_pixel_mm;
+  } else {
+    cell.pixel = span / static_cast<double>(cell.height() - 1);
+    std::ostringstream text;
+    text << "The pixel size, " << std::setprecision(4) << cell.pixel * 1000.0
+         << " µm, is taken from the positions of the cross-sections, which are assumed to span "
+            "the height of the longitudinal sections";
+    warnings.push_back(text.str());
+  }
+  if (!(cell.pixel > 0.0) || !std::isfinite(cell.pixel)) {
+    throw std::invalid_argument("The pixel size of the section images must be positive");
+  }
+  for (const CellImage* image : cell.cross) {
+    cell.cross_index.push_back(std::clamp<std::int64_t>(
+        std::lround((image->position - cell.cross.front()->position) / cell.pixel), 0,
+        cell.height() - 1));
+  }
+  cell.nearest.resize(at(cell.height()));
+  std::size_t c = 0;
+  for (std::int64_t k = 0; k < cell.height(); ++k) {
+    while (c + 1 < cell.cross_index.size() &&
+           std::abs(cell.cross_index[c + 1] - k) <= std::abs(cell.cross_index[c] - k)) {
+      ++c;
+    }
+    cell.nearest[at(k)] = c;
+  }
+  // Air and threshold from the middle cross-section.
+  const CellImage& middle = *cell.cross[cell.cross.size() / 2];
+  detail::Histogram histogram(detail::kHistogramBins, 0);
+  for (const std::uint16_t value : middle.values) {
+    ++histogram[value];
+  }
+  const detail::ThresholdResult split = detail::airThreshold(histogram);
+  cell.air = split.air_level;
+  cell.threshold = split.threshold;
+  for (const CellImage* image : cell.along) {
+    cell.axis_column.push_back(axisColumn(*image, cell.threshold));
+  }
+  return cell;
+}
+
+VolumeView crossView(const ImageCell& cell) {
+  std::vector<std::int64_t> planes = cell.cross_index;
+  planes.erase(std::unique(planes.begin(), planes.end()), planes.end());
+  return VolumeView({cell.dims, VoxelSize(cell.pixel), cell.air, cell.threshold, planes},
+                    [&cell](const Box& box, std::span<float> out, float fill) {
+                      std::size_t o = 0;
+                      for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+                        const CellImage* image =
+                            z < 0 || z >= cell.height() ? nullptr : cell.cross[cell.nearest[at(z)]];
+                        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+                          for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+                            const bool inside = image != nullptr && x >= 0 && y >= 0 &&
+                                                x < image->width && y < image->height;
+                            out[o++] =
+                                inside ? static_cast<float>(image->values[at(x + image->width * y)])
+                                       : fill;
+                          }
+                        }
+                      }
+                    });
+}
+
+/// The longitudinal section at the first angle as a volume: the same in every plane normal to y,
+/// its axis at the centre `centre_x` (mm) of the cross-sections.
+VolumeView alongView(const ImageCell& cell, double centre_x) {
+  const CellImage& image = *cell.along.front();
+  const auto shift =
+      static_cast<std::int64_t>(std::lround(cell.axis_column.front() - centre_x / cell.pixel));
+  return VolumeView(
+      {cell.dims, VoxelSize(cell.pixel), cell.air, cell.threshold, {}},
+      [&image, shift](const Box& box, std::span<float> out, float fill) {
+        std::size_t o = 0;
+        for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+          const std::int64_t row = image.height - 1 - z;
+          for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+            for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+              const std::int64_t col = x + shift;
+              const bool inside = row >= 0 && row < image.height && col >= 0 && col < image.width;
+              out[o++] =
+                  inside ? static_cast<float>(image.values[at(col + image.width * row)]) : fill;
+            }
           }
         }
-        const double du = f.center_mm[at(u)] - c[0];
-        const double dv = f.center_mm[at(v)] - c[1];
-        f.radius_mm = std::hypot(du, dv);
-        f.angle_deg = std::atan2(dv, du) * 180.0 / kPi;
-        if (f.angle_deg < 0.0) {
-          f.angle_deg += 360.0;
-        }
-      } else {
-        f.radius_mm = f.center_mm[at(result.axis)];
+      });
+}
+
+/// Bounding box: across from the middle cross-section, along the axis from the longitudinal
+/// sections.
+Overview imageOverview(const ImageCell& cell) {
+  const auto bounds = [](const std::vector<std::int64_t>& counts) {
+    const std::int64_t most = *std::max_element(counts.begin(), counts.end());
+    const std::int64_t enough = std::max<std::int64_t>(2, most / 50);
+    std::int64_t lo = -1;
+    std::int64_t hi = -1;
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+      if (counts[i] >= enough) {
+        lo = lo < 0 ? static_cast<std::int64_t>(i) : lo;
+        hi = static_cast<std::int64_t>(i) + 1;
+      }
+    }
+    if (lo < 0) {
+      throw std::invalid_argument("The section images show no material above the air threshold");
+    }
+    return std::pair{lo, hi};
+  };
+  const CellImage& middle = *cell.cross[cell.cross.size() / 2];
+  std::vector<std::int64_t> cols(at(middle.width), 0);
+  std::vector<std::int64_t> rows(at(middle.height), 0);
+  for (std::int64_t y = 0; y < middle.height; ++y) {
+    for (std::int64_t x = 0; x < middle.width; ++x) {
+      if (static_cast<float>(middle.values[at(x + middle.width * y)]) >= cell.threshold) {
+        ++cols[at(x)];
+        ++rows[at(y)];
       }
     }
   }
-  renderImages(dataset, extras, result);
+  std::vector<std::int64_t> levels(at(cell.height()), 0);
+  for (const CellImage* image : cell.along) {
+    for (std::int64_t row = 0; row < image->height; ++row) {
+      for (std::int64_t col = 0; col < image->width; ++col) {
+        if (static_cast<float>(image->values[at(col + image->width * row)]) >= cell.threshold) {
+          ++levels[at(image->height - 1 - row)];
+        }
+      }
+    }
+  }
+  Overview o;
+  const std::array<std::pair<std::int64_t, std::int64_t>, 3> b{bounds(cols), bounds(rows),
+                                                               bounds(levels)};
+  for (std::size_t a = 0; a < 3; ++a) {
+    o.lo[a] = std::max<std::int64_t>(0, b[a].first - 2);
+    o.hi[a] = std::min(cell.dims[a], b[a].second + 2);
+  }
+  o.type = CellType::kCylindrical;
+  o.axis = 2;
+  return o;
+}
+
+/// Overhang at both ends from the longitudinal sections, both halves of each.
+void imageOverhang(const ImageCell& cell, const BatteryOptions& options, const CylinderData& data,
+                   BatteryResult& result, std::vector<SectionImage>& worst) {
+  const TelemetryPhase phase("overhang");
+  double core_min = kNaN;
+  double inner_max = kNaN;
+  for (std::size_t k = 0; k < data.core.size(); ++k) {
+    for (std::size_t j = 0; j < data.core[k].size(); ++j) {
+      core_min = nanMin(core_min, data.core[k][j]);
+      inner_max = nanMax(inner_max, data.inner[k][j]);
+    }
+  }
+  const double across_from = std::max(0.0, core_min - 2.0 * data.step);
+  const auto across = static_cast<std::int64_t>(std::ceil((inner_max - across_from) / data.step));
+  const std::int64_t length = data.box.hi[2] - data.box.lo[2];
+  const std::int64_t depth = std::max<std::int64_t>(8, length / 4);
+  // Directions: the right half of each section at its angle, the left half opposite.
+  struct Direction {
+    std::size_t image = 0;
+    double sign = 1.0;
+    double angle = 0.0;
+  };
+  std::vector<Direction> directions;
+  for (std::size_t i = 0; i < cell.along.size(); ++i) {
+    for (int half = 0; half < 2; ++half) {
+      double angle = std::fmod(cell.along[i]->position + 180.0 * half, 360.0);
+      angle = angle < 0.0 ? angle + 360.0 : angle;
+      directions.push_back({i, half == 0 ? 1.0 : -1.0, angle});
+    }
+  }
+  std::vector<double> angles;
+  angles.reserve(directions.size());
+  for (const Direction& d : directions) {
+    angles.push_back(d.angle);
+  }
+  const std::size_t bins = data.inner.front().size();
+  bool unfinished = false;
+  std::vector<int> hidden_edges;
+  for (int side = 0; side < 2; ++side) {
+    const int edge = static_cast<int>(result.edges.size());
+    result.edges.push_back({2, side, edgeName(2, side)});
+    const std::int64_t start = side == 0 ? data.box.lo[2] + depth : data.box.hi[2] - 1 - depth;
+    const std::int64_t rows = depth + 1;
+    std::vector<SectionImage> images(directions.size());
+    tbb::parallel_for(std::size_t{0}, directions.size(), [&](std::size_t j) {
+      const Direction& d = directions[j];
+      const CellImage& source = *cell.along[d.image];
+      const double axis = cell.axis_column[d.image];
+      SectionImage& image = images[j];
+      image.across = across;
+      image.along = rows;
+      image.across_from_mm = across_from;
+      image.across_step_mm = data.step;
+      image.along_from_mm = static_cast<double>(start) * cell.pixel;
+      image.along_step_mm = (side == 0 ? -1.0 : 1.0) * cell.pixel;
+      image.values.assign(at(across * rows), cell.air);
+      const auto bin =
+          static_cast<std::size_t>(std::lround(d.angle / 360.0 * static_cast<double>(bins))) % bins;
+      double wall = kNaN;
+      for (const auto& inner : data.inner) {
+        wall = nanMin(wall, inner[bin]);
+      }
+      image.valid_across = std::clamp<std::int64_t>(
+          static_cast<std::int64_t>(std::floor((wall - across_from) / data.step)) - 1, 0, across);
+      for (std::int64_t s = 0; s < rows; ++s) {
+        const std::int64_t row = source.height - 1 - (start + (side == 0 ? -s : s));
+        if (row < 0 || row >= source.height) {
+          continue;
+        }
+        const std::uint16_t* line = source.values.data() + at(source.width * row);
+        for (std::int64_t i = 0; i < across; ++i) {
+          const double r = (across_from + static_cast<double>(i) * data.step) / cell.pixel;
+          const double col = axis + d.sign * r;
+          const double base = std::floor(col);
+          const auto c0 = static_cast<std::int64_t>(base);
+          if (c0 < 0 || c0 + 1 >= source.width) {
+            continue;
+          }
+          const double t = col - base;
+          image.values[at(i + across * s)] = static_cast<float>(
+              (1.0 - t) * static_cast<double>(line[c0]) + t * static_cast<double>(line[c0 + 1]));
+        }
+      }
+    });
+    edgeOverhang(images, angles, edge, options, result, unfinished, hidden_edges, worst);
+  }
+  warnOverhang(result, unfinished, hidden_edges);
+}
+
+/// The pixels at or below `gas` in columns [from, to) connected to the seed pixels (4-connected):
+/// the hollow core, not a void.
+std::vector<char> darkFrom(const CellImage& image, std::int64_t from, std::int64_t to, float gas,
+                           const std::vector<std::int64_t>& seeds) {
+  std::vector<char> mask(at(image.width * image.height), 0);
+  const auto dark = [&](std::int64_t i) { return static_cast<float>(image.values[at(i)]) <= gas; };
+  std::vector<std::int64_t> stack;
+  for (const std::int64_t seed : seeds) {
+    if (dark(seed) && mask[at(seed)] == 0) {
+      mask[at(seed)] = 1;
+      stack.push_back(seed);
+    }
+  }
+  while (!stack.empty()) {
+    const std::int64_t i = stack.back();
+    stack.pop_back();
+    const std::int64_t x = i % image.width;
+    const std::int64_t y = i / image.width;
+    const std::array<std::array<std::int64_t, 2>, 4> next{
+        {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}}};
+    for (const auto& n : next) {
+      if (n[0] < from || n[0] >= to || n[1] < 0 || n[1] >= image.height) {
+        continue;
+      }
+      const std::int64_t j = n[0] + image.width * n[1];
+      if (mask[at(j)] == 0 && dark(j)) {
+        mask[at(j)] = 1;
+        stack.push_back(j);
+      }
+    }
+  }
+  return mask;
+}
+
+/// Particles and voids as their sections in the images; one finding seen in several images is
+/// kept once, from the image where it is largest.
+void imageFindings(const ImageCell& cell, const InRegion& in_region, const CylinderData& data,
+                   BatteryResult& result, const BatteryOptions& options) {
+  const TelemetryPhase phase("particles and voids");
+  const auto particle = static_cast<float>(result.particle_threshold);
+  const auto gas = static_cast<float>(result.void_threshold);
+  const VoxelSize pitch(cell.pixel);
+  using Found = std::vector<std::pair<std::uint64_t, float>>;
+  // Jobs: every cross-section, and each half of every longitudinal section.
+  const std::size_t n_cross = cell.cross.size();
+  const std::size_t n_jobs = n_cross + 2 * cell.along.size();
+  std::vector<std::vector<CellFinding>> bright(n_jobs);
+  std::vector<std::vector<CellFinding>> dark(n_jobs);
+  std::atomic<bool> too_many{false};
+  const auto finish = [&](std::size_t job, Found& b, Found& d, std::int64_t width,
+                          std::int64_t height, const auto& place) {
+    if (b.size() + d.size() > kMaxFindingVoxels / 16) {
+      too_many = true;
+      return;
+    }
+    const Index3 dims{width, height, 1};
+    for (int kind = 0; kind < 2; ++kind) {
+      std::vector<CellFinding> found =
+          components(std::move(kind == 0 ? b : d), dims, pitch,
+                     kind == 0 ? options.min_particle_voxels : options.min_void_voxels, kind == 0);
+      for (CellFinding& f : found) {
+        const double area = static_cast<double>(f.voxels) * cell.pixel * cell.pixel;
+        f.volume_mm3 = kNaN;
+        f.equivalent_diameter_mm = 2.0 * std::sqrt(area / kPi);
+        f.center_mm = place(f.center_mm[0] / cell.pixel, f.center_mm[1] / cell.pixel);
+      }
+      (kind == 0 ? bright : dark)[job] = std::move(found);
+    }
+  };
+  tbb::parallel_for(std::size_t{0}, n_jobs, [&](std::size_t job) {
+    Found b;
+    Found d;
+    if (job < n_cross) {
+      const CellImage& image = *cell.cross[job];
+      const std::int64_t k = cell.cross_index[job];
+      const auto centre = data.centre(static_cast<double>(k) * cell.pixel);
+      const std::vector<char> core = darkFrom(image, 0, image.width, gas,
+                                              {std::lround(centre[0] / cell.pixel) +
+                                               image.width * std::lround(centre[1] / cell.pixel)});
+      for (std::int64_t y = 0; y < image.height; ++y) {
+        for (std::int64_t x = 0; x < image.width; ++x) {
+          const auto value = static_cast<float>(image.values[at(x + image.width * y)]);
+          if ((value < particle && value > gas) || core[at(x + image.width * y)] != 0 ||
+              !in_region({x, y, k}, value >= particle)) {
+            continue;
+          }
+          (value >= particle ? b : d)
+              .emplace_back(static_cast<std::uint64_t>(x + image.width * y), value);
+        }
+      }
+      finish(job, b, d, image.width, image.height, [&](double x, double y) {
+        return Vec3{x * cell.pixel, y * cell.pixel, static_cast<double>(k) * cell.pixel};
+      });
+      return;
+    }
+    const std::size_t i = (job - n_cross) / 2;
+    const double sign = (job - n_cross) % 2 == 0 ? 1.0 : -1.0;
+    const CellImage& image = *cell.along[i];
+    const double axis = cell.axis_column[i];
+    const double angle = (image.position + (sign > 0.0 ? 0.0 : 180.0)) * kPi / 180.0;
+    const double cos_a = std::cos(angle);
+    const double sin_a = std::sin(angle);
+    const auto to3d = [&](double col, double row) {
+      const double r = sign * (col - axis) * cell.pixel;
+      const double z = (static_cast<double>(image.height - 1) - row) * cell.pixel;
+      const auto c = data.centre(z);
+      return Vec3{c[0] + r * cos_a, c[1] + r * sin_a, z};
+    };
+    const auto from = static_cast<std::int64_t>(sign > 0.0 ? std::ceil(axis) : 0.0);
+    const auto to =
+        static_cast<std::int64_t>(sign > 0.0 ? static_cast<double>(image.width) : std::ceil(axis));
+    std::vector<std::int64_t> seeds;
+    const std::int64_t seed_col = sign > 0.0 ? from : to - 1;
+    if (seed_col >= 0 && seed_col < image.width) {
+      for (std::int64_t row = 0; row < image.height; ++row) {
+        seeds.push_back(seed_col + image.width * row);
+      }
+    }
+    const std::vector<char> core = darkFrom(image, from, to, gas, seeds);
+    for (std::int64_t row = 0; row < image.height; ++row) {
+      for (std::int64_t col = from; col < to; ++col) {
+        const auto value = static_cast<float>(image.values[at(col + image.width * row)]);
+        if ((value < particle && value > gas) || core[at(col + image.width * row)] != 0) {
+          continue;
+        }
+        const Vec3 p = to3d(static_cast<double>(col), static_cast<double>(row));
+        const Index3 v{std::lround(p[0] / cell.pixel), std::lround(p[1] / cell.pixel),
+                       std::lround(p[2] / cell.pixel)};
+        if (!in_region(v, value >= particle)) {
+          continue;
+        }
+        (value >= particle ? b : d)
+            .emplace_back(static_cast<std::uint64_t>(col + image.width * row), value);
+      }
+    }
+    finish(job, b, d, image.width, image.height, to3d);
+  });
+  if (too_many) {
+    throw std::runtime_error(
+        "Too many pixels above the particle threshold or below the void threshold in the "
+        "electrode stack; set the thresholds by hand");
+  }
+  const auto merge = [](std::vector<std::vector<CellFinding>>& per_job) {
+    std::vector<CellFinding> all;
+    for (auto& found : per_job) {
+      all.insert(all.end(), found.begin(), found.end());
+    }
+    std::sort(all.begin(), all.end(),
+              [](const CellFinding& a, const CellFinding& b) { return a.voxels > b.voxels; });
+    std::vector<CellFinding> kept;
+    for (const CellFinding& f : all) {
+      const bool seen = std::any_of(kept.begin(), kept.end(), [&](const CellFinding& k) {
+        const double d =
+            std::hypot(f.center_mm[0] - k.center_mm[0], f.center_mm[1] - k.center_mm[1],
+                       f.center_mm[2] - k.center_mm[2]);
+        return d < 0.5 * (f.size_mm + k.size_mm);
+      });
+      if (!seen) {
+        kept.push_back(f);
+      }
+    }
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+      kept[i].id = static_cast<int>(i + 1);
+    }
+    return kept;
+  };
+  result.particles = merge(bright);
+  result.voids = merge(dark);
+  separateStructures(result, options);
+}
+
+BatteryResult analyzeImages(const CellImages& images, const BatteryOptions& options) {
+  if (options.cell_type && *options.cell_type != CellType::kCylindrical) {
+    throw std::invalid_argument("Cells given as section images must be cylindrical");
+  }
+  BatteryResult result;
+  result.from_images = true;
+  const ImageCell cell = placeImages(images, options, result.warnings);
+  const VolumeView cross = crossView(cell);
+  result.dims = cell.dims;
+  result.voxel_size = VoxelSize(cell.pixel);
+  result.levels.air = cell.air;
+  result.min_overhang_mm = kNaN;
+  result.type = CellType::kCylindrical;
+  result.axis = 2;
+  Extras extras;
+  CylinderData data;
+  data.axis = 2;
+  data.u = 0;
+  data.v = 1;
+  data.box = imageOverview(cell);
+  extras.box = data.box;
+  for (std::size_t a = 0; a < 3; ++a) {
+    result.bounds_min_mm[a] = static_cast<double>(data.box.lo[a]) * cell.pixel;
+    result.bounds_max_mm[a] = static_cast<double>(data.box.hi[a] - 1) * cell.pixel;
+  }
+  result.length_mm = static_cast<double>(data.box.hi[2] - data.box.lo[2]) * cell.pixel;
+  cylinderSections(cross, options, data, result);
+  const double centre_z = 0.5 * (result.bounds_min_mm[2] + result.bounds_max_mm[2]);
+  const VolumeView along = alongView(cell, data.centre(centre_z)[0]);
+  cylinderOuterSize(cross, along, data, result);
+  imageOverhang(cell, options, data, result, extras.worst);
+  summarizeEdges(result);
+  cylinderEnds(data, result);
+  extras.points = data.points;
+  extras.cross_axis = 2;
+  extras.cross_index = static_cast<std::int64_t>(
+      std::lround(result.sections[result.sections.size() / 2].position_mm[0] / cell.pixel));
+  extras.long_axis = 1;
+  extras.long_index = static_cast<std::int64_t>(std::lround(data.centre(centre_z)[1] / cell.pixel));
+  summarizeSections(result);
+  setThresholds(result, options);
+  imageFindings(cell, cylinderRegion(data, result.voxel_size), data, result, options);
+  placeFindings(result);
+  renderImages(cross, along, extras, result);
   return result;
 }
 
@@ -2154,6 +2992,10 @@ nlohmann::json number(double value) {
 
 BatteryResult analyzeBattery(const Dataset& dataset, const BatteryOptions& options) {
   return analyze(dataset, options);
+}
+
+BatteryResult analyzeBatteryImages(const CellImages& images, const BatteryOptions& options) {
+  return analyzeImages(images, options);
 }
 
 nlohmann::json toJson(const BatteryResult& result) {
@@ -2199,7 +3041,8 @@ nlohmann::json toJson(const BatteryResult& result) {
                      {"worst", e.worst},
                      {"cathode_edge_spread_mm", number(e.cathode_edge_spread_mm)},
                      {"anode_edge_spread_mm", number(e.anode_edge_spread_mm)},
-                     {"anode_edge_mm", number(e.anode_edge_mm)}});
+                     {"anode_edge_mm", number(e.anode_edge_mm)},
+                     {"cathode_edge_mm", number(e.cathode_edge_mm)}});
   }
   nlohmann::json overhang = nlohmann::json::array();
   for (const OverhangSample& s : result.overhang) {
@@ -2261,6 +3104,8 @@ nlohmann::json toJson(const BatteryResult& result) {
           {"gaps", gaps},
           {"particles", particles},
           {"voids", voids},
+          {"bright_structures", result.bright_structures},
+          {"from_images", result.from_images},
           {"warnings", result.warnings}};
 }
 

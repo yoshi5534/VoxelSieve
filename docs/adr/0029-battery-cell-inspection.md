@@ -55,6 +55,30 @@ geometry (`CellSource`, `vs-battery --cell`) to test it against.
   against the requirements in `order.battery` (overhang range, edge spread, layer count,
   diameter, length, thickness, swelling, roundness, wall, gaps, particle and void count and
   size); see `examples/battery_order.json`.
+- **Anodes as dark as the separator.** Hard carbon and graphite anodes often do not stand out
+  from the separator and electrolyte between the cathodes. Then all layers found count as
+  cathodes, and the anode is the band between neighbouring cathodes beyond their ends, where it
+  still stands out against the electrolyte: its end is where that band drops to half way
+  between its level just beyond the cathode ends and the level beyond the cathodes themselves.
+  Where the band does not stand out by a share of the cathode contrast in most sections of an
+  edge, that edge's overhang is reported as not measured, with a warning.
+- **Particles and voids where the electrodes are.** Particles are looked for between the anode
+  ends along the axis and from half a layer pitch inside the innermost to half a pitch beyond the
+  outermost layer; voids inside the shortest cathode and not in the first and last turn, where
+  the electrolyte at the strip ends looks like gas. Bright components longer than
+  `max_particle_size_mm` are tabs, foil ends or welds, counted apart.
+- **Section images.** Cells are sometimes handed over as images of sections instead of the
+  volume: longitudinal sections through the axis every few degrees and cross-sections along it
+  (`battery_images`, `vs-battery --images`, read from a folder or a ZIP archive with libpng and
+  libzip). The cross-sections form a volume in which every slice repeats the nearest image;
+  housing and layers are measured in the slices that hold an image. The overhang comes from both
+  halves of each longitudinal section, the right half at its angle and the left one opposite,
+  with the same layer tracking as in a volume. Particles and voids are components in each image,
+  dark pixels connected to the core excluded, and a finding seen in several images counts once;
+  they have an area, no volume. The pixel size is the span of the cross-section positions over
+  the height of the longitudinal sections, unless given. The longitudinal section at 0° is taken
+  to run along the x axis of the cross-sections; positions along the axis count from the bottom
+  row of the longitudinal sections.
 - **Scale.** Only the sections, profiles and the electrode stack for particles are read, through
   the brick cache (ADR 0004); sections run in parallel.
 

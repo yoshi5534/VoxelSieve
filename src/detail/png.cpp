@@ -11,6 +11,38 @@
 
 namespace voxelsieve::detail {
 
+GreyImage decodeGreyPng(std::span<const std::uint8_t> png) {
+  png_image image{};
+  image.version = PNG_IMAGE_VERSION;
+  if (png_image_begin_read_from_memory(&image, png.data(), png.size()) == 0) {
+    const std::string message = image.message;
+    png_image_free(&image);
+    throw std::runtime_error("Cannot decode PNG: " + message);
+  }
+  GreyImage grey;
+  grey.width = image.width;
+  grey.height = image.height;
+  // 16-bit files count as linear in libpng's simplified API, so their values pass unchanged.
+  grey.bit_depth = (image.format & PNG_FORMAT_FLAG_LINEAR) != 0 ? 16 : 8;
+  image.format = grey.bit_depth == 16 ? PNG_FORMAT_LINEAR_Y : PNG_FORMAT_GRAY;
+  const std::size_t count = std::size_t{grey.width} * grey.height;
+  bool ok = false;
+  if (grey.bit_depth == 16) {
+    grey.values.resize(count);
+    ok = png_image_finish_read(&image, nullptr, grey.values.data(), 0, nullptr) != 0;
+  } else {
+    std::vector<std::uint8_t> bytes(count);
+    ok = png_image_finish_read(&image, nullptr, bytes.data(), 0, nullptr) != 0;
+    grey.values.assign(bytes.begin(), bytes.end());
+  }
+  if (!ok) {
+    const std::string message = image.message;
+    png_image_free(&image);
+    throw std::runtime_error("Cannot decode PNG: " + message);
+  }
+  return grey;
+}
+
 std::vector<std::uint8_t> encodePng(std::uint32_t width, std::uint32_t height, int channels,
                                     std::span<const std::uint8_t> pixels) {
   if (channels != 1 && channels != 3 && channels != 4) {

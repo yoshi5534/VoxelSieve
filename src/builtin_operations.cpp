@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -942,39 +943,9 @@ class FibreOrientation final : public Operation {
 /// A measured value, or null where nothing could be measured.
 Json finiteOrNull(double value) { return std::isfinite(value) ? Json(value) : Json(); }
 
-class BatteryInspection final : public Operation {
- public:
-  BatteryInspection() {
-    info_.id = "battery_inspection";
-    info_.title = "Battery cell inspection";
-    info_.description =
-        "Inspects a battery cell, cylindrical (wound electrodes in a round can) or stacked "
-        "(pouch, prismatic): outer size, diameter and out-of-roundness, dents and wall "
-        "thickness of the housing; core of a wound cell; number and pitch of the cathode and "
-        "anode layers and gaps between them; the anode overhang beyond the cathode at every "
-        "edge of the electrode stack, per layer and section; foreign particles brighter than "
-        "the electrodes and gas voids in the electrode stack. The cell axis or stack normal "
-        "lies along a volume axis. Writes battery.json and images: a cross-section with the "
-        "layers marked, a longitudinal section and the section with the smallest overhang per "
-        "edge.";
-    info_.inputs = {{"dataset", artifact::kDataset, "Dataset of the cell"}};
-    info_.outputs = {{"battery", artifact::kBattery, "Cell inspection result and images"}};
-    info_.parameters = {
-        {"type", "object"},
-        {"properties",
-         {{"cell_type",
-           {{"type", "string"},
-            {"enum", {"auto", "cylindrical", "stacked"}},
-            {"default", "auto"},
-            {"description",
-             "cylindrical: wound in a round can; stacked: sheets in a pouch or prismatic can; "
-             "auto: cylindrical when the cross-section is round"}}},
-          {"axis",
-           {{"type", "string"},
-            {"enum", {"auto", "x", "y", "z"}},
-            {"default", "auto"},
-            {"description", "Cell axis or stack normal"}}},
-          {"angles",
+/// Analysis parameters shared by the battery inspections of datasets and of section images.
+Json batteryProperties() {
+  return {{"angles",
            {{"type", "integer"},
             {"minimum", 8},
             {"maximum", 3600},
@@ -987,14 +958,6 @@ class BatteryInspection final : public Operation {
             {"default", 5},
             {"description",
              "Cross-sections along the axis, or profiles per in-plane direction of a stack"}}},
-          {"overhang_sections",
-           {{"type", "integer"},
-            {"minimum", 4},
-            {"maximum", 720},
-            {"default", 36},
-            {"description",
-             "Sections across the electrode edges: angles around a cylindrical cell; a stack "
-             "gets a quarter of them per edge"}}},
           {"average_voxels",
            {{"type", "integer"},
             {"minimum", 0},
@@ -1025,70 +988,178 @@ class BatteryInspection final : public Operation {
             {"default", 1.6},
             {"description",
              "A space between neighbouring layers more than this times the usual one is a "
-             "gap"}}}}}};
+             "gap"}}}};
+}
+
+BatteryOptions batteryOptions(const Json& p) {
+  BatteryOptions options;
+  options.angles = p.at("angles").get<int>();
+  options.sections = p.at("sections").get<int>();
+  if (p.contains("overhang_sections")) {
+    options.overhang_sections = p.at("overhang_sections").get<int>();
+  }
+  options.average_voxels = p.at("average_voxels").get<int>();
+  options.cathode_brighter = p.at("cathode_brighter").get<bool>();
+  if (p.contains("particle_threshold")) {
+    options.particle_threshold = p.at("particle_threshold").get<float>();
+  }
+  if (p.contains("void_threshold")) {
+    options.void_threshold = p.at("void_threshold").get<float>();
+  }
+  options.min_particle_voxels = p.at("min_particle_voxels").get<std::int64_t>();
+  options.min_void_voxels = p.at("min_void_voxels").get<std::int64_t>();
+  options.gap_factor = p.at("gap_factor").get<double>();
+  return options;
+}
+
+/// Writes the result into the battery artifact and summarises it.
+OperationResult batteryOutcome(const BatteryResult& battery, const OperationContext& context) {
+  context.progress(0.9);
+  const TelemetryPhase phase("write results");
+  writeBatteryResult(battery, context.output_dir / "battery");
+  for (const std::string& warning : battery.warnings) {
+    context.log(warning);
+  }
+  OperationResult result;
+  result.outputs["battery"] = "battery";
+  Json edges = Json::array();
+  for (const BatteryEdge& edge : battery.edges) {
+    edges.push_back({{"edge", edge.name},
+                     {"samples", edge.samples},
+                     {"min_overhang_mm", finiteOrNull(edge.min_mm)},
+                     {"mean_overhang_mm", finiteOrNull(edge.mean_mm)}});
+  }
+  result.summary = {
+      {"cell_type", battery.type == CellType::kCylindrical ? "cylindrical" : "stacked"},
+      {"axis", std::string(1, "xyz"[battery.axis])},
+      {"outer_size_mm", battery.outer_size_mm},
+      {"cathode_layers", battery.cathode_layers},
+      {"anode_layers", battery.anode_layers},
+      {"pitch_mm", finiteOrNull(battery.pitch_mm)},
+      {"min_overhang_mm", finiteOrNull(battery.min_overhang_mm)},
+      {"edges", edges},
+      {"gaps", battery.gaps.size()},
+      {"particles", battery.particles.size()},
+      {"voids", battery.voids.size()}};
+  if (battery.type == CellType::kCylindrical) {
+    result.summary["diameter_mm"] = finiteOrNull(battery.outer_mean_mm);
+    result.summary["out_of_roundness_mm"] = finiteOrNull(battery.max_out_of_roundness_mm);
+  } else {
+    result.summary["min_thickness_mm"] = finiteOrNull(battery.outer_min_size_mm);
+    result.summary["max_thickness_mm"] = finiteOrNull(battery.outer_max_size_mm);
+  }
+  return result;
+}
+
+class BatteryInspection final : public Operation {
+ public:
+  BatteryInspection() {
+    info_.id = "battery_inspection";
+    info_.title = "Battery cell inspection";
+    info_.description =
+        "Inspects a battery cell, cylindrical (wound electrodes in a round can) or stacked "
+        "(pouch, prismatic): outer size, diameter and out-of-roundness, dents and wall "
+        "thickness of the housing; core of a wound cell; number and pitch of the cathode and "
+        "anode layers and gaps between them; the anode overhang beyond the cathode at every "
+        "edge of the electrode stack, per layer and section; foreign particles brighter than "
+        "the electrodes and gas voids in the electrode stack. The cell axis or stack normal "
+        "lies along a volume axis. Writes battery.json and images: a cross-section with the "
+        "layers marked, a longitudinal section and the section with the smallest overhang per "
+        "edge.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset of the cell"}};
+    info_.outputs = {{"battery", artifact::kBattery, "Cell inspection result and images"}};
+    Json properties = batteryProperties();
+    properties["cell_type"] = {
+        {"type", "string"},
+        {"enum", {"auto", "cylindrical", "stacked"}},
+        {"default", "auto"},
+        {"description",
+         "cylindrical: wound in a round can; stacked: sheets in a pouch or prismatic can; "
+         "auto: cylindrical when the cross-section is round"}};
+    properties["axis"] = {{"type", "string"},
+                          {"enum", {"auto", "x", "y", "z"}},
+                          {"default", "auto"},
+                          {"description", "Cell axis or stack normal"}};
+    properties["overhang_sections"] = {
+        {"type", "integer"},
+        {"minimum", 4},
+        {"maximum", 720},
+        {"default", 36},
+        {"description",
+         "Sections across the electrode edges: angles around a cylindrical cell; a stack gets a "
+         "quarter of them per edge"}};
+    info_.parameters = {{"type", "object"}, {"properties", properties}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
-    BatteryOptions options;
+    BatteryOptions options = batteryOptions(p);
     if (const std::string type = p.at("cell_type").get<std::string>(); type != "auto") {
       options.cell_type = type == "cylindrical" ? CellType::kCylindrical : CellType::kStacked;
     }
     if (const std::string axis = p.at("axis").get<std::string>(); axis != "auto") {
       options.axis = axis[0] - 'x';
     }
-    options.angles = p.at("angles").get<int>();
-    options.sections = p.at("sections").get<int>();
-    options.overhang_sections = p.at("overhang_sections").get<int>();
-    options.average_voxels = p.at("average_voxels").get<int>();
-    options.cathode_brighter = p.at("cathode_brighter").get<bool>();
-    if (p.contains("particle_threshold")) {
-      options.particle_threshold = p.at("particle_threshold").get<float>();
-    }
-    if (p.contains("void_threshold")) {
-      options.void_threshold = p.at("void_threshold").get<float>();
-    }
-    options.min_particle_voxels = p.at("min_particle_voxels").get<std::int64_t>();
-    options.min_void_voxels = p.at("min_void_voxels").get<std::int64_t>();
-    options.gap_factor = p.at("gap_factor").get<double>();
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
-    const BatteryResult battery = analyzeBattery(dataset, options);
-    context.progress(0.9);
-    const TelemetryPhase phase("write results");
-    writeBatteryResult(battery, context.output_dir / "battery");
-    for (const std::string& warning : battery.warnings) {
-      context.log(warning);
+    return batteryOutcome(analyzeBattery(dataset, options), context);
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class BatteryImages final : public Operation {
+ public:
+  BatteryImages() {
+    info_.id = "battery_images";
+    info_.title = "Battery cell inspection from section images";
+    info_.description =
+        "Inspects a cylindrical battery cell given as section images instead of a volume: a "
+        "folder or ZIP archive with a folder per cell holding axial_images/<angle>.png "
+        "(longitudinal sections through the axis, top row at the high end, right half at the "
+        "angle, left half opposite) and radial_images/<position mm>.png (cross-sections). "
+        "Housing and layers come from the cross-sections, the anode overhang at both ends from "
+        "the longitudinal sections, particles and voids from both. The same result as "
+        "battery_inspection, for battery_report.";
+    info_.outputs = {{"battery", artifact::kBattery, "Cell inspection result and images"}};
+    Json properties = batteryProperties();
+    properties["path"] = {{"type", "string"},
+                          {"format", "path"},
+                          {"description", "Folder or ZIP archive with the section images"}};
+    properties["cell"] = {
+        {"type", "string"},
+        {"description", "Name of the cell's folder; the result lists the cells when omitted"}};
+    properties["pixel_size_mm"] = {
+        {"type", "number"},
+        {"exclusiveMinimum", 0},
+        {"description",
+         "Pixel edge length; default from the positions of the cross-sections over the height "
+         "of the longitudinal sections"}};
+    info_.parameters = {{"type", "object"}, {"properties", properties}, {"required", {"path"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const std::string path = p.at("path").get<std::string>();
+    if (!p.contains("cell")) {
+      const std::vector<std::string> cells = listCellImages(path);
+      throw std::invalid_argument(
+          "Choose a cell with 'cell'; " + std::to_string(cells.size()) + " in " + path + ": " +
+          (cells.empty() ? std::string("none")
+                         : std::accumulate(std::next(cells.begin()), cells.end(), cells.front(),
+                                           [](std::string a, const std::string& b) {
+                                             return std::move(a) + ", " + b;
+                                           })));
     }
-    OperationResult result;
-    result.outputs["battery"] = "battery";
-    Json edges = Json::array();
-    for (const BatteryEdge& edge : battery.edges) {
-      edges.push_back({{"edge", edge.name},
-                       {"samples", edge.samples},
-                       {"min_overhang_mm", finiteOrNull(edge.min_mm)},
-                       {"mean_overhang_mm", finiteOrNull(edge.mean_mm)}});
+    BatteryOptions options = batteryOptions(p);
+    if (p.contains("pixel_size_mm")) {
+      options.image_pixel_mm = p.at("pixel_size_mm").get<double>();
     }
-    result.summary = {
-        {"cell_type", battery.type == CellType::kCylindrical ? "cylindrical" : "stacked"},
-        {"axis", std::string(1, "xyz"[battery.axis])},
-        {"outer_size_mm", battery.outer_size_mm},
-        {"cathode_layers", battery.cathode_layers},
-        {"anode_layers", battery.anode_layers},
-        {"pitch_mm", finiteOrNull(battery.pitch_mm)},
-        {"min_overhang_mm", finiteOrNull(battery.min_overhang_mm)},
-        {"edges", edges},
-        {"gaps", battery.gaps.size()},
-        {"particles", battery.particles.size()},
-        {"voids", battery.voids.size()}};
-    if (battery.type == CellType::kCylindrical) {
-      result.summary["diameter_mm"] = finiteOrNull(battery.outer_mean_mm);
-      result.summary["out_of_roundness_mm"] = finiteOrNull(battery.max_out_of_roundness_mm);
-    } else {
-      result.summary["min_thickness_mm"] = finiteOrNull(battery.outer_min_size_mm);
-      result.summary["max_thickness_mm"] = finiteOrNull(battery.outer_max_size_mm);
-    }
-    return result;
+    const CellImages images = readCellImages(path, p.at("cell").get<std::string>());
+    context.progress(0.2);
+    return batteryOutcome(analyzeBatteryImages(images, options), context);
   }
 
  private:
@@ -2938,6 +3009,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<FibreOrientation>());
   registry.add(std::make_shared<BatteryInspection>());
+  registry.add(std::make_shared<BatteryImages>());
   registry.add(std::make_shared<SegmentMaterials>());
   registry.add(std::make_shared<SegmentWithModel>());
   registry.add(std::make_shared<MaterialMeshes>());

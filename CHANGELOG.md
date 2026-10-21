@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Battery cells from section images**: `vs-battery --images` and the operation
+  `battery_images` inspect cylindrical cells handed over as PNG images of longitudinal sections
+  and cross-sections, from a folder or a ZIP archive, one cell or all of them with a summary in
+  `cells.csv`. The anode overhang comes from both halves of every longitudinal section. Cells
+  whose anodes are as dark as the separator get their overhang from the band between
+  neighbouring cathodes beyond the cathode ends; an end where the anode does not stand out is
+  reported as not measured. Particles and voids are looked for only where the electrodes are,
+  and long bright structures such as tabs are no longer counted as particles.
+
 - **Battery cells**: the new tool `vs-battery` and operation `battery_inspection` inspect a
   cylindrical or stacked (pouch, prismatic) lithium-ion cell: housing diameter, roundness, dents
   and wall, the core, electrode layer count, pitch and gaps, the anode overhang at every edge

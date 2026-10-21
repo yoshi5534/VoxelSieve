@@ -46,10 +46,16 @@ struct BatteryOptions {
   /// and the gaps between the layers.
   std::optional<float> void_threshold;
   std::int64_t min_particle_voxels = 2;
+  /// Bright components longer than this are taken for parts of the cell, such as tabs, foil ends
+  /// or welds, not for particles.
+  double max_particle_size_mm = 1.0;
   std::int64_t min_void_voxels = 8;
   /// A space between neighbouring layers more than this factor above the median is a gap
   /// (delamination, a fold or a missing layer).
   double gap_factor = 1.6;
+  /// Edge of a pixel of section images (analyzeBatteryImages); unset: from the positions of the
+  /// cross-sections over the height of the longitudinal sections.
+  std::optional<double> image_pixel_mm;
 };
 
 /// Grey value levels found in the cell.
@@ -136,8 +142,10 @@ struct BatteryEdge {
   /// edge from telescoping or shifted sheets.
   double cathode_edge_spread_mm = 0.0;
   double anode_edge_spread_mm = 0.0;
-  /// Mean position of the anode ends along the axis, the end of the electrode stack.
+  /// Mean position of the anode ends along the axis, the end of the electrode stack, and of the
+  /// cathode ends.
   double anode_edge_mm = 0.0;
+  double cathode_edge_mm = 0.0;
 };
 
 /// A foreign particle or gas void in the electrode stack.
@@ -202,6 +210,12 @@ struct BatteryResult {
   double void_threshold = 0.0;
   std::vector<CellFinding> particles;  // largest first
   std::vector<CellFinding> voids;      // largest first
+  /// Bright components in the electrode stack too large for particles (tabs, foil, welds).
+  std::int64_t bright_structures = 0;
+  /// Analysed from section images instead of a volume: particles and voids are their sections in
+  /// the images (voxels are pixels, no volume), positions along the axis count from the bottom
+  /// row of the longitudinal sections.
+  bool from_images = false;
   std::vector<std::string> warnings;
   /// cross_section (normal to the axis, or across the layers of a stack along its longer side)
   /// with the layers, particles and voids marked, longitudinal (along the axis through the
@@ -209,6 +223,42 @@ struct BatteryResult {
   /// the smallest overhang at each edge, its electrode ends marked). Not in the JSON.
   std::vector<BatteryImage> images;
 };
+
+/// A grey image of a section through a cell, rows top to bottom.
+struct CellImage {
+  /// Longitudinal section: angle in degrees; cross-section: position along the axis in mm.
+  double position = 0.0;
+  std::int64_t width = 0;
+  std::int64_t height = 0;
+  std::vector<std::uint16_t> values;
+};
+
+/// A cylindrical cell given as section images instead of a volume (ADR 0029): longitudinal
+/// sections through the axis, the axis vertical, the top row at the high end; the right half of
+/// the image lies at the section's angle, the left half at the angle plus 180 degrees. The
+/// longitudinal section at 0 degrees runs along the x axis of the cross-sections, which are
+/// normal to the axis. All images have square pixels of the same size.
+struct CellImages {
+  std::string cell;
+  std::vector<CellImage> longitudinal;  // ascending angle
+  std::vector<CellImage> cross;         // ascending position
+};
+
+/// The cells in a folder or ZIP archive of section images: for every cell a folder holding
+/// `axial_images/<angle>.png` (longitudinal sections) and `radial_images/<position>.png`
+/// (cross-sections). Names are the cell folders' names, in natural order.
+[[nodiscard]] std::vector<std::string> listCellImages(const std::filesystem::path& source);
+
+/// Reads the section images of `cell` (a name from listCellImages, or the path of its folder in
+/// the source).
+[[nodiscard]] CellImages readCellImages(const std::filesystem::path& source,
+                                        const std::string& cell);
+
+/// Inspects a cylindrical cell from its section images: housing and layers from the
+/// cross-sections, the overhang at both ends from the longitudinal sections, particles and voids
+/// in both.
+[[nodiscard]] BatteryResult analyzeBatteryImages(const CellImages& images,
+                                                 const BatteryOptions& options = {});
 
 /// Inspects the battery cell in `dataset` (level 0).
 [[nodiscard]] BatteryResult analyzeBattery(const Dataset& dataset,

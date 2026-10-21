@@ -1228,12 +1228,14 @@ std::string overhangChartSvg(const Json& battery, const Json& limit) {
 /// One finding (particle or void) for the tables.
 Json findingRow(const Json& f, bool cylindrical) {
   const auto c = f.at("center_mm").get<std::array<double, 3>>();
-  Json row = {{"id", f.at("id")},
-              {"position", formatMm(c)},
-              {"size", formatNumber(f.at("size_mm").get<double>(), 3)},
-              {"diameter", formatNumber(f.at("equivalent_diameter_mm").get<double>(), 3)},
-              {"volume", formatNumber(f.at("volume_mm3").get<double>(), 6)},
-              {"grey_value", formatNumber(f.at("grey_value").get<double>(), 0)}};
+  Json row = {
+      {"id", f.at("id")},
+      {"position", formatMm(c)},
+      {"size", formatNumber(f.at("size_mm").get<double>(), 3)},
+      {"diameter", formatNumber(f.at("equivalent_diameter_mm").get<double>(), 3)},
+      {"volume", f.at("volume_mm3").is_number() ? formatNumber(f.at("volume_mm3").get<double>(), 6)
+                                                : std::string("–")},
+      {"grey_value", formatNumber(f.at("grey_value").get<double>(), 0)}};
   row["in_cell"] = cylindrical ? "r " + formatNumber(f.value("radius_mm", 0.0), 2) + " mm, " +
                                      formatNumber(f.value("angle_deg", 0.0), 0) + "°"
                                : formatNumber(f.value("normal_mm", 0.0), 2) + " mm";
@@ -1278,7 +1280,8 @@ nlohmann::json batteryReportData(const nlohmann::json& order,
                {"min_wall", mmText(b.at("min_wall_mm"))},
                {"gaps", b.at("gaps").size()},
                {"distinct", levels.value("electrodes_distinct", false)},
-               {"cylindrical", cylindrical}};
+               {"cylindrical", cylindrical},
+               {"from_images", b.value("from_images", false)}};
   if (cylindrical) {
     cell["diameter"] = mmText(b.at("outer_mean_mm"));
     cell["out_of_roundness"] = mmText(b.at("max_out_of_roundness_mm"));

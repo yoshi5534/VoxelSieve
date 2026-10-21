@@ -279,7 +279,7 @@ std::vector<OrientationBlock> analyzeRow(const Dataset& dataset, const Orientati
   std::vector<float> grey(static_cast<std::size_t>(inner.voxelCount()));
   dataset.readRegion(0, inner, grey, info.air_level);
   // Analysed voxels: above the air threshold, or of the material.
-  std::vector<std::uint8_t> mask(grey.size(), 0);
+  std::vector<std::uint8_t> mask(grey.size());
   if (options.materials != nullptr) {
     options.materials->readRegion(inner, mask);
     for (std::uint8_t& m : mask) {

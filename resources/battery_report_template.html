@@ -108,6 +108,7 @@
 <h2>5 Evaluation parameters and detection limits</h2>
 <table class="fields">
   <tr><th>Grey value levels</th><td>{{analysis.levels}}</td></tr>
+  {{#battery.from_images}}<tr><th>Data</th><td>Section images of the reconstruction: longitudinal sections through the axis and cross-sections, pixel {{analysis.voxel_size}}</td></tr>{{/battery.from_images}}
   <tr><th>Electrode layers</th><td>Peaks of grey value profiles across the layers, averaged along the layers against noise; {{analysis.sections}} sections for housing and layers</td></tr>
   <tr><th>Anode overhang</th><td>Ends of each cathode layer and its anode neighbours followed through sections across the edges of the electrode stack, {{analysis.overhang_samples}} measured layer ends</td></tr>
   <tr><th>Foreign particles / gas voids</th><td>In the electrode stack, brighter than {{analysis.particle_threshold}} / darker than {{analysis.void_threshold}}</td></tr>
@@ -180,7 +181,7 @@
   {{/voids.listed}}
 </table>
 {{/voids.any}}
-<p class="note">In the cell: radius and angle about the cell axis, or position along the stack normal.</p>
+<p class="note">In the cell: radius and angle about the cell axis, or position along the stack normal.{{#battery.from_images}} Evaluated from section images: particles and voids are their sections in the images, without a volume; positions along the axis count from the bottom of the longitudinal sections.{{/battery.from_images}}</p>
 {{#has_warnings}}
 <h2>Notes on the evaluation</h2>
 <ul>{{#warnings}}<li>{{.}}</li>{{/warnings}}</ul>
