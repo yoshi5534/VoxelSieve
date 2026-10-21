@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Battery particles from section images**: bright and dark sections that overlap across the
+  axis in neighbouring cross-sections are one finding, as long as all of them together. Tabs and
+  welds that run through many cross-sections become one bright structure instead of a row of
+  particles. The largest particle and void in `cells.csv` are the longest, as in the report.
+
 - **Battery overhang, tabs and particles at the can**: a cathode end more than half of
   `max_end_deviation_mm` from its neighbouring layers in the same section, such as a tab bent
   over the winding, is left out of the overhang with the layers next to it; an anode end that is

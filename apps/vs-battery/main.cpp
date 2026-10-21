@@ -409,7 +409,11 @@ void inspectAllCells(const Options& options) {
         writeReport(options, out, false);
       }
       const auto largest = [](const std::vector<voxelsieve::CellFinding>& list) {
-        return list.empty() ? 0.0 : list.front().size_mm;
+        double size = 0.0;
+        for (const voxelsieve::CellFinding& f : list) {
+          size = std::max(size, f.size_mm);
+        }
+        return size;
       };
       csv << cell << ",ok," << csvNumber(result.outer_mean_mm) << "," << csvNumber(result.length_mm)
           << "," << result.cathode_layers << "," << csvNumber(result.pitch_mm);

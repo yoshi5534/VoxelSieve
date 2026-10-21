@@ -260,7 +260,8 @@ TEST_F(BatteryTest, InspectsACylindricalCellFromSectionImages) {
 
 // Section images in a folder per cell, 8-bit PNG files named by angle and position.
 // A tab, a cathode end far beyond the others, is left out of the overhang; a void in the
-// winding is found, one in the innermost turn, where folded separator looks like gas, is not.
+// winding is found, one in the innermost turn, where folded separator looks like gas, is not;
+// a weld seen in many cross-sections is a structure, not a row of particles.
 TEST_F(BatteryTest, LeavesTabsAndTheInnermostTurnOutOfSectionImages) {
   CellSpec spec = defaultCylindricalCell();
   spec.noise_sigma = 800.0;
@@ -272,18 +273,29 @@ TEST_F(BatteryTest, LeavesTabsAndTheInnermostTurnOutOfSectionImages) {
   };
   spec.voids.push_back({at(3.0, 100.0), 0.1});
   spec.voids.push_back({at(0.0, 300.0), 0.1});
+  // A weld along the axis, between two longitudinal sections: in each cross-section a small
+  // bright spot, together longer than a particle.
+  for (int i = 0; i < 9; ++i) {
+    std::array<double, 3> c = at(4.0, 32.5);
+    c[2] = -0.4 + 0.1 * i;
+    spec.particles.push_back({c, 0.06});
+  }
   // The small cell's cathode sticks out at most to the cap, so a tighter limit than on a real
   // cell.
   BatteryOptions options;
   options.max_end_deviation_mm = 0.3;
-  const BatteryResult result = analyzeBatteryImages(cellImages(spec, -0.5), options);
+  options.max_particle_size_mm = 0.4;
+  const CellImages images = cellImages(spec, -0.5);
+  const BatteryResult result = analyzeBatteryImages(images, options);
   const BatteryEdge& top = edgeOf(result, 2, 1);
   EXPECT_NEAR(top.min_mm, 0.3, 0.05);
   EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
     return w.find("are left out") != std::string::npos && w.find("tabs") != std::string::npos;
   }));
   // With the default limit the cathode end is left out because its neighbours end lower.
-  EXPECT_NEAR(edgeOf(analyzeBatteryImages(cellImages(spec, -0.5)), 2, 1).min_mm, 0.3, 0.05);
+  EXPECT_NEAR(edgeOf(analyzeBatteryImages(images), 2, 1).min_mm, 0.3, 0.05);
+  EXPECT_TRUE(result.particles.empty());
+  EXPECT_EQ(result.bright_structures, 1);
   ASSERT_EQ(result.voids.size(), 1U);
   const std::array<double, 3> v = at(3.0, 100.0);
   EXPECT_NEAR(result.voids[0].radius_mm, std::hypot(v[0], v[1]), 0.1);

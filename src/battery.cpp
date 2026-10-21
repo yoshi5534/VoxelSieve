@@ -2999,32 +2999,72 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
         "Too many pixels above the particle threshold or below the void threshold in the "
         "electrode stack; set the thresholds by hand");
   }
-  const auto merge = [](std::vector<std::vector<CellFinding>>& per_job) {
+  // Neighbouring cross-sections lie up to this far apart along the axis.
+  double spacing = cell.pixel;
+  for (std::size_t c = 1; c < n_cross; ++c) {
+    spacing = std::max(
+        spacing, static_cast<double>(cell.cross_index[c] - cell.cross_index[c - 1]) * cell.pixel);
+  }
+  // Sections of one finding in several images are one finding: those that overlap across the
+  // axis and lie in neighbouring cross-sections along it. Tabs and welds run along the axis
+  // through many cross-sections; together their sections show how long they are.
+  const auto merge = [&](std::vector<std::vector<CellFinding>>& per_job, bool brightest) {
     std::vector<CellFinding> all;
     for (auto& found : per_job) {
       all.insert(all.end(), found.begin(), found.end());
     }
     std::sort(all.begin(), all.end(),
               [](const CellFinding& a, const CellFinding& b) { return a.voxels > b.voxels; });
-    std::vector<CellFinding> kept;
-    for (const CellFinding& f : all) {
-      const bool seen = std::any_of(kept.begin(), kept.end(), [&](const CellFinding& k) {
-        const double d =
-            std::hypot(f.center_mm[0] - k.center_mm[0], f.center_mm[1] - k.center_mm[1],
-                       f.center_mm[2] - k.center_mm[2]);
-        return d < 0.5 * (f.size_mm + k.size_mm);
-      });
-      if (!seen) {
-        kept.push_back(f);
+    std::vector<std::size_t> parent(all.size());
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    const auto root = [&](std::size_t i) {
+      while (parent[i] != i) {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
       }
+      return i;
+    };
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      for (std::size_t j = i + 1; j < all.size(); ++j) {
+        const CellFinding& a = all[i];
+        const CellFinding& b = all[j];
+        const double reach = 0.5 * (a.size_mm + b.size_mm);
+        if (std::hypot(a.center_mm[0] - b.center_mm[0], a.center_mm[1] - b.center_mm[1]) < reach &&
+            std::abs(a.center_mm[2] - b.center_mm[2]) <= std::max(reach, 1.5 * spacing)) {
+          const std::size_t ri = root(i);
+          const std::size_t rj = root(j);
+          parent[std::max(ri, rj)] = std::min(ri, rj);
+        }
+      }
+    }
+    // The largest section stands for the finding; the extent along the axis spans all.
+    std::vector<CellFinding> kept;
+    std::vector<std::size_t> kept_of(all.size());
+    std::vector<std::array<double, 2>> extent;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      const CellFinding& f = all[i];
+      const double lo = f.center_mm[2] - 0.5 * f.size_mm;
+      const double hi = f.center_mm[2] + 0.5 * f.size_mm;
+      if (root(i) == i) {
+        kept_of[i] = kept.size();
+        kept.push_back(f);
+        extent.push_back({lo, hi});
+        continue;
+      }
+      const std::size_t k = kept_of[root(i)];
+      extent[k] = {std::min(extent[k][0], lo), std::max(extent[k][1], hi)};
+      kept[k].extreme_value = brightest ? std::max(kept[k].extreme_value, f.extreme_value)
+                                        : std::min(kept[k].extreme_value, f.extreme_value);
     }
     for (std::size_t i = 0; i < kept.size(); ++i) {
       kept[i].id = static_cast<int>(i + 1);
+      kept[i].size_mm = std::max(kept[i].size_mm, extent[i][1] - extent[i][0]);
+      kept[i].center_mm[2] = 0.5 * (extent[i][0] + extent[i][1]);
     }
     return kept;
   };
-  result.particles = merge(bright);
-  result.voids = merge(dark);
+  result.particles = merge(bright, true);
+  result.voids = merge(dark, false);
   separateStructures(result, options);
 }
 
