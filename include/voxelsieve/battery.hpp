@@ -53,6 +53,9 @@ struct BatteryOptions {
   /// A space between neighbouring layers more than this factor above the median is a gap
   /// (delamination, a fold or a missing layer).
   double gap_factor = 1.6;
+  /// Layer ends farther than this from the median end of their edge are left out of the
+  /// overhang: layers lost by the tracking, tabs, the start of a strip.
+  double max_end_deviation_mm = 1.0;
   /// Edge of a pixel of section images (analyzeBatteryImages); unset: from the positions of the
   /// cross-sections over the height of the longitudinal sections.
   std::optional<double> image_pixel_mm;

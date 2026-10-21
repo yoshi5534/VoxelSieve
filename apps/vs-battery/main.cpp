@@ -74,6 +74,8 @@ Options:
                             air and the gaps)
   --min-particle <voxels>   Smallest particle reported (default 2)
   --min-void <voxels>       Smallest void reported (default 8)
+  --max-end-deviation <mm>  Layer ends farther than this from the median end of their edge
+                            (lost layers, tabs) are left out of the overhang (default 1)
   --cache <MB>              Brick cache size (default 1024)
   --telemetry <file>        Write time and resource use per phase as JSON
 
@@ -188,6 +190,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.battery.void_threshold = std::stof(next());
     } else if (arg == "--min-particle") {
       options.battery.min_particle_voxels = std::stoll(next());
+    } else if (arg == "--max-end-deviation") {
+      options.battery.max_end_deviation_mm = std::stod(next());
     } else if (arg == "--min-void") {
       options.battery.min_void_voxels = std::stoll(next());
     } else if (arg == "--images") {

@@ -982,6 +982,13 @@ Json batteryProperties() {
              "gaps between the layers"}}},
           {"min_particle_voxels", {{"type", "integer"}, {"minimum", 1}, {"default", 2}}},
           {"min_void_voxels", {{"type", "integer"}, {"minimum", 1}, {"default", 8}}},
+          {"max_end_deviation_mm",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"default", 1.0},
+            {"description",
+             "Layer ends farther than this from the median end of their edge (lost layers, tabs) "
+             "are left out of the overhang"}}},
           {"gap_factor",
            {{"type", "number"},
             {"minimum", 1.1},
@@ -1009,6 +1016,7 @@ BatteryOptions batteryOptions(const Json& p) {
   options.min_particle_voxels = p.at("min_particle_voxels").get<std::int64_t>();
   options.min_void_voxels = p.at("min_void_voxels").get<std::int64_t>();
   options.gap_factor = p.at("gap_factor").get<double>();
+  options.max_end_deviation_mm = p.at("max_end_deviation_mm").get<double>();
   return options;
 }
 
