@@ -1650,6 +1650,20 @@ void edgeOverhang(std::vector<SectionImage>& images, const std::vector<double>& 
   });
   warnStrayEnds(result, edge, dropStrayEnds(per_angle, options.max_end_deviation_mm),
                 options.max_end_deviation_mm);
+  // Fewer layer ends than sections: what is left are stray ends, not the edge.
+  std::size_t kept = 0;
+  for (const auto& samples : per_angle) {
+    kept += samples.size();
+  }
+  if (kept > 0 && kept < per_angle.size()) {
+    for (auto& samples : per_angle) {
+      samples.clear();
+    }
+    result.warnings.push_back("At " + result.edges[at(edge)].name + " only " +
+                              std::to_string(kept) +
+                              " layer ends were found, fewer than one per section; the overhang "
+                              "there is not measured");
+  }
   int hidden_sections = 0;
   for (int j = 0; j < n; ++j) {
     result.overhang.insert(result.overhang.end(), per_angle[at(j)].begin(), per_angle[at(j)].end());
