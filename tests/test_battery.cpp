@@ -282,6 +282,8 @@ TEST_F(BatteryTest, LeavesTabsAndTheInnermostTurnOutOfSectionImages) {
   EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
     return w.find("are left out") != std::string::npos && w.find("tabs") != std::string::npos;
   }));
+  // With the default limit the cathode end is left out because its neighbours end lower.
+  EXPECT_NEAR(edgeOf(analyzeBatteryImages(cellImages(spec, -0.5)), 2, 1).min_mm, 0.3, 0.05);
   ASSERT_EQ(result.voids.size(), 1U);
   const std::array<double, 3> v = at(3.0, 100.0);
   EXPECT_NEAR(result.voids[0].radius_mm, std::hypot(v[0], v[1]), 0.1);

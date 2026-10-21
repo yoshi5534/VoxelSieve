@@ -733,6 +733,9 @@ void overhangBetweenCathodes(const SectionImage& image, const std::vector<Track>
       for (std::int64_t k = s; k < s + run && below; ++k) {
         below = smoothed[at(k)] < end_level;
       }
+      if (below && s <= first + 1) {
+        break;  // dark right at the cathode end: the anode end is not resolved
+      }
       if (below) {
         const double before = smoothed[at(s - 1)];
         const double frac = (before - end_level) / std::max(1e-9, before - smoothed[at(s)]);
@@ -818,9 +821,25 @@ std::int64_t dropStrayEnds(std::vector<std::vector<OverhangSample>>& per_section
   const double anode_median = median(anode);
   std::int64_t dropped = 0;
   for (auto& samples : per_section) {
+    // A tab bent over the winding ends above its layer's neighbours in the same section; the
+    // band next to it does not show the anode either.
+    std::vector<int> tabs;
+    for (const OverhangSample& s : samples) {
+      std::vector<double> near;
+      for (const OverhangSample& n : samples) {
+        if (n.layer != s.layer && std::abs(n.layer - s.layer) <= 2) {
+          near.push_back(n.cathode_end_mm);
+        }
+      }
+      if (near.size() >= 2 && std::abs(s.cathode_end_mm - median(near)) > 0.5 * limit) {
+        tabs.push_back(s.layer);
+      }
+    }
     const auto stray = [&](const OverhangSample& s) {
       return std::abs(s.cathode_end_mm - cathode_median) > limit ||
-             std::abs(s.anode_end_mm - anode_median) > limit;
+             std::abs(s.anode_end_mm - anode_median) > limit ||
+             std::any_of(tabs.begin(), tabs.end(),
+                         [&](int layer) { return std::abs(s.layer - layer) <= 1; });
     };
     const auto before = samples.size();
     samples.erase(std::remove_if(samples.begin(), samples.end(), stray), samples.end());
@@ -833,7 +852,8 @@ void warnStrayEnds(BatteryResult& result, int edge, std::int64_t dropped, double
   if (dropped > 0) {
     std::ostringstream text;
     text << "At " << result.edges[at(edge)].name << ", " << dropped << " layer ends more than "
-         << limit << " mm from the edge of the electrode stack (lost layers, tabs) are left out";
+         << limit << " mm from the edge of the electrode stack or more than " << 0.5 * limit
+         << " mm from their neighbours (lost layers, tabs) are left out";
     result.warnings.push_back(text.str());
   }
 }
@@ -1139,10 +1159,22 @@ std::vector<CellFinding> components(std::vector<std::pair<std::uint64_t, float>>
 /// welds reach into the electrode stack. Numbers the rest from 1.
 void separateStructures(BatteryResult& result, const BatteryOptions& options) {
   const auto large = [&](const CellFinding& f) { return f.size_mm > options.max_particle_size_mm; };
-  const auto n = std::count_if(result.particles.begin(), result.particles.end(), large);
+  std::vector<CellFinding> structures;
+  std::copy_if(result.particles.begin(), result.particles.end(), std::back_inserter(structures),
+               large);
+  const auto n = static_cast<std::int64_t>(structures.size());
   result.bright_structures += n;
-  result.particles.erase(std::remove_if(result.particles.begin(), result.particles.end(), large),
-                         result.particles.end());
+  // Small bright pieces within the extent of a structure are parts of it, where its brightness
+  // dips below the particle threshold.
+  const auto part_of_structure = [&](const CellFinding& f) {
+    return large(f) || std::any_of(structures.begin(), structures.end(), [&](const auto& t) {
+             return std::hypot(f.center_mm[0] - t.center_mm[0], f.center_mm[1] - t.center_mm[1],
+                               f.center_mm[2] - t.center_mm[2]) < 0.5 * t.size_mm;
+           });
+  };
+  result.particles.erase(
+      std::remove_if(result.particles.begin(), result.particles.end(), part_of_structure),
+      result.particles.end());
   for (std::size_t i = 0; i < result.particles.size(); ++i) {
     result.particles[i].id = static_cast<int>(i + 1);
   }
@@ -1806,7 +1838,16 @@ InRegion cylinderRegion(const CylinderData& data, const VoxelSize& pitch) {
     }
     first_turn.push_back(r);
   }
-  return [data, margin, pitch, n_angles, first_turn](const Index3& v, bool bright) {
+  // The outermost turn of each section, half a pitch outside the median of its radius: beyond it,
+  // at the ends, the can bends inwards and its wall can look like a particle.
+  std::vector<double> last_turn;
+  for (const std::vector<double>& radii : data.last_layer) {
+    std::vector<double> found;
+    std::copy_if(radii.begin(), radii.end(), std::back_inserter(found),
+                 [](double r) { return !std::isnan(r); });
+    last_turn.push_back(found.empty() ? kNaN : median(found) + 0.5 * data.pitch);
+  }
+  return [data, margin, pitch, n_angles, first_turn, last_turn](const Index3& v, bool bright) {
     const auto pos = static_cast<double>(v[at(data.axis)]) * pitch[at(data.axis)];
     const double from = bright ? data.electrode_low : data.cathode_low;
     const double to = bright ? data.electrode_high : data.cathode_high;
@@ -1838,7 +1879,8 @@ InRegion cylinderRegion(const CylinderData& data, const VoxelSize& pitch) {
     const double slack = bright ? 0.5 * data.pitch : -data.pitch;
     const double lo = std::isnan(first) ? data.core[k][bin] + 2.0 * data.step : first - slack;
     const double hi = std::isnan(last) ? data.inner[k][bin] - 2.0 * data.step : last + slack;
-    return r > lo && r < hi && r < data.inner[k][bin] - 2.0 * data.step;
+    const double outermost = std::isnan(last_turn[k]) ? hi : last_turn[k] + slack;
+    return r > lo && r < hi && r < outermost && r < data.inner[k][bin] - 2.0 * data.step;
   };
 }
 
