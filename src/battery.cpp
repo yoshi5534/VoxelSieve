@@ -800,6 +800,44 @@ void sectionOverhang(const SectionImage& image, const BatteryLevels& levels,
   }
 }
 
+/// Leaves out the layer ends of one edge that lie far from the others: a layer lost by the
+/// tracking, a tab or the start of a strip, not the edge of the electrode stack. Returns how many.
+std::int64_t dropStrayEnds(std::vector<std::vector<OverhangSample>>& per_section, double limit) {
+  std::vector<double> cathode;
+  std::vector<double> anode;
+  for (const auto& samples : per_section) {
+    for (const OverhangSample& s : samples) {
+      cathode.push_back(s.cathode_end_mm);
+      anode.push_back(s.anode_end_mm);
+    }
+  }
+  if (cathode.empty()) {
+    return 0;
+  }
+  const double cathode_median = median(cathode);
+  const double anode_median = median(anode);
+  std::int64_t dropped = 0;
+  for (auto& samples : per_section) {
+    const auto stray = [&](const OverhangSample& s) {
+      return std::abs(s.cathode_end_mm - cathode_median) > limit ||
+             std::abs(s.anode_end_mm - anode_median) > limit;
+    };
+    const auto before = samples.size();
+    samples.erase(std::remove_if(samples.begin(), samples.end(), stray), samples.end());
+    dropped += static_cast<std::int64_t>(before - samples.size());
+  }
+  return dropped;
+}
+
+void warnStrayEnds(BatteryResult& result, int edge, std::int64_t dropped, double limit) {
+  if (dropped > 0) {
+    std::ostringstream text;
+    text << "At " << result.edges[at(edge)].name << ", " << dropped << " layer ends more than "
+         << limit << " mm from the edge of the electrode stack (lost layers, tabs) are left out";
+    result.warnings.push_back(text.str());
+  }
+}
+
 /// Warnings about layer ends that were not measured.
 void warnOverhang(BatteryResult& result, bool unfinished, const std::vector<int>& hidden_edges) {
   if (unfinished) {
@@ -1610,6 +1648,22 @@ void edgeOverhang(std::vector<SectionImage>& images, const std::vector<double>& 
     per_unfinished[at(j)] = open ? 1 : 0;
     per_hidden[at(j)] = hide ? 1 : 0;
   });
+  warnStrayEnds(result, edge, dropStrayEnds(per_angle, options.max_end_deviation_mm),
+                options.max_end_deviation_mm);
+  // Fewer layer ends than sections: what is left are stray ends, not the edge.
+  std::size_t kept = 0;
+  for (const auto& samples : per_angle) {
+    kept += samples.size();
+  }
+  if (kept > 0 && kept < per_angle.size()) {
+    for (auto& samples : per_angle) {
+      samples.clear();
+    }
+    result.warnings.push_back("At " + result.edges[at(edge)].name + " only " +
+                              std::to_string(kept) +
+                              " layer ends were found, fewer than one per section; the overhang "
+                              "there is not measured");
+  }
   int hidden_sections = 0;
   for (int j = 0; j < n; ++j) {
     result.overhang.insert(result.overhang.end(), per_angle[at(j)].begin(), per_angle[at(j)].end());
@@ -1742,7 +1796,17 @@ void cylinderEnds(CylinderData& data, const BatteryResult& result) {
 InRegion cylinderRegion(const CylinderData& data, const VoxelSize& pitch) {
   const double margin = 2.0 * pitch[at(data.axis)];
   const auto n_angles = static_cast<double>(data.core.front().size());
-  return [data, margin, pitch, n_angles](const Index3& v, bool bright) {
+  // The innermost turn of each section: the strips start somewhere on it, and the turns inside
+  // and next to it hold folded separator and electrolyte that look like gas.
+  std::vector<double> first_turn;
+  for (const std::vector<double>& radii : data.first_layer) {
+    double r = kNaN;
+    for (const double first : radii) {
+      r = nanMax(r, first);
+    }
+    first_turn.push_back(r);
+  }
+  return [data, margin, pitch, n_angles, first_turn](const Index3& v, bool bright) {
     const auto pos = static_cast<double>(v[at(data.axis)]) * pitch[at(data.axis)];
     const double from = bright ? data.electrode_low : data.cathode_low;
     const double to = bright ? data.electrode_high : data.cathode_high;
@@ -1768,7 +1832,8 @@ InRegion cylinderRegion(const CylinderData& data, const VoxelSize& pitch) {
     // Between the innermost and the outermost layer at this angle, where there are layers; a
     // particle may sit half a layer pitch outside them. Voids not in the first and last turn,
     // where the electrolyte at the start and end of the strips looks like gas.
-    const double first = data.first_layer[k][bin];
+    const double first =
+        bright || std::isnan(first_turn[k]) ? data.first_layer[k][bin] : first_turn[k];
     const double last = data.last_layer[k][bin];
     const double slack = bright ? 0.5 * data.pitch : -data.pitch;
     const double lo = std::isnan(first) ? data.core[k][bin] + 2.0 * data.step : first - slack;
@@ -2073,6 +2138,8 @@ void stackOverhang(const VolumeView& volume, const BatteryOptions& options, Stac
       if (2 * std::count(hidden.begin(), hidden.end(), 1) > per_edge) {
         hidden_edges.push_back(edge);
       }
+      warnStrayEnds(result, edge, dropStrayEnds(per_section, options.max_end_deviation_mm),
+                    options.max_end_deviation_mm);
       std::int64_t worst_index = -1;
       double worst_value = std::numeric_limits<double>::infinity();
       for (int j = 0; j < per_edge; ++j) {

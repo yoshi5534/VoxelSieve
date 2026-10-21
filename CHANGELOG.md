@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Battery overhang and voids on real cells**: layer ends more than `max_end_deviation_mm`
+  (default 1 mm, `vs-battery --max-end-deviation`) from the median end of their edge, such as
+  tabs and layers the tracking lost, are left out of the overhang with a warning, and an edge left
+  with fewer layer ends than sections is reported as not measured. Voids are no
+  longer looked for in the innermost turn of a winding, where folded separator next to the core
+  looks like gas.
+
 - **Battery cells from section images**: `vs-battery --images` and the operation
   `battery_images` inspect cylindrical cells handed over as PNG images of longitudinal sections
   and cross-sections, from a folder or a ZIP archive, one cell or all of them with a summary in

@@ -259,6 +259,35 @@ TEST_F(BatteryTest, InspectsACylindricalCellFromSectionImages) {
 }
 
 // Section images in a folder per cell, 8-bit PNG files named by angle and position.
+// A tab, a cathode end far beyond the others, is left out of the overhang; a void in the
+// winding is found, one in the innermost turn, where folded separator looks like gas, is not.
+TEST_F(BatteryTest, LeavesTabsAndTheInnermostTurnOutOfSectionImages) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.noise_sigma = 800.0;
+  spec.extensions.push_back({2, 1, 200.0, 260.0, 1.2});  // overhang 0.3 - 1.2 = -0.9 mm
+  const auto at = [&](double turn, double deg) {
+    const double r = spec.core_radius_mm + cellPitchMm(spec) * (turn + deg / 360.0) + 0.05;
+    const double t = deg * std::numbers::pi / 180.0;
+    return std::array<double, 3>{r * std::cos(t), r * std::sin(t), -0.5};
+  };
+  spec.voids.push_back({at(3.0, 100.0), 0.1});
+  spec.voids.push_back({at(0.0, 300.0), 0.1});
+  // The small cell's cathode sticks out at most to the cap, so a tighter limit than on a real
+  // cell.
+  BatteryOptions options;
+  options.max_end_deviation_mm = 0.3;
+  const BatteryResult result = analyzeBatteryImages(cellImages(spec, -0.5), options);
+  const BatteryEdge& top = edgeOf(result, 2, 1);
+  EXPECT_NEAR(top.min_mm, 0.3, 0.05);
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
+    return w.find("are left out") != std::string::npos && w.find("tabs") != std::string::npos;
+  }));
+  ASSERT_EQ(result.voids.size(), 1U);
+  const std::array<double, 3> v = at(3.0, 100.0);
+  EXPECT_NEAR(result.voids[0].radius_mm, std::hypot(v[0], v[1]), 0.1);
+  EXPECT_NEAR(result.voids[0].angle_deg, 100.0, 5.0);
+}
+
 TEST_F(BatteryTest, ReadsCellImagesFromAFolder) {
   const auto write = [&](const std::filesystem::path& path, std::uint8_t value) {
     std::filesystem::create_directories(path.parent_path());
