@@ -10,6 +10,7 @@
 #include <functional>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <numeric>
 #include <span>
@@ -3024,16 +3025,60 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
       }
       return i;
     };
+    const double gap = 1.5 * spacing;
+    const auto link = [&](std::size_t i, std::size_t j) {
+      const CellFinding& a = all[i];
+      const CellFinding& b = all[j];
+      const double reach = 0.5 * (a.size_mm + b.size_mm);
+      if (std::hypot(a.center_mm[0] - b.center_mm[0], a.center_mm[1] - b.center_mm[1]) < reach &&
+          std::abs(a.center_mm[2] - b.center_mm[2]) <= std::max(reach, gap)) {
+        const std::size_t ri = root(i);
+        const std::size_t rj = root(j);
+        parent[std::max(ri, rj)] = std::min(ri, rj);
+      }
+    };
+    // Findings up to `small` across reach each other only from neighbouring grid cells; the few
+    // larger ones are compared with all.
+    constexpr double kSmallMm = 1.0;
+    const double cell_z = std::max(kSmallMm, gap);
+    using Key = std::array<std::int64_t, 3>;
+    const auto key = [&](const CellFinding& f) {
+      return Key{static_cast<std::int64_t>(std::floor(f.center_mm[0] / kSmallMm)),
+                 static_cast<std::int64_t>(std::floor(f.center_mm[1] / kSmallMm)),
+                 static_cast<std::int64_t>(std::floor(f.center_mm[2] / cell_z))};
+    };
+    std::map<Key, std::vector<std::size_t>> grid;
+    std::vector<std::size_t> large;
     for (std::size_t i = 0; i < all.size(); ++i) {
-      for (std::size_t j = i + 1; j < all.size(); ++j) {
-        const CellFinding& a = all[i];
-        const CellFinding& b = all[j];
-        const double reach = 0.5 * (a.size_mm + b.size_mm);
-        if (std::hypot(a.center_mm[0] - b.center_mm[0], a.center_mm[1] - b.center_mm[1]) < reach &&
-            std::abs(a.center_mm[2] - b.center_mm[2]) <= std::max(reach, 1.5 * spacing)) {
-          const std::size_t ri = root(i);
-          const std::size_t rj = root(j);
-          parent[std::max(ri, rj)] = std::min(ri, rj);
+      if (all[i].size_mm > kSmallMm) {
+        large.push_back(i);
+      } else {
+        grid[key(all[i])].push_back(i);
+      }
+    }
+    for (const auto& [k, members] : grid) {
+      for (std::int64_t dx = -1; dx <= 1; ++dx) {
+        for (std::int64_t dy = -1; dy <= 1; ++dy) {
+          for (std::int64_t dz = -1; dz <= 1; ++dz) {
+            const auto other = grid.find(Key{k[0] + dx, k[1] + dy, k[2] + dz});
+            if (other == grid.end()) {
+              continue;
+            }
+            for (const std::size_t i : members) {
+              for (const std::size_t j : other->second) {
+                if (i < j) {
+                  link(i, j);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    for (const std::size_t i : large) {
+      for (std::size_t j = 0; j < all.size(); ++j) {
+        if (j != i) {
+          link(i, j);
         }
       }
     }

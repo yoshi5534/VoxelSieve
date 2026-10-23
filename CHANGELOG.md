@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Battery images with many findings**: sections of findings are joined through a grid instead
+  of comparing every pair, which kept one core busy for hours on large cells.
+
 - **Faster ZIP reading from slow shares**: only the first handle on a ZIP archive compares every
   entry's local header with the central directory, and section images of battery cells check an
   unchanged archive once rather than once per cell. Each check reads a little of the whole
