@@ -24,7 +24,9 @@ class ZipArchive {
   };
 
   /// Reads the central directory; throws if `file` is not a ZIP archive.
-  explicit ZipArchive(const std::filesystem::path& file);
+  /// `check`: compare every entry's local header with the central directory, which reads a
+  /// little of the whole archive. Callers that open the same archive again may skip it.
+  explicit ZipArchive(const std::filesystem::path& file, bool check = true);
   ZipArchive(const ZipArchive&) = delete;
   ZipArchive& operator=(const ZipArchive&) = delete;
   ZipArchive(ZipArchive&&) = delete;
@@ -47,7 +49,9 @@ class ZipArchive {
   };
   using Handle = std::unique_ptr<zip, Close>;
 
-  [[nodiscard]] Handle open() const;
+  /// `check`: compare the local header of every entry with the central directory. That touches
+  /// the whole archive, so only the first handle does it.
+  [[nodiscard]] Handle open(bool check) const;
 
   std::filesystem::path path_;
   /// The archive, memory-mapped: libzip reads it from memory, so the operating system reads the

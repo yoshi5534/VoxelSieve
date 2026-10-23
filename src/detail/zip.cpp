@@ -14,13 +14,14 @@ namespace voxelsieve::detail {
 
 void ZipArchive::Close::operator()(zip* archive) const { zip_discard(archive); }
 
-ZipArchive::Handle ZipArchive::open() const {
+ZipArchive::Handle ZipArchive::open(bool check) const {
   zip_error_t error;
   zip_error_init(&error);
   zip_source_t* source = zip_source_buffer_create(file_.data(), file_.size(), 0, &error);
-  zip_t* archive = source == nullptr
-                       ? nullptr
-                       : zip_open_from_source(source, ZIP_RDONLY | ZIP_CHECKCONS, &error);
+  zip_t* archive =
+      source == nullptr
+          ? nullptr
+          : zip_open_from_source(source, ZIP_RDONLY | (check ? ZIP_CHECKCONS : 0), &error);
   if (archive == nullptr) {
     zip_source_free(source);  // the archive owns it once open
     const std::string message = zip_error_strerror(&error);
@@ -32,7 +33,7 @@ ZipArchive::Handle ZipArchive::open() const {
   return Handle(archive);
 }
 
-ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
+ZipArchive::ZipArchive(const std::filesystem::path& file, bool check) : path_(file) {
   if (!std::filesystem::is_regular_file(file)) {
     throw std::runtime_error("Cannot open " + file.string());
   }
@@ -48,7 +49,7 @@ ZipArchive::ZipArchive(const std::filesystem::path& file) : path_(file) {
   // the pages go first when memory runs short. Only a hint; failure changes nothing.
   (void)madvise(const_cast<char*>(file_.data()), file_.size(), MADV_SEQUENTIAL);
 #endif
-  Handle archive = open();
+  Handle archive = open(check);
   const zip_int64_t count = zip_get_num_entries(archive.get(), 0);
   entries_.reserve(static_cast<std::size_t>(std::max<zip_int64_t>(count, 0)));
   for (zip_int64_t i = 0; i < count; ++i) {
@@ -77,7 +78,7 @@ std::vector<std::uint8_t> ZipArchive::read(const Entry& entry) const {
     }
   }
   if (!archive) {
-    archive = open();
+    archive = open(false);
   }
   std::vector<std::uint8_t> data(entry.size);
   {

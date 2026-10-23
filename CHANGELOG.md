@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Faster ZIP reading from slow shares**: only the first handle on a ZIP archive compares every
+  entry's local header with the central directory, and section images of battery cells check an
+  unchanged archive once rather than once per cell. Each check reads a little of the whole
+  archive; on a Windows drive seen from WSL, the repeated checks left the CPU idle.
+
 - **Battery particles from section images**: bright and dark sections that overlap across the
   axis in neighbouring cross-sections are one finding, as long as all of them together. Tabs and
   welds that run through many cross-sections become one bright structure instead of a row of
