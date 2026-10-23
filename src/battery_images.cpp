@@ -6,9 +6,12 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "detail/png.hpp"
@@ -76,6 +79,26 @@ std::optional<ImageEntry> parseEntry(const std::string& path) {
   return entry;
 }
 
+/// Opens the archive; checks its entries only the first time. Every cell of an archive opens it
+/// again, and the check reads a little of the whole archive, which on a slow network share takes
+/// longer than reading the cell's images.
+std::unique_ptr<detail::ZipArchive> openArchive(const std::filesystem::path& source) {
+  static std::mutex mutex;
+  static std::set<std::tuple<std::string, std::filesystem::file_time_type, std::uintmax_t>> checked;
+  const auto key =
+      std::make_tuple(std::filesystem::absolute(source).string(),
+                      std::filesystem::last_write_time(source), std::filesystem::file_size(source));
+  bool known = false;
+  {
+    const std::lock_guard lock(mutex);
+    known = checked.contains(key);
+  }
+  auto zip = std::make_unique<detail::ZipArchive>(source, !known);
+  const std::lock_guard lock(mutex);
+  checked.insert(key);
+  return zip;
+}
+
 std::vector<ImageEntry> scan(const std::filesystem::path& source,
                              std::unique_ptr<detail::ZipArchive>& zip) {
   std::vector<ImageEntry> entries;
@@ -90,7 +113,7 @@ std::vector<ImageEntry> scan(const std::filesystem::path& source,
       }
     }
   } else {
-    zip = std::make_unique<detail::ZipArchive>(source);
+    zip = openArchive(source);
     for (const detail::ZipArchive::Entry& e : zip->entries()) {
       if (auto entry = parseEntry(e.name)) {
         entry->zip_entry = e;
