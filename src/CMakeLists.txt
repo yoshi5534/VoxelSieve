@@ -58,6 +58,7 @@ add_library(voxelsieve SHARED
   diconde.cpp
   dicom.cpp
   detail/blocks.cpp
+  detail/components.cpp
   detail/network.cpp
   detail/png.cpp
   detail/tiff.cpp

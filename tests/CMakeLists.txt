@@ -1,6 +1,7 @@
 find_package(GTest REQUIRED)
 
 add_executable(voxelsieve_tests
+  test_components.cpp
   test_dataset.cpp
   test_denoise.cpp
   test_diconde.cpp

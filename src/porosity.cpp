@@ -2,22 +2,27 @@
 
 #include <openvdb/io/File.h>
 #include <openvdb/tools/Morphology.h>
+#include <openvdb/tree/LeafManager.h>
 #include <tbb/combinable.h>
+#include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <deque>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
 
+#include "detail/components.hpp"
 #include "detail/png.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
@@ -205,52 +210,81 @@ Scan scanBricks(const Dataset& dataset) {
   return scan;
 }
 
-/// Connected components (26-neighbourhood) of the candidates that are not connected to a seed.
-/// Counts the outside-air voxels per block in `outside` and marks them in `outside_air`.
+/// Connected components (26-neighbourhood) of the candidates that are not connected to a seed,
+/// in the order of their first voxel. Counts the outside-air voxels per block in `outside` and
+/// marks them in `outside_air`.
 std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Coord, int>& outside,
                                                    openvdb::BoolGrid& outside_air) {
-  auto outside_acc = outside_air.getAccessor();
-  auto visited = openvdb::BoolGrid::create(false);
-  auto visited_acc = visited->getAccessor();
-  const auto candidate_acc = scan.candidates->getConstAccessor();
-  std::deque<Coord> queue;
+  using Leaf = openvdb::BoolTree::LeafNodeType;
+  const detail::VoxelComponents components(scan.candidates->tree());
 
-  const auto flood = [&](const Coord& start, std::vector<Coord>* component) {
-    visited_acc.setValueOn(start);
-    queue.push_back(start);
-    while (!queue.empty()) {
-      const Coord c = queue.front();
-      queue.pop_front();
-      if (component != nullptr) {
-        component->push_back(c);
-      } else {
-        ++outside[blockOf(c)];
-        outside_acc.setValueOn(c);
-      }
-      for (const Coord& d : neighbours26()) {
-        const Coord n = c + d;
-        if (candidate_acc.isValueOn(n) && !visited_acc.isValueOn(n)) {
-          visited_acc.setValueOn(n);
-          queue.push_back(n);
-        }
+  // Components that hold a seed are outside air. Seeds are candidates.
+  std::vector<std::atomic<bool>> is_outside(components.size());
+  openvdb::tree::LeafManager<const openvdb::BoolTree> seed_leaves(scan.seeds->tree());
+  seed_leaves.foreach ([&](const Leaf& leaf, std::size_t) {
+    for (auto it = leaf.cbeginValueOn(); it; ++it) {
+      const std::int64_t component = components.at(it.getCoord());
+      if (component >= 0) {
+        is_outside[static_cast<std::size_t>(component)].store(true, std::memory_order_relaxed);
       }
     }
-  };
+  });
 
-  // Outside air first, without keeping its voxels.
-  for (auto it = scan.seeds->cbeginValueOn(); it; ++it) {
-    if (!visited_acc.isValueOn(it.getCoord())) {
-      flood(it.getCoord(), nullptr);
+  // Outside air per leaf, which is one block.
+  const std::size_t leaf_count = components.leafCount();
+  std::vector<std::unique_ptr<Leaf>> outside_leaves(leaf_count);
+  std::vector<int> outside_counts(leaf_count, 0);
+  std::vector<std::uint8_t> has_inside(leaf_count, 0);
+  tbb::parallel_for(std::size_t{0}, leaf_count, [&](std::size_t i) {
+    const auto pieces = components.componentsInLeaf(i);
+    const bool any_outside = std::any_of(pieces.begin(), pieces.end(),
+                                         [&](std::size_t c) { return is_outside[c].load(); });
+    has_inside[i] = std::any_of(pieces.begin(), pieces.end(),
+                                [&](std::size_t c) { return !is_outside[c].load(); });
+    if (!any_outside) {
+      return;
+    }
+    const Leaf& leaf = components.leaf(i);
+    auto air = std::make_unique<Leaf>(leaf.origin(), false);
+    int count = 0;
+    for (auto it = leaf.cbeginValueOn(); it; ++it) {
+      if (is_outside[components.component(i, it.pos())]) {
+        air->setValueOn(it.pos());
+        ++count;
+      }
+    }
+    outside_counts[i] = count;
+    outside_leaves[i] = std::move(air);
+  });
+  for (std::size_t i = 0; i < leaf_count; ++i) {
+    if (outside_leaves[i]) {
+      outside[blockOf(components.leaf(i).origin())] = outside_counts[i];
+      outside_air.tree().addLeaf(outside_leaves[i].release());
     }
   }
-  std::vector<std::vector<Coord>> components;
-  for (auto it = scan.candidates->cbeginValueOn(); it; ++it) {
-    if (!visited_acc.isValueOn(it.getCoord())) {
-      components.emplace_back();
-      flood(it.getCoord(), &components.back());
+
+  // The voxels of the other components, numbered in the order of the components.
+  std::vector<std::int64_t> slot(components.size(), -1);
+  std::vector<std::vector<Coord>> result;
+  for (std::size_t c = 0; c < components.size(); ++c) {
+    if (!is_outside[c]) {
+      slot[c] = static_cast<std::int64_t>(result.size());
+      result.emplace_back();
     }
   }
-  return components;
+  for (std::size_t i = 0; i < leaf_count; ++i) {
+    if (has_inside[i] == 0) {
+      continue;
+    }
+    const Leaf& leaf = components.leaf(i);
+    for (auto it = leaf.cbeginValueOn(); it; ++it) {
+      const std::int64_t index = slot[components.component(i, it.pos())];
+      if (index >= 0) {
+        result[static_cast<std::size_t>(index)].push_back(it.getCoord());
+      }
+    }
+  }
+  return result;
 }
 
 /// Depth of every block inside the part below the surface, in voxels.
@@ -261,35 +295,36 @@ std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Co
 class BlockDepth {
  public:
   BlockDepth(const Scan& scan, const std::map<Coord, int>& outside) {
+    // Part voxels (neither removed nor outside air) of every block, at block resolution.
+    auto part = openvdb::Int32Grid::create(0);
+    {
+      auto part_acc = part->getAccessor();
+      for (const Coord& block : scan.solid) {
+        part_acc.setValue(block, kBlockVoxels);
+      }
+      for (const auto& [block, count] : scan.partial) {
+        part_acc.setValue(block, count);
+      }
+      for (const auto& [block, count] : outside) {
+        part_acc.setValue(block, part_acc.getValue(block) - count);
+      }
+    }
+    const auto part_acc = part->getConstAccessor();
     const auto fraction = [&](const Coord& block) {
-      int part = 0;
-      if (scan.solid.contains(block)) {
-        part = kBlockVoxels;
-      } else if (const auto it = scan.partial.find(block); it != scan.partial.end()) {
-        part = it->second;
-      }
-      if (const auto it = outside.find(block); it != outside.end()) {
-        part -= it->second;
-      }
-      return static_cast<double>(part) / kBlockVoxels;
+      return static_cast<double>(part_acc.getValue(block)) / kBlockVoxels;
     };
+    const auto inside = [&](const Coord& block) { return fraction(block) >= 0.5; };
 
     // Seeds: blocks at least half inside with a neighbour that is not fully inside. For a planar
     // surface the depth of the block centre is 8 * (f_block + f_neighbour) - 4 voxels.
     using Item = std::pair<double, Coord>;
     std::priority_queue<Item, std::vector<Item>, std::greater<>> queue;
-    std::set<Coord> inside;
-    for (const Coord& block : scan.solid) {
-      if (fraction(block) >= 0.5) {
-        inside.insert(block);
+    auto depth_acc = depth_->getAccessor();
+    for (auto it = part->cbeginValueOn(); it; ++it) {
+      const Coord block = it.getCoord();
+      if (!inside(block)) {
+        continue;
       }
-    }
-    for (const auto& [block, unused] : scan.partial) {
-      if (fraction(block) >= 0.5) {
-        inside.insert(block);
-      }
-    }
-    for (const Coord& block : inside) {
       const double own = fraction(block);
       double best = std::numeric_limits<double>::infinity();
       for (const Coord& d : face_neighbours) {
@@ -299,39 +334,36 @@ class BlockDepth {
         }
       }
       if (best < std::numeric_limits<double>::infinity()) {
-        depth_[block] = best;
+        depth_acc.setValue(block, best);
         queue.emplace(best, block);
       }
     }
     while (!queue.empty()) {
       const auto [depth, block] = queue.top();
       queue.pop();
-      if (depth > depth_[block]) {
+      if (depth > depth_acc.getValue(block)) {
         continue;
       }
       for (const Coord& d : face_neighbours) {
         const Coord n = block + d;
-        if (!inside.contains(n)) {
+        if (!inside(n)) {
           continue;
         }
-        const auto it = depth_.find(n);
-        if (it == depth_.end() || depth + kBlock < it->second) {
-          depth_[n] = depth + kBlock;
+        if (!depth_acc.isValueOn(n) || depth + kBlock < depth_acc.getValue(n)) {
+          depth_acc.setValue(n, depth + kBlock);
           queue.emplace(depth + kBlock, n);
         }
       }
     }
   }
 
-  /// Depth of `block`; 0 for blocks outside the part.
-  [[nodiscard]] double at(const Coord& block) const {
-    const auto it = depth_.find(block);
-    return it == depth_.end() ? 0.0 : it->second;
-  }
-  [[nodiscard]] bool contains(const Coord& block) const { return depth_.contains(block); }
+  /// Depth of `block`; 0 for blocks outside the part. Safe to call from many threads.
+  [[nodiscard]] double at(const Coord& block) const { return depth_->tree().getValue(block); }
+  [[nodiscard]] bool contains(const Coord& block) const { return depth_->tree().isValueOn(block); }
 
  private:
-  std::map<Coord, double> depth_;
+  /// Depth per block, at block resolution; active for the blocks inside the part.
+  openvdb::DoubleGrid::Ptr depth_ = openvdb::DoubleGrid::create(0.0);
 };
 
 /// Grey value of one material as a function of the depth below the surface, which follows
@@ -668,31 +700,41 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   // so they are left out of the material level; their zone deficit is computed without the shell.
   result.pore_labels = openvdb::Int32Grid::create(0);
   auto label_acc = result.pore_labels->getAccessor();
-  std::vector<openvdb::BoolGrid::Ptr> shells;
-  auto all_shells = openvdb::BoolGrid::create(false);
-  std::map<Coord, BlockStats> material_blocks = scan.blocks;
+  std::vector<const std::vector<Coord>*> kept;
   for (const auto& component : components) {
-    if (static_cast<std::int64_t>(component.size()) < options.min_pore_voxels) {
-      continue;
+    if (static_cast<std::int64_t>(component.size()) >= options.min_pore_voxels) {
+      kept.push_back(&component);
     }
+  }
+  std::vector<openvdb::BoolGrid::Ptr> shells(kept.size());
+  tbb::parallel_for(std::size_t{0}, kept.size(), [&](std::size_t i) {
     auto shell = openvdb::BoolGrid::create(false);
     auto shell_acc = shell->getAccessor();
-    for (const Coord& c : component) {
+    for (const Coord& c : *kept[i]) {
       shell_acc.setValueOn(c);
-      label_acc.setValue(c, static_cast<int>(shells.size()) + 1);
     }
     openvdb::tools::dilateActiveValues(shell->tree(), 1, openvdb::tools::NN_FACE_EDGE_VERTEX);
     // Dilation prunes fully active leaves of large pores into tiles; iterate voxels, not tiles.
     shell->tree().voxelizeActiveTiles();
-    for (auto it = shell->cbeginValueOn(); it; ++it) {
-      material_blocks.erase(blockOf(it.getCoord()));
+    shells[i] = shell;
+  });
+  auto all_shells = openvdb::BoolGrid::create(false);
+  std::map<Coord, BlockStats> material_blocks = scan.blocks;
+  for (std::size_t i = 0; i < kept.size(); ++i) {
+    for (const Coord& c : *kept[i]) {
+      label_acc.setValue(c, static_cast<int>(i) + 1);
     }
-    all_shells->tree().topologyUnion(shell->tree());
+    for (auto leaf = shells[i]->tree().cbeginLeaf(); leaf; ++leaf) {
+      // A block is one leaf, so a leaf of the shell marks its block.
+      if (!leaf->isEmpty()) {
+        material_blocks.erase(blockOf(leaf->origin()));
+      }
+    }
+    all_shells->tree().topologyUnion(shells[i]->tree());
     DetectedPore pore;
-    pore.id = static_cast<int>(shells.size()) + 1;
-    pore.voxel_count = static_cast<std::int64_t>(component.size());
+    pore.id = static_cast<int>(i) + 1;
+    pore.voxel_count = static_cast<std::int64_t>(kept[i]->size());
     result.pores.push_back(pore);
-    shells.push_back(shell);
   }
 
   // Blocks at the surface or at a pore: sums over their voxels outside the pore shells, apart
@@ -817,9 +859,10 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   }
 
   // Pore volumes from the grey values of the pore and its shell.
-  Dataset::Sampler grey(dataset, 0);
-  for (std::size_t i = 0; i < result.pores.size(); ++i) {
+  tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
     DetectedPore& pore = result.pores[i];
+    Dataset::Sampler grey(dataset, 0);
+    const auto labels = result.pore_labels->getConstAccessor();
     double void_sum = 0.0;
     double weight_sum = 0.0;
     std::array<double, 3> weighted{};
@@ -837,7 +880,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
       weight_sum += weight;
       for (std::size_t a = 0; a < 3; ++a) {
         weighted[a] += weight * p[a];
-        if (label_acc.getValue(c) == pore.id) {
+        if (labels.getValue(c) == pore.id) {
           lo[a] = std::min(lo[a], p[a]);
           hi[a] = std::max(hi[a], p[a]);
         }
@@ -849,7 +892,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
     pore.bounds = boundsOf(lo, hi);
     pore.equivalent_diameter_mm = std::cbrt(6.0 * pore.volume_mm3 / std::numbers::pi);
-  }
+  });
 
   // Zones: blocks whose mean lies clearly below the local material level.
   std::map<Coord, double> deficits;
