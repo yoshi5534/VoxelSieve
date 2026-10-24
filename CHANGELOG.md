@@ -12,6 +12,15 @@
   order (minimum, maximum, tolerated area below the minimum). Out of core: only the surface mesh
   is held in memory (ADR 0030).
 
+- **Faster porosity analysis**: the connected pores and the outside air are found by a parallel
+  labelling of the voxels instead of one flood fill on one thread, the pore shells and pore
+  volumes are computed in parallel, and the depth below the surface is kept at block resolution
+  in a grid. On a 1020x780x420 casting the pore and zone phase took 2.2 s instead of 9.1 s on
+  four cores, with the same result.
+
+- **vs-phantom in parallel and in slabs**: the phantom is computed slab by slab on all cores and
+  written as it goes, so it no longer needs the whole volume in memory.
+
 - **Battery section images next to the can wall**: bright pixels within 0.5 mm of the housing
   outside the winding are taken for the bright fringe of the wall, strongest where the can bends
   at the bottom, instead of rows of particles in the outermost turn. A warning says how many.
