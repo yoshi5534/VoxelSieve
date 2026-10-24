@@ -109,7 +109,9 @@ class LineTransform {
         ++j;
       }
       const std::int64_t site = v_[j];
-      const double dx = x - static_cast<double>(site) * pitch;
+      // From the index difference, so that a site's own distance is exactly 0 also where the
+      // compiler fuses the multiplication into the subtraction.
+      const double dx = static_cast<double>(q - site) * pitch;
       data[q * stride] = static_cast<float>(dx * dx + f_[static_cast<std::size_t>(site)]);
     }
   }
@@ -367,8 +369,8 @@ class MapBuilder {
       for (std::int64_t y = candidates.min[1]; y < candidates.max[1]; ++y) {
         for (std::int64_t x = candidates.min[0]; x < candidates.max[0]; ++x) {
           const float d = field[at(x, y, z)];
-          if (d <= 0.0F) {
-            continue;
+          if (d < half_pitch) {
+            continue;  // not material: a material voxel is at least a pitch from air
           }
           if (d >= radius) {
             capped_planes[static_cast<std::size_t>(z - candidates.min[2])] = 1;
@@ -417,7 +419,7 @@ class MapBuilder {
       for (std::int64_t y = core.min[1]; y < core.max[1]; ++y) {
         for (std::int64_t x = core.min[0]; x < core.max[0]; ++x) {
           // At least its own sphere, also where the left out spheres would have been the largest.
-          if (const float d = field[at(x, y, z)]; d > 0.0F) {
+          if (const float d = field[at(x, y, z)]; d >= half_pitch) {
             thickness[core_at(x, y, z)] = 2.0F * d - half_pitch;
           }
         }
