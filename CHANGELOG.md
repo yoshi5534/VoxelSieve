@@ -18,6 +18,11 @@
   in a grid. On a 1020x780x420 casting the pore and zone phase took 2.2 s instead of 9.1 s on
   four cores, with the same result.
 
+- **Coarser levels without waiting**: the import builds the coarser levels as a tree over the
+  level-0 bricks, in parallel at every node, instead of level by level. A coarse brick no longer
+  waits until the whole level before it is written, the bricks below it are read in parallel,
+  and only level 0 is read back from disk. The levels are unchanged.
+
 - **vs-phantom in parallel and in slabs**: the phantom is computed slab by slab on all cores and
   written as it goes, so it no longer needs the whole volume in memory.
 
