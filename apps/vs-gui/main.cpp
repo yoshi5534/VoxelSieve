@@ -42,7 +42,8 @@ instead. Register it with an MCP client as a stdio server, for example:
   {"command": "vs-gui", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
 Every GUI function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
 slice pictures and reading result files. The result files of the steps are also resources, and
-the prompts porosity_check, compare_with_cad and first_look walk through typical inspections.
+the prompts porosity_check, compare_with_cad, wall_thickness_check and first_look walk through
+typical inspections.
 
 Directories given after the options are the only places the GUI reads data from and keeps
 projects in (with everything below them); without any, every path is allowed. Give the

@@ -41,5 +41,6 @@
       }
     ]
   },
+  "wall_thickness": { "min_mm": 1.0, "max_area_below_min_mm2": 50.0 },
   "approval": { "inspector": "M. Example", "approver": "E. Sample", "approver_role": "Head of laboratory" }
 }

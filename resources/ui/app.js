@@ -61,6 +61,12 @@ const LABELS = {
   tolerance_mm: 'Tolerance (± mm)',
   outer_surface_only: 'Compare the outer skin only',
   aligned_stl: 'Write the aligned CAD model as STL',
+  method: 'Method',
+  min_wall_mm: 'Minimum wall (mm)',
+  max_wall_mm: 'Maximum wall (mm)',
+  max_thickness_mm: 'Measure walls up to (mm)',
+  search_angle_deg: 'Search angle (°)',
+  max_triangles: 'Triangle budget of the surface',
 };
 
 const SUMMARY_LABELS = {
@@ -119,6 +125,19 @@ const SUMMARY_LABELS = {
   displacement_mean_mm: 'Non-rigid: mean displacement (mm)',
   rigid_deviation_rms_mm: 'Rigid alignment alone: RMS of the deviation (mm)',
   rigid_within_tolerance_percent: 'Rigid alignment alone: within tolerance (% of area)',
+  method: 'Method',
+  thickness_min_mm: 'Thinnest wall (mm)',
+  thickness_median_mm: 'Median wall thickness (mm)',
+  thickness_mean_mm: 'Mean wall thickness (mm)',
+  thickness_max_mm: 'Thickest wall (mm)',
+  measured_percent: 'Measured (% of the surface)',
+  max_thickness_mm: 'Measured up to (mm)',
+  min_wall_mm: 'Minimum wall (mm)',
+  below_min_percent: 'Thinner than the minimum (% of the surface)',
+  thin_regions: 'Thin regions',
+  max_wall_mm: 'Maximum wall (mm)',
+  above_max_percent: 'Thicker than the maximum (% of the surface)',
+  thick_regions: 'Thick regions',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1055,6 +1074,9 @@ const RESULT_TYPES = {
   comparison: { label: 'Nominal-actual comparison', view: '3d', volumeMode: 4,
     keys: ['deviation_rms_mm', 'within_tolerance_percent', 'tolerance_mm',
       'displacement_max_mm'] },
+  wall_thickness: { label: 'Wall thickness', view: '3d', volumeMode: 5,
+    keys: ['thickness_min_mm', 'thickness_median_mm', 'below_min_percent', 'thin_regions',
+      'measured_percent'] },
   report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
   diconde: { label: 'DICONDE export', keys: ['slices', 'indications', 'series', 'path'] },
 };
@@ -1086,6 +1108,7 @@ function isShown(result) {
   if (result.type === 'materials') return materialsOf(source)?.id === result.step;
   if (result.type === 'surface') return surfaceOf(source) === result.step;
   if (result.type === 'comparison') return comparisonOf(source) === result.step;
+  if (result.type === 'wall_thickness') return wallThicknessOf(source) === result.step;
   return false;
 }
 
@@ -1525,7 +1548,7 @@ const MATERIAL_NAMES = ['Air inclusion', 'Aluminium', 'Steel', 'Cast iron', 'Tit
   'Magnesium', 'Plastic', 'Fibre', 'Ceramic', 'Glass', 'Inclusion', 'Coating'];
 
 const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
-  'Extracted surface', 'Nominal-actual deviation'];
+  'Extracted surface', 'Nominal-actual deviation', 'Wall thickness'];
 
 /// Surface step computed from the dataset of `datasetStep` that the views show.
 function surfaceOf(datasetStep) {
@@ -1542,6 +1565,13 @@ function comparisonOf(datasetStep) {
     ['compare_cad', 'compare_objects'].includes(step.operation) &&
     surfaces.includes(step.inputs.surface?.step));
   return shownStep('comparison', steps)?.id ?? null;
+}
+
+/// Wall thickness step computed from the dataset of `datasetStep` that the views show.
+function wallThicknessOf(datasetStep) {
+  const steps = activeSteps().filter((step) => step.operation === 'wall_thickness' &&
+    step.inputs.dataset?.step === datasetStep);
+  return shownStep('wall_thickness', steps)?.id ?? null;
 }
 
 /// Colour bar of the deviation colours (deviationColor in compare.cpp) with its limits.
@@ -1588,6 +1618,40 @@ function displacementLegend(tolerance, range) {
       'How far the non-rigid registration moved the surface to fit the nominal geometry'));
 }
 
+/// Colour bar of the wall thickness colours (thicknessColor in thickness.cpp) from 0 to `range`,
+/// with the limits of the analysis.
+function thicknessLegend(minWall, maxWall, range) {
+  const at = (mm) => (100 * Math.min(mm / range, 1)).toFixed(2);
+  const stops = [[215, 40, 40], [240, 220, 50], [60, 190, 90], [40, 190, 230], [40, 70, 210]];
+  const parts = stops.map((c, i) => 'rgb(' + c.join(',') + ') ' + (25 * i) + '%');
+  const bar = el('div', { className: 'legend-bar' });
+  const layers = [];
+  if (minWall > 0) {
+    layers.push('linear-gradient(to right, rgb(200,40,170) 0%, rgb(200,40,170) ' + at(minWall) +
+      '%, transparent ' + at(minWall) + '%)');
+  }
+  if (maxWall > 0 && maxWall < range) {
+    layers.push('linear-gradient(to right, transparent ' + at(maxWall) + '%, rgb(110,50,170) ' +
+      at(maxWall) + '%)');
+  }
+  layers.push('linear-gradient(to right, ' + parts.join(', ') + ')');
+  bar.style.background = layers.join(', ');
+  const label = (text, percent, align) => {
+    const span = el('span', {}, text);
+    span.style.left = percent + '%';
+    span.style.transform = 'translateX(' + align + '%)';
+    return span;
+  };
+  const labels = [label('0', 0, 0), label('≥ ' + formatNumber(range) + ' mm', 100, -100)];
+  if (minWall > 0) labels.push(label(formatNumber(minWall) + ' mm', at(minWall), -50));
+  if (maxWall > 0 && maxWall < range) labels.push(label(formatNumber(maxWall) + ' mm', at(maxWall), -50));
+  return el('div', { className: 'deviation-legend' }, bar,
+    el('div', { className: 'legend-labels' }, labels),
+    el('div', { className: 'legend-note' },
+      'Thin red to thick blue' + (minWall > 0 ? ' · magenta: thinner than the minimum' : '') +
+      (maxWall > 0 ? ' · violet: thicker than the maximum' : '') + ' · grey: not measured'));
+}
+
 function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
   // The transfer function outlives re-rendering; it is reset when another volume is loaded.
@@ -1597,9 +1661,11 @@ function renderVolumeView(panel, dataset) {
   const materials = materialsOf(dataset.step.id);
   const surfaceStep = surfaceOf(dataset.step.id);
   const comparisonStep = comparisonOf(dataset.step.id);
-  // Without a surface or comparison step its mesh cannot be shown; fall back to the grey values.
-  if ((volume.mode === 3 && surfaceStep === null) ||
-      (volume.mode === 4 && comparisonStep === null)) volume.mode = 0;
+  const thicknessStep = wallThicknessOf(dataset.step.id);
+  // Without a surface, comparison or wall thickness step its mesh cannot be shown; fall back to
+  // the grey values.
+  const meshStep = { 3: surfaceStep, 4: comparisonStep, 5: thicknessStep };
+  if (volume.mode in meshStep && meshStep[volume.mode] === null) volume.mode = 0;
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
     title: 'Click sets a point, drag moves it, double click or Delete removes it' });
@@ -1623,10 +1689,10 @@ function renderVolumeView(panel, dataset) {
   };
   const mode = el('select', { title: 'Rendering' },
     VOLUME_MODES.map((name, i) => {
-      const missing = (i === 3 && surfaceStep === null) || (i === 4 && comparisonStep === null);
+      const missing = i in meshStep && meshStep[i] === null;
+      const operation = { 3: 'Surface', 4: 'Nominal-actual comparison', 5: 'Wall thickness' }[i];
       return el('option', { value: i, selected: volume.mode === i, disabled: missing,
-        title: missing ? 'Run the operation "' + (i === 3 ? 'Surface' : 'Nominal-actual comparison') +
-          '" first' : null }, name);
+        title: missing ? 'Run the operation "' + operation + '" first' : null }, name);
     }));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
   shading.addEventListener('change', () => update({ shading: shading.checked }));
@@ -1957,9 +2023,10 @@ function renderVolumeView(panel, dataset) {
     materialRows.hidden = !draft.editing;
     shading.parentElement.hidden = volume.mode !== 1;
     pores.parentElement.hidden = volume.mode >= 3;
-    legend.hidden = volume.mode !== 4;
+    legend.hidden = volume.mode !== 4 && volume.mode !== 5;
     if (volume.mode === 3) showSurface();
     if (volume.mode === 4) showDeviation();
+    if (volume.mode === 5) showThickness();
   };
   /// Loads the mesh of the latest surface step of this dataset and says what is shown.
   const showSurface = () => {
@@ -1987,6 +2054,18 @@ function renderVolumeView(panel, dataset) {
       status.textContent = (mesh.displacement ? 'Non-rigid displacement' :
         mesh.hasDisplacement ? 'Nominal-actual deviation after non-rigid registration' :
           'Nominal-actual deviation') + ' of step ' + comparisonStep + ' · ' +
+        formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
+    }).catch((error) => {
+      status.textContent = error.message;
+    });
+  };
+  /// Loads the measured surface of the latest wall thickness step of this dataset.
+  const showThickness = () => {
+    status.textContent = 'Loading wall thickness of step ' + thicknessStep + ' …';
+    volume.loadWallThickness(thicknessStep).then((mesh) => {
+      if (volume.mode !== 5) return;
+      legend.replaceChildren(thicknessLegend(mesh.minWall, mesh.maxWall, mesh.range));
+      status.textContent = 'Wall thickness of step ' + thicknessStep + ' · ' +
         formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
     }).catch((error) => {
       status.textContent = error.message;

@@ -22,6 +22,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/thickness.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -1041,6 +1042,46 @@ std::shared_ptr<const Gui::DeviationView> Gui::deviationMesh(
   deviation_meshes_.emplace_back(key, view);
   if (deviation_meshes_.size() > kOpenDatasets) {
     deviation_meshes_.erase(deviation_meshes_.begin());
+  }
+  return view;
+}
+
+std::shared_ptr<const Gui::ThicknessView> Gui::thicknessMesh(
+    std::optional<int> thickness_step) const {
+  std::filesystem::path dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = thickness_step ? Json{{"step", *thickness_step}} : Json::object();
+    dir = project().resolve(artifactRef(params, artifact::kWallThickness));
+  }
+  const std::filesystem::path key = dir.string() + "#" + fileStamp(dir / "thickness.ply");
+  {
+    const std::scoped_lock lock(surface_mutex_);
+    for (const auto& [path, view] : thickness_meshes_) {
+      if (path == key) {
+        return view;
+      }
+    }
+  }
+  std::ifstream in(dir / "wall_thickness.json");
+  const Json info = Json::parse(in);
+  ThicknessMesh read = readThicknessPly(dir / "thickness.ply");
+  const VoxelSize v = readVoxelSize(info);
+  for (auto& p : read.mesh.points) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      p[k] = static_cast<float>(p[k] / v[k]);
+    }
+  }
+  auto view = std::make_shared<ThicknessView>();
+  view->mesh = std::move(read.mesh);
+  view->thickness_mm = std::move(read.thickness_mm);
+  view->min_wall_mm = info.value("min_wall_mm", 0.0);
+  view->max_wall_mm = info.value("max_wall_mm", 0.0);
+  view->range_mm = info.at("thickness").at("range_mm").get<double>();
+  const std::scoped_lock lock(surface_mutex_);
+  thickness_meshes_.emplace_back(key, view);
+  if (thickness_meshes_.size() > kOpenDatasets) {
+    thickness_meshes_.erase(thickness_meshes_.begin());
   }
   return view;
 }

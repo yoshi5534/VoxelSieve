@@ -230,6 +230,14 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   ASSERT_EQ(displacement.status, 200U) << displacement.body;
   EXPECT_GT(displacement.body.size(), 1000U);
 
+  // A wall thickness: points, one float32 thickness per point, then triangles.
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/wall_thickness").status, 400U);
+  ASSERT_EQ(call("run_wall_thickness", {{"min_wall_mm", 1.0}}).status, 200U);
+  const Reply thickness = request(server_->port(), http::verb::get, "/api/wall_thickness");
+  ASSERT_EQ(thickness.status, 200U) << thickness.body;
+  EXPECT_GT(thickness.body.size(), 1000U);
+  EXPECT_EQ(thickness.body.size() % 4U, 0U);
+
   // Another object in the slice view: the CAD model as cut lines, a volume sampled in the plane.
   ASSERT_EQ(call("object_add", {{"path", (dir_ / "cad.stl").string()}}).status, 200U);
   const Reply cuts =

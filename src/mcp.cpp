@@ -38,7 +38,8 @@ constexpr const char* kInstructions =
     "existing dataset), run_porosity, run_report with the inspection order. A first article "
     "inspection against a drawing: run_surface, run_compare_cad, cad_features to find the "
     "nominal elements, run_measure_dimensions with the inspection plan, "
-    "run_first_article_report. A battery cell: run_battery_inspection (run_battery_images for a "
+    "run_first_article_report. Wall thickness: run_wall_thickness (min_wall_mm from the "
+    "drawing), then run_report. A battery cell: run_battery_inspection (run_battery_images for a "
     "cell given as section images), run_battery_report with the order. Inputs are taken from the "
     "latest step with the right output type unless given. project_status shows the step "
     "protocol; undo and redo move through it. Datasets can be hundreds of GB: never read them "
@@ -70,14 +71,15 @@ constexpr std::array<std::string_view, 4> kIdempotentMethods = {"project_open", 
                                                                 "view_set", "cancel"};
 
 /// Output types whose files are resources: results small enough to read, unlike datasets.
-constexpr std::array<std::string_view, 8> kResourceOutputTypes = {"report",
+constexpr std::array<std::string_view, 9> kResourceOutputTypes = {"report",
                                                                   "porosity",
                                                                   "comparison",
                                                                   "pose",
                                                                   "measurements",
                                                                   "dimensional_measurement",
                                                                   "fibre_orientation",
-                                                                  "battery"};
+                                                                  "battery",
+                                                                  "wall_thickness"};
 
 template <std::size_t N>
 bool contains(const std::array<std::string_view, N>& names, std::string_view name) {
@@ -267,6 +269,30 @@ const std::vector<Prompt>& prompts() {
        "5. Summarise the smallest anode overhang per edge with its layer and position, the "
        "layer count, gaps, deformation of the housing, particles and voids, and every "
        "requirement that is not met, quoting the results of the steps, not estimates."},
+      {"wall_thickness_check",
+       "Wall thickness of a CT scan: thinnest walls and where they are, against the minimum of "
+       "the drawing, with a report.",
+       Json::array({{{"name", "scan"},
+                     {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},
+                     {"required", true}},
+                    {{"name", "min_wall"},
+                     {"description", "Smallest permitted wall thickness in mm, from the drawing"},
+                     {"required", false}},
+                    {{"name", "project"},
+                     {"description", "Project directory; default: next to the scan"},
+                     {"required", false}}}),
+       "Check the wall thickness of the CT scan {scan} with VoxelSieve.\n"
+       "1. Open or create the project {project} (next to the scan if none is given) and import "
+       "the scan; extract the surface with run_surface.\n"
+       "2. Run run_wall_thickness with min_wall_mm {min_wall} (leave it out if no minimum is "
+       "given). The ray method suits plates and housings; for castings with ribs and fillets, "
+       "run it again with method sphere.\n"
+       "3. Report the thinnest wall, the median, the share of the surface measured and every "
+       "thin region with its thickness, area and location; look at the thinnest one with "
+       "view_slice through its location.\n"
+       "4. Run run_report with an order whose wall_thickness section holds min_mm {min_wall} "
+       "(run_porosity first, the report needs it) and state whether the limit is met, quoting "
+       "the values of the steps, not estimates."},
       {"first_look", "A first look at a CT scan: size, voxel size, grey values and three slices.",
        Json::array({{{"name", "scan"},
                      {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},

@@ -95,7 +95,7 @@ the noise level.
 
 The assistant renders the slice with the pores in red and the loosened zone in yellow.
 
-VoxelSieve also offers these as prompts, *porosity_check*, *compare_with_cad* and *first_look*:
+VoxelSieve also offers these as prompts, *porosity_check*, *compare_with_cad*, *wall_thickness_check* and *first_look*:
 clients that list MCP prompts let you pick one, fill in the paths and have the assistant walk
 through the steps.
 

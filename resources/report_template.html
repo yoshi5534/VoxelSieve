@@ -79,7 +79,7 @@
 <h2>3 Test method</h2>
 <table class="fields">
   <tr><th>Method</th><td>Industrial computed tomography according to ISO 15708</td></tr>
-  <tr><th>Evaluation</th><td>Porosity analysis{{#materials}}, material segmentation{{/materials}}{{#fibres}}, fibre orientation{{/fibres}}{{#comparison}}, nominal-actual comparison{{/comparison}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Evaluation</th><td>Porosity analysis{{#materials}}, material segmentation{{/materials}}{{#fibres}}, fibre orientation{{/fibres}}{{#comparison}}, nominal-actual comparison{{/comparison}}{{#wall_thickness}}, wall thickness analysis{{/wall_thickness}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
   <tr><th>Deviations from the method</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}none{{/method.deviations}}</td></tr>
 </table>
 </section>
@@ -224,10 +224,51 @@
 </section>
 {{/comparison}}
 
+{{#wall_thickness}}
+<section>
+<h2>{{section.wall_thickness}} Wall thickness</h2>
+<table class="fields">
+  <tr><th>Method</th><td>{{method}}; walls up to {{max_thickness}} measured</td></tr>
+  <tr><th>Measured surface</th><td>{{measured}} of {{area}} (outer surface without {{dropped}} internal pore surfaces; pores still thin the walls)</td></tr>
+  <tr><th>Thinnest / thickest wall</th><td>{{min}} / {{max}}</td></tr>
+  <tr><th>Median / mean</th><td>{{median}} / {{mean}}</td></tr>
+  <tr><th>5 % / 95 % of the surface</th><td>thinner than {{p5}} / thinner than {{p95}}</td></tr>
+{{#min_wall}}
+  <tr><th>Thinner than {{limit}}</th><td>{{share}} of the measured surface ({{area}}) in {{count}} regions</td></tr>
+{{/min_wall}}
+{{#max_wall}}
+  <tr><th>Thicker than {{limit}}</th><td>{{share}} of the measured surface ({{area}}) in {{count}} regions</td></tr>
+{{/max_wall}}
+</table>
+<div class="renders">
+  <figure><img src="{{{images.thickness_1}}}" alt="Wall thickness, view from above"><figcaption>Wall thickness, view from above</figcaption></figure>
+  <figure><img src="{{{images.thickness_2}}}" alt="Wall thickness, view from below"><figcaption>Wall thickness, view from below</figcaption></figure>
+</div>
+<figure class="histogram">{{{images.thickness_histogram}}}<figcaption>Distribution of the wall thickness, ranges beyond the limits shaded</figcaption></figure>
+{{#min_wall}}{{#has_regions}}
+<table>
+  <tr><th colspan="4">Thinnest regions (below {{limit}})</th></tr>
+  <tr><th>Region</th><th class="num">Thinnest wall</th><th class="num">Area</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#regions}}<tr><td>{{id}}</td><td class="num">{{thickness}}</td><td class="num">{{area}}</td><td class="num">{{location}}</td></tr>
+  {{/regions}}
+</table>
+{{/has_regions}}{{/min_wall}}
+{{#max_wall}}{{#has_regions}}
+<table>
+  <tr><th colspan="4">Thickest regions (above {{limit}})</th></tr>
+  <tr><th>Region</th><th class="num">Thickest wall</th><th class="num">Area</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#regions}}<tr><td>{{id}}</td><td class="num">{{thickness}}</td><td class="num">{{area}}</td><td class="num">{{location}}</td></tr>
+  {{/regions}}
+</table>
+{{/has_regions}}{{/max_wall}}
+<p class="note">Thin walls red over yellow and green to thick walls blue, up to {{range}}; magenta: thinner than the minimum, violet: thicker than the maximum; grey: no wall found within the measuring range. Frequencies are weighted by surface area.</p>
+</section>
+{{/wall_thickness}}
+
 <section>
 <h2>{{section.assessment}} Assessment</h2>
 {{#evaluation}}
-<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{/wall_thickness}}</p>
 {{#zones}}
 <table>
   <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}</th></tr>

@@ -116,6 +116,19 @@ class Gui {
   [[nodiscard]] std::shared_ptr<const DeviationView> deviationMesh(
       std::optional<int> comparison_step) const;
 
+  /// The measured surface of a wall thickness step (default: the latest) in level-0 voxel
+  /// coordinates, with the thickness per vertex in mm (NaN where none was found), the limits the
+  /// analysis ran with (0: none) and the colour range (ADR 0030).
+  struct ThicknessView {
+    IndexedMesh mesh;
+    std::vector<float> thickness_mm;
+    double min_wall_mm = 0.0;
+    double max_wall_mm = 0.0;
+    double range_mm = 0.0;
+  };
+  [[nodiscard]] std::shared_ptr<const ThicknessView> thicknessMesh(
+      std::optional<int> thickness_step) const;
+
   /// What the 3D view draws for an object (ADR 0018): the triangles of a mesh object, the display
   /// mesh of a volume's latest surface step, or, before a surface step, the box the volume
   /// fills. Points are in the object's own coordinates divided by `scale` per axis: mm for a
@@ -280,6 +293,8 @@ class Gui {
       surface_meshes_;
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const DeviationView>>>
       deviation_meshes_;
+  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const ThicknessView>>>
+      thickness_meshes_;
   mutable std::mutex surface_mutex_;
 };
 

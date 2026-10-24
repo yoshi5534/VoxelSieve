@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Wall thickness**: the operation `wall_thickness` and the tool `vs-thickness` measure the wall
+  thickness at every point of the part's surface, along the inward normal to the opposite face
+  (ray, default) or as the largest inscribed sphere. Internal pores thin the wall they lie in.
+  Statistics, histogram and the regions thinner than the minimum or thicker than the maximum wall
+  go into `wall_thickness.json`, the coloured surface into `thickness.ply` and two views. The GUI
+  shows the surface coloured by thickness in the 3D view, MCP clients get the prompt
+  `wall_thickness_check`, and the report evaluates a `wall_thickness` section of the inspection
+  order (minimum, maximum, tolerated area below the minimum). Out of core: only the surface mesh
+  is held in memory (ADR 0030).
+
 - **Battery section images next to the can wall**: bright pixels within 0.5 mm of the housing
   outside the winding are taken for the bright fringe of the wall, strongest where the can bends
   at the bottom, instead of rows of particles in the outermost turn. A warning says how many.
