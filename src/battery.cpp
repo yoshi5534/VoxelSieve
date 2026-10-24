@@ -3026,6 +3026,34 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
       return pixel.second < static_cast<float>(t[at(band)]);
     });
   };
+  // Next to the can the stack looks brighter, most at the ends where the can bends: bright
+  // pixels this close to the housing outside the winding belong to its edge, not to a particle.
+  constexpr double kHousingMarginMm = 0.5;
+  const auto margin = std::max<std::int64_t>(1, std::lround(kHousingMarginMm / cell.pixel));
+  const auto housing = static_cast<float>(
+      0.5 * (result.levels.housing + std::max(result.levels.cathode, result.levels.anode)));
+  std::atomic<std::size_t> at_housing{0};
+  // Drops the pixels of `b` near a pixel of `image` as bright as the housing where `outside`.
+  const auto drop_at_housing = [&](Found& b, const CellImage& image, const auto& outside) {
+    if (!(result.levels.housing > result.particle_threshold)) {
+      return;
+    }
+    at_housing += std::erase_if(b, [&](const auto& pixel) {
+      const auto x = static_cast<std::int64_t>(pixel.first) % image.width;
+      const auto y = static_cast<std::int64_t>(pixel.first) / image.width;
+      for (std::int64_t ny = std::max<std::int64_t>(0, y - margin);
+           ny <= std::min(image.height - 1, y + margin); ++ny) {
+        for (std::int64_t nx = std::max<std::int64_t>(0, x - margin);
+             nx <= std::min(image.width - 1, x + margin); ++nx) {
+          if (static_cast<float>(image.values[at(nx + image.width * ny)]) >= housing &&
+              outside(nx, ny)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+  };
   const auto finish = [&](std::size_t job, Found& b, Found& d, std::int64_t width,
                           std::int64_t height, const auto& place) {
     if (b.size() + d.size() > kMaxFindingVoxels / 16) {
@@ -3094,6 +3122,9 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
         }
       }
       adapt(job, b, samples, steps, image.width, image.height);
+      drop_at_housing(b, image, [&](std::int64_t nx, std::int64_t ny) {
+        return !in_region({nx, ny, k}, true);
+      });
       gas_fraction[job] =
           sampled > 0 ? static_cast<double>(gas_like) / static_cast<double>(sampled) : kNaN;
       finish(job, b, d, image.width, image.height, [&](double x, double y) {
@@ -3154,6 +3185,9 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
       }
     }
     adapt(job, b, samples, steps, image.width, band_rows);
+    drop_at_housing(b, image, [&](std::int64_t nx, std::int64_t ny) {
+      return !in_region(voxel(nx, ny), true);
+    });
     finish(job, b, d, image.width, image.height, to3d);
   });
   if (too_many) {
@@ -3162,6 +3196,12 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
         "electrode stack; set the thresholds by hand");
   }
   leaveOutVoidsBeyondTheEnds(cell, gas_fraction, dark, result);
+  if (at_housing > 0) {
+    std::ostringstream text;
+    text << at_housing.load() << " bright pixels within " << kHousingMarginMm
+         << " mm of the housing are taken for its edge, not for particles";
+    result.warnings.push_back(text.str());
+  }
   const auto raised = std::count_if(thresholds.begin(), thresholds.end(),
                                     [&](double t) { return t > result.particle_threshold; });
   if (raised > 0) {
