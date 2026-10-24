@@ -319,6 +319,19 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_THROW((void)gui.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
                std::exception);
 
+  // The wall thickness on the surface of the box: 4, 5 and 6 mm through it.
+  const Json walls =
+      gui.call("run_wall_thickness", {{"max_thickness_mm", 8.0}, {"min_wall_mm", 4.5}});
+  EXPECT_EQ(walls.at("status"), "done");
+  EXPECT_EQ(walls.at("inputs").at("surface").at("step"), surface.at("id"));
+  EXPECT_NEAR(walls.at("summary").at("thickness_median_mm").get<double>(), 5.0, 0.2);
+  const auto thickness = gui.thicknessMesh(std::nullopt);
+  EXPECT_FALSE(thickness->mesh.triangles.empty());
+  EXPECT_EQ(thickness->thickness_mm.size(), thickness->mesh.points.size());
+  EXPECT_DOUBLE_EQ(thickness->min_wall_mm, 4.5);
+  EXPECT_GT(thickness->range_mm, 0.0);
+  EXPECT_EQ(gui.thicknessMesh(std::nullopt), thickness);  // cached
+
   // The report picks up the surface and the comparison for its 3D views.
   const Json reported = gui.call("run_report", {});
   EXPECT_EQ(reported.at("status"), "done");
@@ -333,6 +346,7 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_NE(html.find("then non-rigid registration"), std::string::npos);
   EXPECT_NE(html.find("Displacement of the non-rigid registration"), std::string::npos);
   EXPECT_NE(html.find("Pores (red)"), std::string::npos);
+  EXPECT_NE(html.find("Thinner than 4.500 mm"), std::string::npos);
 
   // Explicit inputs by step id.
   const Json histogram = gui.call(
@@ -342,7 +356,7 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   // Every analysis is a result of the scanned object, with its files; the newer comparison
   // replaces the older one, and the report names what it builds on.
   const Json results = gui.call("results", {}).at("results");
-  ASSERT_EQ(results.size(), 6U);
+  ASSERT_EQ(results.size(), 7U);
   std::vector<std::string> types;
   for (const Json& result : results) {
     types.push_back(result.at("type").get<std::string>());
@@ -351,14 +365,14 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     EXPECT_FALSE(result.at("files").empty());
   }
   EXPECT_EQ(types, (std::vector<std::string>{"porosity", "surface", "comparison", "comparison",
-                                             "report", "table"}));
+                                             "wall_thickness", "report", "table"}));
   EXPECT_EQ(results[0].at("summary").at("pores"), 2);
   EXPECT_FALSE(results[2].at("current"));
   EXPECT_TRUE(results[3].at("current"));
-  EXPECT_EQ(results[4].at("based_on").size(), 3U);
-  EXPECT_EQ(gui.call("results", {{"current_only", true}}).at("results").size(), 5U);
+  EXPECT_EQ(results[5].at("based_on").size(), 4U);
+  EXPECT_EQ(gui.call("results", {{"current_only", true}}).at("results").size(), 6U);
   EXPECT_TRUE(gui.call("results", {{"object", "o9"}}).at("results").empty());
-  EXPECT_EQ(gui.call("project_status", {}).at("results").size(), 6U);
+  EXPECT_EQ(gui.call("project_status", {}).at("results").size(), 7U);
 
   const Json undone = gui.call("undo", {});
   EXPECT_TRUE(undone.at("changed"));
@@ -369,7 +383,7 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Gui other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 8U);
+  EXPECT_EQ(reopened.at("steps").size(), 9U);
 
   EXPECT_THROW(gui.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(gui.call("undo", Json::array()), std::invalid_argument);
@@ -890,7 +904,7 @@ TEST_F(GuiTest, McpSessionFindsThePoresOfASyntheticScan) {
   EXPECT_EQ(
       handle(request(12, "prompts/get", {{"name", "compare_with_cad"}})).at("error").at("code"),
       -32602);
-  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 5U);
+  EXPECT_EQ(handle(request(13, "prompts/list")).at("result").at("prompts").size(), 6U);
   EXPECT_NE(handle(request(14, "prompts/get",
                            {{"name", "first_article_inspection"},
                             {"arguments", {{"scan", "part.raw"}, {"cad", "part.stl"}}}}))

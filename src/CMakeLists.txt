@@ -66,6 +66,7 @@ add_library(voxelsieve SHARED
   source.cpp
   surface.cpp
   compare.cpp
+  thickness.cpp
   dimensional.cpp
   render.cpp
   synthetic.cpp

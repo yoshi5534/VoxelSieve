@@ -5,7 +5,7 @@
 
 set(VOXELSIEVE_PROGRAMS
   vs-battery vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report vs-segment vs-sieve
-  vs-gui vs-surface vs-synth)
+  vs-gui vs-surface vs-synth vs-thickness)
 
 install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
   RUNTIME_DEPENDENCY_SET voxelsieve_runtime

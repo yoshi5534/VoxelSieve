@@ -38,6 +38,8 @@ Options:
   --surface <file.vss>    Surface written by vs-surface: adds 3D views of the part and its
                           pores
   --comparison <dir>      Output of vs-compare: adds the nominal-actual comparison
+  --wall-thickness <dir>  Output of vs-thickness: adds the wall thickness, evaluated against
+                          the "wall_thickness" limits of the order
   --template <file>       Report template instead of the built-in one
   --print-template        Print the built-in template and exit
   --print-first-article-template
@@ -58,6 +60,7 @@ struct Options {
   std::filesystem::path report_template;
   std::filesystem::path surface;
   std::filesystem::path comparison;
+  std::filesystem::path wall_thickness;
   bool print_template = false;
   bool print_first_article_template = false;
   voxelsieve::PorosityOptions porosity;
@@ -87,6 +90,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.surface = next();
     } else if (arg == "--comparison") {
       options.comparison = next();
+    } else if (arg == "--wall-thickness") {
+      options.wall_thickness = next();
     } else if (arg == "--template") {
       options.report_template = next();
     } else if (arg == "--print-template") {
@@ -165,6 +170,9 @@ int main(int argc, char** argv) {
     if (!options->comparison.empty()) {
       voxelsieve::addComparison(data, options->comparison);
     }
+    if (!options->wall_thickness.empty()) {
+      voxelsieve::addWallThickness(data, options->wall_thickness, order);
+    }
     std::ofstream(options->out / "report.html", std::ios::binary)
         << voxelsieve::renderTemplate(report_template, data);
     data.erase("images");
@@ -174,14 +182,16 @@ int main(int argc, char** argv) {
       std::cerr << "warning: " << warning << "\n";
     }
     std::cout << "report             " << (options->out / "report.html").string() << "\n";
-    if (zones.empty()) {
+    if (!data.contains("evaluation")) {
       std::cout << "evaluation         none (no acceptance limits in the order)\n";
     } else {
-      for (const auto& zone : evaluation.zones) {
-        std::cout << "zone               " << zone.name << ": "
-                  << (zone.passed() ? "passed" : "FAILED") << "\n";
+      // Inspection zones of the porosity, then the blocks of further analyses.
+      for (const auto& zone : data["evaluation"]["zones"]) {
+        std::cout << "zone               " << zone.value("name", std::string()) << ": "
+                  << (zone.value("passed", true) ? "passed" : "FAILED") << "\n";
       }
-      std::cout << "result             " << (evaluation.passed() ? "passed" : "FAILED") << "\n";
+      std::cout << "result             "
+                << (data["evaluation"].value("passed", true) ? "passed" : "FAILED") << "\n";
     }
     voxelsieve::reportTelemetry(telemetry, options->telemetry);
     return 0;
