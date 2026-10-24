@@ -75,7 +75,12 @@ geometry (`CellSource`, `vs-battery --cell`) to test it against.
   halves of each longitudinal section, the right half at its angle and the left one opposite,
   with the same layer tracking as in a volume. Particles and voids are components in each image,
   dark pixels connected to the core excluded, and a finding seen in several images counts once;
-  they have an area, no volume. The pixel size is the span of the cross-section positions over
+  they have an area, no volume. Section images often grow brighter or darker along the cell and
+  carry strong noise, so each image, and each 2 mm band of a longitudinal section, raises the
+  particle threshold to six times its noise above the brightest 1 % of its electrode stack; the
+  noise comes from pixels two apart along the layers. Voids are dropped near and beyond the stack
+  ends found where more than 1 % of a cross-section's stack is as dark as gas. With layers fewer
+  than six pixels apart the overhang is not measured. The pixel size is the span of the cross-section positions over
   the height of the longitudinal sections, unless given. The longitudinal section at 0° is taken
   to run along the x axis of the cross-sections; positions along the axis count from the bottom
   row of the longitudinal sections.
