@@ -83,7 +83,8 @@ template <int Vectors, bool Masked>
 VOXELSIEVE_AVX2 void convolveStripAvx2(const ConvolutionRow& row, std::int64_t x0, __m256i mask) {
   constexpr std::int64_t kLanes = 8;
   const int k = row.kernel;
-  std::array<std::array<__m256, Vectors>, kConvolutionBlock> acc{};
+  // C arrays: std::array would drop the alignment attribute of __m256.
+  __m256 acc[kConvolutionBlock][Vectors];  // NOLINT(*-avoid-c-arrays)
   for (int b = 0; b < kConvolutionBlock; ++b) {
     for (int v = 0; v < Vectors; ++v) {
       acc[b][v] = _mm256_set1_ps(row.bias[static_cast<std::size_t>(b)]);
@@ -95,7 +96,7 @@ VOXELSIEVE_AVX2 void convolveStripAvx2(const ConvolutionRow& row, std::int64_t x
       for (int ky = 0; ky < k; ++ky) {
         const float* src = row.src + i * row.channel_stride + kz * row.plane + ky * row.row + x0;
         for (int kx = 0; kx < k; ++kx) {
-          std::array<__m256, Vectors> values{};
+          __m256 values[Vectors];  // NOLINT(*-avoid-c-arrays)
           for (int v = 0; v < Vectors; ++v) {
             values[v] = Masked ? _mm256_maskload_ps(src + kx + v * kLanes, mask)
                                : _mm256_loadu_ps(src + kx + v * kLanes);
