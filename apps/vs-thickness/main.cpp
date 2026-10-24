@@ -2,13 +2,17 @@
 
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/mesh.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/thickness.hpp"
@@ -29,6 +33,11 @@ in mm, open it like any dataset), thickness_map.json (volume statistics, regions
 thicker than the limits, such as material accumulations) and thickness_map_[xyz].png, slices
 through the thickest spot.
 
+With --nominal and the output of vs-compare, it also measures the nominal thickness of the CAD
+model where the comparison aligned it, by the same method at the point of the model nearest to
+every surface point, and the deviation of the actual thickness from it (thickness.ply gets the
+properties nominal and deviation, thickness_deviation_view_[12].png show it).
+
 Methods:
   ray     along the inward surface normal through the grey values to the opposite face of the
           wall; sub-voxel accurate for walls with roughly parallel faces (plates, housings)
@@ -46,6 +55,11 @@ Options:
   --search-angle <deg>    Ray method: largest angle between the ray and the face it leaves the
                           wall through (default 30)
   --all-surfaces          Also measure on the surfaces of closed internal voids
+  --nominal <dir>         Output of vs-compare: compare with the nominal thickness of its CAD
+                          model
+  --nominal-tolerance <mm>
+                          Permitted deviation from the nominal thickness (default: twice the
+                          tolerance of the comparison)
   --volume-map            Also write the thickness map of the whole part
   --map-max-thickness <mm>
                           Thickness map: thicker material gets this value (default: the
@@ -62,6 +76,8 @@ struct Options {
   std::filesystem::path surface;
   std::filesystem::path out;
   voxelsieve::WallThicknessOptions thickness;
+  std::filesystem::path nominal;
+  double nominal_tolerance_mm = 0.0;
   bool volume_map = false;
   voxelsieve::ThicknessMapOptions map;
   std::size_t cache_mb = 1024;
@@ -96,6 +112,10 @@ std::optional<Options> parse(int argc, char** argv) {
       options.thickness.search_angle_deg = std::stod(next());
     } else if (arg == "--all-surfaces") {
       options.thickness.outer_surface_only = false;
+    } else if (arg == "--nominal") {
+      options.nominal = next();
+    } else if (arg == "--nominal-tolerance") {
+      options.nominal_tolerance_mm = std::stod(next());
     } else if (arg == "--volume-map") {
       options.volume_map = true;
     } else if (arg == "--map-max-thickness") {
@@ -155,8 +175,25 @@ int main(int argc, char** argv) {
       surface = options->out / "surface.vss";
       (void)voxelsieve::writeSurface(dataset, surface);
     }
-    const auto result = voxelsieve::analyzeWallThickness(
-        dataset, voxelsieve::SurfaceMask::open(surface), options->thickness);
+    auto result = voxelsieve::analyzeWallThickness(dataset, voxelsieve::SurfaceMask::open(surface),
+                                                   options->thickness);
+    if (!options->nominal.empty()) {
+      std::ifstream in(options->nominal / "compare.json");
+      if (!in) {
+        throw std::runtime_error("Cannot read " + (options->nominal / "compare.json").string());
+      }
+      const auto compared = nlohmann::json::parse(in);
+      const std::filesystem::path cad = compared.at("cad_path").get<std::string>();
+      voxelsieve::NominalThicknessOptions nominal;
+      nominal.source = cad.filename().string();
+      nominal.tolerance_mm = options->nominal_tolerance_mm > 0.0
+                                 ? options->nominal_tolerance_mm
+                                 : 2.0 * compared.at("tolerance_mm").get<double>();
+      voxelsieve::addNominalThickness(result, voxelsieve::readStl(cad),
+                                      voxelsieve::RigidTransform::fromMatrix(
+                                          compared.at("cad_to_scan").get<std::vector<double>>()),
+                                      nominal);
+    }
     voxelsieve::writeWallThickness(result, options->out);
     const auto& s = result.stats;
     std::cout << std::fixed << "method             " << voxelsieve::toString(result.method)
@@ -178,6 +215,20 @@ int main(int argc, char** argv) {
                 << " mm: " << std::setprecision(2) << 100.0 * s.above_max << " % of the surface, "
                 << result.thick_regions.size() << " regions\n";
       printRegions("  thick region ", result.thick_regions);
+    }
+    if (result.nominal) {
+      const auto& d = result.nominal->stats;
+      std::cout << std::setprecision(3) << "against nominal    " << result.nominal->source
+                << ", tolerance " << result.nominal->tolerance_mm << " mm, compared on "
+                << std::setprecision(1)
+                << (s.measured_area_mm2 > 0.0 ? 100.0 * d.area_mm2 / s.measured_area_mm2 : 0.0)
+                << " % of the measured surface\n"
+                << std::setprecision(3) << "deviation          mean " << d.mean_mm << " mm, from "
+                << d.min_mm << " to " << d.max_mm << " mm; " << std::setprecision(2)
+                << 100.0 * d.below_tolerance << " % thinner, " << 100.0 * d.above_tolerance
+                << " % thicker than nominal\n";
+      printRegions("  thinner region ", result.nominal->thinner_regions);
+      printRegions("  thicker region ", result.nominal->thicker_regions);
     }
     if (options->volume_map) {
       voxelsieve::ThicknessMapOptions map_options = options->map;

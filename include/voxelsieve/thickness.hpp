@@ -13,6 +13,11 @@
 //
 // Internal pores reduce the wall: a ray stops at a pore and a sphere does not reach into one.
 //
+// With a CAD model placed on the scan (a nominal-actual comparison), addNominalThickness measures
+// the nominal thickness of the model at every point by the same method, and the deviation of the
+// actual thickness from it: walls that came out thinner or thicker than designed, whatever their
+// absolute thickness.
+//
 // The thickness map (writeThicknessMap) gives every material voxel the local thickness: the
 // diameter of the largest sphere inside the material that contains the voxel. It shows walls
 // inside the part and accumulations of material (thick nodes, where castings shrink) that the
@@ -24,11 +29,15 @@
 #include <filesystem>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/mesh.hpp"
 #include "voxelsieve/surface.hpp"
+#include "voxelsieve/transform.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -92,6 +101,25 @@ struct ThicknessRegion {
   std::array<std::array<double, 3>, 2> bounds_mm{};
 };
 
+/// The nominal wall thickness of a CAD model at the measured surface and the deviation of the
+/// actual thickness from it.
+struct NominalThickness {
+  /// Where the nominal geometry came from (a file or an object), for the report.
+  std::string source;
+  /// Permitted deviation of the actual from the nominal thickness, mm.
+  double tolerance_mm = 0.0;
+  /// Per vertex of the measured surface: the nominal thickness at the nearest point of the model,
+  /// NaN where the model has no wall there up to max_thickness_mm; and the actual minus the
+  /// nominal thickness, NaN where either is missing.
+  std::vector<float> nominal_mm;
+  std::vector<float> deviation_mm;
+  /// Area-weighted statistics of the deviation over the vertices with both values.
+  DeviationStats stats;
+  /// Surface regions thinner and thicker than nominal by more than the tolerance (nominalRegions).
+  std::vector<ThicknessRegion> thinner_regions;
+  std::vector<ThicknessRegion> thicker_regions;
+};
+
 struct WallThicknessResult {
   WallThicknessOptions::Method method = WallThicknessOptions::Method::kRay;
   VoxelSize voxel_size;
@@ -110,6 +138,8 @@ struct WallThicknessResult {
   ThicknessStats stats;
   std::vector<ThicknessRegion> thin_regions;   // thinnest first
   std::vector<ThicknessRegion> thick_regions;  // thickest first
+  /// Set by addNominalThickness.
+  std::optional<NominalThickness> nominal;
 };
 
 /// Measures the wall thickness on the surface `surface` of `dataset` (level 0). The mesh is held
@@ -118,6 +148,31 @@ struct WallThicknessResult {
 [[nodiscard]] WallThicknessResult analyzeWallThickness(const Dataset& dataset,
                                                        const SurfaceMask& surface,
                                                        const WallThicknessOptions& options = {});
+
+struct NominalThicknessOptions {
+  /// Recorded as NominalThickness::source.
+  std::string source;
+  /// Permitted deviation of the actual from the nominal thickness, mm; must be positive.
+  double tolerance_mm = 0.2;
+  /// Called with the fraction done, 0 to 1, from one thread at a time.
+  std::function<void(double fraction)> progress;
+};
+
+/// Measures the nominal thickness of `nominal` (a closed mesh in mm, such as a CAD model) at the
+/// point nearest to every vertex of `result`, by the method, range and search angle of `result`,
+/// and sets result.nominal. `nominal_to_scan` places the model in the dataset's coordinates, such
+/// as CompareResult::cad_to_scan. Vertices farther than max_thickness_mm from the model get no
+/// nominal value.
+void addNominalThickness(WallThicknessResult& result, const Mesh& nominal,
+                         const RigidTransform& nominal_to_scan,
+                         const NominalThicknessOptions& options = {});
+
+/// Connected regions of `mesh` thinner (`thinner`) or thicker than nominal by more than
+/// `tolerance_mm`, from the deviation per vertex; the largest first, extreme_mm the largest
+/// deviation.
+[[nodiscard]] std::vector<ThicknessRegion> nominalRegions(const IndexedMesh& mesh,
+                                                          const std::vector<float>& deviation_mm,
+                                                          double tolerance_mm, bool thinner);
 
 /// Statistics of the thickness per vertex of `mesh` (mm, NaN where not measured) against the limits
 /// (0: none), weighted by the area around each vertex.
@@ -138,12 +193,17 @@ struct WallThicknessResult {
 
 /// Writes wall_thickness.json, thickness.ply (the measured surface in mm with the thickness and a
 /// colour per vertex) and views of the coloured surface (thickness_view_1.png and _2.png, the
-/// views of kDeviationViews).
+/// views of kDeviationViews). With a nominal thickness, thickness.ply also has the float
+/// properties `nominal` and `deviation` per vertex, wall_thickness.json a `nominal` section, and
+/// thickness_deviation_view_[12].png show the deviation in the colours of deviationColor.
 void writeWallThickness(const WallThicknessResult& result, const std::filesystem::path& dir);
 
 struct ThicknessMesh {
   IndexedMesh mesh;  // mm
   std::vector<float> thickness_mm;
+  /// Empty without a nominal thickness.
+  std::vector<float> nominal_mm;
+  std::vector<float> deviation_mm;
 };
 [[nodiscard]] ThicknessMesh readThicknessPly(const std::filesystem::path& file);
 

@@ -238,6 +238,11 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   ASSERT_EQ(thickness.status, 200U) << thickness.body;
   EXPECT_GT(thickness.body.size(), 1000U);
   EXPECT_EQ(thickness.body.size() % 4U, 0U);
+  // After the comparison, the deviation from the nominal thickness in place of the thickness.
+  const Reply against_nominal =
+      request(server_->port(), http::verb::get, "/api/wall_thickness?nominal=1");
+  ASSERT_EQ(against_nominal.status, 200U) << against_nominal.body;
+  EXPECT_EQ(against_nominal.body.size(), thickness.body.size());
   // With a thickness map, the slice tiles carry one float32 thickness per pixel after the overlay.
   const std::string tile_query = "/api/tile?axis=2&index=10&level=0&u=0&v=0&size=16&thickness=";
   const auto step_of = [](const Reply& reply) {

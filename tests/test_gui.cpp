@@ -334,6 +334,13 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_DOUBLE_EQ(thickness->min_wall_mm, 4.5);
   EXPECT_GT(thickness->range_mm, 0.0);
   EXPECT_EQ(gui.thicknessMesh(std::nullopt), thickness);  // cached
+  // The comparison before gives the nominal thickness: the CAD model is the box itself.
+  EXPECT_EQ(walls.at("inputs").at("comparison").at("step"), bent.at("id"));
+  EXPECT_EQ(walls.at("summary").at("nominal"), "cad.stl");
+  EXPECT_GT(walls.at("summary").at("nominal_compared_percent").get<double>(), 80.0);
+  EXPECT_LT(walls.at("summary").at("thinner_than_nominal_percent").get<double>(), 5.0);
+  EXPECT_EQ(thickness->deviation_mm.size(), thickness->mesh.points.size());
+  EXPECT_DOUBLE_EQ(thickness->nominal_tolerance_mm, 0.2);  // twice that of the comparison
   // The thickness map in a slice tile through the middle of the dataset.
   {
     const auto dims = info.at("dims").get<std::array<std::int64_t, 3>>();

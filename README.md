@@ -349,6 +349,11 @@ CAD model, and finds the regions thinner or thicker than the drawing allows:
     the maximum and grey where no wall up to `--max-thickness` was found.
 - **Large scans:** only the surface mesh is held in memory (`--max-triangles`); the grey values
   are read along the rays through the brick cache.
+- **Against the CAD model:** `--nominal part.compare` (the output of `vs-compare`) also measures
+  the nominal thickness of the aligned CAD model at every point, by the same method, and the
+  deviation of the actual thickness from it: walls that came out thinner or thicker than designed,
+  such as both walls around a shifted core. `thickness.ply` gets `nominal` and `deviation` per
+  vertex, `thickness_deviation_view_[12].png` show it.
 - **Inside the part:** `--volume-map` also writes the local thickness of every material voxel
   (the largest sphere inside the material that contains it) as the dataset `thickness_map/`,
   with statistics, regions beyond the limits and slices through the thickest spot. It finds
@@ -357,8 +362,9 @@ CAD model, and finds the regions thinner or thicker than the drawing allows:
   part, at most 64 voxels) gets that value. Convex edges count to the wall they bound.
 
 The GUI runs it as the operation "Wall thickness" and shows the coloured surface in the 3D view
-as "Wall thickness" and the thickness map as an overlay of the slice view; the report adds a
-wall thickness section (see below). Method and decisions:
+as "Wall thickness" (after a nominal-actual comparison also against the nominal thickness) and
+the thickness map as an overlay of the slice view; the report adds a wall thickness section (see
+below). Method and decisions:
 `docs/adr/0030-wall-thickness.md`.
 
 ![Wall thickness of a cast housing, walls below 2.5 mm in magenta](docs/images/wall-thickness.png)
@@ -422,10 +428,12 @@ statistics, coloured views, histogram and the thin and thick regions. A `wall_th
 in the order sets the limits, and `max_area_below_min_mm2` tolerates small thin spots such as
 sharp edges instead of judging the single thinnest point. When the analysis wrote a thickness
 map (`--volume-map`), the report shows it too, and `max_mm` also judges the thickest spot inside
-the part:
+the part. With a CAD model (`--nominal`), `nominal_tolerance_mm` judges the deviation from the
+nominal thickness, and `max_area_outside_nominal_mm2` tolerates small areas beyond it:
 
 ```json
-"wall_thickness": { "min_mm": 2.5, "max_mm": 8.0, "max_area_below_min_mm2": 5.0 }
+"wall_thickness": { "min_mm": 2.5, "max_mm": 8.0, "max_area_below_min_mm2": 5.0,
+                    "nominal_tolerance_mm": 0.4, "max_area_outside_nominal_mm2": 5.0 }
 ```
 
 In the GUI, the report step takes the latest surface, comparison and wall thickness of the

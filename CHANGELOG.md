@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Wall thickness against the CAD model**: after a nominal-actual comparison (`compare_cad`,
+  `compare_objects`), `wall_thickness` also measures the nominal thickness of the aligned model at
+  every point of the surface, by the same method, and the deviation of the actual thickness from
+  it, with statistics, the regions thinner or thicker than nominal and coloured views
+  (`vs-thickness --nominal`). The 3D view shows the deviation, and the inspection order takes
+  `nominal_tolerance_mm` and `max_area_outside_nominal_mm2` (ADR 0030).
+
 - **Thickness map inside the part**: `wall_thickness` with `volume_map` (`vs-thickness
   --volume-map`) writes the local thickness of every material voxel, the diameter of the largest
   sphere inside the material that contains it, as a dataset with statistics, regions thinner or

@@ -262,6 +262,39 @@
 </table>
 {{/has_regions}}{{/max_wall}}
 <p class="note">Thin walls red over yellow and green to thick walls blue, up to {{range}}; magenta: thinner than the minimum, violet: thicker than the maximum; grey: no wall found within the measuring range. Frequencies are weighted by surface area.</p>
+{{#nominal}}
+<h3>Wall thickness against the CAD model</h3>
+<table class="fields">
+  <tr><th>Nominal</th><td>{{source}}, as aligned by the nominal-actual comparison; the nominal thickness is measured on the model by the same method at the point nearest to every surface point</td></tr>
+  <tr><th>Compared surface</th><td>{{compared}} of the measured surface</td></tr>
+  <tr><th>Deviation, actual minus nominal</th><td>mean {{deviation_mean}}; from {{deviation_min}} to {{deviation_max}}; 90 % of the surface between {{deviation_p5}} and {{deviation_p95}}</td></tr>
+  <tr><th>Within {{tolerance}}</th><td>{{within}} of the compared surface</td></tr>
+  <tr><th>Thinner than nominal</th><td>{{thinner_share}} ({{thinner_area}})</td></tr>
+  <tr><th>Thicker than nominal</th><td>{{thicker_share}} ({{thicker_area}})</td></tr>
+</table>
+<div class="renders">
+  <figure><img src="{{{images.thickness_deviation_1}}}" alt="Deviation from the nominal thickness, view from above"><figcaption>Deviation from the nominal thickness, view from above</figcaption></figure>
+  <figure><img src="{{{images.thickness_deviation_2}}}" alt="Deviation from the nominal thickness, view from below"><figcaption>Deviation from the nominal thickness, view from below</figcaption></figure>
+</div>
+<figure class="histogram">{{{images.thickness_deviation_histogram}}}<figcaption>Distribution of the deviation from the nominal thickness, tolerance band marked</figcaption></figure>
+{{#has_thinner}}
+<table>
+  <tr><th colspan="4">Walls thinner than nominal by more than the tolerance, largest first</th></tr>
+  <tr><th>Region</th><th class="num">Largest shortfall</th><th class="num">Area</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#thinner_regions}}<tr><td>{{id}}</td><td class="num">{{deviation}}</td><td class="num">{{area}}</td><td class="num">{{location}}</td></tr>
+  {{/thinner_regions}}
+</table>
+{{/has_thinner}}
+{{#has_thicker}}
+<table>
+  <tr><th colspan="4">Walls thicker than nominal by more than the tolerance, largest first</th></tr>
+  <tr><th>Region</th><th class="num">Largest excess</th><th class="num">Area</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#thicker_regions}}<tr><td>{{id}}</td><td class="num">{{deviation}}</td><td class="num">{{area}}</td><td class="num">{{location}}</td></tr>
+  {{/thicker_regions}}
+</table>
+{{/has_thicker}}
+<p class="note">Green within the tolerance, yellow to red thicker and cyan to blue thinner than nominal, up to ± {{deviation_range}}; grey: no actual or nominal value. Where the actual wall lies elsewhere than in the model, a ray may reach another wall than on the model, which shows as a large deviation along a narrow strip.</p>
+{{/nominal}}
 {{#map}}
 <h3>Thickness inside the part</h3>
 <table class="fields">
@@ -305,7 +338,7 @@
 <section>
 <h2>{{section.assessment}} Assessment</h2>
 {{#evaluation}}
-<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{#map}} The thickest spot inside the part comes from the thickness map.{{/map}}{{/wall_thickness}}</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{#nominal}} The deviation from the nominal thickness counts where both are known.{{/nominal}}{{#map}} The thickest spot inside the part comes from the thickness map.{{/map}}{{/wall_thickness}}</p>
 {{#zones}}
 <table>
   <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}</th></tr>

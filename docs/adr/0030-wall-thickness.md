@@ -75,7 +75,7 @@ the distance mask (ADR 0009, `scanSurface`); the operation `wall_thickness` and 
 - Thickness is measured on mesh vertices, so features smaller than the mesh spacing (about one
   voxel within the triangle budget) are sampled, not resolved. Larger scans need a larger budget
   or a coarser mesh.
-- The comparison with nominal thicknesses from the CAD model is not covered yet.
+- The comparison with nominal thicknesses from the CAD model: see the second amendment.
 
 ## Amendment (2026-10-24): thickness map of the whole part
 
@@ -130,3 +130,53 @@ Consequences: the map is a second, volumetric reading of thickness, defined ever
 one to find material accumulations; the surface methods stay the ones for the limits of thin
 walls. Its run time grows with the volume of material and with the cube of the maximum
 thickness, so thick blocks of material are capped rather than measured.
+
+## Amendment (2026-10-24): nominal thickness from the CAD model
+
+A wall of 2.4 mm passes a minimum of 2 mm, but it is a defect if the drawing says 3 mm: a core
+that shifted in the mould makes one wall thinner and the opposite one thicker, both within the
+absolute limits. With a CAD model aligned to the scan (ADR 0010, ADR 0018), `addNominalThickness`
+(`thickness.hpp`) measures the nominal thickness of the model at every point of the measured
+surface and the deviation of the actual thickness from it.
+
+- **Where.** Every vertex of the measured surface is mapped into the model's coordinates by the
+  transform of the comparison (`cad_to_scan`) and the nearest point of the model is taken
+  (`MeshDistance`, exact, with its bounding volume hierarchy). The nominal thickness is measured
+  there with the outward normal of the model's triangle; vertices farther than the measuring range
+  from the model get none.
+- **Same method.** The nominal thickness uses the method of the actual one, so both answer the
+  same question. Ray: sphere tracing along the inward normal through the exact distance to the
+  model up to the opposite face, which must face along the ray within the same search angle.
+  Sphere: the shrinking ball against the exact distance to the model, stopped by the same rule
+  for points close to the touching point as on the scan, so that convex edges read alike (without
+  it, edges read 1 to 2 mm thicker on the scan than on the model).
+- **Deviation.** Actual minus nominal per vertex where both exist, its area-weighted statistics
+  against a tolerance, and the connected regions thinner or thicker than nominal by more than the
+  tolerance, largest first. Where the actual wall lies elsewhere than in the model, a ray can reach
+  a different wall on the two (it runs along a side wall on one and through the wall on the other);
+  this shows as a large deviation on a narrow strip, so regions are ranked by area and an order can
+  tolerate an area.
+- **Output.** `thickness.ply` gets the float properties `nominal` and `deviation`,
+  `wall_thickness.json` a `nominal` section, and `thickness_deviation_view_[12].png` show the
+  deviation in the colours of the comparison (green within the tolerance, blue thinner, red
+  thicker). The browser UI shows them as an option of the wall thickness view
+  (`GET /api/wall_thickness?nominal=1`).
+- **Operation.** `wall_thickness` takes a nominal-actual comparison as an optional input; like
+  every optional input it is wired to the latest comparison of the object, so a wall thickness
+  after `compare_cad` or `compare_objects` is compared with nominal unless `nominal_thickness` is
+  false. The default tolerance is twice that of the comparison, since each face may deviate by
+  it. A non-rigid comparison (ADR 0022) contributes its rigid alignment only. `vs-thickness
+  --nominal <dir>` takes the output of `vs-compare`.
+- **Report and order.** The wall thickness section gets "Wall thickness against the CAD model":
+  deviation statistics, views, histogram and the regions. The order's `wall_thickness` section
+  takes `nominal_tolerance_mm` (criteria: the largest shortfall and excess within it) and
+  `max_area_outside_nominal_mm2` (criteria: the area thinner and the area thicker than nominal by
+  more than the tolerance, each within it). An order with `nominal_tolerance_mm` for an analysis
+  without a CAD model is an error.
+
+Consequences: the deviation from nominal finds walls that are wrong for their place, which the
+absolute limits do not. It depends on the alignment: a model placed off by 0.1 mm shifts the
+faces, not the thicknesses, so it is less sensitive to alignment than the surface deviation, but
+a wrong orientation compares the wrong walls. Measuring the nominal thickness costs about as much
+as the actual one (the housing sample with a CAD model of 1.9 million triangles: 12 s for a
+million vertices on 4 cores).

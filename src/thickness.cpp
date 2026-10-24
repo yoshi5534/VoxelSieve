@@ -362,6 +362,75 @@ float sphereThickness(const PointTree& tree, std::uint32_t i, const Vec& n, doub
   return shrunk ? static_cast<float>(2.0 * r) : kNotMeasured;
 }
 
+/// The nominal geometry for addNominalThickness: distances and the outward normal of every
+/// triangle.
+struct NominalModel {
+  const MeshDistance& distance;
+  std::vector<Vec> normals;
+  double max_mm = 0.0;
+  double cos_limit = 0.0;
+  double eps = 0.0;
+
+  /// The outward normal of the triangle a query found.
+  [[nodiscard]] const Vec& normal(const MeshDistance::Hit& hit) const {
+    return normals[hit.triangle];
+  }
+};
+
+/// Thickness of the model from its surface point `x` with outward normal `n` along -n to the
+/// opposite face, by sphere tracing through the distance to the model; NaN as for rayThickness.
+float nominalRayThickness(const NominalModel& model, const Vec& x, const Vec& n) {
+  constexpr int kSteps = 512;
+  const Vec dir = -1.0 * n;
+  double t = 4.0 * model.eps;
+  for (int step = 0; step < kSteps && t <= model.max_mm; ++step) {
+    const MeshDistance::Hit hit = model.distance.query(x + t * dir);
+    // Inside, the distance is negative; nearly zero or positive at the opposite face.
+    const double r = -hit.distance;
+    if (r < model.eps) {
+      if (dot(model.normal(hit), dir) < model.cos_limit) {
+        return kNotMeasured;
+      }
+      return static_cast<float>(t + r);
+    }
+    t += r;
+  }
+  return kNotMeasured;
+}
+
+/// Diameter of the largest ball inside the model that touches it at `x` with outward normal
+/// `n`, by shrinking as sphereThickness against the exact distance to the model, with the same
+/// rule for points close to `x`, so that edges read as they do on the scan.
+float nominalSphereThickness(const NominalModel& model, const Vec& x, const Vec& n) {
+  double r = 0.5 * model.max_mm;
+  bool shrunk = false;
+  const double min_separation = std::cos(std::numbers::pi / 6.0);
+  for (int iteration = 0; iteration < 64; ++iteration) {
+    const MeshDistance::Hit hit = model.distance.query(x - r * n);
+    if (std::abs(hit.distance) >= r - model.eps) {
+      break;
+    }
+    // The closest point lies inside the ball: shrink it to touch both x and that point.
+    const Vec w = x - Vec{hit.closest[0], hit.closest[1], hit.closest[2]};
+    const double along = dot(n, w);
+    if (along <= model.eps * model.eps) {
+      break;
+    }
+    const double next = 0.5 * dot(w, w) / along;
+    if (next >= r - model.eps) {
+      break;
+    }
+    const Vec centre = x - next * n;
+    const Vec y = x - w;
+    if (dot(x - centre, y - centre) > min_separation * next * next) {
+      break;
+    }
+    r = next;
+    shrunk = true;
+  }
+  return shrunk ? static_cast<float>(2.0 * r) : kNotMeasured;
+}
+
 ThicknessStats statsOf(const IndexedMesh& mesh, const std::vector<float>& thickness,
                        double min_wall, double max_wall) {
   constexpr int kBins = 40;
@@ -529,6 +598,16 @@ void writePly(const std::filesystem::path& file, const WallThicknessResult& resu
                                 bytes(result.mesh.points.data()), tinyply::Type::INVALID, 0);
   ply.add_properties_to_element("vertex", {"thickness"}, tinyply::Type::FLOAT32, n,
                                 bytes(result.thickness_mm.data()), tinyply::Type::INVALID, 0);
+  if (result.nominal) {
+    ply.get_comments().emplace_back(
+        "nominal: thickness of the nominal model in mm, deviation: thickness minus nominal");
+    ply.add_properties_to_element("vertex", {"nominal"}, tinyply::Type::FLOAT32, n,
+                                  bytes(result.nominal->nominal_mm.data()), tinyply::Type::INVALID,
+                                  0);
+    ply.add_properties_to_element("vertex", {"deviation"}, tinyply::Type::FLOAT32, n,
+                                  bytes(result.nominal->deviation_mm.data()),
+                                  tinyply::Type::INVALID, 0);
+  }
   ply.add_properties_to_element("vertex", {"red", "green", "blue"}, tinyply::Type::UINT8, n,
                                 colors.data(), tinyply::Type::INVALID, 0);
   ply.add_properties_to_element(
@@ -772,6 +851,87 @@ std::vector<ThicknessRegion> thickRegions(const IndexedMesh& mesh,
       [](double a, double b) { return a > b; });
 }
 
+std::vector<ThicknessRegion> nominalRegions(const IndexedMesh& mesh,
+                                            const std::vector<float>& deviation_mm,
+                                            double tolerance_mm, bool thinner) {
+  std::vector<ThicknessRegion> regions = thinner ? thinRegions(mesh, deviation_mm, -tolerance_mm)
+                                                 : thickRegions(mesh, deviation_mm, tolerance_mm);
+  // A ray that reaches another wall than on the model gives a large deviation on a few points;
+  // the regions that matter are the large ones.
+  std::stable_sort(
+      regions.begin(), regions.end(),
+      [](const ThicknessRegion& a, const ThicknessRegion& b) { return a.area_mm2 > b.area_mm2; });
+  for (std::size_t i = 0; i < regions.size(); ++i) {
+    regions[i].id = static_cast<int>(i + 1);
+  }
+  return regions;
+}
+
+void addNominalThickness(WallThicknessResult& result, const Mesh& nominal,
+                         const RigidTransform& nominal_to_scan,
+                         const NominalThicknessOptions& options) {
+  if (!(options.tolerance_mm > 0.0)) {
+    throw std::invalid_argument("The thickness tolerance must be positive");
+  }
+  if (nominal.triangles.empty()) {
+    throw std::invalid_argument("The nominal model has no triangles");
+  }
+  const TelemetryPhase phase("nominal thickness");
+  const MeshDistance distance(nominal);
+  NominalModel model{distance,
+                     {},
+                     result.max_thickness_mm,
+                     std::cos(result.search_angle_deg * std::numbers::pi / 180.0),
+                     1e-3 * result.voxel_size.minMm()};
+  // Outward normals, also for a model wound inside out (as MeshDistance turns it).
+  const double orientation = meshVolumeMm3(nominal) < 0.0 ? -1.0 : 1.0;
+  model.normals.reserve(nominal.triangles.size());
+  for (const auto& t : nominal.triangles) {
+    const Vec a = toVec(t[0]);
+    model.normals.push_back(orientation * normalized(cross(toVec(t[1]) - a, toVec(t[2]) - a)));
+  }
+  const RigidTransform scan_to_nominal = nominal_to_scan.inverse();
+  NominalThickness out;
+  out.source = options.source;
+  out.tolerance_mm = options.tolerance_mm;
+  const std::size_t n = result.mesh.points.size();
+  out.nominal_mm.assign(n, kNotMeasured);
+  out.deviation_mm.assign(n, kNotMeasured);
+  std::atomic<std::size_t> done{0};
+  std::mutex progress_mutex;
+  int reported_percent = -1;
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, n, 256),
+                    [&](const tbb::blocked_range<std::size_t>& range) {
+                      for (std::size_t i = range.begin(); i != range.end(); ++i) {
+                        const Vec p = scan_to_nominal.apply(toVec(result.mesh.points[i]));
+                        const MeshDistance::Hit hit = distance.query(p);
+                        if (std::abs(hit.distance) > model.max_mm) {
+                          continue;  // nothing of the model here
+                        }
+                        const Vec x{hit.closest[0], hit.closest[1], hit.closest[2]};
+                        const float t = result.method == Method::kSphere
+                                            ? nominalSphereThickness(model, x, model.normal(hit))
+                                            : nominalRayThickness(model, x, model.normal(hit));
+                        out.nominal_mm[i] = t;
+                        out.deviation_mm[i] = result.thickness_mm[i] - t;  // NaN if either is
+                      }
+                      const std::size_t now = done += range.size();
+                      if (options.progress) {
+                        const std::scoped_lock lock(progress_mutex);
+                        const auto percent =
+                            static_cast<int>(100 * now / std::max<std::size_t>(n, 1));
+                        if (percent > reported_percent) {
+                          reported_percent = percent;
+                          options.progress(percent / 100.0);
+                        }
+                      }
+                    });
+  out.stats = deviationStats(result.mesh, out.deviation_mm, options.tolerance_mm);
+  out.thinner_regions = nominalRegions(result.mesh, out.deviation_mm, options.tolerance_mm, true);
+  out.thicker_regions = nominalRegions(result.mesh, out.deviation_mm, options.tolerance_mm, false);
+  result.nominal = std::move(out);
+}
+
 nlohmann::json toJson(const WallThicknessResult& result) {
   const ThicknessStats& s = result.stats;
   Json percentiles = Json::object();
@@ -807,6 +967,35 @@ nlohmann::json toJson(const WallThicknessResult& result) {
   if (result.method == Method::kRay) {
     json["search_angle_deg"] = result.search_angle_deg;
   }
+  if (result.nominal) {
+    const NominalThickness& nominal = *result.nominal;
+    const DeviationStats& d = nominal.stats;
+    Json deviation_percentiles = Json::object();
+    for (std::size_t i = 0; i < kDeviationPercentiles.size(); ++i) {
+      deviation_percentiles[std::to_string(static_cast<int>(kDeviationPercentiles[i]))] =
+          d.percentiles_mm[i];
+    }
+    json["nominal"] = {
+        {"source", nominal.source},
+        {"tolerance_mm", nominal.tolerance_mm},
+        {"compared_area_mm2", d.area_mm2},
+        {"compared_fraction", s.measured_area_mm2 > 0.0 ? d.area_mm2 / s.measured_area_mm2 : 0.0},
+        {"deviation",
+         {{"mean_mm", d.mean_mm},
+          {"std_mm", d.std_mm},
+          {"min_mm", d.min_mm},
+          {"max_mm", d.max_mm},
+          {"percentiles_mm", deviation_percentiles},
+          {"within_tolerance", d.within_tolerance},
+          {"thinner", d.below_tolerance},
+          {"thicker", d.above_tolerance},
+          {"range_mm", d.range_mm},
+          {"histogram", d.histogram}}},
+        {"thinner_region_count", nominal.thinner_regions.size()},
+        {"thinner_regions", regionsJson(nominal.thinner_regions)},
+        {"thicker_region_count", nominal.thicker_regions.size()},
+        {"thicker_regions", regionsJson(nominal.thicker_regions)}};
+  }
   return json;
 }
 
@@ -830,6 +1019,22 @@ void writeWallThickness(const WallThicknessResult& result, const std::filesystem
     view.elevation_degrees = kDeviationViews[k][1];
     writePng(render(scene, view), dir / ("thickness_view_" + std::to_string(k + 1) + ".png"));
   }
+  if (result.nominal) {
+    const NominalThickness& nominal = *result.nominal;
+    scene.vertex_colors.clear();
+    for (const float d : nominal.deviation_mm) {
+      scene.vertex_colors.push_back(
+          std::isfinite(d) ? deviationColor(d, nominal.tolerance_mm, nominal.stats.range_mm)
+                           : thicknessColor(d, 0.0, 0.0, 1.0));
+    }
+    for (std::size_t k = 0; k < kDeviationViews.size(); ++k) {
+      RenderView view;
+      view.azimuth_degrees = kDeviationViews[k][0];
+      view.elevation_degrees = kDeviationViews[k][1];
+      writePng(render(scene, view),
+               dir / ("thickness_deviation_view_" + std::to_string(k + 1) + ".png"));
+    }
+  }
 }
 
 ThicknessMesh readThicknessPly(const std::filesystem::path& file) {
@@ -845,6 +1050,18 @@ ThicknessMesh readThicknessPly(const std::filesystem::path& file) {
     }
     const auto points = ply.request_properties_from_element("vertex", {"x", "y", "z"});
     const auto thickness = ply.request_properties_from_element("vertex", {"thickness"});
+    bool has_nominal = false;
+    for (const tinyply::PlyElement& element : ply.get_elements()) {
+      for (const tinyply::PlyProperty& property : element.properties) {
+        has_nominal = has_nominal || (element.name == "vertex" && property.name == "nominal");
+      }
+    }
+    std::shared_ptr<tinyply::PlyData> nominal;
+    std::shared_ptr<tinyply::PlyData> deviation;
+    if (has_nominal) {
+      nominal = ply.request_properties_from_element("vertex", {"nominal"});
+      deviation = ply.request_properties_from_element("vertex", {"deviation"});
+    }
     const auto faces = ply.request_properties_from_element("face", {"vertex_indices"}, 3);
     ply.read(in);
     if (points->t != tinyply::Type::FLOAT32 || thickness->t != tinyply::Type::FLOAT32 ||
@@ -856,6 +1073,17 @@ ThicknessMesh readThicknessPly(const std::filesystem::path& file) {
     std::memcpy(out.mesh.points.data(), points->buffer.get(), points->buffer.size_bytes());
     out.thickness_mm.resize(thickness->count);
     std::memcpy(out.thickness_mm.data(), thickness->buffer.get(), thickness->buffer.size_bytes());
+    for (const auto& [data, values] :
+         {std::pair{nominal, &out.nominal_mm}, std::pair{deviation, &out.deviation_mm}}) {
+      if (!data) {
+        continue;
+      }
+      if (data->t != tinyply::Type::FLOAT32 || data->count != points->count) {
+        throw std::runtime_error("unexpected property types");
+      }
+      values->resize(data->count);
+      std::memcpy(values->data(), data->buffer.get(), data->buffer.size_bytes());
+    }
     std::vector<std::int32_t> indices(faces->count * 3);
     if (faces->buffer.size_bytes() != indices.size() * sizeof(std::int32_t)) {
       throw std::runtime_error("faces that are not triangles");

@@ -397,31 +397,40 @@ struct HttpServer::Impl {
          {"X-Displacement", view->displacement_mm.empty() ? "0" : "1"}});
   }
 
-  /// GET /api/wall_thickness[?step=5]
+  /// GET /api/wall_thickness[?step=5][&nominal=1]
   /// Body: the measured surface of a wall thickness step (Gui::thicknessMesh): three float32 per
   /// vertex in level-0 voxel coordinates, one float32 thickness in mm per vertex (NaN where none
   /// was found), then three uint32 indices per triangle. X-Min-Wall and X-Max-Wall are the limits
-  /// (0: none), X-Range the colour range.
+  /// (0: none), X-Range the colour range. X-Nominal says whether the step has a nominal thickness
+  /// from a CAD model; with nominal=1 the values are the deviation from it (actual minus nominal,
+  /// NaN where either is missing), X-Tolerance its tolerance and X-Range its colour range.
   http::message_generator wallThickness(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const std::optional<int> step = values.contains("step")
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
+    const bool nominal = values.contains("nominal") && values.at("nominal") != 0;
     const auto view = gui.thicknessMesh(step);
+    if (nominal && view->deviation_mm.empty()) {
+      throw std::invalid_argument("The wall thickness step has no nominal thickness");
+    }
     const auto& mesh = view->mesh;
+    const std::vector<float>& shown = nominal ? view->deviation_mm : view->thickness_mm;
     const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
-    const std::size_t thickness_bytes = view->thickness_mm.size() * sizeof(float);
+    const std::size_t thickness_bytes = shown.size() * sizeof(float);
     const std::size_t triangle_bytes = mesh.triangles.size() * sizeof(mesh.triangles[0]);
     std::string body(point_bytes + thickness_bytes + triangle_bytes, '\0');
     std::memcpy(body.data(), mesh.points.data(), point_bytes);
-    std::memcpy(body.data() + point_bytes, view->thickness_mm.data(), thickness_bytes);
+    std::memcpy(body.data() + point_bytes, shown.data(), thickness_bytes);
     std::memcpy(body.data() + point_bytes + thickness_bytes, mesh.triangles.data(), triangle_bytes);
     return binary(request, std::move(body),
                   {{"X-Vertices", std::to_string(mesh.points.size())},
                    {"X-Triangles", std::to_string(mesh.triangles.size())},
                    {"X-Min-Wall", std::to_string(view->min_wall_mm)},
                    {"X-Max-Wall", std::to_string(view->max_wall_mm)},
-                   {"X-Range", std::to_string(view->range_mm)}});
+                   {"X-Range", std::to_string(nominal ? view->deviation_range_mm : view->range_mm)},
+                   {"X-Tolerance", std::to_string(view->nominal_tolerance_mm)},
+                   {"X-Nominal", view->deviation_mm.empty() ? "0" : "1"}});
   }
 
   /// GET /api/object_mesh?object=2[&max_triangles=1500000]

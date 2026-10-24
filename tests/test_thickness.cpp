@@ -49,6 +49,8 @@ class ThicknessTest : public ::testing::Test {
                                 SurfaceMask::open(dir_ / "surface.vss"), options);
   }
 
+  WallThicknessResult measureAgainstHollowBoxCad(const PhantomSpec& spec);
+
   /// The hollow box of the phantom, 8 mm with walls of 1.5 mm, without pores.
   static PhantomSpec hollowBox(const VoxelSize& voxel_size) {
     PhantomSpec spec;
@@ -306,6 +308,183 @@ TEST_F(ThicknessTest, TheReportEvaluatesTheLimitsOfTheOrder) {
   addWallThickness(data, dir_ / "out", nlohmann::json::object());
   EXPECT_FALSE(data.contains("evaluation"));
   EXPECT_FALSE(data.at("wall_thickness").contains("min_wall"));
+  EXPECT_FALSE(data.at("wall_thickness").contains("nominal"));
+  EXPECT_TRUE(readThicknessPly(dir_ / "out" / "thickness.ply").deviation_mm.empty());
+  // Without a CAD model, an order with a tolerance for the nominal thickness cannot be evaluated.
+  data = nlohmann::json::object();
+  EXPECT_THROW(
+      addWallThickness(data, dir_ / "out", {{"wall_thickness", {{"nominal_tolerance_mm", 0.2}}}}),
+      std::invalid_argument);
+}
+
+/// CAD model of the hollow box in its own coordinates, with the cavity moved by 0.3 mm along +y:
+/// walls of 1.2 mm on that side, 1.8 mm opposite, 1.5 mm elsewhere. Placed on the phantom by
+/// hollowBoxCadToScan, its +y side lies at the top (+z) of the scan.
+Mesh hollowBoxCad() {
+  Mesh mesh = boxMesh({8.0, 8.0, 8.0});
+  for (auto t : boxMesh({5.0, 5.0, 5.0}, {0.0, 0.3, 0.0}).triangles) {
+    std::swap(t[1], t[2]);  // the cavity faces inward
+    mesh.triangles.push_back(t);
+  }
+  return mesh;
+}
+
+RigidTransform hollowBoxCadToScan(const PhantomSpec& spec) {
+  std::array<double, 3> center{};
+  for (std::size_t k = 0; k < 3; ++k) {
+    center[k] = (static_cast<double>(spec.dims[k]) / 2.0 - 0.5) * spec.voxel_size[k];
+  }
+  return RigidTransform::fromAxisAngle({1.0, 0.0, 0.0}, 90.0, center);
+}
+
+/// Deviation of the hollow box from hollowBoxCad at a surface point `p` in front of both
+/// cavities, away from their edges: +0.3 mm at the top, -0.3 mm at the bottom, 0 at the sides.
+std::optional<double> hollowBoxDeviation(const PhantomSpec& spec, const std::array<float, 3>& p) {
+  std::array<double, 3> rel{};
+  for (std::size_t k = 0; k < 3; ++k) {
+    rel[k] = p[k] - (static_cast<double>(spec.dims[k]) / 2.0 - 0.5) * spec.voxel_size[k];
+  }
+  int face = -1;
+  for (int k = 0; k < 3; ++k) {
+    if (std::abs(std::abs(rel[static_cast<std::size_t>(k)]) - 4.0) < 0.15) {
+      face = face < 0 ? k : 3;
+    }
+  }
+  if (face < 0 || face == 3) {
+    return std::nullopt;
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    if (static_cast<int>(k) != face && std::abs(rel[k]) > 1.9) {
+      return std::nullopt;
+    }
+  }
+  if (face != 2) {
+    return 0.0;
+  }
+  return rel[2] > 0.0 ? 0.3 : -0.3;
+}
+
+/// Share of the vertices with an analytic deviation that are within `tolerance` of it.
+std::pair<double, std::size_t> matchesHollowBoxDeviation(const PhantomSpec& spec,
+                                                         const IndexedMesh& mesh,
+                                                         const std::vector<float>& deviation_mm,
+                                                         double tolerance) {
+  std::size_t known = 0;
+  std::size_t matching = 0;
+  for (std::size_t i = 0; i < mesh.points.size(); ++i) {
+    const auto expected = hollowBoxDeviation(spec, mesh.points[i]);
+    if (!expected) {
+      continue;
+    }
+    ++known;
+    const float d = deviation_mm[i];
+    matching += std::isfinite(d) && std::abs(d - *expected) <= tolerance ? 1 : 0;
+  }
+  return {known > 0 ? static_cast<double>(matching) / static_cast<double>(known) : 0.0, known};
+}
+
+/// Rays through the hollow box of `spec`, compared with hollowBoxCad.
+WallThicknessResult ThicknessTest::measureAgainstHollowBoxCad(const PhantomSpec& spec) {
+  scan(PhantomSource(spec));
+  WallThicknessOptions options;
+  options.max_thickness_mm = 10.0;
+  WallThicknessResult result = measure(options);
+  NominalThicknessOptions nominal_options;
+  nominal_options.source = "box.stl";
+  nominal_options.tolerance_mm = 0.1;
+  addNominalThickness(result, hollowBoxCad(), hollowBoxCadToScan(spec), nominal_options);
+  return result;
+}
+
+TEST_F(ThicknessTest, ComparesTheRaysWithTheNominalThicknessOfTheCadModel) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  const WallThicknessResult result = measureAgainstHollowBoxCad(spec);
+  ASSERT_TRUE(result.nominal.has_value());
+  const NominalThickness nominal = result.nominal.value_or(NominalThickness{});
+  EXPECT_EQ(nominal.source, "box.stl");
+  ASSERT_EQ(nominal.nominal_mm.size(), result.mesh.points.size());
+  const auto [share, known] =
+      matchesHollowBoxDeviation(spec, result.mesh, nominal.deviation_mm, 0.06);
+  EXPECT_GT(known, 5000U);
+  EXPECT_GT(share, 0.97);
+  // Most of the surface is compared; the top and bottom faces in front of the cavity are a fifth
+  // of it, half thinner and half thicker than nominal.
+  EXPECT_GT(nominal.stats.area_mm2, 0.85 * result.stats.measured_area_mm2);
+  EXPECT_GT(nominal.stats.below_tolerance, 0.05);
+  EXPECT_GT(nominal.stats.above_tolerance, 0.05);
+  // The largest region thinner than nominal is the bottom face, the largest thicker one the top.
+  // Narrow strips of the side faces lie in front of the cavity in one and along a side wall in
+  // the other: the deviation there is the full width of the box.
+  ASSERT_FALSE(nominal.thinner_regions.empty());
+  ASSERT_FALSE(nominal.thicker_regions.empty());
+  const double top = (static_cast<double>(spec.dims[2]) / 2.0 - 0.5) * spec.voxel_size[2] + 4.0;
+  // (Their extreme value may come from a point at the rim of the cavity, where the ray just
+  // misses it on one of the two.)
+  const ThicknessRegion& thinner = nominal.thinner_regions.front();
+  EXPECT_NEAR(thinner.bounds_mm[1][2], top - 8.0, 0.2);
+  EXPECT_GT(thinner.area_mm2, 10.0);
+  const ThicknessRegion& thicker = nominal.thicker_regions.front();
+  EXPECT_NEAR(thicker.bounds_mm[0][2], top, 0.2);
+  EXPECT_GT(thicker.area_mm2, 10.0);
+  const auto strip =
+      std::min_element(nominal.thinner_regions.begin(), nominal.thinner_regions.end(),
+                       [](const ThicknessRegion& a, const ThicknessRegion& b) {
+                         return a.extreme_mm < b.extreme_mm;
+                       });
+  EXPECT_NEAR(strip->extreme_mm, -6.5, 0.2);
+
+  // Into the files and back.
+  writeWallThickness(result, dir_ / "out");
+  const ThicknessMesh read = readThicknessPly(dir_ / "out" / "thickness.ply");
+  ASSERT_EQ(read.deviation_mm.size(), read.mesh.points.size());
+  EXPECT_EQ(read.nominal_mm.size(), read.mesh.points.size());
+  std::ifstream in(dir_ / "out" / "wall_thickness.json");
+  const nlohmann::json json = nlohmann::json::parse(in);
+  EXPECT_EQ(json.at("nominal").at("source"), "box.stl");
+  EXPECT_EQ(json.at("nominal").at("thinner_region_count"), nominal.thinner_regions.size());
+  EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / "thickness_deviation_view_1.png"));
+}
+
+TEST_F(ThicknessTest, TheReportEvaluatesTheNominalThicknessAgainstTheOrder) {
+  writeWallThickness(measureAgainstHollowBoxCad(hollowBox(VoxelSize{0.1})), dir_ / "out");
+  // With the tolerance of the order: the top and bottom faces lie beyond 0.2 mm.
+  nlohmann::json data = nlohmann::json::object();
+  addWallThickness(data, dir_ / "out", {{"wall_thickness", {{"nominal_tolerance_mm", 0.2}}}});
+  const nlohmann::json& section = data.at("wall_thickness").at("nominal");
+  EXPECT_EQ(section.at("source"), "box.stl");
+  EXPECT_TRUE(section.at("has_thinner"));
+  EXPECT_FALSE(data.at("images").at("thickness_deviation_1").get<std::string>().empty());
+  const nlohmann::json& criteria = data.at("evaluation").at("zones").at(0).at("criteria");
+  ASSERT_EQ(criteria.size(), 2U);
+  EXPECT_FALSE(criteria.at(0).at("passed"));
+  EXPECT_FALSE(data.at("evaluation").at("passed"));
+  // Within 0.4 mm only the strips along the moved cavity remain, which an area may tolerate.
+  data = nlohmann::json::object();
+  addWallThickness(data, dir_ / "out",
+                   {{"wall_thickness",
+                     {{"nominal_tolerance_mm", 0.4}, {"max_area_outside_nominal_mm2", 20.0}}}});
+  EXPECT_TRUE(data.at("evaluation").at("passed"));
+}
+
+TEST_F(ThicknessTest, ComparesTheSpheresWithTheNominalThicknessOfTheCadModel) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  scan(PhantomSource(spec));
+  WallThicknessOptions options;
+  options.method = Method::kSphere;
+  WallThicknessResult result = measure(options);
+  NominalThicknessOptions nominal_options;
+  nominal_options.tolerance_mm = 0.1;
+  addNominalThickness(result, hollowBoxCad(), hollowBoxCadToScan(spec), nominal_options);
+  ASSERT_TRUE(result.nominal.has_value());
+  const auto [share, known] = matchesHollowBoxDeviation(
+      spec, result.mesh, result.nominal.value_or(NominalThickness{}).deviation_mm, 0.08);
+  EXPECT_GT(known, 5000U);
+  EXPECT_GT(share, 0.95);
+  EXPECT_THROW(addNominalThickness(result, Mesh{}, RigidTransform{}, nominal_options),
+               std::invalid_argument);
+  nominal_options.tolerance_mm = 0.0;
+  EXPECT_THROW(addNominalThickness(result, hollowBoxCad(), RigidTransform{}, nominal_options),
+               std::invalid_argument);
 }
 
 TEST_F(ThicknessTest, RejectsInvalidOptions) {

@@ -1078,6 +1078,11 @@ std::shared_ptr<const Gui::ThicknessView> Gui::thicknessMesh(
   view->min_wall_mm = info.value("min_wall_mm", 0.0);
   view->max_wall_mm = info.value("max_wall_mm", 0.0);
   view->range_mm = info.at("thickness").at("range_mm").get<double>();
+  if (!read.deviation_mm.empty()) {
+    view->deviation_mm = std::move(read.deviation_mm);
+    view->nominal_tolerance_mm = info.at("nominal").at("tolerance_mm").get<double>();
+    view->deviation_range_mm = info.at("nominal").at("deviation").at("range_mm").get<double>();
+  }
   const std::scoped_lock lock(surface_mutex_);
   thickness_meshes_.emplace_back(key, view);
   if (thickness_meshes_.size() > kOpenDatasets) {

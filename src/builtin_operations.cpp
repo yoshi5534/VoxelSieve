@@ -1374,6 +1374,47 @@ class CompareCad final : public Operation {
   OperationInfo info_;
 };
 
+const Json& objectEntry(const OperationContext& context, const std::string& id);
+IndexedMesh objectSurface(const Json& object, std::size_t max_triangles, bool outer_only,
+                          double& resolution_mm);
+
+/// The nominal geometry of a comparison step and where it lay on the scan: the CAD model of
+/// compare_cad or the nominal object of compare_objects.
+struct ComparedNominal {
+  Mesh mesh;
+  RigidTransform to_scan;
+  std::string source;
+  double tolerance_mm = 0.0;
+  bool bent = false;  // the comparison also registered it non-rigidly
+};
+
+ComparedNominal comparedNominal(const OperationContext& context,
+                                const std::filesystem::path& comparison_dir) {
+  std::ifstream in(comparison_dir / "compare.json");
+  if (!in) {
+    throw std::runtime_error("Cannot read " + (comparison_dir / "compare.json").string());
+  }
+  const Json json = Json::parse(in);
+  ComparedNominal nominal;
+  nominal.to_scan = RigidTransform::fromMatrix(json.at("cad_to_scan").get<std::vector<double>>());
+  nominal.tolerance_mm = json.at("tolerance_mm").get<double>();
+  nominal.bent = json.contains("deformation");
+  if (json.contains("cad_path")) {
+    const std::filesystem::path path = json.at("cad_path").get<std::string>();
+    nominal.mesh = readStl(path);
+    nominal.source = path.filename().string();
+  } else if (json.contains("nominal_object")) {
+    const std::string id = json.at("nominal_object").get<std::string>();
+    const Json& object = objectEntry(context, id);
+    double resolution_mm = 0.0;
+    nominal.mesh = triangleSoup(objectSurface(object, 2000000, true, resolution_mm));
+    nominal.source = object.at("name").get<std::string>();
+  } else {
+    throw std::invalid_argument("The comparison names no nominal geometry");
+  }
+  return nominal;
+}
+
 class WallThickness final : public Operation {
  public:
   WallThickness() {
@@ -1389,9 +1430,15 @@ class WallThickness final : public Operation {
         "views; without a surface step, the surface is extracted first. With volume_map, also "
         "the local thickness of every material voxel (largest sphere containing it): the "
         "dataset thickness_map, thickness_map.json and slices through the thickest spot; it "
-        "shows walls inside the part and material accumulations, and colours the slice view.";
+        "shows walls inside the part and material accumulations, and colours the slice view. "
+        "With a nominal-actual comparison, also the nominal thickness of the CAD model at "
+        "every point, by the same method, and the deviation of the actual thickness from it.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset"},
-                    {"surface", artifact::kSurface, "Surface of the dataset", true}};
+                    {"surface", artifact::kSurface, "Surface of the dataset", true},
+                    {"comparison", artifact::kComparison,
+                     "Nominal-actual comparison: its CAD model where it lies on the scan, for the "
+                     "nominal thickness",
+                     true}};
     info_.outputs = {{"wall_thickness", artifact::kWallThickness, "Wall thickness"}};
     info_.parameters = {
         {"type", "object"},
@@ -1452,7 +1499,19 @@ class WallThickness final : public Operation {
             {"default", 0},
             {"description",
              "Thickness map: thicker material gets this value; 0: the smallest extent of the "
-             "part, at most 64 voxels. Time and memory grow with it"}}}}}};
+             "part, at most 64 voxels. Time and memory grow with it"}}},
+          {"nominal_thickness",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description",
+             "With a comparison input: compare with the nominal thickness of its CAD model"}}},
+          {"nominal_tolerance_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Permitted deviation from the nominal thickness; 0: twice the tolerance of the "
+             "comparison (each face may deviate by it)"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1486,8 +1545,22 @@ class WallThickness final : public Operation {
     options.progress = [&](double fraction) {
       context.progress(start + (surface_end - start) * fraction);
     };
-    const WallThicknessResult thickness =
+    WallThicknessResult thickness =
         analyzeWallThickness(dataset, SurfaceMask::open(surface_file), options);
+    const auto comparison = context.inputs.find("comparison");
+    if (comparison != context.inputs.end() && p.at("nominal_thickness").get<bool>()) {
+      const ComparedNominal nominal = comparedNominal(context, comparison->second);
+      if (nominal.bent) {
+        context.log(
+            "The comparison also bent the CAD model; the nominal thickness is measured "
+            "where its rigid alignment placed it");
+      }
+      NominalThicknessOptions nominal_options;
+      nominal_options.source = nominal.source;
+      const double tolerance = p.at("nominal_tolerance_mm").get<double>();
+      nominal_options.tolerance_mm = tolerance > 0.0 ? tolerance : 2.0 * nominal.tolerance_mm;
+      addNominalThickness(thickness, nominal.mesh, nominal.to_scan, nominal_options);
+    }
     {
       const TelemetryPhase phase("write results");
       writeWallThickness(thickness, dir);
@@ -1512,6 +1585,17 @@ class WallThickness final : public Operation {
       result.summary["max_wall_mm"] = options.max_wall_mm;
       result.summary["above_max_percent"] = 100.0 * s.above_max;
       result.summary["thick_regions"] = thickness.thick_regions.size();
+    }
+    if (thickness.nominal) {
+      const DeviationStats& d = thickness.nominal->stats;
+      result.summary["nominal"] = thickness.nominal->source;
+      result.summary["nominal_tolerance_mm"] = thickness.nominal->tolerance_mm;
+      result.summary["nominal_compared_percent"] =
+          s.measured_area_mm2 > 0.0 ? 100.0 * d.area_mm2 / s.measured_area_mm2 : 0.0;
+      result.summary["nominal_deviation_min_mm"] = d.min_mm;
+      result.summary["nominal_deviation_max_mm"] = d.max_mm;
+      result.summary["thinner_than_nominal_percent"] = 100.0 * d.below_tolerance;
+      result.summary["thicker_than_nominal_percent"] = 100.0 * d.above_tolerance;
     }
     if (volume_map) {
       ThicknessMapOptions map_options;

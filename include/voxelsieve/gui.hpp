@@ -125,6 +125,11 @@ class Gui {
     double min_wall_mm = 0.0;
     double max_wall_mm = 0.0;
     double range_mm = 0.0;
+    /// With a nominal thickness from a CAD model: actual minus nominal per vertex (NaN where
+    /// either is missing), its tolerance and colour range; empty and 0 otherwise.
+    std::vector<float> deviation_mm;
+    double nominal_tolerance_mm = 0.0;
+    double deviation_range_mm = 0.0;
   };
   [[nodiscard]] std::shared_ptr<const ThicknessView> thicknessMesh(
       std::optional<int> thickness_step) const;
