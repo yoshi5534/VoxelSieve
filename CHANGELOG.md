@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Learned models three to four times faster on the CPU**: the convolution keeps the sums of
+  4 channels x 24 voxels in registers with AVX2 and FMA, chosen at run time on CPUs that have
+  them (the portable kernel stays for the others), concatenations are read by the next
+  convolution without being copied, and the feature maps of one tile are reused by the next
+  instead of being freshly allocated and zeroed. The Me 163 U-Net segmented a 1020x780x420
+  casting in 138 s instead of 493 s on four cores; a single voxel of 99 million changed class
+  through the rounding of FMA.
+
 - **Wall thickness**: the operation `wall_thickness` and the tool `vs-thickness` measure the wall
   thickness at every point of the part's surface, along the inward normal to the opposite face
   (ray, default) or as the largest inscribed sphere. Internal pores thin the wall they lie in.
