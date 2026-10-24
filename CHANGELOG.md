@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Battery section images next to the can wall**: bright pixels within 0.5 mm of the housing
+  outside the winding are taken for the bright fringe of the wall, strongest where the can bends
+  at the bottom, instead of rows of particles in the outermost turn. A warning says how many.
+
 - **Battery section images with fine layers and noise**: the particle threshold of each section
   image, and of each 2 mm band of a longitudinal section, lies at least six times the noise
   (measured along the layers) above the brightest 1 % of its electrode stack. Images that grow

@@ -304,6 +304,29 @@ TEST_F(BatteryTest, TakesTheParticleThresholdAboveTheNoiseOfTheLayers) {
   EXPECT_GT(analyzeBatteryImages(images, options).particles.size(), 1U);
 }
 
+// Bright pixels against the housing, like the fringe beside a can wall in real scans, are taken
+// for its edge; a particle in the winding is still found.
+TEST_F(BatteryTest, TakesBrightPixelsAtTheHousingForItsEdge) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.housing_gap_mm = 0.05;
+  // In the outermost turn, 0.35 mm from the inside of the can.
+  const double outer = spec.core_radius_mm + cellPitchMm(spec) * (5.0 + 300.0 / 360.0) + 0.05;
+  ASSERT_LT(cellOuterRadiusMm(spec) - spec.housing_wall_mm - outer, 0.4);
+  const double t = 300.0 * std::numbers::pi / 180.0;
+  spec.particles.push_back({{outer * std::cos(t), outer * std::sin(t), 0.3}, 0.08});
+  const double r = spec.core_radius_mm + cellPitchMm(spec) * (4.0 + 200.0 / 360.0) + 0.05;
+  const double u = 200.0 * std::numbers::pi / 180.0;
+  spec.particles.push_back({{r * std::cos(u), r * std::sin(u), 0.3}, 0.08});
+
+  const BatteryResult result = analyzeBatteryImages(cellImages(spec, -0.5));
+  ASSERT_EQ(result.particles.size(), 1U);
+  EXPECT_NEAR(result.particles[0].radius_mm, r, 0.06);
+  EXPECT_NEAR(result.particles[0].angle_deg, 200.0, 4.0);
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
+    return w.find("of the housing") != std::string::npos;
+  }));
+}
+
 // Section images in a folder per cell, 8-bit PNG files named by angle and position.
 // A tab, a cathode end far beyond the others, is left out of the overhang; a void in the
 // winding is found, one in the innermost turn, where folded separator looks like gas, is not;
