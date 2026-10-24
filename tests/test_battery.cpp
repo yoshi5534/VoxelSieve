@@ -258,6 +258,52 @@ TEST_F(BatteryTest, InspectsACylindricalCellFromSectionImages) {
   EXPECT_EQ(html.find("{{"), std::string::npos);
 }
 
+// Layers a few pixels apart: the overhang is not measured rather than read from the blur.
+TEST_F(BatteryTest, LeavesTheOverhangOutWhereLayersAreFewPixelsApart) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.cathode_thickness_mm = 0.04;
+  spec.anode_thickness_mm = 0.04;
+  spec.separator_thickness_mm = 0.02;
+  spec.turns = 12;
+  ASSERT_LT(cellPitchMm(spec), 6.0 * spec.voxel_size[0]);
+  const BatteryResult result = analyzeBatteryImages(cellImages(spec, -0.5));
+  EXPECT_TRUE(result.overhang.empty());
+  for (const BatteryEdge& edge : result.edges) {
+    EXPECT_EQ(edge.samples, 0);
+  }
+  EXPECT_TRUE(std::isnan(result.min_overhang_mm));
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const auto& w) {
+    return w.find("pixels apart") != std::string::npos;
+  }));
+}
+
+// Electrodes as bright as each other and little brighter than the gaps, with strong noise: the
+// noise on the layers reaches a threshold from the levels alone, a dense particle stands out.
+TEST_F(BatteryTest, TakesTheParticleThresholdAboveTheNoiseOfTheLayers) {
+  CellSpec spec = defaultCylindricalCell();
+  spec.anode_value = spec.cathode_value;
+  spec.electrolyte_value = spec.cathode_value - 4000;
+  spec.noise_sigma = 1500.0;
+  const double r = spec.core_radius_mm + cellPitchMm(spec) * (4.0 + 120.0 / 360.0) + 0.05;
+  const double t = 120.0 * std::numbers::pi / 180.0;
+  spec.particles.push_back({{r * std::cos(t), r * std::sin(t), 0.3}, 0.08});
+  const CellImages images = cellImages(spec, -0.5);
+
+  const BatteryResult result = analyzeBatteryImages(images);
+  EXPECT_FALSE(result.levels.electrodes_distinct);
+  EXPECT_LT(result.particle_threshold, spec.cathode_value + 4.0 * spec.noise_sigma);
+  ASSERT_EQ(result.particles.size(), 1U);
+  EXPECT_NEAR(result.particles[0].radius_mm, r, 0.06);
+  EXPECT_NEAR(result.particles[0].angle_deg, 120.0, 4.0);
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
+                          [](const auto& w) { return w.find("raised") != std::string::npos; }));
+
+  // With the threshold from the levels alone, the noise is found as particles.
+  BatteryOptions options;
+  options.particle_threshold = static_cast<float>(result.particle_threshold);
+  EXPECT_GT(analyzeBatteryImages(images, options).particles.size(), 1U);
+}
+
 // Section images in a folder per cell, 8-bit PNG files named by angle and position.
 // A tab, a cathode end far beyond the others, is left out of the overhang; a void in the
 // winding is found, one in the innermost turn, where folded separator looks like gas, is not;

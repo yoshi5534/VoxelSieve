@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Battery section images with fine layers and noise**: the particle threshold of each section
+  image, and of each 2 mm band of a longitudinal section, lies at least six times the noise
+  (measured along the layers) above the brightest 1 % of its electrode stack. Images that grow
+  brighter along the cell no longer show their noise as thousands of particles; a warning says
+  where the threshold was raised. Voids are dropped near and beyond the ends of the stack where
+  more than 1 % of a cross-section's stack is as dark as gas. With
+  layers fewer than six pixels apart the overhang is reported as not measured rather than read
+  from the blur of two or three pixels.
+
 - **Battery images with many findings**: sections of findings are joined through a grid instead
   of comparing every pair, which kept one core busy for hours on large cells.
 

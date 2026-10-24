@@ -2892,6 +2892,102 @@ std::vector<char> darkFrom(const CellImage& image, std::int64_t from, std::int64
   return mask;
 }
 
+/// Particle thresholds of one section image, one per band of rows: `global`, or higher where the
+/// brightest layers of the band reach it with their noise. Section images often grow brighter or
+/// darker along the cell, and a threshold from the levels of the whole cell then takes the noise
+/// on the brightest layers for thousands of particles. `samples` are grey values in the electrode
+/// stack per band, `steps` differences between pixels two apart along the layers, which see the
+/// same layer and, unlike direct neighbours, mostly independent noise.
+std::vector<double> imageParticleThresholds(std::vector<std::vector<double>> samples,
+                                            std::vector<double> steps, double global) {
+  constexpr std::size_t kMinSamples = 500;
+  // Noise above the 99th percentile of the stack, that is above nearly every layer pixel.
+  constexpr double kNoiseMargin = 6.0;
+  std::vector<double> thresholds(samples.size(), global);
+  if (steps.size() < kMinSamples) {
+    return thresholds;
+  }
+  for (double& step : steps) {
+    step = std::abs(step);
+  }
+  // Median absolute difference of two pixels: 0.6745 * sqrt(2) noise.
+  const double noise = median(std::move(steps)) / (0.6745 * std::numbers::sqrt2);
+  // Bands with few samples take the levels of the whole image.
+  std::vector<double> all;
+  for (const std::vector<double>& band : samples) {
+    all.insert(all.end(), band.begin(), band.end());
+  }
+  if (all.size() < kMinSamples) {
+    return thresholds;
+  }
+  const double whole = quantile(all, 0.99);
+  for (std::size_t i = 0; i < samples.size(); ++i) {
+    const double top = samples[i].size() >= kMinSamples ? quantile(samples[i], 0.99) : whole;
+    thresholds[i] = std::max(global, top + kNoiseMargin * noise);
+  }
+  return thresholds;
+}
+
+/// Inside the winding the gaps hold electrolyte, and nearly no pixel of the stack is as dark as
+/// gas. Where the electrode ends were not measured, the region searched can reach beyond them,
+/// into cross-sections where the electrodes end one after another and the space between them
+/// looks like gas: the innermost of the cross-sections at either end with more than a percent of
+/// their stack as dark as gas marks an end, and voids near or beyond it are dropped.
+void leaveOutVoidsBeyondTheEnds(const ImageCell& cell, const std::vector<double>& gas_fraction,
+                                std::vector<std::vector<CellFinding>>& dark,
+                                BatteryResult& result) {
+  constexpr double kMaxGasFraction = 0.01;
+  constexpr double kEndMarginMm = 0.5;
+  std::vector<std::size_t> inside;
+  for (std::size_t c = 0; c < gas_fraction.size(); ++c) {
+    if (!std::isnan(gas_fraction[c])) {
+      inside.push_back(c);
+    }
+  }
+  if (inside.empty()) {
+    return;
+  }
+  const std::size_t mid = inside[inside.size() / 2];
+  double low = -std::numeric_limits<double>::infinity();
+  double high = std::numeric_limits<double>::infinity();
+  // An end only where every cross-section beyond it is as dark too: a large void in the middle
+  // darkens a few cross-sections, with clear ones beyond.
+  const auto beyond = [&](std::size_t c) { return !(gas_fraction[c] <= kMaxGasFraction); };
+  for (std::size_t c = 0; c < mid && beyond(c); ++c) {
+    if (!std::isnan(gas_fraction[c])) {
+      low = static_cast<double>(cell.cross_index[c]) * cell.pixel + kEndMarginMm;
+    }
+  }
+  for (std::size_t c = gas_fraction.size() - 1; c > mid && beyond(c); --c) {
+    if (!std::isnan(gas_fraction[c])) {
+      high = static_cast<double>(cell.cross_index[c]) * cell.pixel - kEndMarginMm;
+    }
+  }
+  std::size_t dropped = 0;
+  for (std::vector<CellFinding>& found : dark) {
+    dropped += std::erase_if(
+        found, [&](const CellFinding& f) { return f.center_mm[2] < low || f.center_mm[2] > high; });
+  }
+  if (dropped > 0) {
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(2) << "Cross-sections";
+    if (std::isfinite(low)) {
+      text << " below z " << low - kEndMarginMm << " mm";
+    }
+    if (std::isfinite(low) && std::isfinite(high)) {
+      text << " and";
+    }
+    if (std::isfinite(high)) {
+      text << " above z " << high + kEndMarginMm << " mm";
+    }
+    text << " are as dark as gas in more than 1 % of the electrode stack, where the electrodes "
+            "end; "
+         << dropped << " void sections within " << kEndMarginMm << " mm of the ends or beyond "
+         << "are not counted";
+    result.warnings.push_back(text.str());
+  }
+}
+
 /// Particles and voids as their sections in the images; one finding seen in several images is
 /// kept once, from the image where it is largest.
 void imageFindings(const ImageCell& cell, const InRegion& in_region, const CylinderData& data,
@@ -2907,6 +3003,29 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
   std::vector<std::vector<CellFinding>> bright(n_jobs);
   std::vector<std::vector<CellFinding>> dark(n_jobs);
   std::atomic<bool> too_many{false};
+  // Every fourth pixel along both image axes is enough for the levels of an image; the levels of
+  // longitudinal sections are taken in bands this long along the axis.
+  constexpr std::int64_t kSampleStep = 4;
+  constexpr double kBandMm = 2.0;
+  const std::int64_t band_rows = std::max<std::int64_t>(1, std::lround(kBandMm / cell.pixel));
+  std::vector<double> thresholds(n_jobs, result.particle_threshold);
+  // Share of the electrode stack in each cross-section as dark as gas.
+  std::vector<double> gas_fraction(n_cross, kNaN);
+  // Raises the threshold of `job` per band of `rows` rows from its samples and keeps the pixels
+  // above it in `b`.
+  const auto adapt = [&](std::size_t job, Found& b, std::vector<std::vector<double>>& samples,
+                         std::vector<double>& steps, std::int64_t width, std::int64_t rows) {
+    if (options.particle_threshold) {
+      return;
+    }
+    const std::vector<double> t =
+        imageParticleThresholds(std::move(samples), std::move(steps), result.particle_threshold);
+    thresholds[job] = *std::max_element(t.begin(), t.end());
+    std::erase_if(b, [&](const auto& pixel) {
+      const auto band = static_cast<std::int64_t>(pixel.first) / width / rows;
+      return pixel.second < static_cast<float>(t[at(band)]);
+    });
+  };
   const auto finish = [&](std::size_t job, Found& b, Found& d, std::int64_t width,
                           std::int64_t height, const auto& place) {
     if (b.size() + d.size() > kMaxFindingVoxels / 16) {
@@ -2937,9 +3056,35 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
       const std::vector<char> core = darkFrom(image, 0, image.width, gas,
                                               {std::lround(centre[0] / cell.pixel) +
                                                image.width * std::lround(centre[1] / cell.pixel)});
+      std::vector<std::vector<double>> samples(1);
+      std::vector<double> steps;
+      std::size_t sampled = 0;
+      std::size_t gas_like = 0;
+      const double cx = centre[0] / cell.pixel;
+      const double cy = centre[1] / cell.pixel;
       for (std::int64_t y = 0; y < image.height; ++y) {
         for (std::int64_t x = 0; x < image.width; ++x) {
           const auto value = static_cast<float>(image.values[at(x + image.width * y)]);
+          if (x % kSampleStep == 0 && y % kSampleStep == 0 && in_region({x, y, k}, true)) {
+            ++sampled;
+            if (value <= gas || core[at(x + image.width * y)] != 0) {
+              ++gas_like;
+            } else {
+              samples[0].push_back(value);
+              // Pixels around the axis lie on the same turn.
+              const double dx = static_cast<double>(x) - cx;
+              const double dy = static_cast<double>(y) - cy;
+              const double r = std::max(std::hypot(dx, dy), 1.0);
+              const std::int64_t nx = x - std::lround(2.0 * dy / r);
+              const std::int64_t ny = y + std::lround(2.0 * dx / r);
+              if (nx >= 0 && nx < image.width && ny >= 0 && ny < image.height) {
+                const auto next = static_cast<float>(image.values[at(nx + image.width * ny)]);
+                if (next > gas) {
+                  steps.push_back(static_cast<double>(value) - next);
+                }
+              }
+            }
+          }
           if ((value < particle && value > gas) || core[at(x + image.width * y)] != 0 ||
               !in_region({x, y, k}, value >= particle)) {
             continue;
@@ -2948,6 +3093,9 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
               .emplace_back(static_cast<std::uint64_t>(x + image.width * y), value);
         }
       }
+      adapt(job, b, samples, steps, image.width, image.height);
+      gas_fraction[job] =
+          sampled > 0 ? static_cast<double>(gas_like) / static_cast<double>(sampled) : kNaN;
       finish(job, b, d, image.width, image.height, [&](double x, double y) {
         return Vec3{x * cell.pixel, y * cell.pixel, static_cast<double>(k) * cell.pixel};
       });
@@ -2977,28 +3125,52 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
       }
     }
     const std::vector<char> core = darkFrom(image, from, to, gas, seeds);
+    std::vector<std::vector<double>> samples(at((image.height + band_rows - 1) / band_rows));
+    std::vector<double> steps;
+    const auto voxel = [&](std::int64_t col, std::int64_t row) {
+      const Vec3 p = to3d(static_cast<double>(col), static_cast<double>(row));
+      return Index3{std::lround(p[0] / cell.pixel), std::lround(p[1] / cell.pixel),
+                    std::lround(p[2] / cell.pixel)};
+    };
     for (std::int64_t row = 0; row < image.height; ++row) {
       for (std::int64_t col = from; col < to; ++col) {
         const auto value = static_cast<float>(image.values[at(col + image.width * row)]);
-        if ((value < particle && value > gas) || core[at(col + image.width * row)] != 0) {
-          continue;
+        if (col % kSampleStep == 0 && row % kSampleStep == 0 && row + 2 < image.height &&
+            value > gas && core[at(col + image.width * row)] == 0 &&
+            in_region(voxel(col, row), true)) {
+          samples[at(row / band_rows)].push_back(value);
+          // The layers run along the axis, down the image.
+          const auto next = static_cast<float>(image.values[at(col + image.width * (row + 2))]);
+          if (next > gas) {
+            steps.push_back(static_cast<double>(value) - next);
+          }
         }
-        const Vec3 p = to3d(static_cast<double>(col), static_cast<double>(row));
-        const Index3 v{std::lround(p[0] / cell.pixel), std::lround(p[1] / cell.pixel),
-                       std::lround(p[2] / cell.pixel)};
-        if (!in_region(v, value >= particle)) {
+        if ((value < particle && value > gas) || core[at(col + image.width * row)] != 0 ||
+            !in_region(voxel(col, row), value >= particle)) {
           continue;
         }
         (value >= particle ? b : d)
             .emplace_back(static_cast<std::uint64_t>(col + image.width * row), value);
       }
     }
+    adapt(job, b, samples, steps, image.width, band_rows);
     finish(job, b, d, image.width, image.height, to3d);
   });
   if (too_many) {
     throw std::runtime_error(
         "Too many pixels above the particle threshold or below the void threshold in the "
         "electrode stack; set the thresholds by hand");
+  }
+  leaveOutVoidsBeyondTheEnds(cell, gas_fraction, dark, result);
+  const auto raised = std::count_if(thresholds.begin(), thresholds.end(),
+                                    [&](double t) { return t > result.particle_threshold; });
+  if (raised > 0) {
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << "In " << raised << " of " << n_jobs
+         << " section images (halves of longitudinal sections counted apart) the brightest layers "
+            "with their noise reach the particle threshold; there it is raised up to "
+         << *std::max_element(thresholds.begin(), thresholds.end());
+    result.warnings.push_back(text.str());
   }
   // Neighbouring cross-sections lie up to this far apart along the axis.
   double spacing = cell.pixel;
@@ -3113,6 +3285,9 @@ void imageFindings(const ImageCell& cell, const InRegion& in_region, const Cylin
   separateStructures(result, options);
 }
 
+/// Fewest pixels between neighbouring layers for an overhang measured in section images.
+constexpr double kMinPixelsPerLayer = 6.0;
+
 BatteryResult analyzeImages(const CellImages& images, const BatteryOptions& options) {
   if (options.cell_type && *options.cell_type != CellType::kCylindrical) {
     throw std::invalid_argument("Cells given as section images must be cylindrical");
@@ -3153,6 +3328,21 @@ BatteryResult analyzeImages(const CellImages& images, const BatteryOptions& opti
   extras.long_axis = 1;
   extras.long_index = static_cast<std::int64_t>(std::lround(data.centre(centre_z)[1] / cell.pixel));
   summarizeSections(result);
+  // Where the layers lie only a few pixels apart, the ends of cathode and anode blur into each
+  // other: an overhang of 0.1 mm is then two or three pixels, as large as that blur.
+  if (!result.overhang.empty() && result.pitch_mm < kMinPixelsPerLayer * cell.pixel) {
+    result.overhang.clear();
+    result.min_overhang_mm = kNaN;
+    for (BatteryEdge& edge : result.edges) {
+      edge.samples = 0;
+      edge.worst = -1;
+    }
+    summarizeEdges(result);
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << "The layers lie " << result.pitch_mm / cell.pixel
+         << " pixels apart, fewer than " << kMinPixelsPerLayer << "; the overhang is not measured";
+    result.warnings.push_back(text.str());
+  }
   setThresholds(result, options);
   imageFindings(cell, cylinderRegion(data, result.voxel_size), data, result, options);
   placeFindings(result);
