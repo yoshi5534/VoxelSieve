@@ -289,7 +289,9 @@ const std::vector<Prompt>& prompts() {
        "run it again with method sphere.\n"
        "3. Report the thinnest wall, the median, the share of the surface measured and every "
        "thin region with its thickness, area and location; look at the thinnest one with "
-       "view_slice through its location.\n"
+       "view_slice through its location. For castings, run it with volume_map true as well: "
+       "the thickness map shows material accumulations inside the part (thick_regions of "
+       "thickness_map.json with max_wall_mm), where shrinkage porosity forms.\n"
        "4. Run run_report with an order whose wall_thickness section holds min_mm {min_wall} "
        "(run_porosity first, the report needs it) and state whether the limit is met, quoting "
        "the values of the steps, not estimates."},

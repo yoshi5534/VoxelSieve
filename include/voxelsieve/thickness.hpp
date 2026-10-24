@@ -12,6 +12,11 @@
 //   thickness that castings are designed with.
 //
 // Internal pores reduce the wall: a ray stops at a pore and a sphere does not reach into one.
+//
+// The thickness map (writeThicknessMap) gives every material voxel the local thickness: the
+// diameter of the largest sphere inside the material that contains the voxel. It shows walls
+// inside the part and accumulations of material (thick nodes, where castings shrink) that the
+// surface alone does not.
 
 #include <array>
 #include <cstddef>
@@ -147,5 +152,76 @@ struct ThicknessMesh {
 /// (limits of 0 are off); grey where nothing was measured (NaN).
 [[nodiscard]] std::array<std::uint8_t, 3> thicknessColor(double thickness_mm, double min_wall_mm,
                                                          double max_wall_mm, double range_mm);
+
+/// Thickness map of the whole part (ADR 0030): the local thickness at every material voxel.
+struct ThicknessMapOptions {
+  /// Thicker material gets this value. 0: the smallest extent of the part, which no wall exceeds,
+  /// but at most 64 voxels of the finest pitch. Time and memory grow with it: every tile is read
+  /// with a halo of twice the largest sphere radius.
+  double max_thickness_mm = 0.0;
+  /// Limits of the drawing: material thinner than `min_wall_mm` or thicker than `max_wall_mm` is
+  /// listed as regions of its own. 0: no limit.
+  double min_wall_mm = 0.0;
+  double max_wall_mm = 0.0;
+  /// Called with the fraction done, 0 to 1, from one thread at a time.
+  std::function<void(double fraction)> progress;
+};
+
+/// Connected material thinner than the minimum or thicker than the maximum wall, found on blocks
+/// of `ThicknessMapResult::block_voxels` voxels per axis.
+struct ThicknessMapRegion {
+  int id = 0;
+  std::int64_t voxels = 0;  // voxels beyond the limit
+  double volume_mm3 = 0.0;
+  /// Thinnest or thickest value and the centre of the block it lies in, mm in the dataset's
+  /// coordinates.
+  double extreme_mm = 0.0;
+  std::array<double, 3> location_mm{};
+  std::array<std::array<double, 3>, 2> bounds_mm{};
+};
+
+struct ThicknessMapResult {
+  VoxelSize voxel_size;
+  float iso_value = 0.0F;
+  double max_thickness_mm = 0.0;
+  double min_wall_mm = 0.0;
+  double max_wall_mm = 0.0;
+  std::int64_t material_voxels = 0;
+  double material_volume_mm3 = 0.0;
+  /// Volume-weighted statistics; `capped` is the fraction of the material at the maximum.
+  double min_mm = 0.0;
+  double max_mm = 0.0;
+  double mean_mm = 0.0;
+  double std_mm = 0.0;
+  std::array<double, 5> percentiles_mm{};  // kThicknessPercentiles
+  double below_min = 0.0;
+  double above_max = 0.0;
+  double capped = 0.0;
+  /// Histogram range 0 to range_mm; volume fraction per bin, the last bin includes what lies
+  /// beyond.
+  double range_mm = 0.0;
+  std::vector<double> histogram;
+  /// Material voxels per bin of `fine_bin_mm` from 0 to the maximum thickness, for the shares
+  /// beyond other limits (the report evaluates the limits of the order with it).
+  double fine_bin_mm = 0.0;
+  std::vector<std::int64_t> fine_histogram;
+  /// The thickest voxel, mm in the dataset's coordinates.
+  std::array<double, 3> thickest_mm{};
+  std::int64_t block_voxels = 8;
+  std::vector<ThicknessMapRegion> thin_regions;   // thinnest first
+  std::vector<ThicknessMapRegion> thick_regions;  // thickest first
+};
+
+/// Writes the thickness map of the material of `dataset` (grey values at or above the iso value of
+/// `surface`) to `dir`: the dataset `dir`/thickness_map with the local thickness in mm per
+/// material voxel (pores and air removed), thickness_map.json and slices along x, y and z through
+/// the thickest spot coloured by thickness (thickness_map_x.png, ...). `dir` may exist but must
+/// not hold a thickness_map yet. The volume is processed tile by tile with a halo, so memory does
+/// not grow with the scan (ADR 0004).
+ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& surface,
+                                     const std::filesystem::path& dir,
+                                     const ThicknessMapOptions& options = {});
+
+[[nodiscard]] nlohmann::json toJson(const ThicknessMapResult& result);
 
 }  // namespace voxelsieve

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Thickness map inside the part**: `wall_thickness` with `volume_map` (`vs-thickness
+  --volume-map`) writes the local thickness of every material voxel, the diameter of the largest
+  sphere inside the material that contains it, as a dataset with statistics, regions thinner or
+  thicker than the limits and slices through the thickest spot. Convex edges count to the wall
+  they bound. The slice view colours the material by it, and the report shows it and evaluates
+  the thickest spot inside the part against the order's maximum (ADR 0030).
+
 - **Wall thickness**: the operation `wall_thickness` and the tool `vs-thickness` measure the wall
   thickness at every point of the part's surface, along the inward normal to the opposite face
   (ray, default) or as the largest inscribed sphere. Internal pores thin the wall they lie in.

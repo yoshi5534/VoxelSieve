@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/thickness.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/render.hpp"
@@ -35,8 +36,6 @@ using Json = nlohmann::json;
 using Method = WallThicknessOptions::Method;
 
 constexpr float kNotMeasured = std::numeric_limits<float>::quiet_NaN();
-/// Regions listed in wall_thickness.json; the counts include the rest.
-constexpr std::size_t kListedRegions = 100;
 
 Vec operator+(const Vec& a, const Vec& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
 Vec operator-(const Vec& a, const Vec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
@@ -51,20 +50,6 @@ Vec normalized(const Vec& a) {
   return n > 0.0 ? (1.0 / n) * a : Vec{0.0, 0.0, 0.0};
 }
 Vec toVec(const std::array<float, 3>& p) { return {p[0], p[1], p[2]}; }
-
-/// Smallest power-of-ten multiple of 1, 2, 2.5 or 5 that is at least `value`.
-double niceCeil(double value) {
-  if (value <= 0.0) {
-    return 1.0;
-  }
-  const double power = std::pow(10.0, std::floor(std::log10(value)));
-  for (const double m : {1.0, 2.0, 2.5, 5.0, 10.0}) {
-    if (m * power >= value * (1.0 - 1e-9)) {
-      return m * power;
-    }
-  }
-  return 10.0 * power;
-}
 
 /// Grey values of level 0 at positions in mm, trilinear between the voxel centres; removed
 /// outside air and positions outside the volume read as the air level. For one thread.
@@ -428,7 +413,7 @@ ThicknessStats statsOf(const IndexedMesh& mesh, const std::vector<float>& thickn
   for (; next < kThicknessPercentiles.size(); ++next) {
     s.percentiles_mm[next] = s.max_mm;
   }
-  s.range_mm = niceCeil(std::max({s.percentiles_mm[4], 1.25 * min_wall, max_wall}));
+  s.range_mm = detail::niceCeil(std::max({s.percentiles_mm[4], 1.25 * min_wall, max_wall}));
   for (const std::uint32_t i : measured) {
     const int bin =
         std::clamp(static_cast<int>(std::floor(thickness[i] / s.range_mm * kBins)), 0, kBins - 1);
@@ -502,7 +487,7 @@ std::vector<ThicknessRegion> regionsOf(const IndexedMesh& mesh, const std::vecto
 
 Json regionsJson(const std::vector<ThicknessRegion>& regions) {
   Json list = Json::array();
-  for (std::size_t i = 0; i < std::min(regions.size(), kListedRegions); ++i) {
+  for (std::size_t i = 0; i < std::min(regions.size(), detail::kListedRegions); ++i) {
     const ThicknessRegion& r = regions[i];
     list.push_back({{"id", r.id},
                     {"thickness_mm", r.extreme_mm},

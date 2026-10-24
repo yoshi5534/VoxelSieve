@@ -22,6 +22,7 @@ namespace voxelsieve {
 namespace {
 
 using Method = WallThicknessOptions::Method;
+using Index3 = std::array<std::int64_t, 3>;
 
 class ThicknessTest : public ::testing::Test {
  protected:
@@ -317,6 +318,183 @@ TEST_F(ThicknessTest, RejectsInvalidOptions) {
   EXPECT_THROW((void)measure(options), std::invalid_argument);
   EXPECT_THROW((void)thicknessMethodFromString("cube"), std::invalid_argument);
   EXPECT_EQ(thicknessMethodFromString("sphere"), Method::kSphere);
+}
+
+/// Local thickness of the hollow box at voxel `p` (the wall), or nullopt within 0.5 mm of the
+/// edges and corners of the cavity or of the box, where it grows towards the diagonals.
+std::optional<double> hollowBoxLocalThickness(const PhantomSpec& spec, const Index3& p) {
+  const std::array<double, 3> rel = voxelCenterMm(spec, p[0], p[1], p[2]);
+  int in_wall = 0;
+  for (const double r : rel) {
+    const double a = std::abs(r);
+    if (a > 3.9) {
+      return std::nullopt;  // at the outer face: partial volume
+    }
+    if (a > 2.6) {
+      ++in_wall;
+    } else if (a > 2.0) {
+      return std::nullopt;
+    }
+  }
+  return in_wall == 1 ? std::optional<double>(1.5) : std::nullopt;
+}
+
+class ThicknessMapTest : public ThicknessTest {
+ protected:
+  [[nodiscard]] ThicknessMapResult map(const ThicknessMapOptions& options) const {
+    return writeThicknessMap(Dataset::open(dir_ / "scan.vsieve"),
+                             SurfaceMask::open(dir_ / "surface.vss"), dir_ / "out", options);
+  }
+
+  /// Share of the voxels with an analytic local thickness within `tolerance` of it.
+  [[nodiscard]] std::pair<double, std::size_t> matches(const PhantomSpec& spec,
+                                                       double tolerance) const {
+    const Dataset map = Dataset::open(dir_ / "out" / "thickness_map");
+    Dataset::Sampler sample(map, 0);
+    std::size_t known = 0;
+    std::size_t matching = 0;
+    for (std::int64_t z = 0; z < spec.dims[2]; ++z) {
+      for (std::int64_t y = 0; y < spec.dims[1]; ++y) {
+        for (std::int64_t x = 0; x < spec.dims[0]; ++x) {
+          const auto expected = hollowBoxLocalThickness(spec, {x, y, z});
+          if (!expected) {
+            continue;
+          }
+          ++known;
+          const auto t = sample({x, y, z});
+          matching += t && std::abs(*t - *expected) <= tolerance ? 1 : 0;
+        }
+      }
+    }
+    return {known > 0 ? static_cast<double>(matching) / static_cast<double>(known) : 0.0, known};
+  }
+};
+
+TEST_F(ThicknessMapTest, MapsTheWallsOfTheHollowBox) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  scan(PhantomSource(spec));
+  ThicknessMapOptions options;
+  options.max_thickness_mm = 4.0;
+  const ThicknessMapResult result = map(options);
+  // The walls are 15 voxels: 1.5 mm and half a voxel.
+  const auto [share, known] = matches(spec, 0.1);
+  EXPECT_GT(known, 50000U);
+  EXPECT_GT(share, 0.99);
+  EXPECT_NEAR(result.material_volume_mm3, phantomMaterialVolumeMm3(spec), 15.0);
+  // The edges of the box belong to the walls they join; the largest balls fit into its corners,
+  // 1.5 sqrt(3) / (1 + sqrt(3)) mm in radius.
+  EXPECT_NEAR(result.percentiles_mm[1], 1.55, 0.1);
+  EXPECT_GT(result.min_mm, 1.3);
+  EXPECT_NEAR(result.max_mm, 2.0 * 1.5 * std::sqrt(3.0) / (1.0 + std::sqrt(3.0)), 0.15);
+  EXPECT_DOUBLE_EQ(result.capped, 0.0);
+  double histogram = 0.0;
+  for (const double h : result.histogram) {
+    histogram += h;
+  }
+  EXPECT_NEAR(histogram, 1.0, 1e-9);
+}
+
+TEST_F(ThicknessMapTest, FollowsThePitchOfLongVoxels) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1, 0.1, 0.15});
+  scan(PhantomSource(spec));
+  ThicknessMapOptions options;
+  options.max_thickness_mm = 4.0;
+  (void)map(options);
+  const auto [share, known] = matches(spec, 0.12);
+  EXPECT_GT(known, 30000U);
+  EXPECT_GT(share, 0.98);
+}
+
+TEST_F(ThicknessMapTest, CapsSolidMaterialAndFindsItsRegions) {
+  // A solid cube of 8 mm with a pore near one face: thicker than the maximum except at its edges
+  // and next to the pore.
+  PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  spec.wall_thickness_mm = 0.0;
+  spec.pores = {{{0.0, 0.0, 3.0}, 0.4}};  // 0.6 mm below the top face
+  scan(PhantomSource(spec));
+  ThicknessMapOptions options;
+  options.max_thickness_mm = 3.0;
+  options.min_wall_mm = 1.0;
+  options.max_wall_mm = 2.5;
+  const ThicknessMapResult result = map(options);
+  EXPECT_DOUBLE_EQ(result.max_mm, 3.0);
+  EXPECT_GT(result.capped, 0.8);
+  EXPECT_GE(result.above_max, result.capped);
+  // The material is one region thicker than the maximum.
+  ASSERT_EQ(result.thick_regions.size(), 1U);
+  EXPECT_NEAR(result.thick_regions.front().volume_mm3,
+              result.above_max * result.material_volume_mm3, 1e-6);
+  // Thin: the 0.6 mm of material above the pore.
+  ASSERT_EQ(result.thin_regions.size(), 1U);
+  const ThicknessMapRegion& thin = result.thin_regions.front();
+  EXPECT_NEAR(thin.extreme_mm, 0.6, 0.1);
+  EXPECT_NEAR(thin.location_mm[0], 5.0, 0.6);
+  EXPECT_NEAR(thin.location_mm[1], 5.0, 0.6);
+  EXPECT_NEAR(thin.location_mm[2], 8.6, 0.6);
+  EXPECT_LT(thin.volume_mm3, 1.0);
+}
+
+TEST_F(ThicknessMapTest, WritesItsFiles) {
+  scan(PhantomSource(hollowBox(VoxelSize{0.2})));
+  ThicknessMapOptions options;
+  options.min_wall_mm = 1.7;
+  const ThicknessMapResult result = map(options);
+  for (const char* file : {"thickness_map.json", "thickness_map_x.png", "thickness_map_y.png",
+                           "thickness_map_z.png", "thickness_map/index.json"}) {
+    EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / file)) << file;
+  }
+  // The walls are thinner than the minimum, their edges and corners thicker.
+  ASSERT_FALSE(result.thin_regions.empty());
+  EXPECT_GT(result.below_min, 0.4);
+  EXPECT_LT(result.below_min, 0.8);
+  std::ifstream in(dir_ / "out" / "thickness_map.json");
+  const nlohmann::json json = nlohmann::json::parse(in);
+  EXPECT_EQ(json.at("thin_region_count"), result.thin_regions.size());
+  EXPECT_NEAR(json.at("thickness").at("percentiles_mm").at("50").get<double>(), 1.5, 0.2);
+  // Default maximum: the smallest extent of the part, from its bricks (here the volume).
+  EXPECT_NEAR(result.max_thickness_mm, 10.0, 0.25);
+  EXPECT_THROW((void)map(options), std::invalid_argument);  // the map exists already
+}
+
+TEST_F(ThicknessMapTest, TheReportShowsTheMapAndEvaluatesItsThickestSpot) {
+  scan(PhantomSource(hollowBox(VoxelSize{0.2})));
+  writeWallThickness(measure({}), dir_ / "out");
+  ThicknessMapOptions options;
+  options.min_wall_mm = 1.7;
+  const ThicknessMapResult result = map(options);
+
+  nlohmann::json data = nlohmann::json::object();
+  addWallThickness(data, dir_ / "out", {{"wall_thickness", {{"min_mm", 1.7}, {"max_mm", 2.5}}}});
+  const nlohmann::json& section = data.at("wall_thickness").at("map");
+  EXPECT_FALSE(section.at("median").get<std::string>().empty());
+  // The order's minimum is that of the analysis, so its regions are listed; the maximum is not.
+  EXPECT_TRUE(section.at("thin").at("has_regions"));
+  EXPECT_EQ(section.at("thin").at("regions").size(),
+            std::min<std::size_t>(result.thin_regions.size(), 10));
+  EXPECT_FALSE(section.at("thick").at("has_regions"));
+  EXPECT_FALSE(data.at("images").at("thickness_map_z").get<std::string>().empty());
+  const nlohmann::json& criteria = data.at("evaluation").at("zones").at(0).at("criteria");
+  const auto thickest = std::find_if(criteria.begin(), criteria.end(), [](const auto& c) {
+    return c.at("label") == "Thickest spot inside the part";
+  });
+  ASSERT_NE(thickest, criteria.end());
+  EXPECT_TRUE(thickest->at("passed"));  // the corners reach about 1.9 mm
+
+  // A maximum below the thickest spot fails it.
+  data = nlohmann::json::object();
+  addWallThickness(data, dir_ / "out", {{"wall_thickness", {{"max_mm", result.max_mm - 0.1}}}});
+  EXPECT_FALSE(data.at("evaluation").at("zones").at(0).at("criteria").back().at("passed"));
+}
+
+TEST_F(ThicknessMapTest, RejectsInvalidOptions) {
+  scan(PhantomSource(hollowBox(VoxelSize{0.2})));
+  ThicknessMapOptions options;
+  options.min_wall_mm = 2.0;
+  options.max_wall_mm = 1.0;
+  EXPECT_THROW((void)map(options), std::invalid_argument);
+  options = {};
+  options.max_thickness_mm = -1.0;
+  EXPECT_THROW((void)map(options), std::invalid_argument);
 }
 
 TEST(ThicknessColorTest, MarksTheLimitsAndUnmeasuredPoints) {

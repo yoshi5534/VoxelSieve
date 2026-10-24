@@ -239,8 +239,12 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2][&materials=3]
+  ///               [&thickness=4]
   /// Body: width * height float32 grey values (little endian, u fastest), then width * height
-  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
+  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size. With `thickness`
+  /// (a wall thickness step with a thickness map), then width * height float32 thicknesses in mm
+  /// (NaN where there is no material), with the headers X-Thickness, X-Min-Wall, X-Max-Wall and
+  /// X-Range.
   http::message_generator tile(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
@@ -260,14 +264,28 @@ struct HttpServer::Impl {
     };
     const SliceImage image =
         gui.sliceTile(optional("step"), optional("porosity"), slice, optional("materials"));
-    std::string body(image.grey.size() * sizeof(float) + image.overlay.size(), '\0');
+    std::optional<Gui::ThicknessTile> thickness;
+    if (values.contains("thickness")) {
+      thickness = gui.thicknessTile(optional("thickness"), slice);
+    }
+    const std::size_t grey_bytes = image.grey.size() * sizeof(float);
+    const std::size_t thickness_bytes =
+        thickness ? thickness->thickness_mm.size() * sizeof(float) : 0;
+    std::string body(grey_bytes + image.overlay.size() + thickness_bytes, '\0');
     static_assert(std::endian::native == std::endian::little, "tiles are sent little endian");
-    std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
-    std::memcpy(body.data() + image.grey.size() * sizeof(float), image.overlay.data(),
-                image.overlay.size());
-    return binary(
-        request, std::move(body),
-        {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
+    std::memcpy(body.data(), image.grey.data(), grey_bytes);
+    std::memcpy(body.data() + grey_bytes, image.overlay.data(), image.overlay.size());
+    std::map<std::string, std::string> headers{{"X-Width", std::to_string(image.width)},
+                                               {"X-Height", std::to_string(image.height)}};
+    if (thickness) {
+      std::memcpy(body.data() + grey_bytes + image.overlay.size(), thickness->thickness_mm.data(),
+                  thickness_bytes);
+      headers["X-Thickness"] = "1";
+      headers["X-Min-Wall"] = std::to_string(thickness->min_wall_mm);
+      headers["X-Max-Wall"] = std::to_string(thickness->max_wall_mm);
+      headers["X-Range"] = std::to_string(thickness->range_mm);
+    }
+    return binary(request, std::move(body), headers);
   }
 
   /// GET /api/volume?max=256[&step=1][&porosity=2][&materials=3]

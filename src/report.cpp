@@ -1052,6 +1052,83 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
   data["images"]["thickness_histogram"] =
       thicknessHistogramSvg(s.histogram, min_wall, max_wall, s.range_mm);
 
+  // The thickness map of the whole part, when the analysis wrote one.
+  std::optional<Json> map;
+  bool map_capped = false;
+  double map_max = 0.0;
+  if (std::filesystem::exists(dir / "thickness_map.json")) {
+    map = readJsonFile(dir / "thickness_map.json");
+    const Json& t = map->at("thickness");
+    const double cap = map->at("max_thickness_mm").get<double>();
+    map_max = t.at("max_mm").get<double>();
+    map_capped = t.value("capped", 0.0) > 0.0;
+    // Shares beyond the limits of the order from the fine histogram.
+    const auto fine = t.at("fine_histogram").get<std::vector<std::int64_t>>();
+    const double bin = t.at("fine_bin_mm").get<double>();
+    const double voxels = std::max(1.0, t.at("material_voxels").get<double>());
+    const auto share = [&](double limit, bool below) {
+      double count = 0.0;
+      for (std::size_t i = 0; i < fine.size(); ++i) {
+        const double centre = (static_cast<double>(i) + 0.5) * bin;
+        if (below ? centre < limit : centre > limit) {
+          count += static_cast<double>(fine[i]);
+        }
+      }
+      return count / voxels;
+    };
+    const auto percentile = [&](const char* key) {
+      return mm(t.at("percentiles_mm").at(key).get<double>());
+    };
+    Json m = {{"max_thickness", mm(cap)},
+              {"volume", formatNumber(t.at("material_volume_mm3").get<double>(), 0) + " mm³"},
+              {"p5", percentile("5")},
+              {"median", percentile("50")},
+              {"p95", percentile("95")},
+              {"max", (map_capped ? "≥ " : "") + mm(map_max)}};
+    // Regions were found with the limits of the analysis; they are listed when the order's are
+    // the same.
+    const auto region_table = [&](const char* key, double limit, double analysed) {
+      Json rows = Json::array();
+      if (limit != analysed) {
+        return rows;
+      }
+      for (const Json& r : map->at(key)) {
+        if (rows.size() >= 10) {
+          break;
+        }
+        const auto location = r.at("location_mm").get<std::array<double, 3>>();
+        rows.push_back(
+            {{"id", r.at("id")},
+             {"thickness", mm(r.at("thickness_mm").get<double>())},
+             {"volume", formatNumber(r.at("volume_mm3").get<double>(), 2) + " mm³"},
+             {"location", formatNumber(location[0], 2) + ", " + formatNumber(location[1], 2) +
+                              ", " + formatNumber(location[2], 2)}});
+      }
+      return rows;
+    };
+    if (min_wall > 0.0) {
+      const Json rows = region_table("thin_regions", min_wall, map->value("min_wall_mm", 0.0));
+      m["thin"] = {{"limit", mm(min_wall)},
+                   {"share", percentText(share(min_wall, true))},
+                   {"has_regions", !rows.empty()},
+                   {"regions", rows}};
+    }
+    if (max_wall > 0.0) {
+      const Json rows = region_table("thick_regions", max_wall, map->value("max_wall_mm", 0.0));
+      m["thick"] = {{"limit", mm(max_wall)},
+                    {"share", percentText(share(max_wall, false))},
+                    {"has_regions", !rows.empty()},
+                    {"regions", rows}};
+    }
+    data["wall_thickness"]["map"] = m;
+    for (const char* axis : {"x", "y", "z"}) {
+      const auto file = dir / (std::string("thickness_map_") + axis + ".png");
+      if (std::filesystem::exists(file)) {
+        data["images"][std::string("thickness_map_") + axis] = dataUri(file);
+      }
+    }
+  }
+
   if (required.contains("min_mm") || required.contains("max_mm")) {
     Json criteria = Json::array();
     bool passed = true;
@@ -1080,6 +1157,12 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
     }
     if (required.contains("max_mm")) {
       add("Thickest wall", mm(s.max_mm), "≤ " + mm(max_wall), s.max_mm <= max_wall);
+      if (map) {
+        // Material accumulations inside the part. A map that reached its maximum only tells
+        // that the material is at least that thick, which does not show it within the limit.
+        add("Thickest spot inside the part", (map_capped ? "≥ " : "") + mm(map_max),
+            "≤ " + mm(max_wall), !map_capped && map_max <= max_wall);
+      }
     }
     const Json block_json = {{"name", "Wall thickness"},
                              {"region", "measured surface of the part"},

@@ -24,7 +24,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     nominal-actual comparison of that surface with a CAD model (ADR 0010) and the fits that
     align objects (`fitRigid`, `alignSurfaces`, ADR 0018) and the optional non-rigid registration
     for flexible parts (`CompareOptions::deformation`, ADR 0022); `thickness.hpp` wall thickness
-    on the surface by rays or inscribed spheres (ADR 0030); `dimensional.hpp` dimensional
+    on the surface by rays or inscribed spheres and the local thickness map of the volume
+    (ADR 0030); `dimensional.hpp` dimensional
     measurement: elements found on the CAD model, fitted to the scan, datum alignment and
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images

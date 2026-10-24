@@ -262,13 +262,50 @@
 </table>
 {{/has_regions}}{{/max_wall}}
 <p class="note">Thin walls red over yellow and green to thick walls blue, up to {{range}}; magenta: thinner than the minimum, violet: thicker than the maximum; grey: no wall found within the measuring range. Frequencies are weighted by surface area.</p>
+{{#map}}
+<h3>Thickness inside the part</h3>
+<table class="fields">
+  <tr><th>Method</th><td>Local thickness of every material voxel: the diameter of the largest sphere inside the material that contains it, up to {{max_thickness}}; convex edges take the thickness of the wall they belong to</td></tr>
+  <tr><th>Material volume</th><td>{{volume}}</td></tr>
+  <tr><th>Median / thickest spot</th><td>{{median}} / {{max}}</td></tr>
+  <tr><th>5 % / 95 % of the material</th><td>thinner than {{p5}} / thinner than {{p95}}</td></tr>
+{{#thin}}
+  <tr><th>Thinner than {{limit}}</th><td>{{share}} of the material</td></tr>
+{{/thin}}
+{{#thick}}
+  <tr><th>Thicker than {{limit}}</th><td>{{share}} of the material</td></tr>
+{{/thick}}
+</table>
+<div class="images">
+  <figure><img src="{{{images.thickness_map_z}}}" alt="Thickness map, slice normal to z"><figcaption>Slice normal to z through the thickest spot</figcaption></figure>
+  <figure><img src="{{{images.thickness_map_y}}}" alt="Thickness map, slice normal to y"><figcaption>Slice normal to y</figcaption></figure>
+  <figure><img src="{{{images.thickness_map_x}}}" alt="Thickness map, slice normal to x"><figcaption>Slice normal to x</figcaption></figure>
+</div>
+{{#thick}}{{#has_regions}}
+<table>
+  <tr><th colspan="4">Material accumulations (thicker than {{limit}})</th></tr>
+  <tr><th>Region</th><th class="num">Thickest spot</th><th class="num">Volume</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#regions}}<tr><td>{{id}}</td><td class="num">{{thickness}}</td><td class="num">{{volume}}</td><td class="num">{{location}}</td></tr>
+  {{/regions}}
+</table>
+{{/has_regions}}{{/thick}}
+{{#thin}}{{#has_regions}}
+<table>
+  <tr><th colspan="4">Thin material (thinner than {{limit}})</th></tr>
+  <tr><th>Region</th><th class="num">Thinnest spot</th><th class="num">Volume</th><th class="num">Location x, y, z (mm)</th></tr>
+  {{#regions}}<tr><td>{{id}}</td><td class="num">{{thickness}}</td><td class="num">{{volume}}</td><td class="num">{{location}}</td></tr>
+  {{/regions}}
+</table>
+{{/has_regions}}{{/thin}}
+<p class="note">Slices in the same colours as the surface; frequencies are weighted by volume. Regions are found on blocks of voxels and listed for the limits the analysis ran with.</p>
+{{/map}}
 </section>
 {{/wall_thickness}}
 
 <section>
 <h2>{{section.assessment}} Assessment</h2>
 {{#evaluation}}
-<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{/wall_thickness}}</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{#map}} The thickest spot inside the part comes from the thickness map.{{/map}}{{/wall_thickness}}</p>
 {{#zones}}
 <table>
   <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}</th></tr>

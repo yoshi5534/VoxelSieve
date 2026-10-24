@@ -321,8 +321,11 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
 
   // The wall thickness on the surface of the box: 4, 5 and 6 mm through it.
   const Json walls =
-      gui.call("run_wall_thickness", {{"max_thickness_mm", 8.0}, {"min_wall_mm", 4.5}});
+      gui.call("run_wall_thickness",
+               {{"max_thickness_mm", 8.0}, {"min_wall_mm", 4.5}, {"volume_map", true}});
   EXPECT_EQ(walls.at("status"), "done");
+  // Inside, the largest sphere fits between the faces 4 mm apart.
+  EXPECT_NEAR(walls.at("summary").at("map_max_mm").get<double>(), 4.0, 0.2);
   EXPECT_EQ(walls.at("inputs").at("surface").at("step"), surface.at("id"));
   EXPECT_NEAR(walls.at("summary").at("thickness_median_mm").get<double>(), 5.0, 0.2);
   const auto thickness = gui.thicknessMesh(std::nullopt);
@@ -331,6 +334,22 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
   EXPECT_DOUBLE_EQ(thickness->min_wall_mm, 4.5);
   EXPECT_GT(thickness->range_mm, 0.0);
   EXPECT_EQ(gui.thicknessMesh(std::nullopt), thickness);  // cached
+  // The thickness map in a slice tile through the middle of the dataset.
+  {
+    const auto dims = info.at("dims").get<std::array<std::int64_t, 3>>();
+    SliceRequest request;
+    request.axis = 2;
+    request.index = dims[2] / 2;
+    request.size = {dims[0], dims[1]};
+    const Gui::ThicknessTile tile = gui.thicknessTile(std::nullopt, request);
+    ASSERT_EQ(tile.thickness_mm.size(), static_cast<std::size_t>(dims[0] * dims[1]));
+    const float centre =
+        tile.thickness_mm[static_cast<std::size_t>(dims[0] / 2 + dims[0] * (dims[1] / 2))];
+    EXPECT_NEAR(centre, 4.0, 0.2);
+    EXPECT_TRUE(std::isnan(tile.thickness_mm.front()));  // air in the corner
+    EXPECT_DOUBLE_EQ(tile.min_wall_mm, 4.5);
+    EXPECT_GT(tile.range_mm, 0.0);
+  }
 
   // The report picks up the surface and the comparison for its 3D views.
   const Json reported = gui.call("run_report", {});

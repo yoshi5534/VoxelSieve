@@ -1386,7 +1386,10 @@ class WallThickness final : public Operation {
         "of the largest sphere inside the material that touches the point, also in corners and "
         "at ribs. Pores thin the wall. Surface regions thinner than min_wall_mm or thicker than "
         "max_wall_mm are listed. Writes wall_thickness.json, thickness.ply (coloured mesh) and "
-        "views; without a surface step, the surface is extracted first.";
+        "views; without a surface step, the surface is extracted first. With volume_map, also "
+        "the local thickness of every material voxel (largest sphere containing it): the "
+        "dataset thickness_map, thickness_map.json and slices through the thickest spot; it "
+        "shows walls inside the part and material accumulations, and colours the slice view.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset"},
                     {"surface", artifact::kSurface, "Surface of the dataset", true}};
     info_.outputs = {{"wall_thickness", artifact::kWallThickness, "Wall thickness"}};
@@ -1436,7 +1439,20 @@ class WallThickness final : public Operation {
             {"minimum", 10000},
             {"maximum", 50000000},
             {"default", 2000000},
-            {"description", "Triangle budget of the measured surface mesh"}}}}}};
+            {"description", "Triangle budget of the measured surface mesh"}}},
+          {"volume_map",
+           {{"type", "boolean"},
+            {"default", false},
+            {"description",
+             "Also map the local thickness of every material voxel (slower: a few seconds per "
+             "100 MB of scan for walls of 30 voxels)"}}},
+          {"map_max_thickness_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Thickness map: thicker material gets this value; 0: the smallest extent of the "
+             "part, at most 64 voxels. Time and memory grow with it"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -1462,15 +1478,20 @@ class WallThickness final : public Operation {
       surface_file = dir / "surface.vss";
       (void)writeSurface(dataset, surface_file);
     }
-    const double start = context.inputs.contains("surface") ? 0.0 : 0.2;
+    // The thickness map takes longer than the surface.
+    const bool volume_map = p.at("volume_map").get<bool>();
+    const double start = context.inputs.contains("surface") ? 0.0 : (volume_map ? 0.1 : 0.2);
+    const double surface_end = volume_map ? 0.4 : 0.85;
     context.progress(start);
     options.progress = [&](double fraction) {
-      context.progress(start + (0.85 - start) * fraction);
+      context.progress(start + (surface_end - start) * fraction);
     };
     const WallThicknessResult thickness =
         analyzeWallThickness(dataset, SurfaceMask::open(surface_file), options);
-    const TelemetryPhase phase("write results");
-    writeWallThickness(thickness, dir);
+    {
+      const TelemetryPhase phase("write results");
+      writeWallThickness(thickness, dir);
+    }
     const ThicknessStats& s = thickness.stats;
     OperationResult result;
     result.outputs["wall_thickness"] = "wall_thickness";
@@ -1491,6 +1512,27 @@ class WallThickness final : public Operation {
       result.summary["max_wall_mm"] = options.max_wall_mm;
       result.summary["above_max_percent"] = 100.0 * s.above_max;
       result.summary["thick_regions"] = thickness.thick_regions.size();
+    }
+    if (volume_map) {
+      ThicknessMapOptions map_options;
+      map_options.max_thickness_mm = p.at("map_max_thickness_mm").get<double>();
+      map_options.min_wall_mm = options.min_wall_mm;
+      map_options.max_wall_mm = options.max_wall_mm;
+      map_options.progress = [&](double fraction) {
+        context.progress(surface_end + (1.0 - surface_end) * fraction);
+      };
+      const ThicknessMapResult map =
+          writeThicknessMap(dataset, SurfaceMask::open(surface_file), dir, map_options);
+      result.summary["map_median_mm"] = map.percentiles_mm[2];
+      result.summary["map_max_mm"] = map.max_mm;
+      result.summary["map_range_mm"] = map.range_mm;
+      if (options.min_wall_mm > 0.0) {
+        result.summary["map_below_min_percent"] = 100.0 * map.below_min;
+      }
+      if (options.max_wall_mm > 0.0) {
+        result.summary["map_above_max_percent"] = 100.0 * map.above_max;
+        result.summary["map_thick_regions"] = map.thick_regions.size();
+      }
     }
     return result;
   }

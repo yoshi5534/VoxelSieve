@@ -75,5 +75,58 @@ the distance mask (ADR 0009, `scanSurface`); the operation `wall_thickness` and 
 - Thickness is measured on mesh vertices, so features smaller than the mesh spacing (about one
   voxel within the triangle budget) are sampled, not resolved. Larger scans need a larger budget
   or a coarser mesh.
-- Volume-based thickness maps (thickness at every material voxel from the distance transform)
-  and the comparison with nominal thicknesses from the CAD model are not covered yet.
+- The comparison with nominal thicknesses from the CAD model is not covered yet.
+
+## Amendment (2026-10-24): thickness map of the whole part
+
+The surface tells how thick a wall is where it can be seen from outside; a material
+accumulation inside a casting (a hot spot where a wall meets a flange or a boss) shows only as
+a slightly thicker surface value nearby. `writeThicknessMap` (`thickness.hpp`) writes the local
+thickness of every material voxel, the diameter of the largest sphere inside the material that
+contains it (Hildebrand and Rüegsegger 1997), as a float dataset `thickness_map/` beside the
+other outputs. The operation `wall_thickness` writes it with `volume_map`, `vs-thickness` with
+`--volume-map`.
+
+- **Material.** Voxels at or above the iso value of the surface (`.vss`) are material; removed
+  voxels are air. Pores are air, so they thin the material around them.
+- **Method.** Per tile with a halo of the largest diameter: the exact Euclidean distance
+  transform of the material (Felzenszwalb and Huttenlocher, separable, with the pitch per axis,
+  ADR 0012), then the ridge of the distance field as sphere centres, and every sphere painted
+  with its diameter onto the voxels it covers, keeping the largest. Voxels beyond the volume
+  count as material so that a part cut by the scan's edge is not thinned there.
+- **Ridge.** Painting every voxel's sphere is far too slow; only voxels whose distance rises to
+  no neighbour by more than 0.9 of the step (per mm) are centres. Strictly a ridge point rises
+  by less than 1; the 0.9 drops most of the ragged near-ridge of a noisy surface (the housing
+  sample: from 18 s to 8 s) at the price of a few voxels whose covering sphere is missed; every
+  voxel is therefore initialised with its own sphere. The result is a slight underestimate
+  there, below a voxel.
+- **Convex edges.** By definition the largest sphere at a convex edge is tiny, so the edge of
+  every plate would read as a thin region. Ridge branches that run into an edge (a steady rise
+  of at least 0.5 per mm) are followed up to their top and painted with that diameter, so an
+  edge belongs to the wall it bounds. Concave corners and fillets keep their larger values: they
+  are where material accumulates.
+- **Range.** Thicknesses are computed up to `max_thickness_mm`; thicker material gets that value
+  and counts as capped. The default is the smallest extent of the part (from its bricks), which
+  no sphere exceeds, but at most 64 voxels of the finest pitch: time and memory grow with the
+  cube of the halo. The value is `2d - p/2` for a distance `d` to the nearest air voxel centre
+  and the finest pitch `p`, so a wall of n voxels reads n voxels thick.
+- **Scale.** Bricks are written one at a time through `writeDerivedDataset` (ADR 0004); a tile is
+  a brick, halved until tile and halo hold at most 2^26 voxels, so memory stays bounded for any
+  scan. Within a tile the transforms and the painting run in parallel over lines and planes.
+- **Statistics and regions.** Volume-weighted statistics (minimum, mean, percentiles, histogram)
+  and a fine histogram in `thickness_map.json`, from which the report recomputes shares for the
+  limits of an order. Regions thinner than the minimum or thicker than the maximum are the
+  26-connected components on a grid of 8³ voxel blocks (coarser for large scans), with volume,
+  extreme value and location. `thickness_map_[xyz].png` are slices through the thickest spot.
+- **Report and order.** The wall thickness section of the report gets "Thickness inside the
+  part": statistics, the three slices, shares beyond the order's limits and the regions when the
+  order's limits are those of the analysis. With a `max_mm` in the order the criterion
+  "Thickest spot inside the part" is added; a map that reached its maximum fails it, since it
+  only shows that the material is at least that thick.
+- **GUI.** The slice view colours the material by the map of the step with the scale of the
+  surface (`GET /api/tile?...&thickness=<step>` appends one float32 thickness per pixel).
+
+Consequences: the map is a second, volumetric reading of thickness, defined everywhere, and the
+one to find material accumulations; the surface methods stay the ones for the limits of thin
+walls. Its run time grows with the volume of material and with the cube of the maximum
+thickness, so thick blocks of material are capped rather than measured.

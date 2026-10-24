@@ -129,6 +129,18 @@ class Gui {
   [[nodiscard]] std::shared_ptr<const ThicknessView> thicknessMesh(
       std::optional<int> thickness_step) const;
 
+  /// The thickness map of a wall thickness step (`thickness_step`, default the latest) in the
+  /// pixels of a slice tile of its dataset: mm per pixel, NaN where there is no material, and the
+  /// limits and colour range of the map. Throws when the step has no map.
+  struct ThicknessTile {
+    std::vector<float> thickness_mm;
+    double min_wall_mm = 0.0;
+    double max_wall_mm = 0.0;
+    double range_mm = 0.0;
+  };
+  [[nodiscard]] ThicknessTile thicknessTile(std::optional<int> thickness_step,
+                                            const SliceRequest& request) const;
+
   /// What the 3D view draws for an object (ADR 0018): the triangles of a mesh object, the display
   /// mesh of a volume's latest surface step, or, before a surface step, the box the volume
   /// fills. Points are in the object's own coordinates divided by `scale` per axis: mm for a
