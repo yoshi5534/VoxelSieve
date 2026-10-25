@@ -870,11 +870,16 @@ struct MaterialVolume::Impl {
       grid = openvdb::gridConstPtrCast<openvdb::Int32Grid>(file.readGrid("material"));
       file.close();
     }
-    const std::scoped_lock lock(mutex);
-    if (cache.size() >= kCachedBricks) {
-      cache.clear();
+    // Evicted grids are destroyed after the lock is released: a tree frees its nodes in a
+    // parallel loop, and a task this thread picks up there may come back here for the lock.
+    std::map<Index3, openvdb::Int32Grid::ConstPtr> evicted;
+    {
+      const std::scoped_lock lock(mutex);
+      if (cache.size() >= kCachedBricks) {
+        evicted.swap(cache);
+      }
+      cache[index] = grid;
     }
-    cache[index] = grid;
     return grid;
   }
 };
