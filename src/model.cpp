@@ -6,16 +6,21 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
+#include "detail/convolution.hpp"
 #include "detail/material_volume.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
@@ -42,124 +47,159 @@ std::size_t weightCount(const ModelLayer& layer) {
          static_cast<std::size_t>(layer.kernel * layer.kernel * layer.kernel);
 }
 
-/// Adds weight * src[x + dx] to the `Block` output rows for x where the source is inside. The
-/// rows and the source never overlap, which lets the compiler vectorise the loop.
-template <int Block>
-void accumulateRows(const std::array<float*, 4>& rows, const std::array<float, 4>& weights,
-                    const float* src, std::int64_t nx, std::int64_t dx) {
-  const std::int64_t x0 = std::max<std::int64_t>(0, -dx);
-  const std::int64_t x1 = std::min<std::int64_t>(nx, nx - dx);
-  const float* __restrict s = src + dx;
-  float* __restrict r0 = rows[0];
-  float* __restrict r1 = rows[1];
-  float* __restrict r2 = rows[2];
-  float* __restrict r3 = rows[3];
-  const float w0 = weights[0];
-  const float w1 = weights[1];
-  const float w2 = weights[2];
-  const float w3 = weights[3];
-  for (std::int64_t x = x0; x < x1; ++x) {
-    const float v = s[x];
-    r0[x] += w0 * v;
-    if constexpr (Block > 1) {
-      r1[x] += w1 * v;
+}  // namespace
+
+namespace detail {
+
+/// Feature maps that a forward pass no longer needs, kept for the next pass: the tiles of a
+/// dataset have the same sizes, and fresh memory costs a page fault and the zeroing of every page
+/// by the operating system, on one thread at a time.
+class FeaturePool {
+ public:
+  /// Uninitialised values, in memory of an earlier pass when one at least that large and at most
+  /// twice as large is free (tiles at the edges of a dataset are smaller).
+  FeatureValues take(std::size_t size) {
+    {
+      const std::scoped_lock lock(mutex_);
+      if (const auto it = free_.lower_bound(size); it != free_.end() && it->first <= 2 * size) {
+        FeatureValues values = std::move(it->second);
+        bytes_ -= it->first * sizeof(float);
+        free_.erase(it);
+        values.resize(size);  // within the capacity, without initialising
+        return values;
+      }
     }
-    if constexpr (Block > 2) {
-      r2[x] += w2 * v;
+    return FeatureValues(size);
+  }
+
+  /// Keeps `values` for a later pass, up to a bound.
+  void give(FeatureValues&& values) {
+    const std::size_t capacity = values.capacity();
+    const std::size_t bytes = capacity * sizeof(float);
+    const std::scoped_lock lock(mutex_);
+    if (bytes == 0 || bytes_ + bytes > kMaxBytes) {
+      return;
     }
-    if constexpr (Block > 3) {
-      r3[x] += w3 * v;
+    bytes_ += bytes;
+    free_.emplace(capacity, std::move(values));
+  }
+
+ private:
+  static constexpr std::size_t kMaxBytes = std::size_t{2} << 30U;
+  std::mutex mutex_;
+  std::multimap<std::size_t, FeatureValues> free_;  // by capacity
+  std::size_t bytes_ = 0;
+};
+
+}  // namespace detail
+
+namespace {
+
+/// The channels of `parts`, one after the other, with a border of `r` zero voxels on every side,
+/// so the taps need no bounds checks. Every value is written once, in parallel, so the memory is
+/// first touched by many threads.
+FeatureValues padTensor(const std::vector<const Tensor*>& parts, std::int64_t r,
+                        detail::FeaturePool& pool) {
+  const Index3 dims = parts.front()->dims;
+  const Index3 padded{dims[0] + 2 * r, dims[1] + 2 * r, dims[2] + 2 * r};
+  std::vector<std::pair<const Tensor*, std::int64_t>> channels;  // tensor and its channel
+  for (const Tensor* part : parts) {
+    for (std::int64_t c = 0; c < part->channels; ++c) {
+      channels.emplace_back(part, c);
     }
   }
+  const auto count = static_cast<std::int64_t>(channels.size());
+  // Uninitialised: every value is written below.
+  FeatureValues out =
+      pool.take(static_cast<std::size_t>(count * padded[0] * padded[1] * padded[2]));
+  tbb::parallel_for(std::int64_t{0}, count * padded[2], [&](std::int64_t task) {
+    const std::int64_t i = task / padded[2];
+    const std::int64_t pz = task % padded[2];
+    const auto [tensor, c] = channels[static_cast<std::size_t>(i)];
+    const std::int64_t z = pz - r;
+    for (std::int64_t py = 0; py < padded[1]; ++py) {
+      float* dst = out.data() + ((i * padded[2] + pz) * padded[1] + py) * padded[0];
+      const std::int64_t y = py - r;
+      if (z < 0 || z >= dims[2] || y < 0 || y >= dims[1]) {
+        std::fill_n(dst, padded[0], 0.0F);
+        continue;
+      }
+      std::fill_n(dst, r, 0.0F);
+      std::copy_n(tensor->data.data() + ((c * dims[2] + z) * dims[1] + y) * dims[0], dims[0],
+                  dst + r);
+      std::fill_n(dst + r + dims[0], r, 0.0F);
+    }
+  });
+  return out;
 }
 
-/// "Same" 3D convolution. Each task computes one z plane of up to four output channels, so every
-/// input value that is loaded feeds four accumulations.
-Tensor convolve(const Tensor& in, const ModelLayer& layer) {
-  constexpr int kBlock = 4;
-  const std::int64_t nx = in.dims[0];
-  const std::int64_t ny = in.dims[1];
-  const std::int64_t nz = in.dims[2];
+/// "Same" 3D convolution. Each task computes one z plane of up to four output channels, row by
+/// row (detail/convolution), so every input value that is loaded feeds four accumulations.
+Tensor convolve(const std::vector<const Tensor*>& in, const ModelLayer& layer,
+                detail::FeaturePool& pool) {
+  constexpr int kBlock = detail::kConvolutionBlock;
+  const Index3 dims = in.front()->dims;
+  const std::int64_t nx = dims[0];
+  const std::int64_t ny = dims[1];
+  const std::int64_t nz = dims[2];
   const std::int64_t plane = nx * ny;
-  Tensor out{layer.out_channels, in.dims,
-             std::vector<float>(static_cast<std::size_t>(layer.out_channels * in.voxelCount()))};
+  Tensor out{layer.out_channels, dims,
+             pool.take(static_cast<std::size_t>(layer.out_channels * nx * ny * nz))};
   const int k = layer.kernel;
-  const int r = k / 2;
+  const std::int64_t r = k / 2;
   const std::int64_t k3 = static_cast<std::int64_t>(k) * k * k;
+  FeatureValues padded = padTensor(in, r, pool);
+  const std::int64_t row = nx + 2 * r;
+  const std::int64_t padded_plane = row * (ny + 2 * r);
+  const std::int64_t channel_stride = padded_plane * (nz + 2 * r);
   const std::int64_t blocks = ceilDiv(layer.out_channels, kBlock);
+  // Weights of each block of four output channels, interleaved per tap.
+  const std::int64_t taps = layer.in_channels * k3;
+  std::vector<float> packed(static_cast<std::size_t>(blocks * taps * kBlock), 0.0F);
+  for (std::int64_t o = 0; o < layer.out_channels; ++o) {
+    for (std::int64_t t = 0; t < taps; ++t) {
+      packed[static_cast<std::size_t>(((o / kBlock) * taps + t) * kBlock + o % kBlock)] =
+          layer.weights[static_cast<std::size_t>(o * taps + t)];
+    }
+  }
   tbb::parallel_for(
       tbb::blocked_range<std::int64_t>(0, blocks * nz),
       [&](const tbb::blocked_range<std::int64_t>& range) {
         for (std::int64_t task = range.begin(); task != range.end(); ++task) {
-          const std::int64_t o0 = (task / nz) * kBlock;
+          const std::int64_t block = task / nz;
+          const std::int64_t o0 = block * kBlock;
           const std::int64_t z = task % nz;
-          const int count =
-              static_cast<int>(std::min<std::int64_t>(kBlock, layer.out_channels - o0));
-          std::array<float*, 4> planes{};
-          for (int b = 0; b < count; ++b) {
-            planes[static_cast<std::size_t>(b)] = out.data.data() + ((o0 + b) * nz + z) * plane;
-            std::fill_n(planes[static_cast<std::size_t>(b)], plane,
-                        layer.bias[static_cast<std::size_t>(o0 + b)]);
+          detail::ConvolutionRow conv;
+          conv.in_channels = layer.in_channels;
+          conv.channel_stride = channel_stride;
+          conv.plane = padded_plane;
+          conv.row = row;
+          conv.kernel = k;
+          conv.weights = packed.data() + block * taps * kBlock;
+          conv.count = static_cast<int>(std::min<std::int64_t>(kBlock, layer.out_channels - o0));
+          conv.relu = layer.relu;
+          conv.width = nx;
+          for (int b = 0; b < conv.count; ++b) {
+            conv.bias[static_cast<std::size_t>(b)] = layer.bias[static_cast<std::size_t>(o0 + b)];
           }
           for (std::int64_t y = 0; y < ny; ++y) {
-            std::array<float*, 4> rows{};
-            for (int b = 0; b < count; ++b) {
-              rows[static_cast<std::size_t>(b)] = planes[static_cast<std::size_t>(b)] + y * nx;
+            conv.src = padded.data() + z * padded_plane + y * row;
+            for (int b = 0; b < conv.count; ++b) {
+              conv.dst[static_cast<std::size_t>(b)] =
+                  out.data.data() + ((o0 + b) * nz + z) * plane + y * nx;
             }
-            for (std::int64_t i = 0; i < layer.in_channels; ++i) {
-              for (int kz = 0; kz < k; ++kz) {
-                const std::int64_t sz = z + kz - r;
-                if (sz < 0 || sz >= nz) {
-                  continue;
-                }
-                for (int ky = 0; ky < k; ++ky) {
-                  const std::int64_t sy = y + ky - r;
-                  if (sy < 0 || sy >= ny) {
-                    continue;
-                  }
-                  const float* src = in.data.data() + (i * nz + sz) * plane + sy * nx;
-                  for (int kx = 0; kx < k; ++kx) {
-                    std::array<float, 4> weights{};
-                    for (int b = 0; b < count; ++b) {
-                      weights[static_cast<std::size_t>(b)] = layer.weights[static_cast<std::size_t>(
-                          ((o0 + b) * layer.in_channels + i) * k3 +
-                          static_cast<std::int64_t>((kz * k + ky) * k + kx))];
-                    }
-                    const std::int64_t dx = kx - r;
-                    switch (count) {
-                      case 4:
-                        accumulateRows<4>(rows, weights, src, nx, dx);
-                        break;
-                      case 3:
-                        accumulateRows<3>(rows, weights, src, nx, dx);
-                        break;
-                      case 2:
-                        accumulateRows<2>(rows, weights, src, nx, dx);
-                        break;
-                      default:
-                        accumulateRows<1>(rows, weights, src, nx, dx);
-                    }
-                  }
-                }
-              }
-            }
-          }
-          if (layer.relu) {
-            for (int b = 0; b < count; ++b) {
-              float* p = planes[static_cast<std::size_t>(b)];
-              std::transform(p, p + plane, p, [](float v) { return std::max(v, 0.0F); });
-            }
+            detail::convolveRow(conv);
           }
         }
       });
+  pool.give(std::move(padded));
   return out;
 }
 
-Tensor maxPool(const Tensor& in) {
+Tensor maxPool(const Tensor& in, detail::FeaturePool& pool) {
   const Index3 dims{in.dims[0] / 2, in.dims[1] / 2, in.dims[2] / 2};
-  Tensor out{
-      in.channels, dims,
-      std::vector<float>(static_cast<std::size_t>(in.channels * dims[0] * dims[1] * dims[2]))};
+  Tensor out{in.channels, dims,
+             pool.take(static_cast<std::size_t>(in.channels * dims[0] * dims[1] * dims[2]))};
   tbb::parallel_for(std::int64_t{0}, in.channels * dims[2], [&](std::int64_t task) {
     const std::int64_t c = task / dims[2];
     const std::int64_t z = task % dims[2];
@@ -181,11 +221,10 @@ Tensor maxPool(const Tensor& in) {
   return out;
 }
 
-Tensor upsample(const Tensor& in) {
+Tensor upsample(const Tensor& in, detail::FeaturePool& pool) {
   const Index3 dims{in.dims[0] * 2, in.dims[1] * 2, in.dims[2] * 2};
-  Tensor out{
-      in.channels, dims,
-      std::vector<float>(static_cast<std::size_t>(in.channels * dims[0] * dims[1] * dims[2]))};
+  Tensor out{in.channels, dims,
+             pool.take(static_cast<std::size_t>(in.channels * dims[0] * dims[1] * dims[2]))};
   tbb::parallel_for(std::int64_t{0}, in.channels * dims[2], [&](std::int64_t task) {
     const std::int64_t c = task / dims[2];
     const std::int64_t z = task % dims[2];
@@ -251,7 +290,8 @@ Material materialFromJson(const Json& json) {
 
 }  // namespace
 
-Model::Model(ModelSpec spec) : spec_(std::move(spec)) {
+Model::Model(ModelSpec spec)
+    : spec_(std::move(spec)), pool_(std::make_shared<detail::FeaturePool>()) {
   const bool segmentation = spec_.task == ModelTask::kSegmentation;
   if (segmentation && (spec_.materials.empty() || spec_.materials.size() > kMaxMaterials)) {
     throw std::invalid_argument("A segmentation model needs 1 to 8 materials");
@@ -451,41 +491,84 @@ Tensor Model::forward(std::span<const float> grey, const std::array<std::int64_t
   if (static_cast<std::int64_t>(grey.size()) != dims[0] * dims[1] * dims[2]) {
     throw std::invalid_argument("Model input size does not match its dimensions");
   }
-  // The layer after which each output is no longer needed, so feature maps are freed early.
+  // Concatenations read only by convolutions are not copied: the convolution reads their parts.
+  std::set<std::string> joined;
+  for (std::size_t l = 0; l + 1 < spec_.layers.size(); ++l) {
+    if (spec_.layers[l].op == "concat") {
+      joined.insert(spec_.layers[l].name);
+    }
+  }
+  for (const ModelLayer& layer : spec_.layers) {
+    if (layer.op != "conv") {
+      for (const std::string& input : layer.inputs) {
+        joined.erase(input);
+      }
+    }
+  }
+  // The layer after which each output is no longer needed, so feature maps are freed early. The
+  // parts of a concatenation that is not copied live as long as it is read.
   std::map<std::string, std::size_t> last_use;
   for (std::size_t l = 0; l < spec_.layers.size(); ++l) {
     for (const std::string& input : spec_.layers[l].inputs) {
       last_use[input] = l;
     }
   }
-  std::map<std::string, Tensor> tensors;
-  Tensor& input = tensors["input"];
-  input = Tensor{1, dims, std::vector<float>(grey.size())};
-  std::transform(grey.begin(), grey.end(), input.data.begin(),
-                 [&](float value) { return (value - spec_.input_offset) * spec_.input_scale; });
-  for (std::size_t l = 0; l < spec_.layers.size(); ++l) {
-    const ModelLayer& layer = spec_.layers[l];
-    std::vector<const Tensor*> in;
-    in.reserve(layer.inputs.size());
-    for (const std::string& name : layer.inputs) {
-      in.push_back(&tensors.at(name));
-    }
-    Tensor out;
-    if (layer.op == "conv") {
-      out = convolve(*in[0], layer);
-    } else if (layer.op == "maxpool") {
-      out = maxPool(*in[0]);
-    } else if (layer.op == "upsample") {
-      out = upsample(*in[0]);
-    } else {
-      out = concat(in);
-    }
-    for (const std::string& name : layer.inputs) {
-      if (last_use.at(name) == l) {
-        tensors.erase(name);
+  for (const ModelLayer& layer : spec_.layers) {
+    if (joined.contains(layer.name)) {
+      for (const std::string& part : layer.inputs) {
+        last_use[part] = std::max(last_use[part], last_use.at(layer.name));
       }
     }
-    tensors[layer.name] = std::move(out);
+  }
+  std::map<std::string, Tensor> tensors;
+  std::map<std::string, std::vector<const Tensor*>> parts;  // of the joined concatenations
+  Tensor& input = tensors["input"];
+  input = Tensor{1, dims, pool_->take(grey.size())};
+  std::transform(grey.begin(), grey.end(), input.data.begin(),
+                 [&](float value) { return (value - spec_.input_offset) * spec_.input_scale; });
+  const auto inputs_of = [&](const ModelLayer& layer) {
+    std::vector<const Tensor*> in;
+    for (const std::string& name : layer.inputs) {
+      if (const auto it = parts.find(name); it != parts.end()) {
+        in.insert(in.end(), it->second.begin(), it->second.end());
+      } else {
+        in.push_back(&tensors.at(name));
+      }
+    }
+    return in;
+  };
+  for (std::size_t l = 0; l < spec_.layers.size(); ++l) {
+    const ModelLayer& layer = spec_.layers[l];
+    const std::vector<const Tensor*> in = inputs_of(layer);
+    if (joined.contains(layer.name)) {
+      for (const Tensor* part : in) {
+        if (part->dims != in.front()->dims) {
+          throw std::invalid_argument("concat inputs differ in size");
+        }
+      }
+      parts[layer.name] = in;
+    } else {
+      Tensor out;
+      if (layer.op == "conv") {
+        out = convolve(in, layer, *pool_);
+      } else if (layer.op == "maxpool") {
+        out = maxPool(*in[0], *pool_);
+      } else if (layer.op == "upsample") {
+        out = upsample(*in[0], *pool_);
+      } else {
+        out = concat(in);
+      }
+      tensors[layer.name] = std::move(out);
+    }
+    for (const auto& [name, last] : last_use) {
+      if (last == l) {
+        if (const auto it = tensors.find(name); it != tensors.end()) {
+          pool_->give(std::move(it->second.data));
+          tensors.erase(it);
+        }
+        parts.erase(name);
+      }
+    }
   }
   return std::move(tensors.at(spec_.layers.back().name));
 }
@@ -501,7 +584,7 @@ std::vector<std::uint8_t> Model::classify(std::span<const float> grey,
   }
   const std::int64_t d = spec_.divisor;
   const Index3 padded{ceilDiv(dims[0], d) * d, ceilDiv(dims[1], d) * d, ceilDiv(dims[2], d) * d};
-  const Tensor scores = forward(padInput(grey, dims, padded, fill), padded);
+  Tensor scores = forward(padInput(grey, dims, padded, fill), padded);
   const std::int64_t n = padded[0] * padded[1] * padded[2];
   std::vector<std::uint8_t> classes(grey.size());
   tbb::parallel_for(std::int64_t{0}, dims[2], [&](std::int64_t z) {
@@ -520,6 +603,7 @@ std::vector<std::uint8_t> Model::classify(std::span<const float> grey,
       }
     }
   });
+  pool_->give(std::move(scores.data));
   return classes;
 }
 
@@ -533,7 +617,7 @@ std::vector<float> Model::denoise(std::span<const float> grey,
   }
   const std::int64_t d = spec_.divisor;
   const Index3 padded{ceilDiv(dims[0], d) * d, ceilDiv(dims[1], d) * d, ceilDiv(dims[2], d) * d};
-  const Tensor out = forward(padInput(grey, dims, padded, fill), padded);
+  Tensor out = forward(padInput(grey, dims, padded, fill), padded);
   std::vector<float> denoised(grey.size());
   const float scale = 1.0F / spec_.input_scale;
   for (std::int64_t z = 0; z < dims[2]; ++z) {
@@ -545,6 +629,7 @@ std::vector<float> Model::denoise(std::span<const float> grey,
       }
     }
   }
+  pool_->give(std::move(out.data));
   return denoised;
 }
 

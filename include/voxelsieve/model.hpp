@@ -9,8 +9,10 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
@@ -18,11 +20,36 @@
 
 namespace voxelsieve {
 
+/// Allocator that leaves values uninitialised where a vector would set them to zero. Feature maps
+/// are hundreds of MB that the layers overwrite anyway, in parallel: zeroing them first would
+/// take one thread through all of that memory.
+template <class T>
+struct UninitializedAllocator : std::allocator<T> {
+  template <class U>
+  struct rebind {  // NOLINT(readability-identifier-naming): the allocator interface
+    using other = UninitializedAllocator<U>;
+  };
+  UninitializedAllocator() = default;
+  template <class U>
+  explicit UninitializedAllocator(const UninitializedAllocator<U>& /*other*/) noexcept {}
+  template <class U>
+  void construct(U* p) noexcept {
+    ::new (static_cast<void*>(p)) U;
+  }
+  template <class U, class... Args>
+  void construct(U* p, Args&&... args) {
+    ::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
+  }
+};
+
+/// Values of a feature map; new elements are uninitialised.
+using FeatureValues = std::vector<float, UninitializedAllocator<float>>;
+
 /// Dense feature maps: `channels` volumes of `dims` (x, y, z) voxels each, x fastest.
 struct Tensor {
   int channels = 0;
   std::array<std::int64_t, 3> dims{};
-  std::vector<float> data;
+  FeatureValues data;
 
   [[nodiscard]] std::int64_t voxelCount() const { return dims[0] * dims[1] * dims[2]; }
 };
@@ -72,6 +99,10 @@ struct ModelSpec {
   std::vector<ModelLayer> layers;
 };
 
+namespace detail {
+class FeaturePool;
+}  // namespace detail
+
 /// A loaded model. All methods may be called from several threads.
 class Model {
  public:
@@ -102,6 +133,8 @@ class Model {
 
  private:
   ModelSpec spec_;
+  /// Feature maps of earlier passes, reused by the next ones (shared by copies of the model).
+  std::shared_ptr<detail::FeaturePool> pool_;
 };
 
 /// Writes `spec` as a .vsm file: the bytes "VSMODEL1", the length of the JSON header as

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Learned models three to four times faster on the CPU**: the convolution keeps the sums of
+  4 channels x 24 voxels in registers with AVX2 and FMA, chosen at run time on CPUs that have
+  them (the portable kernel stays for the others), concatenations are read by the next
+  convolution without being copied, and the feature maps of one tile are reused by the next
+  instead of being freshly allocated and zeroed. The Me 163 U-Net segmented a 1020x780x420
+  casting in 138 s instead of 493 s on four cores; a single voxel of 99 million changed class
+  through the rounding of FMA.
+
 - **Wall thickness**: the operation `wall_thickness` and the tool `vs-thickness` measure the wall
   thickness at every point of the part's surface, along the inward normal to the opposite face
   (ray, default) or as the largest inscribed sphere. Internal pores thin the wall they lie in.
@@ -17,6 +25,11 @@
   volumes are computed in parallel, and the depth below the surface is kept at block resolution
   in a grid. On a 1020x780x420 casting the pore and zone phase took 2.2 s instead of 9.1 s on
   four cores, with the same result.
+
+- **Coarser levels without waiting**: the import builds the coarser levels as a tree over the
+  level-0 bricks, in parallel at every node, instead of level by level. A coarse brick no longer
+  waits until the whole level before it is written, the bricks below it are read in parallel,
+  and only level 0 is read back from disk. The levels are unchanged.
 
 - **vs-phantom in parallel and in slabs**: the phantom is computed slab by slab on all cores and
   written as it goes, so it no longer needs the whole volume in memory.
