@@ -1,5 +1,7 @@
 #include "voxelsieve/phantom.hpp"
 
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -124,13 +126,13 @@ std::uint16_t phantomValue(const PhantomSpec& spec, std::int64_t x, std::int64_t
 
 Volume16 generatePhantom(const PhantomSpec& spec) {
   Volume16 volume(spec.dims, spec.voxel_size);
-  for (std::int64_t z = 0; z < spec.dims[2]; ++z) {
+  tbb::parallel_for(std::int64_t{0}, spec.dims[2], [&](std::int64_t z) {
     for (std::int64_t y = 0; y < spec.dims[1]; ++y) {
       for (std::int64_t x = 0; x < spec.dims[0]; ++x) {
         volume.at(x, y, z) = phantomValue(spec, x, y, z);
       }
     }
-  }
+  });
   return volume;
 }
 

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "detail/convolution.hpp"
 #include "material_scene.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
@@ -202,6 +203,17 @@ TEST_F(ModelTest, LayersMatchReferenceImplementation) {
   for (std::size_t i = 0; i < reference.data.size(); ++i) {
     ASSERT_NEAR(scores.data[i], reference.data[i], 1e-4F) << i;
   }
+  // Rows long enough for the wide strips of the vectorised convolution, and a remainder.
+  const Dims wide{60, 4, 2};
+  std::vector<float> wide_grey(static_cast<std::size_t>(wide[0] * wide[1] * wide[2]));
+  for (float& v : wide_grey) {
+    v = value(rng);
+  }
+  const Tensor wide_scores = model.forward(wide_grey, wide);
+  const Map wide_reference = referenceForward(spec, wide_grey, wide);
+  for (std::size_t i = 0; i < wide_reference.data.size(); ++i) {
+    ASSERT_NEAR(wide_scores.data[i], wide_reference.data[i], 1e-4F) << i;
+  }
 
   // classify pads odd sizes and takes the best class per voxel.
   const std::vector<std::uint8_t> classes = model.classify(grey, dims, 0.0F);
@@ -218,6 +230,64 @@ TEST_F(ModelTest, LayersMatchReferenceImplementation) {
   }
   EXPECT_EQ(model.classify(std::vector<float>(105, 0.0F), {5, 3, 7}, 0.0F).size(), 105U);
   EXPECT_THROW((void)model.forward(std::vector<float>(240), {5, 6, 8}), std::invalid_argument);
+}
+
+TEST(ConvolutionTest, VectorisedKernelMatchesThePortableOne) {
+  if (!detail::hasAvx2Convolution()) {
+    GTEST_SKIP() << "No AVX2 on this CPU";
+  }
+  std::mt19937 rng(11);
+  std::normal_distribution<float> normal(0.0F, 1.0F);
+  constexpr int kKernel = 3;
+  constexpr std::int64_t kInChannels = 5;
+  for (const std::int64_t width : {1, 7, 8, 23, 24, 37, 61}) {
+    const std::int64_t row = width + kKernel - 1;
+    const std::int64_t plane = row * kKernel;
+    std::vector<float> input(static_cast<std::size_t>(kInChannels * plane * kKernel));
+    std::vector<float> weights(
+        static_cast<std::size_t>(kInChannels * kKernel * kKernel * kKernel * 4));
+    for (float& v : input) {
+      v = normal(rng);
+    }
+    for (float& v : weights) {
+      v = normal(rng);
+    }
+    for (const int count : {1, 3, 4}) {
+      std::array<std::vector<float>, 4> portable;
+      std::array<std::vector<float>, 4> vectorised;
+      detail::ConvolutionRow conv;
+      conv.src = input.data();
+      conv.in_channels = kInChannels;
+      conv.channel_stride = plane * kKernel;
+      conv.plane = plane;
+      conv.row = row;
+      conv.kernel = kKernel;
+      conv.weights = weights.data();
+      conv.bias = {0.5F, -0.25F, 1.0F, 0.0F};
+      conv.count = count;
+      conv.relu = count == 3;
+      conv.width = width;
+      // One float more than the row on each side catches writes outside it.
+      for (std::size_t b = 0; b < 4; ++b) {
+        portable[b].assign(static_cast<std::size_t>(width + 2), -7.0F);
+        vectorised[b].assign(static_cast<std::size_t>(width + 2), -7.0F);
+      }
+      for (std::size_t b = 0; b < 4; ++b) {
+        conv.dst[b] = portable[b].data() + 1;
+      }
+      detail::convolveRowPortable(conv);
+      for (std::size_t b = 0; b < 4; ++b) {
+        conv.dst[b] = vectorised[b].data() + 1;
+      }
+      detail::convolveRowAvx2(conv);
+      for (std::size_t b = 0; b < 4; ++b) {
+        for (std::size_t x = 0; x < portable[b].size(); ++x) {
+          ASSERT_NEAR(vectorised[b][x], portable[b][x], 1e-4F)
+              << "width " << width << " count " << count << " channel " << b << " x " << x;
+        }
+      }
+    }
+  }
 }
 
 TEST_F(ModelTest, RoundTripsThroughFile) {
