@@ -98,6 +98,7 @@ add_subdirectory(apps/vs-compare)
 add_subdirectory(apps/vs-denoise)
 add_subdirectory(apps/vs-diconde)
 add_subdirectory(apps/vs-synth)
+add_subdirectory(apps/vs-thickness)
 
 if(VOXELSIEVE_BUILD_TESTS)
   enable_testing()

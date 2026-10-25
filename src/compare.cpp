@@ -1037,8 +1037,8 @@ double niceCeil(double value) {
   return 10.0 * power;
 }
 
-DeviationStats deviationStats(const IndexedMesh& mesh, const std::vector<float>& deviation,
-                              double tolerance) {
+DeviationStats deviationStatsOf(const IndexedMesh& mesh, const std::vector<float>& deviation,
+                                double tolerance) {
   constexpr int kBins = 40;
   DeviationStats s;
   s.vertices = mesh.points.size();
@@ -1052,20 +1052,28 @@ DeviationStats deviationStats(const IndexedMesh& mesh, const std::vector<float>&
     for (const std::uint32_t i : t) {
       weight[i] += area / 3.0;
     }
-    s.area_mm2 += area;
+  }
+  // Vertices without a value (NaN) count for nothing.
+  std::vector<std::uint32_t> order;
+  order.reserve(deviation.size());
+  for (std::uint32_t i = 0; i < deviation.size(); ++i) {
+    if (std::isfinite(deviation[i])) {
+      order.push_back(i);
+      s.area_mm2 += weight[i];
+    } else {
+      weight[i] = 0.0;
+    }
   }
   if (s.area_mm2 <= 0.0) {
     return s;
   }
-  std::vector<std::uint32_t> order(deviation.size());
-  std::iota(order.begin(), order.end(), 0U);
   std::sort(order.begin(), order.end(),
             [&deviation](std::uint32_t a, std::uint32_t b) { return deviation[a] < deviation[b]; });
   s.min_mm = deviation[order.front()];
   s.max_mm = deviation[order.back()];
   double sum = 0.0;
   double sum2 = 0.0;
-  for (std::size_t i = 0; i < deviation.size(); ++i) {
+  for (const std::uint32_t i : order) {
     const double d = deviation[i];
     sum += weight[i] * d;
     sum2 += weight[i] * d * d;
@@ -1111,7 +1119,7 @@ DeviationStats deviationStats(const IndexedMesh& mesh, const std::vector<float>&
   }
   s.range_mm = niceCeil(std::max(2.0 * tolerance, p99));
   s.histogram.assign(kBins, 0.0);
-  for (std::size_t i = 0; i < deviation.size(); ++i) {
+  for (const std::uint32_t i : order) {
     const double t = (deviation[i] + s.range_mm) / (2.0 * s.range_mm);
     const int bin = std::clamp(static_cast<int>(std::floor(t * kBins)), 0, kBins - 1);
     s.histogram[static_cast<std::size_t>(bin)] += weight[i] / s.area_mm2;
@@ -1203,6 +1211,11 @@ void writeImages(const CompareResult& result, const std::filesystem::path& dir) 
 }
 
 }  // namespace
+
+DeviationStats deviationStats(const IndexedMesh& mesh, const std::vector<float>& deviation_mm,
+                              double tolerance_mm) {
+  return deviationStatsOf(mesh, deviation_mm, tolerance_mm);
+}
 
 // ---------------------------------------------------------------------------------------------
 // RigidTransform
@@ -1801,7 +1814,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
                             nominal.query(scan_to_cad.apply({p[0], p[1], p[2]})).distance);
                       }
                     });
-  result.stats = deviationStats(result.mesh, result.deviation_mm, options.tolerance_mm);
+  result.stats = deviationStatsOf(result.mesh, result.deviation_mm, options.tolerance_mm);
   if (!options.deformation.enabled) {
     return result;
   }
@@ -1830,9 +1843,9 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
                         deformation.displacement_mm[i] = static_cast<float>(norm(displacement[i]));
                       }
                     });
-  result.stats = deviationStats(result.mesh, result.deviation_mm, options.tolerance_mm);
+  result.stats = deviationStatsOf(result.mesh, result.deviation_mm, options.tolerance_mm);
   deformation.displacement =
-      deviationStats(result.mesh, deformation.displacement_mm, options.tolerance_mm);
+      deviationStatsOf(result.mesh, deformation.displacement_mm, options.tolerance_mm);
   return result;
 }
 

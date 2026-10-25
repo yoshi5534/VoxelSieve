@@ -290,8 +290,9 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 27U);
+  EXPECT_EQ(registry.all().size(), 28U);
   EXPECT_NE(registry.find("fibre_orientation"), nullptr);
+  EXPECT_NE(registry.find("wall_thickness"), nullptr);
   EXPECT_NE(registry.find("battery_inspection"), nullptr);
   EXPECT_NE(registry.find("battery_report"), nullptr);
   EXPECT_NE(registry.find("import_tiff"), nullptr);
@@ -320,6 +321,14 @@ TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   EXPECT_GT(orientation.summary.at("blocks").get<int>(), 0);
   EXPECT_TRUE(std::filesystem::exists(project.resolve({orientation.id, "orientation"}) /
                                       "orientation.json"));
+  // Without a surface step, the wall thickness extracts the surface itself. Through the box, the
+  // walls are 4, 6 and 8 mm.
+  const Step thickness =
+      project.run(registry, "wall_thickness", {{"max_thickness_mm", 10.0}, {"min_wall_mm", 1.0}});
+  EXPECT_NEAR(thickness.summary.at("thickness_median_mm").get<double>(), 6.0, 0.3);
+  EXPECT_GT(thickness.summary.at("measured_percent").get<double>(), 90.0);
+  EXPECT_TRUE(
+      std::filesystem::exists(project.resolve({thickness.id, "wall_thickness"}) / "thickness.ply"));
   const Json order = {{"part", {{"name", "Box"}}},
                       {"acceptance", {{"zones", {{{"name", "all"}, {"max_pore_size_mm", 0.1}}}}}}};
   const Step report = project.run(registry, "report", {{"order", order}});

@@ -23,7 +23,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `surface.hpp` the surface as a few-bit distance mask (`.vss`, ADR 0009); `compare.hpp` the
     nominal-actual comparison of that surface with a CAD model (ADR 0010) and the fits that
     align objects (`fitRigid`, `alignSurfaces`, ADR 0018) and the optional non-rigid registration
-    for flexible parts (`CompareOptions::deformation`, ADR 0022); `dimensional.hpp` dimensional
+    for flexible parts (`CompareOptions::deformation`, ADR 0022); `thickness.hpp` wall thickness
+    on the surface by rays or inscribed spheres, against the nominal thickness of a CAD model,
+    and the local thickness map of the volume (ADR 0030); `dimensional.hpp` dimensional
     measurement: elements found on the CAD model, fitted to the scan, datum alignment and
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
@@ -55,7 +57,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
   a battery cell order and an example plugin (`examples/plugins/histogram`)
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats

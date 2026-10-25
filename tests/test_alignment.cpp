@@ -156,6 +156,14 @@ TEST_F(AlignmentTest, AlignsInSequenceAndComparesPlacedObjects) {
   EXPECT_EQ(compared.object, "o1");
   EXPECT_LT(std::abs(compared.summary.at("deviation_mean_mm").get<double>()), 0.05 * kVoxel);
   EXPECT_GT(compared.summary.at("within_tolerance_percent").get<double>(), 97.0);
+  // The wall thickness of the scan against the nominal thickness of the placed CAD model.
+  const Step thickness =
+      project.run(registry_, "wall_thickness", {}, {}, {}, nullptr, {.object = "o1", .name = {}});
+  EXPECT_EQ(thickness.inputs.at("comparison").step, compared.id);
+  EXPECT_EQ(thickness.summary.at("nominal"), project.object("o2").name);
+  EXPECT_GT(thickness.summary.at("nominal_compared_percent").get<double>(), 80.0);
+  EXPECT_LT(thickness.summary.at("thinner_than_nominal_percent").get<double>(), 5.0);
+  EXPECT_LT(thickness.summary.at("thicker_than_nominal_percent").get<double>(), 5.0);
 
   project.run(registry_, "move",
               {{"objects", {"o1", "o2"}},

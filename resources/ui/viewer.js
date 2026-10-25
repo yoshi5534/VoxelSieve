@@ -100,6 +100,7 @@ class SliceViewer {
     this.step = null;           // dataset step id
     this.porosity = null;       // porosity step id for the overlay
     this.materials = null;      // material segmentation step id for the overlay
+    this.thickness = null;      // wall thickness step whose thickness map colours the material
     this.axis = 2;
     this.index = [0, 0, 0];
     this.zoom = 1;              // screen pixels per level-0 voxel along the finer in-plane axis
@@ -120,13 +121,15 @@ class SliceViewer {
   }
 
   /// Shows a dataset; keeps the view when the dataset stays the same.
-  setDataset(info, step, porosity, materials = null) {
+  setDataset(info, step, porosity, materials = null, thickness = null) {
     const same = this.step === step && this.info !== null;
     this.info = info;
     this.step = step;
-    if (this.porosity !== porosity || this.materials !== materials) {
+    if (this.porosity !== porosity || this.materials !== materials ||
+      this.thickness !== thickness) {
       this.porosity = porosity;
       this.materials = materials;
+      this.thickness = thickness;
       this.clearTiles();
     }
     if (!same) {
@@ -365,7 +368,7 @@ class SliceViewer {
   /// A tile position independent of the slice, of the volume or of the layer of another object.
   slot(level, tu, tv, layer = null) {
     const content = layer ? ['object', layer.id, layer.version]
-      : [this.porosity ?? '-', this.materials ?? '-'];
+      : [this.porosity ?? '-', this.materials ?? '-', this.thickness ?? '-'];
     return [this.step, ...content, this.axis, level, tu, tv].join('/');
   }
 
@@ -609,6 +612,7 @@ class SliceViewer {
     if (layer) params.set('object', layer.number);
     if (!layer && this.porosity !== null) params.set('porosity', this.porosity);
     if (!layer && this.materials !== null) params.set('materials', this.materials);
+    if (!layer && this.thickness !== null) params.set('thickness', this.thickness);
     try {
       const response = await fetch((layer ? 'api/object_tile?' : 'api/tile?') + params,
         { signal: controller.signal });
@@ -621,6 +625,11 @@ class SliceViewer {
       // The overlay of the volume, or what the tile hit of the other volume.
       tile[layer ? 'inside' : 'overlay'] = new Uint8Array(buffer, count * 4, count);
       if (layer) tile.threshold = Number(response.headers.get('X-Threshold'));
+      if (response.headers.get('X-Thickness') === '1') {
+        tile.thickness = new Float32Array(buffer, count * 5, count);
+        tile.thicknessScale = ['X-Min-Wall', 'X-Max-Wall', 'X-Range'].map(
+          (name) => Number(response.headers.get(name)));
+      }
       this.tiles.set(key, tile);
       if (layer && !layer.window) {
         // Its own window, from its first tiles.
@@ -716,7 +725,8 @@ class SliceViewer {
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
     slicePixels(tile.data, tile.overlay, this.window ?? [0, 1],
-      this.showOverlay ? this.hiddenMaterials : null, image.data, this.materialColors);
+      this.showOverlay ? this.hiddenMaterials : null, image.data, this.materialColors,
+      tile.thickness ? { values: tile.thickness, scale: tile.thicknessScale } : null);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;
@@ -726,8 +736,22 @@ class SliceViewer {
 /// Pixels of a tile of the volume, RGBA: the grey values between `low` and `high`, with the
 /// overlay tinted on top unless `hiddenMaterials` (ids of material classes left out) is null;
 /// material m in `materialColors[m - 1]`.
+/// Colour of a wall thickness, as thicknessColor in thickness.cpp: red for thin over yellow and
+/// green to blue up to `range`; magenta below `minWall` and violet above `maxWall` (0: no limit).
+function thicknessRgb(t, minWall, maxWall, range) {
+  if (minWall > 0 && t < minWall) return [200, 40, 170];
+  if (maxWall > 0 && t > maxWall) return [110, 50, 170];
+  const stops = [[215, 40, 40], [240, 220, 50], [60, 190, 90], [40, 190, 230], [40, 70, 210]];
+  const x = Math.min(Math.max(t / Math.max(range, 1e-6), 0), 1) * 4;
+  const i = Math.min(Math.floor(x), 3);
+  const f = x - i;
+  return stops[i].map((c, k) => c + f * (stops[i + 1][k] - c));
+}
+
+/// Grey values with the overlay: pores, zones and materials, or with `thickness` ({values,
+/// scale: [minWall, maxWall, range]}) the material coloured by its wall thickness.
 function slicePixels(data, overlay, [low, high], hiddenMaterials, out,
-  materialColors = MATERIAL_COLORS) {
+  materialColors = MATERIAL_COLORS, thickness = null) {
   const scale = 255 / (high - low);
   for (let i = 0; i < data.length; i += 1) {
     const grey = Math.min(Math.max((data[i] - low) * scale, 0), 255);
@@ -747,6 +771,11 @@ function slicePixels(data, overlay, [low, high], hiddenMaterials, out,
         const [mr, mg, mb] = materialColors[id - 1] ?? MATERIAL_COLORS[(id - 1) % 8];
         r = 0.5 * grey + 0.5 * mr; g = 0.5 * grey + 0.5 * mg; b = 0.5 * grey + 0.5 * mb;
       }
+      const t = thickness?.values[i];
+      if (t !== undefined && !Number.isNaN(t)) {
+        const [tr, tg, tb] = thicknessRgb(t, ...thickness.scale);
+        r = 0.35 * grey + 0.65 * tr; g = 0.35 * grey + 0.65 * tg; b = 0.35 * grey + 0.65 * tb;
+      }
     }
     const p = i * 4;
     out[p] = r;
@@ -760,5 +789,5 @@ if (typeof window !== 'undefined') {
   Object.assign(window, { SliceViewer, MATERIAL_COLORS, SLICE_AXIS_NAMES: AXIS_NAMES });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { cutsToScreen, insideWindow, layerPixels, slicePixels };
+  module.exports = { cutsToScreen, insideWindow, layerPixels, slicePixels, thicknessRgb };
 }

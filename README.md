@@ -32,6 +32,7 @@ assistant, using sample data. The tools:
 | `vs-segment` | dataset → material classes by grey value or a learned model (`--model`), scored against labels |
 | `vs-denoise` | dataset → denoised dataset (non-local means or a learned model); `--benchmark` compares them |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
+| `vs-thickness` | dataset → wall thickness at every surface point (ray or sphere), thin and thick regions, coloured PLY; `--volume-map` the thickness of every material voxel |
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
 | `vs-battery` | battery cell → housing, electrode layers, anode overhang, particles, voids, report |
@@ -319,6 +320,55 @@ and shows the coloured surface in the 3D view as "Nominal-actual deviation". Met
 
 ![Deviation of a warped housing with a dent from its CAD model](docs/images/nominal-actual.png)
 
+## Wall thickness
+
+`vs-thickness` measures how thick the wall is at every point of the part's surface, without a
+CAD model, and finds the regions thinner or thicker than the drawing allows:
+
+```sh
+./build/release/apps/vs-thickness/vs-thickness housing.vsieve --out housing.thickness \
+    --min-wall 2.5 --max-wall 8
+```
+
+- **Methods:** `--method ray` (default) follows the inward normal through the grey values to the
+  opposite face of the wall, to a fraction of a voxel, as a calliper would. A ray that leaves the
+  wall through an edge or along a rib, where the face it reaches does not lie within the search
+  angle (`--search-angle`, default 30°), leaves the point unmeasured rather than reporting a length
+  that is not a wall. `--method sphere` takes the diameter of the largest sphere inside the
+  material that touches the point: defined everywhere, also at ribs and in corners, but small at
+  convex edges by definition.
+- **Pores** thin the wall they lie in: their surfaces limit the rays and spheres, but only the
+  outer skin gets values (`--all-surfaces` measures the pore surfaces too).
+- **Outputs:**
+  - `wall_thickness.json`: area-weighted statistics (minimum, mean, percentiles, histogram), the
+    share of the surface measured, and the thin and thick regions with area, extreme value and
+    location.
+  - `thickness.ply`: the surface in mm with the thickness and a colour per vertex.
+  - `thickness_view_1.png`, `thickness_view_2.png`: views from above and from below, red for
+    thin over yellow and green to blue for thick walls, magenta below the minimum, violet above
+    the maximum and grey where no wall up to `--max-thickness` was found.
+- **Large scans:** only the surface mesh is held in memory (`--max-triangles`); the grey values
+  are read along the rays through the brick cache.
+- **Against the CAD model:** `--nominal part.compare` (the output of `vs-compare`) also measures
+  the nominal thickness of the aligned CAD model at every point, by the same method, and the
+  deviation of the actual thickness from it: walls that came out thinner or thicker than designed,
+  such as both walls around a shifted core. `thickness.ply` gets `nominal` and `deviation` per
+  vertex, `thickness_deviation_view_[12].png` show it.
+- **Inside the part:** `--volume-map` also writes the local thickness of every material voxel
+  (the largest sphere inside the material that contains it) as the dataset `thickness_map/`,
+  with statistics, regions beyond the limits and slices through the thickest spot. It finds
+  material accumulations such as hot spots where a wall meets a flange, which the surface does
+  not show. Material thicker than `--map-max-thickness` (default: the smallest extent of the
+  part, at most 64 voxels) gets that value. Convex edges count to the wall they bound.
+
+The GUI runs it as the operation "Wall thickness" and shows the coloured surface in the 3D view
+as "Wall thickness" (after a nominal-actual comparison also against the nominal thickness) and
+the thickness map as an overlay of the slice view; the report adds a wall thickness section (see
+below). Method and decisions:
+`docs/adr/0030-wall-thickness.md`.
+
+![Wall thickness of a cast housing, walls below 2.5 mm in magenta](docs/images/wall-thickness.png)
+
 ## Porosity analysis
 
 `vs-porosity` finds internal pores and zones of loosened microstructure in a sieved dataset:
@@ -373,8 +423,21 @@ With `--surface part.vss` (from `vs-surface`) the report shows the part and its 
 part as glass with pores in red and loosened zones in amber, true to scale. With
 `--comparison part.compare` (from `vs-compare`) it adds the nominal-actual comparison: the key
 figures, the coloured deviation from above and from below, and the histogram of the deviation.
-In the GUI, the report step takes the latest surface and comparison of the project when there
-are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
+With `--wall-thickness part.thickness` (from `vs-thickness`) it adds the wall thickness:
+statistics, coloured views, histogram and the thin and thick regions. A `wall_thickness` section
+in the order sets the limits, and `max_area_below_min_mm2` tolerates small thin spots such as
+sharp edges instead of judging the single thinnest point. When the analysis wrote a thickness
+map (`--volume-map`), the report shows it too, and `max_mm` also judges the thickest spot inside
+the part. With a CAD model (`--nominal`), `nominal_tolerance_mm` judges the deviation from the
+nominal thickness, and `max_area_outside_nominal_mm2` tolerates small areas beyond it:
+
+```json
+"wall_thickness": { "min_mm": 2.5, "max_mm": 8.0, "max_area_below_min_mm2": 5.0,
+                    "nominal_tolerance_mm": 0.4, "max_area_outside_nominal_mm2": 5.0 }
+```
+
+In the GUI, the report step takes the latest surface, comparison and wall thickness of the
+project when there are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
 
 For fibre composites and other parts of several materials, the report step in the GUI also takes
 the material segmentation (materials with grey values, volume and share, slices coloured by
@@ -640,9 +703,10 @@ Resources: the result files of the project's steps (`report.html`, `report.json`
 Datasets are never sent over the protocol, only their metadata and these results.
 
 Prompts: `porosity_check` (porosity against an inspection order, with report),
-`compare_with_cad` (nominal-actual comparison), `first_article_inspection` (characteristics of
-a drawing measured on the scan, with the first article report) and `first_look` (size, voxel size, three slices)
-walk a model through the usual inspections.
+`compare_with_cad` (nominal-actual comparison), `wall_thickness_check` (walls against the minimum
+of the drawing), `first_article_inspection` (characteristics of a drawing measured on the scan,
+with the first article report) and `first_look` (size, voxel size, three slices) walk a model
+through the usual inspections.
 
 ## Contributing
 

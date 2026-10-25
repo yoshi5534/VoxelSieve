@@ -1,6 +1,7 @@
 #include "voxelsieve/dataset.hpp"
 
 #include <openvdb/io/File.h>
+#include <openvdb/tools/Composite.h>
 #include <openvdb/tools/Morphology.h>
 #include <openvdb/tools/Prune.h>
 #include <openvdb/tree/LeafManager.h>
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -470,35 +472,34 @@ GreyGrid roundedGrid(const openvdb::FloatGrid& mean) {
   return grid;
 }
 
-/// Mean of the active children of each voxel, from up to 2x2x2 bricks of the finer level.
-/// Children are loaded one at a time to bound memory. Integer types store the mean rounded to
-/// the nearest integer (ADR 0021).
-GreyGrid downsample(const std::vector<std::filesystem::path>& children, ValueType type) {
+/// Mean of the active children of each voxel of the coarser level that `child`, one brick of the
+/// finer level, covers. The brick edge is even, so every coarse voxel takes its children from one
+/// brick, and the parts from the up to 2x2x2 bricks below a coarse brick never overlap. Integer
+/// types store the mean rounded to the nearest integer (ADR 0021).
+GreyGrid downsample(GreyGrid child, ValueType type) {
   using Leaf = openvdb::FloatTree::LeafNodeType;
   auto sum = openvdb::FloatGrid::create(0.0F);
   auto count = openvdb::FloatGrid::create(0.0F);
   auto sum_acc = sum->getAccessor();
   auto count_acc = count->getAccessor();
-  for (const auto& path : children) {
-    readBrick(path, /*delay_load=*/false).visit([&](auto& child) {
-      child.tree().voxelizeActiveTiles();
-      // A leaf of 8^3 voxels falls into one octant of a parent leaf, so each child leaf looks up
-      // its two parent leaves once and then adds voxel by voxel, in the same order as before.
-      for (auto leaf = child.tree().cbeginLeaf(); leaf; ++leaf) {
-        const openvdb::Coord origin = leaf->origin();
-        const openvdb::Coord parent_origin(origin.x() >> 1, origin.y() >> 1, origin.z() >> 1);
-        Leaf* sum_leaf = sum_acc.touchLeaf(parent_origin);
-        Leaf* count_leaf = count_acc.touchLeaf(parent_origin);
-        for (auto it = leaf->cbeginValueOn(); it; ++it) {
-          const openvdb::Coord c = it.getCoord();
-          const openvdb::Index n =
-              Leaf::coordToOffset(openvdb::Coord(c.x() >> 1, c.y() >> 1, c.z() >> 1));
-          sum_leaf->setValueOn(n, sum_leaf->getValue(n) + static_cast<float>(*it));
-          count_leaf->setValueOn(n, count_leaf->getValue(n) + 1.0F);
-        }
+  child.visit([&](auto& grid) {
+    grid.tree().voxelizeActiveTiles();
+    // A leaf of 8^3 voxels falls into one octant of a parent leaf, so each child leaf looks up
+    // its two parent leaves once and then adds voxel by voxel.
+    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+      const openvdb::Coord origin = leaf->origin();
+      const openvdb::Coord parent_origin(origin.x() >> 1, origin.y() >> 1, origin.z() >> 1);
+      Leaf* sum_leaf = sum_acc.touchLeaf(parent_origin);
+      Leaf* count_leaf = count_acc.touchLeaf(parent_origin);
+      for (auto it = leaf->cbeginValueOn(); it; ++it) {
+        const openvdb::Coord c = it.getCoord();
+        const openvdb::Index n =
+            Leaf::coordToOffset(openvdb::Coord(c.x() >> 1, c.y() >> 1, c.z() >> 1));
+        sum_leaf->setValueOn(n, sum_leaf->getValue(n) + static_cast<float>(*it));
+        count_leaf->setValueOn(n, count_leaf->getValue(n) + 1.0F);
       }
-    });
-  }
+    }
+  });
   for (auto leaf = sum->tree().beginLeaf(); leaf; ++leaf) {
     const Leaf* count_leaf = count_acc.probeConstLeaf(leaf->origin());
     for (auto it = leaf->beginValueOn(); it; ++it) {
@@ -514,6 +515,28 @@ GreyGrid downsample(const std::vector<std::filesystem::path>& children, ValueTyp
       break;
   }
   return sum;
+}
+
+/// One grid of the disjoint `parts` of the same type; no grid when there are none.
+GreyGrid combineParts(std::vector<GreyGrid>& parts) {
+  GreyGrid result;
+  for (GreyGrid& part : parts) {
+    if (!part) {
+      continue;
+    }
+    if (!result) {
+      result = part;
+      continue;
+    }
+    result.visit([&](auto& grid) {
+      part.visit([&](const auto& other) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(grid)>, std::decay_t<decltype(other)>>) {
+          openvdb::tools::compReplace(grid, other);
+        }
+      });
+    });
+  }
+  return result;
 }
 
 void writeBrick(const std::filesystem::path& path, const GreyGrid& grid) {
@@ -556,46 +579,73 @@ nlohmann::json toJson(const DatasetInfo& info) {
 
 /// Writes the coarser levels of a dataset whose level 0 is written and listed in `info`, until one
 /// brick holds the whole volume, then overview.vdb and index.json.
+///
+/// The coarse bricks form a tree over the level-0 bricks, built depth first and in parallel at
+/// every node: a coarse brick is written as soon as the bricks below it are, and handed to its
+/// parent in memory, so no level waits for the one before it to finish and only level 0 is read
+/// back from disk.
 void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
                        const std::function<void(std::string_view, double)>& progress) {
-  std::mutex mutex;
-  int level_count = 1;  // levels needed in all, for the progress
-  for (Index3 d = info.dims;
-       std::any_of(d.begin(), d.end(), [&](std::int64_t n) { return n > info.brick_size; });
-       d = ceilDiv3(d, 2)) {
-    ++level_count;
+  std::vector<LevelInfo> coarse;
+  for (const LevelInfo* finer = &info.levels.back();
+       std::any_of(finer->dims.begin(), finer->dims.end(),
+                   [&](std::int64_t d) { return d > info.brick_size; });
+       finer = &coarse.back()) {
+    LevelInfo coarser{
+        finer->level + 1, ceilDiv3(finer->dims, 2), finer->voxel_size.scaled(2.0), {}};
+    std::filesystem::create_directories(brickPath(dir, coarser.level, {0, 0, 0}).parent_path());
+    coarse.push_back(std::move(coarser));
   }
   const TelemetryPhase phase("levels");
-  ProgressCounter level_progress(progress, "levels", static_cast<std::size_t>(level_count - 1));
-  while (true) {
-    const LevelInfo& finer = info.levels.back();
-    if (std::all_of(finer.dims.begin(), finer.dims.end(),
-                    [&](std::int64_t d) { return d <= info.brick_size; })) {
-      break;
-    }
-    LevelInfo coarser{finer.level + 1, ceilDiv3(finer.dims, 2), finer.voxel_size.scaled(2.0), {}};
-    const Index3 coarse_brick_dims = ceilDiv3(coarser.dims, info.brick_size);
-    std::filesystem::create_directories(brickPath(dir, coarser.level, {0, 0, 0}).parent_path());
-    tbb::parallel_for(std::size_t{0}, product(coarse_brick_dims), [&](std::size_t i) {
-      const Index3 brick = unravel(i, coarse_brick_dims);
-      std::vector<std::filesystem::path> children;
-      for (const Index3& child : finer.bricks) {
-        if (child[0] / 2 == brick[0] && child[1] / 2 == brick[1] && child[2] / 2 == brick[2]) {
-          children.push_back(brickPath(dir, finer.level, child));
+  const LevelInfo& base = info.levels.front();
+  const std::set<Index3> base_bricks(base.bricks.begin(), base.bricks.end());
+  ProgressCounter level_progress(progress, "levels", coarse.empty() ? 0 : base.bricks.size());
+  std::mutex mutex;
+
+  // Coarse brick `brick` of `level` (1 or more), written and returned; no grid when no brick of
+  // level 0 lies below it.
+  std::function<GreyGrid(int, const Index3&)> build = [&](int level, const Index3& brick) {
+    const Index3 finer_bricks = ceilDiv3(
+        level == 1 ? base.dims : coarse[static_cast<std::size_t>(level - 2)].dims, info.brick_size);
+    std::vector<Index3> children;
+    for (std::int64_t dz = 0; dz < 2; ++dz) {
+      for (std::int64_t dy = 0; dy < 2; ++dy) {
+        for (std::int64_t dx = 0; dx < 2; ++dx) {
+          const Index3 child{2 * brick[0] + dx, 2 * brick[1] + dy, 2 * brick[2] + dz};
+          if (child[0] < finer_bricks[0] && child[1] < finer_bricks[1] &&
+              child[2] < finer_bricks[2] && (level > 1 || base_bricks.contains(child))) {
+            children.push_back(child);
+          }
         }
       }
-      if (children.empty()) {
-        return;
+    }
+    std::vector<GreyGrid> parts(children.size());
+    tbb::parallel_for(std::size_t{0}, children.size(), [&](std::size_t i) {
+      GreyGrid child = level == 1 ? readBrick(brickPath(dir, 0, children[i]), /*delay_load=*/false)
+                                  : build(level - 1, children[i]);
+      if (child) {
+        parts[i] = downsample(std::move(child), info.value_type);
       }
-      const GreyGrid grid = downsample(children, info.value_type);
-      setGridProperties(grid.base(), coarser.level, info.voxel_size);
-      writeBrick(brickPath(dir, coarser.level, brick), grid);
-      const std::scoped_lock lock(mutex);
-      coarser.bricks.push_back(brick);
+      if (level == 1) {
+        level_progress.step();
+      }
     });
-    std::sort(coarser.bricks.begin(), coarser.bricks.end());
-    info.levels.push_back(std::move(coarser));
-    level_progress.step();
+    GreyGrid grid = combineParts(parts);
+    if (!grid) {
+      return grid;
+    }
+    setGridProperties(grid.base(), level, info.voxel_size);
+    writeBrick(brickPath(dir, level, brick), grid);
+    const std::scoped_lock lock(mutex);
+    coarse[static_cast<std::size_t>(level - 1)].bricks.push_back(brick);
+    return grid;
+  };
+  if (!coarse.empty()) {
+    build(coarse.back().level, {0, 0, 0});
+  }
+  for (LevelInfo& level : coarse) {
+    std::sort(level.bricks.begin(), level.bricks.end());
+    info.levels.push_back(std::move(level));
   }
 
   // Overview: the single brick of the coarsest level, or an empty grid for an empty dataset.

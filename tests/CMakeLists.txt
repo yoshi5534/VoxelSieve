@@ -1,6 +1,7 @@
 find_package(GTest REQUIRED)
 
 add_executable(voxelsieve_tests
+  test_components.cpp
   test_dataset.cpp
   test_denoise.cpp
   test_diconde.cpp
@@ -25,6 +26,7 @@ add_executable(voxelsieve_tests
   test_sieve.cpp
   test_surface.cpp
   test_compare.cpp
+  test_thickness.cpp
   test_dimensional.cpp
   test_render.cpp
   test_synthetic.cpp
@@ -186,13 +188,23 @@ add_test(NAME vs_compare_cli_bad_initial
          COMMAND vs-compare ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.stl
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_compare_bad --initial 1,2,3)
 set_tests_properties(vs_compare_cli_bad_initial PROPERTIES WILL_FAIL TRUE)
+add_test(NAME vs_thickness_cli
+         COMMAND vs-thickness ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve
+                 --surface ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss --min-wall 1.0
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_thickness)
+set_tests_properties(vs_thickness_cli PROPERTIES DEPENDS vs_surface_cli PASS_REGULAR_EXPRESSION "thinner than 1.000 mm")
+add_test(NAME vs_thickness_cli_sphere
+         COMMAND vs-thickness ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve --method sphere
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_thickness_sphere)
+set_tests_properties(vs_thickness_cli_sphere PROPERTIES DEPENDS vs_surface_cli_sieve PASS_REGULAR_EXPRESSION "method +sphere")
 add_test(NAME vs_report_cli_images
          COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vsieve
                  --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
                  --out ${CMAKE_CURRENT_BINARY_DIR}/cli_hub_report
                  --surface ${CMAKE_CURRENT_BINARY_DIR}/cli_hub.vss
-                 --comparison ${CMAKE_CURRENT_BINARY_DIR}/cli_compare)
-set_tests_properties(vs_report_cli_images PROPERTIES DEPENDS vs_compare_cli PASS_REGULAR_EXPRESSION "report.html")
+                 --comparison ${CMAKE_CURRENT_BINARY_DIR}/cli_compare
+                 --wall-thickness ${CMAKE_CURRENT_BINARY_DIR}/cli_thickness)
+set_tests_properties(vs_report_cli_images PROPERTIES DEPENDS "vs_compare_cli;vs_thickness_cli" PASS_REGULAR_EXPRESSION "report.html")
 
 add_test(NAME vs_gui_mcp_cli
   COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:vs-gui> -DARGS=--mcp

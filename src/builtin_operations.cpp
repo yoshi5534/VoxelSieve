@@ -40,6 +40,7 @@
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
+#include "voxelsieve/thickness.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -1373,6 +1374,257 @@ class CompareCad final : public Operation {
   OperationInfo info_;
 };
 
+const Json& objectEntry(const OperationContext& context, const std::string& id);
+IndexedMesh objectSurface(const Json& object, std::size_t max_triangles, bool outer_only,
+                          double& resolution_mm);
+
+/// The nominal geometry of a comparison step and where it lay on the scan: the CAD model of
+/// compare_cad or the nominal object of compare_objects.
+struct ComparedNominal {
+  Mesh mesh;
+  RigidTransform to_scan;
+  std::string source;
+  double tolerance_mm = 0.0;
+  bool bent = false;  // the comparison also registered it non-rigidly
+};
+
+ComparedNominal comparedNominal(const OperationContext& context,
+                                const std::filesystem::path& comparison_dir) {
+  std::ifstream in(comparison_dir / "compare.json");
+  if (!in) {
+    throw std::runtime_error("Cannot read " + (comparison_dir / "compare.json").string());
+  }
+  const Json json = Json::parse(in);
+  ComparedNominal nominal;
+  nominal.to_scan = RigidTransform::fromMatrix(json.at("cad_to_scan").get<std::vector<double>>());
+  nominal.tolerance_mm = json.at("tolerance_mm").get<double>();
+  nominal.bent = json.contains("deformation");
+  if (json.contains("cad_path")) {
+    const std::filesystem::path path = json.at("cad_path").get<std::string>();
+    nominal.mesh = readStl(path);
+    nominal.source = path.filename().string();
+  } else if (json.contains("nominal_object")) {
+    const std::string id = json.at("nominal_object").get<std::string>();
+    const Json& object = objectEntry(context, id);
+    double resolution_mm = 0.0;
+    nominal.mesh = triangleSoup(objectSurface(object, 2000000, true, resolution_mm));
+    nominal.source = object.at("name").get<std::string>();
+  } else {
+    throw std::invalid_argument("The comparison names no nominal geometry");
+  }
+  return nominal;
+}
+
+class WallThickness final : public Operation {
+ public:
+  WallThickness() {
+    info_.id = "wall_thickness";
+    info_.title = "Wall thickness";
+    info_.description =
+        "Measures the wall thickness at every point of the part surface (ADR 0030). Ray method: "
+        "along the inward normal through the grey values to the opposite face of the wall, "
+        "sub-voxel accurate for walls with roughly parallel faces. Sphere method: the diameter "
+        "of the largest sphere inside the material that touches the point, also in corners and "
+        "at ribs. Pores thin the wall. Surface regions thinner than min_wall_mm or thicker than "
+        "max_wall_mm are listed. Writes wall_thickness.json, thickness.ply (coloured mesh) and "
+        "views; without a surface step, the surface is extracted first. With volume_map, also "
+        "the local thickness of every material voxel (largest sphere containing it): the "
+        "dataset thickness_map, thickness_map.json and slices through the thickest spot; it "
+        "shows walls inside the part and material accumulations, and colours the slice view. "
+        "With a nominal-actual comparison, also the nominal thickness of the CAD model at "
+        "every point, by the same method, and the deviation of the actual thickness from it.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset"},
+                    {"surface", artifact::kSurface, "Surface of the dataset", true},
+                    {"comparison", artifact::kComparison,
+                     "Nominal-actual comparison: its CAD model where it lies on the scan, for the "
+                     "nominal thickness",
+                     true}};
+    info_.outputs = {{"wall_thickness", artifact::kWallThickness, "Wall thickness"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"method",
+           {{"type", "string"},
+            {"enum", {"ray", "sphere"}},
+            {"default", "ray"},
+            {"description",
+             "ray: to the opposite face along the normal (plates, housings); sphere: largest "
+             "inscribed sphere (castings with ribs and fillets)"}}},
+          {"min_wall_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description", "Smallest permitted wall thickness; 0: none"}}},
+          {"max_wall_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Largest permitted wall thickness, such as material accumulations of castings; 0: "
+             "none"}}},
+          {"max_thickness_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Thicker walls stay unmeasured; 0: half the middle extent of the part"}}},
+          {"search_angle_deg",
+           {{"type", "number"},
+            {"minimum", 1},
+            {"maximum", 90},
+            {"default", 30},
+            {"description",
+             "Ray method: largest angle between the ray and the normal of the face it leaves the "
+             "wall through"}}},
+          {"outer_surface_only",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description",
+             "Values only on the outer skin; internal voids still limit the walls"}}},
+          {"max_triangles",
+           {{"type", "integer"},
+            {"minimum", 10000},
+            {"maximum", 50000000},
+            {"default", 2000000},
+            {"description", "Triangle budget of the measured surface mesh"}}},
+          {"volume_map",
+           {{"type", "boolean"},
+            {"default", false},
+            {"description",
+             "Also map the local thickness of every material voxel (slower: a few seconds per "
+             "100 MB of scan for walls of 30 voxels)"}}},
+          {"map_max_thickness_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Thickness map: thicker material gets this value; 0: the smallest extent of the "
+             "part, at most 64 voxels. Time and memory grow with it"}}},
+          {"nominal_thickness",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description",
+             "With a comparison input: compare with the nominal thickness of its CAD model"}}},
+          {"nominal_tolerance_mm",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"default", 0},
+            {"description",
+             "Permitted deviation from the nominal thickness; 0: twice the tolerance of the "
+             "comparison (each face may deviate by it)"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    WallThicknessOptions options;
+    options.method = thicknessMethodFromString(p.at("method").get<std::string>());
+    options.min_wall_mm = p.at("min_wall_mm").get<double>();
+    options.max_wall_mm = p.at("max_wall_mm").get<double>();
+    options.max_thickness_mm = p.at("max_thickness_mm").get<double>();
+    options.search_angle_deg = p.at("search_angle_deg").get<double>();
+    options.outer_surface_only = p.at("outer_surface_only").get<bool>();
+    options.max_triangles = p.at("max_triangles").get<std::size_t>();
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const auto dir = context.output_dir / "wall_thickness";
+    std::filesystem::create_directories(dir);
+    std::filesystem::path surface_file;
+    if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
+      surface_file = surface->second / "surface.vss";
+    } else {
+      context.log("No surface step given: extracted the surface from the dataset");
+      const TelemetryPhase phase("surface mask");
+      surface_file = dir / "surface.vss";
+      (void)writeSurface(dataset, surface_file);
+    }
+    // The thickness map takes longer than the surface.
+    const bool volume_map = p.at("volume_map").get<bool>();
+    const double start = context.inputs.contains("surface") ? 0.0 : (volume_map ? 0.1 : 0.2);
+    const double surface_end = volume_map ? 0.4 : 0.85;
+    context.progress(start);
+    options.progress = [&](double fraction) {
+      context.progress(start + (surface_end - start) * fraction);
+    };
+    WallThicknessResult thickness =
+        analyzeWallThickness(dataset, SurfaceMask::open(surface_file), options);
+    const auto comparison = context.inputs.find("comparison");
+    if (comparison != context.inputs.end() && p.at("nominal_thickness").get<bool>()) {
+      const ComparedNominal nominal = comparedNominal(context, comparison->second);
+      if (nominal.bent) {
+        context.log(
+            "The comparison also bent the CAD model; the nominal thickness is measured "
+            "where its rigid alignment placed it");
+      }
+      NominalThicknessOptions nominal_options;
+      nominal_options.source = nominal.source;
+      const double tolerance = p.at("nominal_tolerance_mm").get<double>();
+      nominal_options.tolerance_mm = tolerance > 0.0 ? tolerance : 2.0 * nominal.tolerance_mm;
+      addNominalThickness(thickness, nominal.mesh, nominal.to_scan, nominal_options);
+    }
+    {
+      const TelemetryPhase phase("write results");
+      writeWallThickness(thickness, dir);
+    }
+    const ThicknessStats& s = thickness.stats;
+    OperationResult result;
+    result.outputs["wall_thickness"] = "wall_thickness";
+    result.summary = {
+        {"method", toString(thickness.method)},
+        {"thickness_min_mm", s.min_mm},
+        {"thickness_median_mm", s.percentiles_mm[2]},
+        {"thickness_mean_mm", s.mean_mm},
+        {"thickness_max_mm", s.max_mm},
+        {"measured_percent", s.area_mm2 > 0.0 ? 100.0 * s.measured_area_mm2 / s.area_mm2 : 0.0},
+        {"max_thickness_mm", thickness.max_thickness_mm}};
+    if (options.min_wall_mm > 0.0) {
+      result.summary["min_wall_mm"] = options.min_wall_mm;
+      result.summary["below_min_percent"] = 100.0 * s.below_min;
+      result.summary["thin_regions"] = thickness.thin_regions.size();
+    }
+    if (options.max_wall_mm > 0.0) {
+      result.summary["max_wall_mm"] = options.max_wall_mm;
+      result.summary["above_max_percent"] = 100.0 * s.above_max;
+      result.summary["thick_regions"] = thickness.thick_regions.size();
+    }
+    if (thickness.nominal) {
+      const DeviationStats& d = thickness.nominal->stats;
+      result.summary["nominal"] = thickness.nominal->source;
+      result.summary["nominal_tolerance_mm"] = thickness.nominal->tolerance_mm;
+      result.summary["nominal_compared_percent"] =
+          s.measured_area_mm2 > 0.0 ? 100.0 * d.area_mm2 / s.measured_area_mm2 : 0.0;
+      result.summary["nominal_deviation_min_mm"] = d.min_mm;
+      result.summary["nominal_deviation_max_mm"] = d.max_mm;
+      result.summary["thinner_than_nominal_percent"] = 100.0 * d.below_tolerance;
+      result.summary["thicker_than_nominal_percent"] = 100.0 * d.above_tolerance;
+    }
+    if (volume_map) {
+      ThicknessMapOptions map_options;
+      map_options.max_thickness_mm = p.at("map_max_thickness_mm").get<double>();
+      map_options.min_wall_mm = options.min_wall_mm;
+      map_options.max_wall_mm = options.max_wall_mm;
+      map_options.progress = [&](double fraction) {
+        context.progress(surface_end + (1.0 - surface_end) * fraction);
+      };
+      const ThicknessMapResult map =
+          writeThicknessMap(dataset, SurfaceMask::open(surface_file), dir, map_options);
+      result.summary["map_median_mm"] = map.percentiles_mm[2];
+      result.summary["map_max_mm"] = map.max_mm;
+      result.summary["map_range_mm"] = map.range_mm;
+      if (options.min_wall_mm > 0.0) {
+        result.summary["map_below_min_percent"] = 100.0 * map.below_min;
+      }
+      if (options.max_wall_mm > 0.0) {
+        result.summary["map_above_max_percent"] = 100.0 * map.above_max;
+        result.summary["map_thick_regions"] = map.thick_regions.size();
+      }
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 std::string readTextFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -1418,14 +1670,17 @@ class Report final : public Operation {
         "comparison with its views and histogram. For fibre composites and other parts of "
         "several materials, a material segmentation adds the materials with their shares and "
         "coloured slices, and a fibre orientation the fibre families, evaluated against the "
-        "\"fibres\" requirements of the order (direction tolerance, share).";
+        "\"fibres\" requirements of the order (direction tolerance, share). A wall thickness "
+        "analysis adds its statistics, views and thin regions, evaluated against the "
+        "\"wall_thickness\" limits of the order (min_mm, max_mm).";
     info_.inputs = {
         {"porosity", artifact::kPorosity, "Porosity result"},
         {"surface", artifact::kSurface, "Surface for the 3D views of the part", true},
         {"comparison", artifact::kComparison, "Nominal-actual comparison", true},
         {"dataset", artifact::kDataset, "Dataset for the slices through the materials", true},
         {"materials", artifact::kMaterials, "Material segmentation", true},
-        {"orientation", artifact::kFibreOrientation, "Fibre orientation", true}};
+        {"orientation", artifact::kFibreOrientation, "Fibre orientation", true},
+        {"wall_thickness", artifact::kWallThickness, "Wall thickness", true}};
     info_.outputs = {{"report", artifact::kReport, "Report directory"}};
     info_.parameters = {
         {"type", "object"},
@@ -1477,6 +1732,10 @@ class Report final : public Operation {
     if (const auto orientation = context.inputs.find("orientation");
         orientation != context.inputs.end()) {
       addFibreOrientation(data, orientation->second, order);
+    }
+    if (const auto thickness = context.inputs.find("wall_thickness");
+        thickness != context.inputs.end()) {
+      addWallThickness(data, thickness->second, order);
     }
     phase.reset();
     phase.emplace("write report");
@@ -3016,6 +3275,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportGzippedXml>());
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<FibreOrientation>());
+  registry.add(std::make_shared<WallThickness>());
   registry.add(std::make_shared<BatteryInspection>());
   registry.add(std::make_shared<BatteryImages>());
   registry.add(std::make_shared<SegmentMaterials>());

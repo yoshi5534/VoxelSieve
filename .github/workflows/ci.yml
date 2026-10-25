@@ -65,7 +65,7 @@ jobs:
     name: Build and test (${{ matrix.preset }})
     needs: dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,10 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --timeout 600 --parallel "$(nproc)"
+        # Under ASan the slowest tests take five to ten minutes, depending on the runner.
+        run: >-
+          ctest --preset ${{ matrix.preset }} --parallel "$(nproc)"
+          --timeout ${{ matrix.preset == 'asan' && 1200 || 600 }}
 
   lint:
     name: Format and clang-tidy

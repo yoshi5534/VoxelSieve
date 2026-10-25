@@ -117,6 +117,17 @@ void addMaterials(nlohmann::json& data, const std::filesystem::path& dir,
 void addFibreOrientation(nlohmann::json& data, const std::filesystem::path& dir,
                          const nlohmann::json& order);
 
+/// Adds a wall thickness analysis written by writeWallThickness in `dir` (ADR 0030): method,
+/// statistics, the regions thinner or thicker than the limits with their location
+/// (data.wall_thickness), views coloured by thickness (images.thickness_1, images.thickness_2) and
+/// the histogram as SVG (images.thickness_histogram). The "wall_thickness" section of `order`
+/// sets the limits (min_mm, max_mm), else those of the analysis count; with it, the thinnest wall
+/// against min_mm, or the area thinner than min_mm against max_area_below_min_mm2 when given, and
+/// the thickest wall against max_mm join data.evaluation as a block of their own and count for
+/// its verdict.
+void addWallThickness(nlohmann::json& data, const std::filesystem::path& dir,
+                      const nlohmann::json& order);
+
 /// Renders a template with a subset of Mustache: {{name}} (HTML-escaped), {{{name}}} (raw),
 /// dotted names, sections {{#name}}...{{/name}} over lists, objects and true values, inverted
 /// sections {{^name}}...{{/name}}, {{.}} for the current element and {{! comments }}.

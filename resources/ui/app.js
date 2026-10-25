@@ -61,6 +61,16 @@ const LABELS = {
   tolerance_mm: 'Tolerance (± mm)',
   outer_surface_only: 'Compare the outer skin only',
   aligned_stl: 'Write the aligned CAD model as STL',
+  method: 'Method',
+  min_wall_mm: 'Minimum wall (mm)',
+  max_wall_mm: 'Maximum wall (mm)',
+  max_thickness_mm: 'Measure walls up to (mm)',
+  search_angle_deg: 'Search angle (°)',
+  max_triangles: 'Triangle budget of the surface',
+  volume_map: 'Also map the thickness inside the part',
+  map_max_thickness_mm: 'Thickness map up to (mm)',
+  nominal_thickness: 'Compare with the nominal thickness of the CAD model',
+  nominal_tolerance_mm: 'Tolerance against nominal (± mm, 0: from the comparison)',
 };
 
 const SUMMARY_LABELS = {
@@ -119,6 +129,31 @@ const SUMMARY_LABELS = {
   displacement_mean_mm: 'Non-rigid: mean displacement (mm)',
   rigid_deviation_rms_mm: 'Rigid alignment alone: RMS of the deviation (mm)',
   rigid_within_tolerance_percent: 'Rigid alignment alone: within tolerance (% of area)',
+  method: 'Method',
+  thickness_min_mm: 'Thinnest wall (mm)',
+  thickness_median_mm: 'Median wall thickness (mm)',
+  thickness_mean_mm: 'Mean wall thickness (mm)',
+  thickness_max_mm: 'Thickest wall (mm)',
+  measured_percent: 'Measured (% of the surface)',
+  max_thickness_mm: 'Measured up to (mm)',
+  min_wall_mm: 'Minimum wall (mm)',
+  below_min_percent: 'Thinner than the minimum (% of the surface)',
+  thin_regions: 'Thin regions',
+  max_wall_mm: 'Maximum wall (mm)',
+  above_max_percent: 'Thicker than the maximum (% of the surface)',
+  thick_regions: 'Thick regions',
+  map_median_mm: 'Thickness map: median (mm)',
+  map_max_mm: 'Thickness map: thickest spot (mm)',
+  map_range_mm: 'Thickness map: colour range (mm)',
+  map_below_min_percent: 'Thickness map: thinner than the minimum (% of the material)',
+  map_above_max_percent: 'Thickness map: thicker than the maximum (% of the material)',
+  map_thick_regions: 'Thickness map: thick regions',
+  nominal_tolerance_mm: 'Tolerance against nominal (± mm)',
+  nominal_compared_percent: 'Compared with nominal (% of the measured surface)',
+  nominal_deviation_min_mm: 'Largest shortfall against nominal (mm)',
+  nominal_deviation_max_mm: 'Largest excess over nominal (mm)',
+  thinner_than_nominal_percent: 'Thinner than nominal (% of the compared surface)',
+  thicker_than_nominal_percent: 'Thicker than nominal (% of the compared surface)',
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1055,6 +1090,9 @@ const RESULT_TYPES = {
   comparison: { label: 'Nominal-actual comparison', view: '3d', volumeMode: 4,
     keys: ['deviation_rms_mm', 'within_tolerance_percent', 'tolerance_mm',
       'displacement_max_mm'] },
+  wall_thickness: { label: 'Wall thickness', view: '3d', volumeMode: 5,
+    keys: ['thickness_min_mm', 'thickness_median_mm', 'below_min_percent', 'thin_regions',
+      'measured_percent', 'thinner_than_nominal_percent', 'map_max_mm', 'map_thick_regions'] },
   report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
   diconde: { label: 'DICONDE export', keys: ['slices', 'indications', 'series', 'path'] },
 };
@@ -1086,6 +1124,7 @@ function isShown(result) {
   if (result.type === 'materials') return materialsOf(source)?.id === result.step;
   if (result.type === 'surface') return surfaceOf(source) === result.step;
   if (result.type === 'comparison') return comparisonOf(source) === result.step;
+  if (result.type === 'wall_thickness') return wallThicknessOf(source) === result.step;
   return false;
 }
 
@@ -1373,6 +1412,7 @@ function renderViewStage(panel) {
   const viewer = state.viewer ?? (state.viewer = new SliceViewer());
   const porosity = porosityOf(dataset.step.id);
   const materials = materialsOf(dataset.step.id);
+  const thicknessMap = thicknessMapOf(dataset.step.id);
   loadPores(porosity);
   const canvas = el('canvas', { tabindex: 0 });
   const status = el('div', { className: 'viewer-status' });
@@ -1385,7 +1425,7 @@ function renderViewStage(panel) {
     title: 'Slice normal to the ' + SLICE_AXIS_NAMES[axis] + ' axis',
   }, SLICE_AXIS_NAMES[axis].toUpperCase()));
   const overlay = el('input', { type: 'checkbox', checked: viewer.showOverlay,
-    disabled: porosity === null && materials === null });
+    disabled: porosity === null && materials === null && thicknessMap === null });
   overlay.addEventListener('change', () => viewer.setOverlay(overlay.checked));
   slider.addEventListener('input', () => viewer.setSlice(Number(slider.value)));
   sliceNumber.addEventListener('change', () => viewer.setSlice(Number(sliceNumber.value)));
@@ -1456,12 +1496,18 @@ function renderViewStage(panel) {
     side.append(...materialLegend(materials, (ids) => viewer.setHiddenMaterials(ids),
       (colors) => viewer.setMaterialColors(colors)));
   }
+  if (thicknessMap !== null) {
+    side.append(el('h3', {}, 'Wall thickness (step ' + thicknessMap.id + ')'),
+      thicknessLegend(thicknessMap.params.min_wall_mm ?? 0, thicknessMap.params.max_wall_mm ?? 0,
+        thicknessMap.summary?.map_range_mm ?? 10, 'the material'));
+  }
   panel.append(el('div', { className: 'viewer' },
     el('div', {}, tools, canvas, status), side));
 
   state.capture = () => viewer.capture();
   api('dataset_info', { step: dataset.step.id }).then((info) => {
-    viewer.setDataset(info, dataset.step.id, porosity, materials?.id ?? null);
+    viewer.setDataset(info, dataset.step.id, porosity, materials?.id ?? null,
+      thicknessMap?.id ?? null);
     viewer.attach(canvas);
     if (state.restore?.slice) {
       viewer.setState(state.restore.slice);
@@ -1525,7 +1571,7 @@ const MATERIAL_NAMES = ['Air inclusion', 'Aluminium', 'Steel', 'Cast iron', 'Tit
   'Magnesium', 'Plastic', 'Fibre', 'Ceramic', 'Glass', 'Inclusion', 'Coating'];
 
 const VOLUME_MODES = ['Surface', 'Transfer function', 'Maximum intensity projection',
-  'Extracted surface', 'Nominal-actual deviation'];
+  'Extracted surface', 'Nominal-actual deviation', 'Wall thickness'];
 
 /// Surface step computed from the dataset of `datasetStep` that the views show.
 function surfaceOf(datasetStep) {
@@ -1544,8 +1590,24 @@ function comparisonOf(datasetStep) {
   return shownStep('comparison', steps)?.id ?? null;
 }
 
+/// Wall thickness step computed from the dataset of `datasetStep` that the views show.
+function wallThicknessOf(datasetStep) {
+  const steps = activeSteps().filter((step) => step.operation === 'wall_thickness' &&
+    step.inputs.dataset?.step === datasetStep);
+  return shownStep('wall_thickness', steps)?.id ?? null;
+}
+
+/// The wall thickness step of the dataset of `datasetStep` that the views show, when it has a
+/// thickness map: the slice view colours the material by it.
+function thicknessMapOf(datasetStep) {
+  const id = wallThicknessOf(datasetStep);
+  const step = activeSteps().find((candidate) => candidate.id === id);
+  return step?.params?.volume_map ? step : null;
+}
+
 /// Colour bar of the deviation colours (deviationColor in compare.cpp) with its limits.
-function deviationLegend(tolerance, range) {
+function deviationLegend(tolerance, range,
+  note = 'Blue: material missing · green: within tolerance · red: excess material') {
   const edge = (100 * (range - tolerance) / (2 * range)).toFixed(2);
   const inner = (100 - edge).toFixed(2);
   const bar = el('div', { className: 'legend-bar' });
@@ -1563,8 +1625,7 @@ function deviationLegend(tolerance, range) {
     el('div', { className: 'legend-labels' },
       label('≤ ' + mm(-range), 0, 0), label(mm(-tolerance), edge, -50), label('0', 50, -50),
       label(mm(tolerance), inner, -50), label('≥ ' + mm(range), 100, -100)),
-    el('div', { className: 'legend-note' },
-      'Blue: material missing · green: within tolerance · red: excess material'));
+    el('div', { className: 'legend-note' }, note));
 }
 
 /// Colour bar of the displacement of a non-rigid registration: green up to the tolerance, then
@@ -1588,6 +1649,47 @@ function displacementLegend(tolerance, range) {
       'How far the non-rigid registration moved the surface to fit the nominal geometry'));
 }
 
+/// Colour bar of the wall thickness colours (thicknessColor in thickness.cpp) from 0 to `range`,
+/// with the limits of the analysis.
+function thicknessLegend(minWall, maxWall, range, measured = null) {
+  const at = (mm) => (100 * Math.min(mm / range, 1)).toFixed(2);
+  const stops = [[215, 40, 40], [240, 220, 50], [60, 190, 90], [40, 190, 230], [40, 70, 210]];
+  const parts = stops.map((c, i) => 'rgb(' + c.join(',') + ') ' + (25 * i) + '%');
+  const bar = el('div', { className: 'legend-bar' });
+  const layers = [];
+  if (minWall > 0) {
+    layers.push('linear-gradient(to right, rgb(200,40,170) 0%, rgb(200,40,170) ' + at(minWall) +
+      '%, transparent ' + at(minWall) + '%)');
+  }
+  if (maxWall > 0 && maxWall < range) {
+    layers.push('linear-gradient(to right, transparent ' + at(maxWall) + '%, rgb(110,50,170) ' +
+      at(maxWall) + '%)');
+  }
+  layers.push('linear-gradient(to right, ' + parts.join(', ') + ')');
+  bar.style.background = layers.join(', ');
+  const label = (text, percent, align) => {
+    const span = el('span', {}, text);
+    span.style.left = percent + '%';
+    span.style.transform = 'translateX(' + align + '%)';
+    return span;
+  };
+  // Labels of the limits replace the ends of the scale they would cover.
+  const nearEnd = maxWall > 0 && maxWall < range && at(maxWall) > 80;
+  const labels = [];
+  if (!(minWall > 0 && at(minWall) < 15)) labels.push(label('0', 0, 0));
+  if (!nearEnd) labels.push(label('≥ ' + formatNumber(range) + ' mm', 100, -100));
+  if (minWall > 0) labels.push(label(formatNumber(minWall) + ' mm', at(minWall), -50));
+  if (maxWall > 0 && maxWall < range) {
+    labels.push(label(formatNumber(maxWall) + ' mm', at(maxWall), nearEnd ? -100 : -50));
+  }
+  return el('div', { className: 'deviation-legend' }, bar,
+    el('div', { className: 'legend-labels' }, labels),
+    el('div', { className: 'legend-note' },
+      'Thin red to thick blue' + (minWall > 0 ? ' · magenta: thinner than the minimum' : '') +
+      (maxWall > 0 ? ' · violet: thicker than the maximum' : '') +
+      (measured ? ' · on ' + measured : ' · grey: not measured')));
+}
+
 function renderVolumeView(panel, dataset) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
   // The transfer function outlives re-rendering; it is reset when another volume is loaded.
@@ -1597,9 +1699,11 @@ function renderVolumeView(panel, dataset) {
   const materials = materialsOf(dataset.step.id);
   const surfaceStep = surfaceOf(dataset.step.id);
   const comparisonStep = comparisonOf(dataset.step.id);
-  // Without a surface or comparison step its mesh cannot be shown; fall back to the grey values.
-  if ((volume.mode === 3 && surfaceStep === null) ||
-      (volume.mode === 4 && comparisonStep === null)) volume.mode = 0;
+  const thicknessStep = wallThicknessOf(dataset.step.id);
+  // Without a surface, comparison or wall thickness step its mesh cannot be shown; fall back to
+  // the grey values.
+  const meshStep = { 3: surfaceStep, 4: comparisonStep, 5: thicknessStep };
+  if (volume.mode in meshStep && meshStep[volume.mode] === null) volume.mode = 0;
   const canvas = el('canvas');
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
     title: 'Click sets a point, drag moves it, double click or Delete removes it' });
@@ -1623,10 +1727,10 @@ function renderVolumeView(panel, dataset) {
   };
   const mode = el('select', { title: 'Rendering' },
     VOLUME_MODES.map((name, i) => {
-      const missing = (i === 3 && surfaceStep === null) || (i === 4 && comparisonStep === null);
+      const missing = i in meshStep && meshStep[i] === null;
+      const operation = { 3: 'Surface', 4: 'Nominal-actual comparison', 5: 'Wall thickness' }[i];
       return el('option', { value: i, selected: volume.mode === i, disabled: missing,
-        title: missing ? 'Run the operation "' + (i === 3 ? 'Surface' : 'Nominal-actual comparison') +
-          '" first' : null }, name);
+        title: missing ? 'Run the operation "' + operation + '" first' : null }, name);
     }));
   const shading = el('input', { type: 'checkbox', checked: volume.shading });
   shading.addEventListener('change', () => update({ shading: shading.checked }));
@@ -1957,9 +2061,10 @@ function renderVolumeView(panel, dataset) {
     materialRows.hidden = !draft.editing;
     shading.parentElement.hidden = volume.mode !== 1;
     pores.parentElement.hidden = volume.mode >= 3;
-    legend.hidden = volume.mode !== 4;
+    legend.hidden = volume.mode !== 4 && volume.mode !== 5;
     if (volume.mode === 3) showSurface();
     if (volume.mode === 4) showDeviation();
+    if (volume.mode === 5) showThickness();
   };
   /// Loads the mesh of the latest surface step of this dataset and says what is shown.
   const showSurface = () => {
@@ -1987,6 +2092,26 @@ function renderVolumeView(panel, dataset) {
       status.textContent = (mesh.displacement ? 'Non-rigid displacement' :
         mesh.hasDisplacement ? 'Nominal-actual deviation after non-rigid registration' :
           'Nominal-actual deviation') + ' of step ' + comparisonStep + ' · ' +
+        formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
+    }).catch((error) => {
+      status.textContent = error.message;
+    });
+  };
+  /// Loads the measured surface of the latest wall thickness step of this dataset, coloured by
+  /// the thickness or by its deviation from the nominal thickness of the CAD model.
+  const showThickness = (nominal = false) => {
+    status.textContent = 'Loading wall thickness of step ' + thicknessStep + ' …';
+    volume.loadWallThickness(thicknessStep, nominal).then((mesh) => {
+      if (volume.mode !== 5) return;
+      const toggle = mesh.hasNominal ? el('label', {},
+        el('input', { type: 'checkbox', checked: mesh.nominal,
+          onchange: (event) => showThickness(event.target.checked) }),
+        ' Show the deviation from the nominal thickness of the CAD model') : [];
+      legend.replaceChildren(mesh.nominal ? deviationLegend(mesh.tolerance, mesh.range,
+        'Blue: thinner than nominal · green: within tolerance · red: thicker · grey: no value')
+        : thicknessLegend(mesh.minWall, mesh.maxWall, mesh.range), toggle);
+      status.textContent = (mesh.nominal ? 'Wall thickness against nominal' : 'Wall thickness') +
+        ' of step ' + thicknessStep + ' · ' +
         formatNumber(mesh.triangles) + ' triangles · drag rotates, mouse wheel zooms';
     }).catch((error) => {
       status.textContent = error.message;

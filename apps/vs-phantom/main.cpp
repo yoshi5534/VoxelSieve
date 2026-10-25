@@ -11,6 +11,7 @@
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/source.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace {
@@ -87,7 +88,8 @@ int main(int argc, char** argv) {
     const voxelsieve::TelemetryScope scope(telemetry);
     const auto raw_path = std::filesystem::path(options->out).concat(".raw");
     const auto json_path = std::filesystem::path(options->out).concat(".json");
-    voxelsieve::writeRaw(raw_path, voxelsieve::generatePhantom(options->spec));
+    // Streamed in slabs that are computed in parallel, so the volume never has to fit in memory.
+    voxelsieve::writeRaw(raw_path, voxelsieve::PhantomSource(options->spec));
     voxelsieve::writeJson(json_path, voxelsieve::phantomToJson(options->spec));
     std::cout << "Wrote " << raw_path.string() << " and " << json_path.string() << '\n';
     voxelsieve::reportTelemetry(telemetry, options->telemetry);

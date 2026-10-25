@@ -58,6 +58,8 @@ add_library(voxelsieve SHARED
   diconde.cpp
   dicom.cpp
   detail/blocks.cpp
+  detail/components.cpp
+  detail/convolution.cpp
   detail/network.cpp
   detail/png.cpp
   detail/tiff.cpp
@@ -66,6 +68,8 @@ add_library(voxelsieve SHARED
   source.cpp
   surface.cpp
   compare.cpp
+  thickness.cpp
+  thickness_map.cpp
   dimensional.cpp
   render.cpp
   synthetic.cpp
