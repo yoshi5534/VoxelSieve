@@ -65,7 +65,7 @@ jobs:
     name: Build and test (${{ matrix.preset }})
     needs: dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
