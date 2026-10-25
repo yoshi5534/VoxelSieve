@@ -128,6 +128,12 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   // Windows may trim a few pages of the 96 MiB block from the working set while it is written.
   EXPECT_GE(memory_peak, phase(record, "compute").at("peak_rss_mb").get<double>() + 80.0);
   EXPECT_GE(record.at("total").at("peak_rss_mb").get<double>(), memory_peak);
+#ifdef _WIN32
+  // The library replaces the C runtime's heap with TBB's scalable allocator (src/CMakeLists.txt).
+  EXPECT_EQ(record.at("system").at("allocator"), "tbbmalloc");
+#else
+  EXPECT_EQ(record.at("system").at("allocator"), "system");
+#endif
   if (record.at("system").at("peak_per_phase").get<bool>()) {
     // The high-water mark restarts at each phase, so the write phase does not see the block.
     EXPECT_LT(phase(record, "write").at("peak_rss_mb").get<double>(), memory_peak - 50.0);

@@ -1,17 +1,22 @@
 #include "voxelsieve/dataset.hpp"
 
 #include <openvdb/io/File.h>
+#include <openvdb/io/Stream.h>
 #include <openvdb/tools/Composite.h>
 #include <openvdb/tools/Morphology.h>
 #include <openvdb/tools/Prune.h>
 #include <openvdb/tree/LeafManager.h>
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
+#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <atomic>
+#include <boost/iostreams/device/array.hpp>
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <boost/iostreams/stream.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -32,6 +37,7 @@
 #include "detail/transform.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
+#include "voxelsieve/uninitialized.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -363,10 +369,13 @@ void setGridProperties(openvdb::GridBase& grid, int level, const VoxelSize& voxe
   grid.insertMeta("voxelsieve_level", openvdb::Int32Metadata(level));
 }
 
-/// Builds one level-0 brick, or returns nullptr when the sieve keeps nothing inside it.
+/// Builds one level-0 brick, or returns nullptr when the sieve keeps nothing inside it. `values`
+/// holds the brick's grey values while it is built; reused from brick to brick, its memory is not
+/// handed back to the system and faulted in again for every brick.
 template <class Grid>
 typename Grid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& blocks,
-                              const Index3& brick, const DatasetOptions& options) {
+                              const Index3& brick, const DatasetOptions& options,
+                              UninitializedVector<std::uint16_t>& values) {
   using Value = typename Grid::ValueType;
   const Index3 dims = source.dims();
   const std::int64_t blocks_per_brick = options.brick_size / kBlockSize;
@@ -417,7 +426,7 @@ typename Grid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& block
     return nullptr;
   }
 
-  std::vector<std::uint16_t> values(static_cast<std::size_t>(box.voxelCount()));
+  values.resize(static_cast<std::size_t>(box.voxelCount()));
   source.readRegion(box, values);
   if constexpr (std::is_same_v<Value, std::uint8_t>) {
     // 8-bit grids hold 8-bit input only (writeDataset checks the source's sample type).
@@ -444,16 +453,17 @@ typename Grid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& block
 }
 
 GreyGrid buildBrick(ValueType type, const VolumeSource& source, const BlockGrid& blocks,
-                    const Index3& brick, const DatasetOptions& options) {
+                    const Index3& brick, const DatasetOptions& options,
+                    UninitializedVector<std::uint16_t>& values) {
   switch (type) {
     case ValueType::kUInt16:
-      return buildBrick<UInt16Grid>(source, blocks, brick, options);
+      return buildBrick<UInt16Grid>(source, blocks, brick, options, values);
     case ValueType::kUInt8:
-      return buildBrick<UInt8Grid>(source, blocks, brick, options);
+      return buildBrick<UInt8Grid>(source, blocks, brick, options, values);
     case ValueType::kFloat:
       break;
   }
-  return buildBrick<openvdb::FloatGrid>(source, blocks, brick, options);
+  return buildBrick<openvdb::FloatGrid>(source, blocks, brick, options, values);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -675,10 +685,34 @@ std::filesystem::path brickPath(const std::filesystem::path& dir, int level, con
 
 GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
   initializeVdb();
-  openvdb::io::File vdb(file.string());
-  vdb.open(delay_load);
-  GreyGrid grid = GreyGrid::fromBase(vdb.readGrid("density"));
-  vdb.close();
+  GreyGrid grid;
+  if (delay_load) {
+    openvdb::io::File vdb(file.string());
+    vdb.open(/*delayLoad=*/true);
+    grid = GreyGrid::fromBase(vdb.readGrid("density"));
+    vdb.close();
+  } else {
+    // Read in one piece and parsed from memory: from the file, OpenVDB seeks and reads again for
+    // every leaf, two system calls per 512 voxels.
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
+    if (!in) {
+      throw std::runtime_error("Cannot open " + file.string());
+    }
+    std::vector<char> bytes(static_cast<std::size_t>(in.tellg()));
+    in.seekg(0);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!in) {
+      throw std::runtime_error("Cannot read " + file.string());
+    }
+    boost::iostreams::stream<boost::iostreams::array_source> stream(bytes.data(), bytes.size());
+    openvdb::io::Stream vdb(stream, /*delayLoad=*/false);
+    for (const openvdb::GridBase::Ptr& base : *vdb.getGrids()) {
+      if (base->getName() == "density") {
+        grid = GreyGrid::fromBase(base);
+        break;
+      }
+    }
+  }
   if (!grid) {
     throw std::runtime_error("No grey-value grid 'density' in " + file.string());
   }
@@ -782,9 +816,14 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   std::mutex mutex;
   ProgressCounter brick_progress(options.progress, "bricks", product(brick_dims));
   PageRelease bricks_release(staged ? &source : nullptr, 16);
+  tbb::enumerable_thread_specific<UninitializedVector<std::uint16_t>> buffers;
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
-    const GreyGrid grid = buildBrick(info.value_type, source, blocks, brick, options);
+    // Isolated, so a thread waiting inside OpenVDB does not start another brick with its buffer.
+    GreyGrid grid;
+    tbb::this_task_arena::isolate([&] {
+      grid = buildBrick(info.value_type, source, blocks, brick, options, buffers.local());
+    });
     bricks_release.step();
     brick_progress.step();
     if (!grid) {
