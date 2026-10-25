@@ -17,30 +17,9 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/uninitialized.hpp"
 
 namespace voxelsieve {
-
-/// Allocator that leaves values uninitialised where a vector would set them to zero. Feature maps
-/// are hundreds of MB that the layers overwrite anyway, in parallel: zeroing them first would
-/// take one thread through all of that memory.
-template <class T>
-struct UninitializedAllocator : std::allocator<T> {
-  template <class U>
-  struct rebind {  // NOLINT(readability-identifier-naming): the allocator interface
-    using other = UninitializedAllocator<U>;
-  };
-  UninitializedAllocator() = default;
-  template <class U>
-  explicit UninitializedAllocator(const UninitializedAllocator<U>& /*other*/) noexcept {}
-  template <class U>
-  void construct(U* p) noexcept {
-    ::new (static_cast<void*>(p)) U;
-  }
-  template <class U, class... Args>
-  void construct(U* p, Args&&... args) {
-    ::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
-  }
-};
 
 /// Values of a feature map; new elements are uninitialised.
 using FeatureValues = std::vector<float, UninitializedAllocator<float>>;

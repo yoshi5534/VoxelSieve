@@ -2,7 +2,9 @@
 
 #include <openvdb/io/File.h>
 #include <openvdb/tools/VolumeToMesh.h>
+#include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
+#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
 
@@ -17,6 +19,7 @@
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -28,6 +31,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
+#include "voxelsieve/uninitialized.hpp"
 #include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
@@ -66,31 +70,35 @@ std::filesystem::path brickFile(const std::filesystem::path& dir, const Index3& 
 }
 
 /// Box filter of radius `r` along one axis of a dense x-fastest array, in place.
-void boxFilterAxis(std::vector<float>& data, const Index3& dims, std::size_t axis, int r) {
+void boxFilterAxis(std::span<float> data, const Index3& dims, std::size_t axis, int r) {
   const std::int64_t n = dims[axis];
   const std::int64_t stride = axis == 0 ? 1 : (axis == 1 ? dims[0] : dims[0] * dims[1]);
   const std::int64_t lines = static_cast<std::int64_t>(data.size()) / n;
-  tbb::parallel_for(std::int64_t{0}, lines, [&](std::int64_t line) {
-    // Start of the line: the index with the axis coordinate 0.
-    std::int64_t start = 0;
-    if (axis == 0) {
-      start = line * n;
-    } else if (axis == 1) {
-      start = (line % dims[0]) + (line / dims[0]) * dims[0] * dims[1];
-    } else {
-      start = line;
-    }
+  tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, lines), [&](const auto& range) {
+    // One prefix sum per task, not per line: a heap allocation per line kept the allocator busy.
     std::vector<double> prefix(static_cast<std::size_t>(n + 1), 0.0);
-    for (std::int64_t i = 0; i < n; ++i) {
-      prefix[static_cast<std::size_t>(i + 1)] =
-          prefix[static_cast<std::size_t>(i)] + data[static_cast<std::size_t>(start + i * stride)];
-    }
-    for (std::int64_t i = 0; i < n; ++i) {
-      const std::int64_t lo = std::max<std::int64_t>(i - r, 0);
-      const std::int64_t hi = std::min<std::int64_t>(i + r + 1, n);
-      data[static_cast<std::size_t>(start + i * stride)] = static_cast<float>(
-          (prefix[static_cast<std::size_t>(hi)] - prefix[static_cast<std::size_t>(lo)]) /
-          static_cast<double>(hi - lo));
+    for (std::int64_t line = range.begin(); line != range.end(); ++line) {
+      // Start of the line: the index with the axis coordinate 0.
+      std::int64_t start = 0;
+      if (axis == 0) {
+        start = line * n;
+      } else if (axis == 1) {
+        start = (line % dims[0]) + (line / dims[0]) * dims[0] * dims[1];
+      } else {
+        start = line;
+      }
+      for (std::int64_t i = 0; i < n; ++i) {
+        prefix[static_cast<std::size_t>(i + 1)] =
+            prefix[static_cast<std::size_t>(i)] +
+            data[static_cast<std::size_t>(start + i * stride)];
+      }
+      for (std::int64_t i = 0; i < n; ++i) {
+        const std::int64_t lo = std::max<std::int64_t>(i - r, 0);
+        const std::int64_t hi = std::min<std::int64_t>(i + r + 1, n);
+        data[static_cast<std::size_t>(start + i * stride)] = static_cast<float>(
+            (prefix[static_cast<std::size_t>(hi)] - prefix[static_cast<std::size_t>(lo)]) /
+            static_cast<double>(hi - lo));
+      }
     }
   });
 }
@@ -710,9 +718,20 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       todo.push_back(brick);
     }
   }
+  // Work buffers of one brick, reused by the next brick on the same thread: fresh memory for
+  // every brick cost more time in page faults than the filters themselves.
+  struct BrickWork {
+    UninitializedVector<float> grey;
+    UninitializedVector<float> above;
+    UninitializedVector<float> neighbours;
+    UninitializedVector<float> material_sum;
+    UninitializedVector<std::uint8_t> state;
+    UninitializedVector<std::uint8_t> next;
+  };
+  tbb::enumerable_thread_specific<BrickWork> workspaces;
   tbb::parallel_for(std::size_t{0}, todo.size(), [&](std::size_t i) {
     // Isolated, so a thread waiting for the filters of its brick does not start another brick
-    // and hold two in memory.
+    // and hold two in memory, or use its work buffers twice.
     tbb::this_task_arena::isolate([&] {
       const Index3& brick = todo[i];
       const Box inner = dataset.brickBox(0, brick);
@@ -722,14 +741,17 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
         outer.max[a] = std::min<std::int64_t>(inner.max[a] + halo, info.dims[a]);
       }
       const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
-      std::vector<float> grey(static_cast<std::size_t>(outer.voxelCount()));
+      const auto voxels = static_cast<std::size_t>(outer.voxelCount());
+      BrickWork& work = workspaces.local();
+      auto& [grey, above, neighbours, material_sum, state, next] = work;
+      grey.resize(voxels);
       dataset.readRegion(0, outer, grey, info.air_level);
       // Above the threshold, and how many of the 3^3 neighbourhood are.
-      std::vector<float> above(grey.size());
+      above.resize(voxels);
       std::transform(grey.begin(), grey.end(), above.begin(),
                      [&](float value) { return value > info.air_threshold ? 1.0F : 0.0F; });
-      std::vector<float> neighbours = above;
-      std::vector<float> material_sum(grey.size());
+      neighbours.assign(above.begin(), above.end());
+      material_sum.resize(voxels);
       std::transform(grey.begin(), grey.end(), above.begin(), material_sum.begin(),
                      std::multiplies<>());
       for (std::size_t a = 0; a < 3; ++a) {
@@ -740,7 +762,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       // except at the region border. Using means keeps the criterion the same there.
       const float min_fraction = static_cast<float>(options.min_neighbours) / 27.0F;
       // 2: material, 1: may grow into material, 0: air.
-      std::vector<std::uint8_t> state(grey.size());
+      state.resize(voxels);
       for (std::size_t v = 0; v < grey.size(); ++v) {
         state[v] = above[v] > 0.0F && neighbours[v] >= min_fraction - 1e-4F ? 2
                    : grey[v] > info.grow_threshold                          ? 1
@@ -748,7 +770,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       }
       const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
       for (int g = 0; g < options.grow_steps; ++g) {
-        std::vector<std::uint8_t> next = state;
+        next.assign(state.begin(), state.end());
         tbb::parallel_for(std::int64_t{0}, size[2], [&](std::int64_t z) {
           for (std::int64_t y = 0; y < size[1]; ++y) {
             for (std::int64_t x = 0; x < size[0]; ++x) {

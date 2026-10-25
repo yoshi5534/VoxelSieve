@@ -10,6 +10,11 @@
 // windows.h first: psapi.h and pdh.h need its types.
 #include <pdh.h>
 #include <psapi.h>
+#ifdef VOXELSIEVE_TBBMALLOC_PROXY
+// Included once in the library, it makes TBB's scalable allocator replace the C runtime's heap in
+// the whole process (see src/CMakeLists.txt).
+#include <tbb/tbbmalloc_proxy.h>
+#endif
 #elif defined(__APPLE__)
 #include <libproc.h>
 #include <mach/mach.h>
@@ -446,6 +451,17 @@ Json hintsFor(const Json& phases, const Json& total, const Json& system) {
 
 thread_local Telemetry* g_current = nullptr;
 
+/// The heap that serves malloc and new in this process.
+std::string allocatorName() {
+#ifdef VOXELSIEVE_TBBMALLOC_PROXY
+  char** log = nullptr;
+  if (TBB_malloc_replacement_log(&log) == 0) {
+    return "tbbmalloc";
+  }
+#endif
+  return "system";
+}
+
 }  // namespace
 
 struct Telemetry::Impl {
@@ -575,6 +591,7 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
   d.peak_per_phase = resetPeakMemory();
   d.system = {{"cores", std::thread::hardware_concurrency()},
               {"threads", tbb::this_task_arena::max_concurrency()},
+              {"allocator", allocatorName()},
               {"memory_total_mb", rounded(memory_total, 0)},
               {"memory_available_mb", rounded(memory_available, 0)},
               {"peak_per_phase", d.peak_per_phase}};

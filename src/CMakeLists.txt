@@ -98,6 +98,15 @@ if(WIN32)
   target_link_options(voxelsieve PRIVATE /DEF:${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def)
   # Performance counters for the disk reads in the telemetry (ADR 0017), part of Windows.
   target_link_libraries(voxelsieve PRIVATE pdh)
+  # The C runtime's heap serialises the many small allocations of OpenVDB trees, so threads of a
+  # 16-core machine waited on each other. TBB's scalable allocator, part of the TBB that OpenVDB
+  # needs anyway, replaces it in the whole process once the library loads (telemetry.cpp).
+  if(TARGET TBB::tbbmalloc_proxy)
+    target_link_libraries(voxelsieve PRIVATE TBB::tbbmalloc_proxy)
+    target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_TBBMALLOC_PROXY)
+  else()
+    message(WARNING "TBB::tbbmalloc_proxy not found; using the C runtime's heap")
+  endif()
 endif()
 
 target_include_directories(voxelsieve PUBLIC

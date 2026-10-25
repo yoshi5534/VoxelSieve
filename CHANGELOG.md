@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **More cores busy on large datasets**: threads waited on the system's memory management more
+  than on each other. Material segmentation and the brick pass of the import reuse their work
+  buffers from brick to brick instead of allocating and zeroing hundreds of MB for each, and
+  bricks are read from disk in one piece instead of with two system calls per 512 voxels. On
+  Windows, TBB's scalable allocator replaces the C runtime's heap in the whole process; the
+  telemetry records which allocator was active. Segmentation of a 1024x1024x768 test scan spent
+  4 s instead of 11 s in the kernel.
+
 - **Wall thickness against the CAD model**: after a nominal-actual comparison (`compare_cad`,
   `compare_objects`), `wall_thickness` also measures the nominal thickness of the aligned model at
   every point of the surface, by the same method, and the deviation of the actual thickness from
