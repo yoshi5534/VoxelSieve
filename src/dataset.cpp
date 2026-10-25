@@ -426,29 +426,34 @@ typename Grid::Ptr buildBrick(const VolumeSource& source, const BlockGrid& block
     return nullptr;
   }
 
-  values.resize(static_cast<std::size_t>(box.voxelCount()));
-  source.readRegion(box, values);
-  if constexpr (std::is_same_v<Value, std::uint8_t>) {
-    // 8-bit grids hold 8-bit input only (writeDataset checks the source's sample type).
-    if (const auto it =
-            std::find_if(values.begin(), values.end(), [](std::uint16_t v) { return v > 255; });
-        it != values.end()) {
-      throw std::runtime_error("Grey value " + std::to_string(*it) +
-                               " of an 8-bit input does not fit into 8 bits");
+  // Isolated while `values` is in use: a thread waiting for TBB tasks in here must not start
+  // another brick, which would take the same buffer. Isolating the whole brick instead left most
+  // cores idle while threads waited in the parallel parts of OpenVDB above.
+  tbb::this_task_arena::isolate([&] {
+    values.resize(static_cast<std::size_t>(box.voxelCount()));
+    source.readRegion(box, values);
+    if constexpr (std::is_same_v<Value, std::uint8_t>) {
+      // 8-bit grids hold 8-bit input only (writeDataset checks the source's sample type).
+      if (const auto it =
+              std::find_if(values.begin(), values.end(), [](std::uint16_t v) { return v > 255; });
+          it != values.end()) {
+        throw std::runtime_error("Grey value " + std::to_string(*it) +
+                                 " of an 8-bit input does not fit into 8 bits");
+      }
     }
-  }
-  openvdb::tree::LeafManager<typename Grid::TreeType> leaves(tree);
-  leaves.foreach (
-      [&](typename Grid::TreeType::LeafNodeType& leaf, std::size_t) {
-        for (auto it = leaf.beginValueOn(); it; ++it) {
-          const openvdb::Coord c = it.getCoord();
-          const auto index = static_cast<std::size_t>(
-              (c.x() - box.min[0]) +
-              box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])));
-          it.setValue(static_cast<Value>(values[index]));
-        }
-      },
-      /*threaded=*/false);
+    openvdb::tree::LeafManager<typename Grid::TreeType> leaves(tree);
+    leaves.foreach (
+        [&](typename Grid::TreeType::LeafNodeType& leaf, std::size_t) {
+          for (auto it = leaf.beginValueOn(); it; ++it) {
+            const openvdb::Coord c = it.getCoord();
+            const auto index = static_cast<std::size_t>(
+                (c.x() - box.min[0]) +
+                box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])));
+            it.setValue(static_cast<Value>(values[index]));
+          }
+        },
+        /*threaded=*/false);
+  });
   return grid;
 }
 
@@ -819,11 +824,8 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   tbb::enumerable_thread_specific<UninitializedVector<std::uint16_t>> buffers;
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
-    // Isolated, so a thread waiting inside OpenVDB does not start another brick with its buffer.
-    GreyGrid grid;
-    tbb::this_task_arena::isolate([&] {
-      grid = buildBrick(info.value_type, source, blocks, brick, options, buffers.local());
-    });
+    const GreyGrid grid =
+        buildBrick(info.value_type, source, blocks, brick, options, buffers.local());
     bricks_release.step();
     brick_progress.step();
     if (!grid) {
