@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a
+  temporary file, which Windows keeps in memory instead of writing it to disk while memory
+  suffices. Written back during the brick pass, it had stalled that pass for half a minute with
+  all cores idle, and it cost as many GB of disk writes as the copy holds.
+
 - **More cores busy on large datasets**: threads waited on the system's memory management more
   than on each other. Material segmentation and the brick pass of the import reuse their work
   buffers from brick to brick instead of allocating and zeroing hundreds of MB for each, and

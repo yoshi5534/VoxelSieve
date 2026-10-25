@@ -31,6 +31,10 @@
 #include <string>
 #include <type_traits>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "detail/blocks.hpp"
 #include "detail/pages.hpp"
 #include "detail/preview.hpp"
@@ -141,7 +145,17 @@ class StagedSource {
     try {
       boost::iostreams::mapped_file_params params(path_.string());
       params.flags = boost::iostreams::mapped_file::readwrite;
+#if defined(_WIN32)
+      // A temporary file: Windows keeps its pages in memory instead of writing them to disk while
+      // memory suffices. Written back, the copy stalled the next pass for half a minute with all
+      // cores idle. The attribute applies to handles opened after it is set, so the file is made
+      // first and mapped as an existing file.
+      std::ofstream(path_, std::ios::binary).close();
+      std::filesystem::resize_file(path_, bytes);
+      (void)SetFileAttributesW(path_.c_str(), FILE_ATTRIBUTE_TEMPORARY);
+#else
       params.new_file_size = static_cast<boost::iostreams::stream_offset>(bytes);
+#endif
       file_.open(params);
     } catch (...) {
       remove();
