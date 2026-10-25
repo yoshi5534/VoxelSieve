@@ -1078,12 +1078,75 @@ std::shared_ptr<const Gui::ThicknessView> Gui::thicknessMesh(
   view->min_wall_mm = info.value("min_wall_mm", 0.0);
   view->max_wall_mm = info.value("max_wall_mm", 0.0);
   view->range_mm = info.at("thickness").at("range_mm").get<double>();
+  if (!read.deviation_mm.empty()) {
+    view->deviation_mm = std::move(read.deviation_mm);
+    view->nominal_tolerance_mm = info.at("nominal").at("tolerance_mm").get<double>();
+    view->deviation_range_mm = info.at("nominal").at("deviation").at("range_mm").get<double>();
+  }
   const std::scoped_lock lock(surface_mutex_);
   thickness_meshes_.emplace_back(key, view);
   if (thickness_meshes_.size() > kOpenDatasets) {
     thickness_meshes_.erase(thickness_meshes_.begin());
   }
   return view;
+}
+
+Gui::ThicknessTile Gui::thicknessTile(std::optional<int> thickness_step,
+                                      const SliceRequest& request) const {
+  std::filesystem::path dir;
+  {
+    const std::scoped_lock lock(mutex_);
+    const Json params = thickness_step ? Json{{"step", *thickness_step}} : Json::object();
+    dir = project().resolve(artifactRef(params, artifact::kWallThickness));
+  }
+  if (!std::filesystem::exists(dir / "thickness_map" / "index.json")) {
+    throw std::invalid_argument("The wall thickness step has no thickness map (volume_map)");
+  }
+  const auto map = openDataset(dir / "thickness_map");
+  const DatasetInfo& info = map->info();
+  if (request.axis < 0 || request.axis > 2 || request.level < 0 ||
+      request.level >= static_cast<int>(info.levels.size())) {
+    throw std::invalid_argument("Slice outside the thickness map");
+  }
+  ThicknessTile tile;
+  tile.thickness_mm.assign(static_cast<std::size_t>(request.size[0] * request.size[1]),
+                           std::numeric_limits<float>::quiet_NaN());
+  const auto axis = static_cast<std::size_t>(request.axis);
+  const auto [u, v] = sliceAxes(request.axis);
+  const auto ua = static_cast<std::size_t>(u);
+  const auto va = static_cast<std::size_t>(v);
+  const auto& dims = info.levels[static_cast<std::size_t>(request.level)].dims;
+  Box box;
+  box.min[axis] = request.index >> request.level;
+  box.max[axis] = box.min[axis] + 1;
+  box.min[ua] = std::max<std::int64_t>(request.origin[0], 0);
+  box.max[ua] = std::min(request.origin[0] + request.size[0], dims[ua]);
+  box.min[va] = std::max<std::int64_t>(request.origin[1], 0);
+  box.max[va] = std::min(request.origin[1] + request.size[1], dims[va]);
+  if (box.min[axis] >= 0 && box.min[axis] < dims[axis] && box.max[ua] > box.min[ua] &&
+      box.max[va] > box.min[va]) {
+    std::vector<float> values(static_cast<std::size_t>(box.voxelCount()));
+    map->readRegion(request.level, box, values, std::numeric_limits<float>::quiet_NaN());
+    for (std::int64_t y = box.min[va]; y < box.max[va]; ++y) {
+      for (std::int64_t x = box.min[ua]; x < box.max[ua]; ++x) {
+        std::array<std::int64_t, 3> p{};
+        p[axis] = box.min[axis];
+        p[ua] = x;
+        p[va] = y;
+        tile.thickness_mm[static_cast<std::size_t>((x - request.origin[0]) +
+                                                   request.size[0] * (y - request.origin[1]))] =
+            values[static_cast<std::size_t>(
+                (p[0] - box.min[0]) +
+                box.size(0) * ((p[1] - box.min[1]) + box.size(1) * (p[2] - box.min[2])))];
+      }
+    }
+  }
+  std::ifstream in(dir / "thickness_map.json");
+  const Json json = Json::parse(in);
+  tile.min_wall_mm = json.value("min_wall_mm", 0.0);
+  tile.max_wall_mm = json.value("max_wall_mm", 0.0);
+  tile.range_mm = json.at("thickness").at("range_mm").get<double>();
+  return tile;
 }
 
 std::shared_ptr<const IndexedMesh> Gui::stlMesh(const std::filesystem::path& file) const {

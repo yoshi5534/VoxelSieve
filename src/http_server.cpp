@@ -239,8 +239,12 @@ struct HttpServer::Impl {
   }
 
   /// GET /api/tile?axis=2&index=100&level=1&u=0&v=0&size=256[&step=1][&porosity=2][&materials=3]
+  ///               [&thickness=4]
   /// Body: width * height float32 grey values (little endian, u fastest), then width * height
-  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size.
+  /// overlay bytes (SliceOverlay). Headers X-Width and X-Height give the size. With `thickness`
+  /// (a wall thickness step with a thickness map), then width * height float32 thicknesses in mm
+  /// (NaN where there is no material), with the headers X-Thickness, X-Min-Wall, X-Max-Wall and
+  /// X-Range.
   http::message_generator tile(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
@@ -260,14 +264,28 @@ struct HttpServer::Impl {
     };
     const SliceImage image =
         gui.sliceTile(optional("step"), optional("porosity"), slice, optional("materials"));
-    std::string body(image.grey.size() * sizeof(float) + image.overlay.size(), '\0');
+    std::optional<Gui::ThicknessTile> thickness;
+    if (values.contains("thickness")) {
+      thickness = gui.thicknessTile(optional("thickness"), slice);
+    }
+    const std::size_t grey_bytes = image.grey.size() * sizeof(float);
+    const std::size_t thickness_bytes =
+        thickness ? thickness->thickness_mm.size() * sizeof(float) : 0;
+    std::string body(grey_bytes + image.overlay.size() + thickness_bytes, '\0');
     static_assert(std::endian::native == std::endian::little, "tiles are sent little endian");
-    std::memcpy(body.data(), image.grey.data(), image.grey.size() * sizeof(float));
-    std::memcpy(body.data() + image.grey.size() * sizeof(float), image.overlay.data(),
-                image.overlay.size());
-    return binary(
-        request, std::move(body),
-        {{"X-Width", std::to_string(image.width)}, {"X-Height", std::to_string(image.height)}});
+    std::memcpy(body.data(), image.grey.data(), grey_bytes);
+    std::memcpy(body.data() + grey_bytes, image.overlay.data(), image.overlay.size());
+    std::map<std::string, std::string> headers{{"X-Width", std::to_string(image.width)},
+                                               {"X-Height", std::to_string(image.height)}};
+    if (thickness) {
+      std::memcpy(body.data() + grey_bytes + image.overlay.size(), thickness->thickness_mm.data(),
+                  thickness_bytes);
+      headers["X-Thickness"] = "1";
+      headers["X-Min-Wall"] = std::to_string(thickness->min_wall_mm);
+      headers["X-Max-Wall"] = std::to_string(thickness->max_wall_mm);
+      headers["X-Range"] = std::to_string(thickness->range_mm);
+    }
+    return binary(request, std::move(body), headers);
   }
 
   /// GET /api/volume?max=256[&step=1][&porosity=2][&materials=3]
@@ -379,31 +397,40 @@ struct HttpServer::Impl {
          {"X-Displacement", view->displacement_mm.empty() ? "0" : "1"}});
   }
 
-  /// GET /api/wall_thickness[?step=5]
+  /// GET /api/wall_thickness[?step=5][&nominal=1]
   /// Body: the measured surface of a wall thickness step (Gui::thicknessMesh): three float32 per
   /// vertex in level-0 voxel coordinates, one float32 thickness in mm per vertex (NaN where none
   /// was found), then three uint32 indices per triangle. X-Min-Wall and X-Max-Wall are the limits
-  /// (0: none), X-Range the colour range.
+  /// (0: none), X-Range the colour range. X-Nominal says whether the step has a nominal thickness
+  /// from a CAD model; with nominal=1 the values are the deviation from it (actual minus nominal,
+  /// NaN where either is missing), X-Tolerance its tolerance and X-Range its colour range.
   http::message_generator wallThickness(const Request& request, std::string_view query) {
     const auto values = queryValues(query);
     const std::optional<int> step = values.contains("step")
                                         ? std::optional<int>(static_cast<int>(values.at("step")))
                                         : std::nullopt;
+    const bool nominal = values.contains("nominal") && values.at("nominal") != 0;
     const auto view = gui.thicknessMesh(step);
+    if (nominal && view->deviation_mm.empty()) {
+      throw std::invalid_argument("The wall thickness step has no nominal thickness");
+    }
     const auto& mesh = view->mesh;
+    const std::vector<float>& shown = nominal ? view->deviation_mm : view->thickness_mm;
     const std::size_t point_bytes = mesh.points.size() * sizeof(mesh.points[0]);
-    const std::size_t thickness_bytes = view->thickness_mm.size() * sizeof(float);
+    const std::size_t thickness_bytes = shown.size() * sizeof(float);
     const std::size_t triangle_bytes = mesh.triangles.size() * sizeof(mesh.triangles[0]);
     std::string body(point_bytes + thickness_bytes + triangle_bytes, '\0');
     std::memcpy(body.data(), mesh.points.data(), point_bytes);
-    std::memcpy(body.data() + point_bytes, view->thickness_mm.data(), thickness_bytes);
+    std::memcpy(body.data() + point_bytes, shown.data(), thickness_bytes);
     std::memcpy(body.data() + point_bytes + thickness_bytes, mesh.triangles.data(), triangle_bytes);
     return binary(request, std::move(body),
                   {{"X-Vertices", std::to_string(mesh.points.size())},
                    {"X-Triangles", std::to_string(mesh.triangles.size())},
                    {"X-Min-Wall", std::to_string(view->min_wall_mm)},
                    {"X-Max-Wall", std::to_string(view->max_wall_mm)},
-                   {"X-Range", std::to_string(view->range_mm)}});
+                   {"X-Range", std::to_string(nominal ? view->deviation_range_mm : view->range_mm)},
+                   {"X-Tolerance", std::to_string(view->nominal_tolerance_mm)},
+                   {"X-Nominal", view->deviation_mm.empty() ? "0" : "1"}});
   }
 
   /// GET /api/object_mesh?object=2[&max_triangles=1500000]

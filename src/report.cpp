@@ -979,6 +979,11 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
   const Json required = order.is_object() && order.contains("wall_thickness")
                             ? order["wall_thickness"]
                             : Json::object();
+  if (required.contains("nominal_tolerance_mm") && measured.deviation_mm.empty()) {
+    throw std::invalid_argument(
+        "The order asks for the nominal wall thickness, but the analysis had no CAD model: run it "
+        "after a nominal-actual comparison");
+  }
   // The limits of the order, else those the analysis ran with.
   const double min_wall = required.value("min_mm", w.value("min_wall_mm", 0.0));
   const double max_wall = required.value("max_mm", w.value("max_wall_mm", 0.0));
@@ -1052,7 +1057,143 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
   data["images"]["thickness_histogram"] =
       thicknessHistogramSvg(s.histogram, min_wall, max_wall, s.range_mm);
 
-  if (required.contains("min_mm") || required.contains("max_mm")) {
+  // The deviation from the nominal thickness of the CAD model, with the order's tolerance.
+  std::optional<DeviationStats> nominal;
+  double nominal_tolerance = 0.0;
+  if (!measured.deviation_mm.empty()) {
+    const Json& n = w.at("nominal");
+    nominal_tolerance = required.value("nominal_tolerance_mm", n.at("tolerance_mm").get<double>());
+    nominal = deviationStats(measured.mesh, measured.deviation_mm, nominal_tolerance);
+    const DeviationStats& d = *nominal;
+    const auto signed_mm = [](double value) {
+      return (value > 0.0 ? "+" : "") + formatNumber(value, 3) + " mm";
+    };
+    const auto deviation_rows = [&](const std::vector<ThicknessRegion>& regions) {
+      Json rows = region_rows(regions);
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        rows[i]["deviation"] = signed_mm(regions[i].extreme_mm);
+      }
+      return rows;
+    };
+    const auto thinner =
+        nominalRegions(measured.mesh, measured.deviation_mm, nominal_tolerance, true);
+    const auto thicker =
+        nominalRegions(measured.mesh, measured.deviation_mm, nominal_tolerance, false);
+    data["wall_thickness"]["nominal"] = {
+        {"source", n.value("source", std::string("the CAD model"))},
+        {"tolerance", "± " + mm(nominal_tolerance)},
+        {"compared",
+         percentText(s.measured_area_mm2 > 0.0 ? d.area_mm2 / s.measured_area_mm2 : 0.0)},
+        {"deviation_mean", signed_mm(d.mean_mm)},
+        {"deviation_min", signed_mm(d.min_mm)},
+        {"deviation_max", signed_mm(d.max_mm)},
+        {"deviation_p5", signed_mm(d.percentiles_mm[1])},
+        {"deviation_p95", signed_mm(d.percentiles_mm[3])},
+        {"within", percentText(d.within_tolerance)},
+        {"thinner_share", percentText(d.below_tolerance)},
+        {"thinner_area", formatNumber(d.below_tolerance * d.area_mm2, 2) + " mm²"},
+        {"thicker_share", percentText(d.above_tolerance)},
+        {"thicker_area", formatNumber(d.above_tolerance * d.area_mm2, 2) + " mm²"},
+        {"has_thinner", !thinner.empty()},
+        {"thinner_regions", deviation_rows(thinner)},
+        {"has_thicker", !thicker.empty()},
+        {"thicker_regions", deviation_rows(thicker)},
+        {"deviation_range", mm(d.range_mm)}};
+    scene.vertex_colors.clear();
+    for (const float value : measured.deviation_mm) {
+      scene.vertex_colors.push_back(std::isfinite(value)
+                                        ? deviationColor(value, nominal_tolerance, d.range_mm)
+                                        : thicknessColor(value, 0.0, 0.0, 1.0));
+    }
+    for (std::size_t k = 0; k < kDeviationViews.size() && !measured.mesh.points.empty(); ++k) {
+      RenderView view;
+      view.azimuth_degrees = kDeviationViews[k][0];
+      view.elevation_degrees = kDeviationViews[k][1];
+      data["images"]["thickness_deviation_" + std::to_string(k + 1)] = dataUri(render(scene, view));
+    }
+    data["images"]["thickness_deviation_histogram"] =
+        deviationHistogramSvg(d.histogram, nominal_tolerance, d.range_mm);
+  }
+
+  // The thickness map of the whole part, when the analysis wrote one.
+  std::optional<Json> map;
+  bool map_capped = false;
+  double map_max = 0.0;
+  if (std::filesystem::exists(dir / "thickness_map.json")) {
+    map = readJsonFile(dir / "thickness_map.json");
+    const Json& t = map->at("thickness");
+    const double cap = map->at("max_thickness_mm").get<double>();
+    map_max = t.at("max_mm").get<double>();
+    map_capped = t.value("capped", 0.0) > 0.0;
+    // Shares beyond the limits of the order from the fine histogram.
+    const auto fine = t.at("fine_histogram").get<std::vector<std::int64_t>>();
+    const double bin = t.at("fine_bin_mm").get<double>();
+    const double voxels = std::max(1.0, t.at("material_voxels").get<double>());
+    const auto share = [&](double limit, bool below) {
+      double count = 0.0;
+      for (std::size_t i = 0; i < fine.size(); ++i) {
+        const double centre = (static_cast<double>(i) + 0.5) * bin;
+        if (below ? centre < limit : centre > limit) {
+          count += static_cast<double>(fine[i]);
+        }
+      }
+      return count / voxels;
+    };
+    const auto percentile = [&](const char* key) {
+      return mm(t.at("percentiles_mm").at(key).get<double>());
+    };
+    Json m = {{"max_thickness", mm(cap)},
+              {"volume", formatNumber(t.at("material_volume_mm3").get<double>(), 0) + " mm³"},
+              {"p5", percentile("5")},
+              {"median", percentile("50")},
+              {"p95", percentile("95")},
+              {"max", (map_capped ? "≥ " : "") + mm(map_max)}};
+    // Regions were found with the limits of the analysis; they are listed when the order's are
+    // the same.
+    const auto region_table = [&](const char* key, double limit, double analysed) {
+      Json rows = Json::array();
+      if (limit != analysed) {
+        return rows;
+      }
+      for (const Json& r : map->at(key)) {
+        if (rows.size() >= 10) {
+          break;
+        }
+        const auto location = r.at("location_mm").get<std::array<double, 3>>();
+        rows.push_back(
+            {{"id", r.at("id")},
+             {"thickness", mm(r.at("thickness_mm").get<double>())},
+             {"volume", formatNumber(r.at("volume_mm3").get<double>(), 2) + " mm³"},
+             {"location", formatNumber(location[0], 2) + ", " + formatNumber(location[1], 2) +
+                              ", " + formatNumber(location[2], 2)}});
+      }
+      return rows;
+    };
+    if (min_wall > 0.0) {
+      const Json rows = region_table("thin_regions", min_wall, map->value("min_wall_mm", 0.0));
+      m["thin"] = {{"limit", mm(min_wall)},
+                   {"share", percentText(share(min_wall, true))},
+                   {"has_regions", !rows.empty()},
+                   {"regions", rows}};
+    }
+    if (max_wall > 0.0) {
+      const Json rows = region_table("thick_regions", max_wall, map->value("max_wall_mm", 0.0));
+      m["thick"] = {{"limit", mm(max_wall)},
+                    {"share", percentText(share(max_wall, false))},
+                    {"has_regions", !rows.empty()},
+                    {"regions", rows}};
+    }
+    data["wall_thickness"]["map"] = m;
+    for (const char* axis : {"x", "y", "z"}) {
+      const auto file = dir / (std::string("thickness_map_") + axis + ".png");
+      if (std::filesystem::exists(file)) {
+        data["images"][std::string("thickness_map_") + axis] = dataUri(file);
+      }
+    }
+  }
+
+  if (required.contains("min_mm") || required.contains("max_mm") ||
+      required.contains("nominal_tolerance_mm")) {
     Json criteria = Json::array();
     bool passed = true;
     const auto add = [&](const std::string& label, const std::string& measured_text,
@@ -1067,6 +1208,28 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
     if (s.measured_area_mm2 <= 0.0) {
       throw std::invalid_argument("The wall thickness analysis measured no wall to evaluate");
     }
+    if (required.contains("nominal_tolerance_mm")) {
+      const DeviationStats& d = *nominal;
+      const auto signed_mm = [](double value) {
+        return (value > 0.0 ? "+" : "") + formatNumber(value, 3) + " mm";
+      };
+      if (required.contains("max_area_outside_nominal_mm2")) {
+        // Small spots may be tolerated, such as where the ray changes the wall it reaches.
+        const double limit = required.at("max_area_outside_nominal_mm2").get<double>();
+        const std::string limit_text = "≤ " + formatNumber(limit, 2) + " mm²";
+        const double thinner = d.below_tolerance * d.area_mm2;
+        const double thicker = d.above_tolerance * d.area_mm2;
+        add("Area thinner than nominal by more than " + mm(nominal_tolerance),
+            formatNumber(thinner, 2) + " mm²", limit_text, thinner <= limit);
+        add("Area thicker than nominal by more than " + mm(nominal_tolerance),
+            formatNumber(thicker, 2) + " mm²", limit_text, thicker <= limit);
+      } else {
+        add("Wall thickness against nominal, thinnest", signed_mm(d.min_mm),
+            "≥ " + signed_mm(-nominal_tolerance), d.min_mm >= -nominal_tolerance);
+        add("Wall thickness against nominal, thickest", signed_mm(d.max_mm),
+            "≤ " + signed_mm(nominal_tolerance), d.max_mm <= nominal_tolerance);
+      }
+    }
     if (required.contains("min_mm")) {
       if (required.contains("max_area_below_min_mm2")) {
         // Small thin spots may be tolerated, such as at sharp edges.
@@ -1080,6 +1243,12 @@ void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& 
     }
     if (required.contains("max_mm")) {
       add("Thickest wall", mm(s.max_mm), "≤ " + mm(max_wall), s.max_mm <= max_wall);
+      if (map) {
+        // Material accumulations inside the part. A map that reached its maximum only tells
+        // that the material is at least that thick, which does not show it within the limit.
+        add("Thickest spot inside the part", (map_capped ? "≥ " : "") + mm(map_max),
+            "≤ " + mm(max_wall), !map_capped && map_max <= max_wall);
+      }
     }
     const Json block_json = {{"name", "Wall thickness"},
                              {"region", "measured surface of the part"},

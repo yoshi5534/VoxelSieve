@@ -74,6 +74,7 @@ uniform float minWall;  // 0: no limit
 uniform float maxWall;
 vec3 deviationColor(float d) {
   float a = abs(d);
+  if (a > 1e29) return vec3(150.0) / 255.0;  // no value
   if (a <= tolerance) return vec3(60.0, 190.0, 90.0) / 255.0;
   float t = clamp((a - tolerance) / max(range - tolerance, 1e-6), 0.0, 1.0);
   if (d > 0.0) return mix(vec3(240.0, 225.0, 40.0), vec3(215.0, 30.0, 30.0), t) / 255.0;
@@ -636,9 +637,10 @@ class VolumeViewer {
     return this.loadMesh('deviation', step, displacement ? { displacement: 1 } : {});
   }
 
-  /// Loads the measured surface of a wall thickness step for mode 5, coloured by the thickness.
-  loadWallThickness(step) {
-    return this.loadMesh('wall_thickness', step);
+  /// Loads the measured surface of a wall thickness step for mode 5, coloured by the thickness
+  /// or, with `nominal`, by its deviation from the nominal thickness of the CAD model.
+  loadWallThickness(step, nominal = false) {
+    return this.loadMesh('wall_thickness', step, nominal ? { nominal: 1 } : {});
   }
 
   async loadMesh(kind, step, extra = {}) {
@@ -651,11 +653,13 @@ class VolumeViewer {
     const triangles = Number(response.headers.get('X-Triangles'));
     const buffer = await response.arrayBuffer();
     const deviations = ['deviation', 'wall_thickness'].includes(kind) ? vertices : 0;
+    const nominal = 'nominal' in extra;
     if (kind === 'wall_thickness') {
-      // Unmeasured points come as NaN; the shader takes negative values for them, since not
-      // every GPU keeps NaN through the interpolation.
+      // Unmeasured points come as NaN; the shader takes negative thicknesses or huge deviations
+      // for them, since not every GPU keeps NaN through the interpolation.
       const values = new Float32Array(buffer, vertices * 12, vertices);
-      values.forEach((value, i) => { if (Number.isNaN(value)) values[i] = -1; });
+      const none = nominal ? 1e30 : -1;
+      values.forEach((value, i) => { if (Number.isNaN(value)) values[i] = none; });
     }
     this.surface = {
       key, kind, triangles,
@@ -668,6 +672,8 @@ class VolumeViewer {
       maxWall: Number(response.headers.get('X-Max-Wall') ?? 0),
       hasDisplacement: response.headers.get('X-Displacement') === '1',
       displacement: 'displacement' in extra,
+      hasNominal: response.headers.get('X-Nominal') === '1',
+      nominal,
     };
     if (this.meshBuffers && this.gl) {
       this.meshBuffers.forEach((b) => this.gl.deleteBuffer(b));
@@ -722,8 +728,8 @@ class VolumeViewer {
     gl.uniform1f(uniform('aspect'), aspect);
     gl.uniform1f(uniform('cut'), this.cut);
     gl.uniform3fv(uniform('surfaceColor'), this.surfaceColor.map((c) => c / 255));
-    gl.uniform1i(uniform('valueColors'),
-      !this.surface.deviation ? 0 : this.surface.kind === 'wall_thickness' ? 2 : 1);
+    gl.uniform1i(uniform('valueColors'), !this.surface.deviation ? 0
+      : this.surface.kind === 'wall_thickness' && !this.surface.nominal ? 2 : 1);
     gl.uniform1f(uniform('tolerance'), this.surface.tolerance);
     gl.uniform1f(uniform('range'), this.surface.range);
     gl.uniform1f(uniform('minWall'), this.surface.minWall);

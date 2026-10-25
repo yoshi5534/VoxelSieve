@@ -2,7 +2,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { cutsToScreen, insideWindow, layerPixels, slicePixels } = require(
+const { cutsToScreen, insideWindow, layerPixels, slicePixels, thicknessRgb } = require(
   path.join(__dirname, '../../resources/ui/viewer.js'));
 
 // A cut through the centre of voxel 10 lies in the middle of its pixels: voxel u spans the screen
@@ -79,4 +79,25 @@ const { cutsToScreen, insideWindow, layerPixels, slicePixels } = require(
   const out = new Uint8ClampedArray(2 * 4);
   slicePixels(data, overlay, [0, 100], [], out, [[0, 0, 255], [255, 0, 0]]);
   assert.deepEqual([...out], [127, 127, 255, 255, 255, 127, 127, 255]);
+}
+
+// The material coloured by its wall thickness from a thickness map: red thin, blue thick, the
+// limits in their own colours; pixels without material keep their grey value.
+{
+  const data = new Float32Array([100, 100, 100, 0]);
+  const overlay = new Uint8Array([0, 0, 0, 0]);
+  const values = new Float32Array([0.5, 4, 1.5, NaN]);
+  const out = new Uint8ClampedArray(4 * 4);
+  slicePixels(data, overlay, [0, 100], [], out, undefined, {
+    values, scale: [1, 3, 4] });
+  const pixel = (i) => [...out.slice(i * 4, i * 4 + 4)];
+  assert.deepEqual(thicknessRgb(0.5, 1, 3, 4), [200, 40, 170]);
+  assert.deepEqual(thicknessRgb(4, 1, 3, 4), [110, 50, 170]);
+  assert.deepEqual(thicknessRgb(0, 0, 0, 4), [215, 40, 40]);
+  assert.deepEqual(thicknessRgb(4, 0, 0, 4), [40, 70, 210]);
+  assert.ok(pixel(2)[0] > pixel(2)[2]);  // 1.5 of 4 mm: between yellow and green
+  assert.deepEqual(pixel(3), [0, 0, 0, 255]);
+  slicePixels(data, overlay, [0, 100], null, out, undefined, {
+    values, scale: [1, 3, 4] });
+  assert.deepEqual(pixel(0), [255, 255, 255, 255]);  // overlay switched off
 }

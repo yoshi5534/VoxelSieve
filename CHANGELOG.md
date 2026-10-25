@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Wall thickness against the CAD model**: after a nominal-actual comparison (`compare_cad`,
+  `compare_objects`), `wall_thickness` also measures the nominal thickness of the aligned model at
+  every point of the surface, by the same method, and the deviation of the actual thickness from
+  it, with statistics, the regions thinner or thicker than nominal and coloured views
+  (`vs-thickness --nominal`). The 3D view shows the deviation, and the inspection order takes
+  `nominal_tolerance_mm` and `max_area_outside_nominal_mm2` (ADR 0030).
+
+- **Thickness map inside the part**: `wall_thickness` with `volume_map` (`vs-thickness
+  --volume-map`) writes the local thickness of every material voxel, the diameter of the largest
+  sphere inside the material that contains it, as a dataset with statistics, regions thinner or
+  thicker than the limits and slices through the thickest spot. Convex edges count to the wall
+  they bound. The slice view colours the material by it, and the report shows it and evaluates
+  the thickest spot inside the part against the order's maximum (ADR 0030).
+
 - **Learned models three to four times faster on the CPU**: the convolution keeps the sums of
   4 channels x 24 voxels in registers with AVX2 and FMA, chosen at run time on CPUs that have
   them (the portable kernel stays for the others), concatenations are read by the next

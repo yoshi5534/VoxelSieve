@@ -109,6 +109,12 @@ struct DeviationStats {
 
 inline constexpr std::array<double, 5> kDeviationPercentiles{1.0, 5.0, 50.0, 95.0, 99.0};
 
+/// Area-weighted statistics of a signed deviation per vertex of `mesh` (mm) against
+/// +-`tolerance_mm`; vertices without a value (NaN) are left out, also of `area_mm2`.
+[[nodiscard]] DeviationStats deviationStats(const IndexedMesh& mesh,
+                                            const std::vector<float>& deviation_mm,
+                                            double tolerance_mm);
+
 /// The non-rigid registration of a comparison, when it was asked for.
 struct DeformationResult {
   bool applied = false;

@@ -289,10 +289,16 @@ const std::vector<Prompt>& prompts() {
        "run it again with method sphere.\n"
        "3. Report the thinnest wall, the median, the share of the surface measured and every "
        "thin region with its thickness, area and location; look at the thinnest one with "
-       "view_slice through its location.\n"
+       "view_slice through its location. For castings, run it with volume_map true as well: "
+       "the thickness map shows material accumulations inside the part (thick_regions of "
+       "thickness_map.json with max_wall_mm), where shrinkage porosity forms. With a CAD "
+       "model, run run_compare_cad before run_wall_thickness: the thickness is then also "
+       "compared with the nominal thickness of the model (thinner_than_nominal_percent, "
+       "nominal.thinner_regions in wall_thickness.json), which shows walls that came out "
+       "thinner than designed.\n"
        "4. Run run_report with an order whose wall_thickness section holds min_mm {min_wall} "
-       "(run_porosity first, the report needs it) and state whether the limit is met, quoting "
-       "the values of the steps, not estimates."},
+       "and, with a CAD model, nominal_tolerance_mm (run_porosity first, the report needs it) "
+       "and state whether the limits are met, quoting the values of the steps, not estimates."},
       {"first_look", "A first look at a CT scan: size, voxel size, grey values and three slices.",
        Json::array({{{"name", "scan"},
                      {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},

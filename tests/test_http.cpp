@@ -232,11 +232,30 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
 
   // A wall thickness: points, one float32 thickness per point, then triangles.
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/wall_thickness").status, 400U);
-  ASSERT_EQ(call("run_wall_thickness", {{"min_wall_mm", 1.0}}).status, 200U);
+  const Reply walls = call("run_wall_thickness", {{"min_wall_mm", 1.0}});
+  ASSERT_EQ(walls.status, 200U) << walls.body;
   const Reply thickness = request(server_->port(), http::verb::get, "/api/wall_thickness");
   ASSERT_EQ(thickness.status, 200U) << thickness.body;
   EXPECT_GT(thickness.body.size(), 1000U);
   EXPECT_EQ(thickness.body.size() % 4U, 0U);
+  // After the comparison, the deviation from the nominal thickness in place of the thickness.
+  const Reply against_nominal =
+      request(server_->port(), http::verb::get, "/api/wall_thickness?nominal=1");
+  ASSERT_EQ(against_nominal.status, 200U) << against_nominal.body;
+  EXPECT_EQ(against_nominal.body.size(), thickness.body.size());
+  // With a thickness map, the slice tiles carry one float32 thickness per pixel after the overlay.
+  const std::string tile_query = "/api/tile?axis=2&index=10&level=0&u=0&v=0&size=16&thickness=";
+  const auto step_of = [](const Reply& reply) {
+    return std::to_string(Json::parse(reply.body).at("id").get<int>());
+  };
+  EXPECT_EQ(request(server_->port(), http::verb::get, tile_query + step_of(walls)).status,
+            400U);  // no thickness map
+  const Reply mapped = call("run_wall_thickness", {{"volume_map", true}});
+  ASSERT_EQ(mapped.status, 200U) << mapped.body;
+  const Reply thickness_tile =
+      request(server_->port(), http::verb::get, tile_query + step_of(mapped));
+  ASSERT_EQ(thickness_tile.status, 200U) << thickness_tile.body;
+  EXPECT_EQ(thickness_tile.body.size(), 16U * 16U * 9U);
 
   // Another object in the slice view: the CAD model as cut lines, a volume sampled in the plane.
   ASSERT_EQ(call("object_add", {{"path", (dir_ / "cad.stl").string()}}).status, 200U);
