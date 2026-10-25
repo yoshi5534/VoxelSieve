@@ -87,7 +87,8 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
-        # Under ASan the slowest tests take five to ten minutes, depending on the runner.
+        # The ASan preset builds with -O1 and line tables only (-g1): at -O0 the tests took three
+        # times as long, and full debug info makes the -O1 build much slower.
         run: >-
           ctest --preset ${{ matrix.preset }} --parallel "$(nproc)"
           --timeout ${{ matrix.preset == 'asan' && 1200 || 600 }}
