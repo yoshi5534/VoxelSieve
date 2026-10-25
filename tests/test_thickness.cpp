@@ -27,9 +27,10 @@ using Index3 = std::array<std::int64_t, 3>;
 class ThicknessTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    // Named after suite and test, since ThicknessMapTest shares test names with ThicknessTest.
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
     dir_ = std::filesystem::temp_directory_path() /
-           ("voxelsieve_thickness_" +
-            std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()));
+           ("voxelsieve_" + std::string(info->test_suite_name()) + "_" + info->name());
     std::filesystem::remove_all(dir_);
     std::filesystem::create_directories(dir_);
   }
