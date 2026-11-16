@@ -157,7 +157,8 @@ void write(const Options& options) {
   if (!options.porosity.empty()) {
     const auto result = voxelsieve::loadPorosityResult(options.porosity);
     diconde.indications = voxelsieve::porosityIndications(result);
-    if (const auto zones = voxelsieve::inspectionZonesFromJson(order); !zones.empty()) {
+    if (const auto zones = voxelsieve::inspectionZonesFromJson(order, options.order.parent_path());
+        !zones.empty()) {
       evaluation = voxelsieve::evaluate(result, zones);
     }
   }

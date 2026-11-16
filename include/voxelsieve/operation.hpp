@@ -34,6 +34,8 @@ inline constexpr const char* kWallThickness =
     "wall_thickness";  // directory with wall_thickness.json, thickness.ply and views (ADR 0030)
 inline constexpr const char* kBattery =
     "battery";  // directory with battery.json and images of a cell inspection (ADR 0029)
+inline constexpr const char* kInspectionRegions =
+    "inspection_regions";  // one STL per inspection region of an order (ADR 0032)
 }  // namespace artifact
 
 struct PortInfo {

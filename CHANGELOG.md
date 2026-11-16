@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Porosity after BDG P 203 in freely defined regions**: inspection zones are regions made of
+  boxes, spheres, cylinders and closed meshes, minus excluded ones; in a project a region can be
+  a mesh object, such as one drawn on the CAD model, and follows its pose. The new operation
+  `inspection_regions` shows them as objects. The porosity analysis measures per pore the
+  enclosing diameter, surface area, sphericity, compactness and distance to the surface, and the
+  report evaluates the porosity key of the drawing (`porosity_key`, e.g. `PV7/ Øp3/ da0,3/
+  UØp0,3`): porosity of the part, the region and a reference volume at its most porous spot,
+  pore volume, diameters, shape, gap between pores, distance to the surface and pores to
+  disregard, each with where it was found (ADR 0032, `examples/inspection_order_p203.json`).
+  Porosity results written before need the analysis run again for these criteria.
+
 - **Python package**: `pip install .` builds the package `voxelsieve`, with numpy access to
   datasets of any size (`ds[z0:z1, y0:y1, x0:x1]`, every resolution level, bricks one by one),
   datasets written from numpy arrays and memory-mapped raw files, your own processing brick by

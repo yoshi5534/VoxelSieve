@@ -6,7 +6,7 @@
 <title>Test report {{report.number}}</title>
 {{! VoxelSieve report template. Placeholders use a Mustache subset, see include/voxelsieve/report.hpp.
     The structure follows the report contents of ISO/IEC 17025 (7.8) and the test report
-    of ISO 15708-3; the evaluation follows the scheme of BDG P 202. Copy this file with
+    of ISO 15708-3; the evaluation follows the schemes of BDG P 202 and P 203. Copy this file with
     "vs-report --print-template" to adapt it to your own layout. }}
 <style>
   @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
@@ -134,8 +134,8 @@
 {{#has_pores}}
 <h2>Pores by size{{#pores_more}} (the {{pores_listed}} largest of {{results.pore_count}}){{/pores_more}}</h2>
 <table>
-  <tr><th>No.</th><th>Position x, y, z in mm</th><th class="num">Extent mm</th><th class="num">Sphere Ø mm</th><th class="num">Volume mm³</th></tr>
-  {{#pores}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{volume}}</td></tr>
+  <tr><th>No.</th><th>Position x, y, z in mm</th><th class="num">Extent mm</th><th class="num">Øaq mm</th><th class="num">Øp mm</th><th class="num">Ψ</th><th class="num">To surface mm</th><th class="num">Volume mm³</th></tr>
+  {{#pores}}<tr><td>{{id}}</td><td>{{position}}</td><td class="num">{{size}}</td><td class="num">{{diameter}}</td><td class="num">{{enclosing_diameter}}</td><td class="num">{{sphericity}}</td><td class="num">{{surface_distance}}</td><td class="num">{{volume}}</td></tr>
   {{/pores}}
 </table>
 {{/has_pores}}
@@ -338,12 +338,12 @@
 <section>
 <h2>{{section.assessment}} Assessment</h2>
 {{#evaluation}}
-<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{#nominal}} The deviation from the nominal thickness counts where both are known.{{/nominal}}{{#map}} The thickest spot inside the part comes from the thickness map.{{/map}}{{/wall_thickness}}</p>
+<p>Assessment according to {{guideline}}. Pores and zones belong to the inspection zone that contains their centroid; porosities include the loosened microstructure, disregarded pores count for no characteristic.{{#fibres}} Each required fibre family is compared with the measured family closest to its direction.{{/fibres}}{{#wall_thickness}} The wall thickness is evaluated on the measured surface; unmeasured points do not count.{{#nominal}} The deviation from the nominal thickness counts where both are known.{{/nominal}}{{#map}} The thickest spot inside the part comes from the thickness map.{{/map}}{{/wall_thickness}}</p>
 {{#zones}}
 <table>
-  <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}</th></tr>
+  <tr><th colspan="4">{{name}}: {{region}}{{#part_volume}}, part volume {{part_volume}}{{/part_volume}}{{#key}}<br>Porosity key: {{key}}{{/key}}{{#disregarded}}<br>{{disregarded}}{{/disregarded}}</th></tr>
   <tr><th>Characteristic</th><th class="num">Finding</th><th class="num">Limit</th><th>Result</th></tr>
-  {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
+  {{#criteria}}<tr><td>{{label}}{{#note}}<br><span class="note">{{note}}</span>{{/note}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
   {{/criteria}}
 </table>
 {{/zones}}

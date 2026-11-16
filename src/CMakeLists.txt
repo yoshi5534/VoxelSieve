@@ -47,6 +47,7 @@ add_library(voxelsieve SHARED
   battery_images.cpp
   cells.cpp
   porosity.cpp
+  region.cpp
   report.cpp
   template.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/report_template.cpp
@@ -60,6 +61,7 @@ add_library(voxelsieve SHARED
   detail/blocks.cpp
   detail/components.cpp
   detail/convolution.cpp
+  detail/voxel_distance.cpp
   detail/network.cpp
   detail/png.cpp
   detail/tiff.cpp

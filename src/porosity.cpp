@@ -25,6 +25,7 @@
 #include "detail/components.hpp"
 #include "detail/png.hpp"
 #include "detail/transform.hpp"
+#include "detail/voxel_distance.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -603,6 +604,11 @@ Box boundsOf(const std::array<double, 3>& lo, const std::array<double, 3>& hi) {
 
 }  // namespace
 
+double DetectedPore::compactness() const {
+  const double sphere = std::numbers::pi / 6.0 * std::pow(enclosing_diameter_mm, 3);
+  return sphere > 0.0 ? volume_mm3 / sphere : std::numeric_limits<double>::quiet_NaN();
+}
+
 double PorosityResult::poreVolumeMm3() const {
   double volume = 0.0;
   for (const DetectedPore& pore : pores) {
@@ -686,6 +692,9 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   std::map<Coord, int> outside;
   auto band = openvdb::BoolGrid::create(false);
   const std::vector<std::vector<Coord>> components = internalComponents(scan, outside, *band);
+  // Outside air below the threshold, before the band grows from it; with the removed voxels it
+  // is the air around the part, whose surface the pores keep their distance to.
+  const openvdb::BoolGrid::Ptr outside_air = band->deepCopy();
   openvdb::tools::dilateActiveValues(band->tree(), kSurfaceBandVoxels,
                                      openvdb::tools::NN_FACE_EDGE_VERTEX);
   band->tree().voxelizeActiveTiles();
@@ -859,6 +868,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   }
 
   // Pore volumes from the grey values of the pore and its shell.
+  std::vector<openvdb::BoolGrid::Ptr> boundaries(result.pores.size());
   tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
     DetectedPore& pore = result.pores[i];
     Dataset::Sampler grey(dataset, 0);
@@ -892,6 +902,37 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
     pore.bounds = boundsOf(lo, hi);
     pore.equivalent_diameter_mm = std::cbrt(6.0 * pore.volume_mm3 / std::numbers::pi);
+
+    // Shape (BDG P 203): the voxels below the threshold with a face to the rest, their enclosing
+    // sphere and their surface.
+    auto boundary = openvdb::BoolGrid::create(false);
+    auto boundary_acc = boundary->getAccessor();
+    std::vector<std::array<double, 3>> points;
+    double faces_mm2 = 0.0;
+    for (const Coord& c : *kept[i]) {
+      bool on_boundary = false;
+      for (std::size_t f = 0; f < face_neighbours.size(); ++f) {
+        if (labels.getValue(c + face_neighbours[f]) != pore.id) {
+          on_boundary = true;
+          const std::size_t axis = f / 2;
+          faces_mm2 += voxel_volume / info.voxel_size[axis];
+        }
+      }
+      if (on_boundary) {
+        boundary_acc.setValueOn(c);
+        points.push_back(info.voxel_size.toMm(toArray(c)));
+      }
+    }
+    const double pitch = (info.voxel_size[0] + info.voxel_size[1] + info.voxel_size[2]) / 3.0;
+    pore.enclosing_diameter_mm = 2.0 * detail::enclosingSphere(points).radius + pitch;
+    // A voxelized surface has |nx| + |ny| + |nz| times the area of the smooth one, 3/2 on average
+    // over all directions.
+    pore.surface_area_mm2 = faces_mm2 * 2.0 / 3.0;
+    const double voxels_volume = static_cast<double>(pore.voxel_count) * voxel_volume;
+    pore.sphericity =
+        std::min(1.0, std::cbrt(std::numbers::pi) * std::pow(6.0 * voxels_volume, 2.0 / 3.0) /
+                          pore.surface_area_mm2);
+    boundaries[i] = boundary;
   });
 
   // Zones: blocks whose mean lies clearly below the local material level.
@@ -1029,13 +1070,51 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
 
   // Part volume: material from the grey values of all kept voxels against the local material
   // level (so cupping does not bias it), plus the voids.
+  // In the same pass, the air voxels that touch the part (removed or outside air): the surface
+  // that the pores keep their distance to. Only blocks at the surface hold them.
   tbb::combinable<double> material_fractions(0.0);
   tbb::combinable<openvdb::FloatGrid::Ptr> material_grids(
       [] { return openvdb::FloatGrid::create(0.0F); });
-  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
+  tbb::combinable<openvdb::BoolGrid::Ptr> surface_grids(
+      [] { return openvdb::BoolGrid::create(false); });
+  const auto at_surface = [&](const Coord& block) {
+    if (!scan.solid.contains(block) || outside.contains(block)) {
+      return true;
+    }
+    return std::any_of(face_neighbours.begin(), face_neighbours.end(), [&](const Coord& d) {
+      return !scan.solid.contains(block + d) || outside.contains(block + d);
+    });
+  };
+  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
     double sum = 0.0;
+    const Box box = dataset.brickBox(0, brick);
+    const auto acc = grid.getConstAccessor();
+    const auto air_acc = outside_air->getConstAccessor();
+    Dataset::Sampler neighbours(dataset, 0);
+    const auto is_air = [&](const Coord& c) {
+      const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] &&
+                                c.y() < box.max[1] && c.z() >= box.min[2] && c.z() < box.max[2];
+      const bool active =
+          inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
+      return !active || air_acc.isValueOn(c);
+    };
+    auto surface = openvdb::BoolGrid::create(false);
+    auto surface_acc = surface->getAccessor();
     auto material_acc = material_grids.local()->getAccessor();
     for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+      if (at_surface(blockOf(leaf->origin()))) {
+        for (auto it = leaf->cbeginValueOn(); it; ++it) {
+          const Coord c = it.getCoord();
+          if (air_acc.isValueOn(c)) {
+            continue;
+          }
+          for (const Coord& d : face_neighbours) {
+            if (is_air(c + d)) {
+              surface_acc.setValueOn(c + d);
+            }
+          }
+        }
+      }
       const double contrast = reference.at(leaf->origin()) - air;
       double leaf_sum = 0.0;
       for (auto it = leaf->cbeginValueOn(); it; ++it) {
@@ -1046,11 +1125,24 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
                             static_cast<float>(leaf_sum / contrast * voxel_volume));
     }
     material_fractions.local() += sum;
+    // topologyUnion runs TBB tasks; isolated, this thread cannot pick up another brick meanwhile.
+    tbb::this_task_arena::isolate(
+        [&] { surface_grids.local()->tree().topologyUnion(surface->tree()); });
   });
   result.material_blocks = openvdb::FloatGrid::create(0.0F);
   material_grids.combine_each([&](const openvdb::FloatGrid::Ptr& grid) {
     // Bricks do not share blocks, so the per-thread grids are disjoint.
     result.material_blocks->tree().merge(grid->tree());
+  });
+  auto surface = openvdb::BoolGrid::create(false);
+  surface_grids.combine_each(
+      [&](const openvdb::BoolGrid::Ptr& grid) { surface->tree().topologyUnion(grid->tree()); });
+  phase.reset();
+  phase.emplace("surface distance");
+  tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
+    const double gap = detail::maskGapMm(boundaries[i]->tree(), surface->tree(), info.voxel_size);
+    result.pores[i].surface_distance_mm =
+        std::isfinite(gap) ? gap : std::numeric_limits<double>::quiet_NaN();
   });
   const double material_fraction_sum = material_fractions.combine(std::plus<>());
   result.part_volume_mm3 =
@@ -1063,6 +1155,21 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   return result;
 }
 
+namespace {
+
+/// Characteristics that older results lack or that could not be measured are null in JSON.
+nlohmann::json finiteOrNull(double value) {
+  return std::isfinite(value) ? nlohmann::json(value) : nlohmann::json(nullptr);
+}
+
+double numberOrNan(const nlohmann::json& item, const char* key) {
+  const auto it = item.find(key);
+  return it != item.end() && it->is_number() ? it->get<double>()
+                                             : std::numeric_limits<double>::quiet_NaN();
+}
+
+}  // namespace
+
 nlohmann::json toJson(const PorosityResult& result) {
   const VoxelSize& v = result.voxel_size;
   const auto mm = [&v](const std::array<double, 3>& voxels) { return v.toMm(voxels); };
@@ -1072,6 +1179,11 @@ nlohmann::json toJson(const PorosityResult& result) {
                      {"voxel_count", pore.voxel_count},
                      {"volume_mm3", pore.volume_mm3},
                      {"equivalent_diameter_mm", pore.equivalent_diameter_mm},
+                     {"enclosing_diameter_mm", finiteOrNull(pore.enclosing_diameter_mm)},
+                     {"surface_area_mm2", finiteOrNull(pore.surface_area_mm2)},
+                     {"sphericity", finiteOrNull(pore.sphericity)},
+                     {"compactness", finiteOrNull(pore.compactness())},
+                     {"surface_distance_mm", finiteOrNull(pore.surface_distance_mm)},
                      {"center_voxels", pore.center_voxels},
                      {"center_mm", mm(pore.center_voxels)},
                      {"bounds_min", pore.bounds.min},
@@ -1337,6 +1449,10 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     pore.voxel_count = item.at("voxel_count").get<std::int64_t>();
     pore.volume_mm3 = item.at("volume_mm3").get<double>();
     pore.equivalent_diameter_mm = item.at("equivalent_diameter_mm").get<double>();
+    pore.enclosing_diameter_mm = numberOrNan(item, "enclosing_diameter_mm");
+    pore.surface_area_mm2 = numberOrNan(item, "surface_area_mm2");
+    pore.sphericity = numberOrNan(item, "sphericity");
+    pore.surface_distance_mm = numberOrNan(item, "surface_distance_mm");
     pore.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
     pore.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
     pore.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
