@@ -1,7 +1,7 @@
 #pragma once
 
 // Distances between sets of voxels and the sphere that encloses a set of points, for the pore
-// characteristics of BDG P 203 (ADR 0031).
+// characteristics of BDG P 203 (ADR 0032).
 
 #include <openvdb/openvdb.h>
 

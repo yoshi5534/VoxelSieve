@@ -126,7 +126,7 @@ struct Evaluation {
 
 /// Assigns pores and loosened zones to the inspection zones by their centre and checks the limits.
 /// A pore or zone can belong to several overlapping inspection zones. Throws when a limit needs a
-/// pore characteristic that the result lacks (results written before ADR 0031). With the analysed
+/// pore characteristic that the result lacks (results written before ADR 0032). With the analysed
 /// `dataset`, the part volume of a region whose boundary runs along the surface of the part is
 /// measured on the voxels there (regionPartVolumeMm3).
 [[nodiscard]] Evaluation evaluate(const PorosityResult& result,

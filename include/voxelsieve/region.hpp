@@ -21,7 +21,7 @@ namespace voxelsieve {
 using PointMm = std::array<double, 3>;
 using BoxMm = std::array<PointMm, 2>;  // min and max corner
 
-/// One solid of an inspection region (ADR 0031).
+/// One solid of an inspection region (ADR 0032).
 struct RegionShape {
   enum class Kind : std::uint8_t { kBox, kSphere, kCylinder, kMesh };
   Kind kind = Kind::kBox;

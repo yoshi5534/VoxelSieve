@@ -27,7 +27,7 @@ struct DetectedPore {
   /// Diameter of the sphere with the same volume (BDG P 203: equivalent diameter).
   double equivalent_diameter_mm = 0.0;
   /// Diameter of the smallest sphere that encloses the pore (BDG P 203: pore diameter), from the
-  /// centres of its voxels plus one voxel pitch. NaN in results written before ADR 0031.
+  /// centres of its voxels plus one voxel pitch. NaN in results written before ADR 0032.
   double enclosing_diameter_mm = std::numeric_limits<double>::quiet_NaN();
   /// Surface area of the voxels below the threshold, from their faces with the 2/3 correction
   /// that makes the stair steps of a voxelized surface count like the smooth surface on average.

@@ -1,4 +1,4 @@
-# 0031: BDG P 203 and freely defined inspection regions
+# 0032: BDG P 203 and freely defined inspection regions
 
 Status: proposed (2026-11-16)
 

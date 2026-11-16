@@ -10,7 +10,7 @@
   report evaluates the porosity key of the drawing (`porosity_key`, e.g. `PV7/ Øp3/ da0,3/
   UØp0,3`): porosity of the part, the region and a reference volume at its most porous spot,
   pore volume, diameters, shape, gap between pores, distance to the surface and pores to
-  disregard, each with where it was found (ADR 0031, `examples/inspection_order_p203.json`).
+  disregard, each with where it was found (ADR 0032, `examples/inspection_order_p203.json`).
   Porosity results written before need the analysis run again for these criteria.
 
 - **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a

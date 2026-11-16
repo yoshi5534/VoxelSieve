@@ -426,7 +426,7 @@ come from the drawing or the customer.
 A zone is the whole part or a region: the union of boxes, spheres, cylinders and closed meshes
 (STL), minus excluded ones. In the GUI a region can name a mesh object of the project, such as a
 region drawn on the CAD model, and follows its pose; `inspection_regions` shows the regions as
-objects in the views. `examples/inspection_order_p203.json` uses all of it (ADR 0031):
+objects in the views. `examples/inspection_order_p203.json` uses all of it (ADR 0032):
 
 ```json
 { "name": "Zone A (sealing face, machined)",

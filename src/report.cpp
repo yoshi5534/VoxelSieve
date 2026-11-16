@@ -422,7 +422,7 @@ std::string_view trim(std::string_view text) {
   return text;
 }
 
-/// A pore characteristic that results written before ADR 0031 lack.
+/// A pore characteristic that results written before ADR 0032 lack.
 double characteristic(double value, const char* what) {
   if (std::isnan(value)) {
     throw std::invalid_argument(std::string("The porosity result has no ") + what +

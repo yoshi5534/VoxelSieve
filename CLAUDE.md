@@ -30,7 +30,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
   - `region.hpp` inspection regions from solids and meshes, the P 203 reference volume and pore
-    gaps (ADR 0031)
+    gaps (ADR 0032)
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
     PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
     the structure tensor (ADR 0028); `battery.hpp` battery cell inspection (housing, electrode
