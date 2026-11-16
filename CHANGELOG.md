@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Python package**: `pip install .` builds the package `voxelsieve`, with numpy access to
+  datasets of any size (`ds[z0:z1, y0:y1, x0:x1]`, every resolution level, bricks one by one),
+  datasets written from numpy arrays and memory-mapped raw files, your own processing brick by
+  brick into a new dataset (`write_derived_dataset`), material labels as arrays, and projects
+  that run every operation by id with its parameters, as the GUI does (`docs/python.md`,
+  ADR 0031).
+
 - **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a
   temporary file, which Windows keeps in memory instead of writing it to disk while memory
   suffices. Written back during the brick pass, it had stalled that pass for half a minute with

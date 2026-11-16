@@ -59,6 +59,10 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
   `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
   a battery cell order and an example plugin (`examples/plugins/histogram`)
+- `python/` the Python package `voxelsieve` (nanobind module `_core` in `core.cpp`, numpy access,
+  projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
+  (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest
+  `python_package`
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 
