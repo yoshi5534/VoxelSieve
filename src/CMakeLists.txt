@@ -88,16 +88,18 @@ if(WIN32)
   # most are instantiations of OpenVDB, TBB and standard templates for three grid types (ADR 0021),
   # which every user of the library instantiates itself. Export only VoxelSieve's own symbols.
   set_target_properties(voxelsieve PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
-  set(_vs_objects ${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_objects.txt)
+  # One set of files per configuration, so that multi-config generators (Visual Studio, which
+  # `pip install .` uses on Windows) work as well as Ninja.
+  set(_vs_def_dir ${CMAKE_CURRENT_BINARY_DIR}/exports/$<CONFIG>)
+  set(_vs_objects ${_vs_def_dir}/voxelsieve_objects.txt)
   file(GENERATE OUTPUT ${_vs_objects} CONTENT "$<JOIN:$<TARGET_OBJECTS:voxelsieve>,\n>\n")
   add_custom_command(TARGET voxelsieve PRE_LINK
-    COMMAND ${CMAKE_COMMAND} -E __create_def ${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_all.def
-            ${_vs_objects}
-    COMMAND ${CMAKE_COMMAND} -DINPUT=${CMAKE_CURRENT_BINARY_DIR}/voxelsieve_all.def
-            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def
+    COMMAND ${CMAKE_COMMAND} -E __create_def ${_vs_def_dir}/voxelsieve_all.def ${_vs_objects}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${_vs_def_dir}/voxelsieve_all.def
+            -DOUTPUT=${_vs_def_dir}/voxelsieve.def
             -P ${PROJECT_SOURCE_DIR}/cmake/FilterExports.cmake
     VERBATIM)
-  target_link_options(voxelsieve PRIVATE /DEF:${CMAKE_CURRENT_BINARY_DIR}/voxelsieve.def)
+  target_link_options(voxelsieve PRIVATE /DEF:${_vs_def_dir}/voxelsieve.def)
   # Performance counters for the disk reads in the telemetry (ADR 0017), part of Windows.
   target_link_libraries(voxelsieve PRIVATE pdh)
   # The C runtime's heap serialises the many small allocations of OpenVDB trees, so threads of a
