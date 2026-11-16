@@ -56,7 +56,8 @@ if(SKBUILD)
     set(_vs_vcpkg_dir "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
     install(RUNTIME_DEPENDENCY_SET voxelsieve_python_runtime
       DIRECTORIES "${_vs_vcpkg_dir}/bin" "${_vs_vcpkg_dir}/lib"
-      PRE_EXCLUDE_REGEXES "^api-ms-" "^ext-ms-" "[Pp]ython[0-9]*"
+      # libvoxelsieve is installed as a target above.
+      PRE_EXCLUDE_REGEXES "^api-ms-" "^ext-ms-" "[Pp]ython[0-9]*" "voxelsieve\\.(dll|so|dylib)$"
       POST_EXCLUDE_REGEXES
         "^/lib/" "^/lib64/" "^/usr/lib/" "^/usr/lib64/" "^/System/" "[/\\\\][Ss]ystem32[/\\\\]"
       LIBRARY DESTINATION voxelsieve
