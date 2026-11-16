@@ -29,6 +29,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     measurement: elements found on the CAD model, fitted to the scan, datum alignment and
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
+  - `region.hpp` inspection regions from solids and meshes, the P 203 reference volume and pore
+    gaps (ADR 0031)
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
     PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
     the structure tensor (ADR 0028); `battery.hpp` battery cell inspection (housing, electrode
@@ -40,8 +42,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
     trained with the PyTorch scripts in `tools/models/` (segmentation, and denoising from the noisy
     scan alone)
-  - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
-    the built-in templates are `resources/report_template.html` and
+  - `report.hpp` evaluation against acceptance limits (BDG P 202, P 203) and the report template
+    engine; the built-in templates are `resources/report_template.html` and
     `resources/first_article_template.html` (first article report), compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
     the phases of new long-running code with `TelemetryPhase`

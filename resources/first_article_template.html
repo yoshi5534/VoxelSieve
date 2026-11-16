@@ -161,9 +161,9 @@
 {{#evaluation}}
 {{#zones}}
 <table>
-  <tr><th colspan="4">{{name}}: {{region}}</th></tr>
+  <tr><th colspan="4">{{name}}: {{region}}{{#key}}<br>Porosity key: {{key}}{{/key}}</th></tr>
   <tr><th>Criterion ({{guideline}})</th><th class="num">Finding</th><th class="num">Limit</th><th>Result</th></tr>
-  {{#criteria}}<tr><td>{{label}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
+  {{#criteria}}<tr><td>{{label}}{{#note}}<br><span class="small">{{note}}</span>{{/note}}</td><td class="num">{{measured}}</td><td class="num">{{limit}}</td><td class="{{#passed}}ok{{/passed}}{{^passed}}nok{{/passed}}">{{verdict}}</td></tr>
   {{/criteria}}
 </table>
 {{/zones}}

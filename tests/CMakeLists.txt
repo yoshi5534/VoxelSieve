@@ -22,6 +22,7 @@ add_executable(voxelsieve_tests
   test_gui.cpp
   test_http.cpp
   test_slice.cpp
+  test_p203.cpp
   test_report.cpp
   test_sieve.cpp
   test_surface.cpp
@@ -121,6 +122,12 @@ add_test(NAME vs_report_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_po
          --order ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report)
 set_tests_properties(vs_report_cli PROPERTIES DEPENDS vs_porosity_cli_sieve)
+# BDG P 203 porosity keys in regions of boxes, cylinders and a mesh next to the order.
+add_test(NAME vs_report_p203_cli COMMAND vs-report ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
+         --order ${PROJECT_SOURCE_DIR}/examples/inspection_order_p203.json
+         --out ${CMAKE_CURRENT_BINARY_DIR}/cli_report_p203)
+set_tests_properties(vs_report_p203_cli PROPERTIES DEPENDS vs_porosity_cli_sieve
+                     PASS_REGULAR_EXPRESSION "zone +Zone D \\(whole part\\)")
 # The sieved synthetic scan, its pores and the example order as DICONDE, then read back.
 add_test(NAME vs_diconde_cli_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_diconde)

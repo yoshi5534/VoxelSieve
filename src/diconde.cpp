@@ -567,7 +567,8 @@ void applyInspectionOrder(const Json& order, DicondeWriteOptions& options,
                formatted(zone.porosity_percent, 3) + " %";
       for (const CriterionResult& criterion : zone.criteria) {
         if (!criterion.passed) {
-          notes += "; " + criterion.name + " " + formatted(criterion.measured, 3) + " > " +
+          notes += "; " + criterion.name + " " + formatted(criterion.measured, 3) +
+                   (criterion.name.starts_with("min_") ? " < " : " > ") +
                    formatted(criterion.limit, 3);
         }
       }

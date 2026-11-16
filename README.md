@@ -10,7 +10,7 @@ On top of it, it finds pores and loosened microstructure and writes an inspectio
 | CT slice | Porosity analysis | Inspection report |
 |---|---|---|
 | ![Section through the axis of a cast bell housing, enlarged: a zone of loosened microstructure and a shrinkage cavity in the engine flange](docs/images/ct-slice.png) | ![Bell housing projected along its axis in grey, pores in red and loosened zones in yellow](docs/images/porosity-projection.png) | ![Evaluation table of the inspection report with three inspection zones](docs/images/report-evaluation.png) |
-| Section through a synthetic scan of a bell housing: a loosened zone and a shrinkage cavity in the engine flange | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 scheme) |
+| Section through a synthetic scan of a bell housing: a loosened zone and a shrinkage cavity in the engine flange | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 and P 203 schemes) |
 
 All images of the porosity analysis come from one synthetic scan of the sample bell housing,
 765 × 765 × 380 voxels of 0.1 mm (445 MB), with the shrinkage cavities and loosened zones where a
@@ -414,10 +414,27 @@ inspection order (`examples/inspection_order.json`) supplies what the scan canno
 the customer, the part number or the tube voltage; missing mandatory fields are marked
 "not given" in the report and printed as warnings.
 
-Acceptance follows the scheme of BDG P 202: per inspection zone (a box in dataset coordinates, or
-the whole part) optional limits on the largest pore extent, the number of pores above a size, the
-porosity, and whether loosened microstructure is allowed. The limits come from the drawing or the
-customer.
+Acceptance follows the schemes of BDG P 202 and BDG P 203: per inspection zone optional limits on
+the largest pore extent, the number of pores above a size, the porosity, and whether loosened
+microstructure is allowed (P 202), and on the porosity of the whole part (PG), of the zone (PROI)
+and of a reference volume placed where the porosity is highest (PV), on pore volume, enclosing and
+equivalent diameter, sphericity, compactness, the gap between pores and the distance to the
+surface, with pores to disregard (P 203). A zone takes the porosity key as written on the drawing
+(`"porosity_key": "BDG P203 - PV7/ Øp3/ UØp0,3"`) or the same limits as fields. The limits
+come from the drawing or the customer.
+
+A zone is the whole part or a region: the union of boxes, spheres, cylinders and closed meshes
+(STL), minus excluded ones. In the GUI a region can name a mesh object of the project, such as a
+region drawn on the CAD model, and follows its pose; `inspection_regions` shows the regions as
+objects in the views. `examples/inspection_order_p203.json` uses all of it (ADR 0031):
+
+```json
+{ "name": "Zone A (sealing face, machined)",
+  "porosity_key": "BDG P203 - Z3/ Øp0,5/ da0,3/ UØp0,2",
+  "region": { "include": [{ "box_mm": [[0, 0, 4], [8, 7, 6]] }],
+              "exclude": [{ "cylinder": { "from_mm": [4, 3.5, 3], "to_mm": [4, 3.5, 6],
+                                          "radius_mm": 0.8 } }] } }
+```
 
 With `--surface part.vss` (from `vs-surface`) the report shows the part and its pores in 3D: the
 part as glass with pores in red and loosened zones in amber, true to scale. With

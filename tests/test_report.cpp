@@ -106,9 +106,9 @@ TEST_F(ReportTest, PoreSizeLimitSeparatesAtTheLunkerExtent) {
   EXPECT_LE(size, 2.0 * lunker.radius_mm + result_.voxel_size[0]);
   EXPECT_GE(size, 2.0 * lunker.spheres.front().radius_mm - result_.voxel_size[0]);
 
-  InspectionZone tight{"tight", std::nullopt, {}};
+  InspectionZone tight{"tight", {}, {}, {}};
   tight.limits.max_pore_size_mm = 0.5 * size;
-  InspectionZone loose{"loose", std::nullopt, {}};
+  InspectionZone loose{"loose", {}, {}, {}};
   loose.limits.max_pore_size_mm = 2.0 * lunker.radius_mm + result_.voxel_size[0];
   const Evaluation evaluation = evaluate(result_, {tight, loose});
   ASSERT_EQ(evaluation.zones.size(), 2U);
@@ -128,13 +128,13 @@ TEST_F(ReportTest, ZonesCountOnlyWhatLiesInTheirBox) {
   // Half of the part along x, on the side away from the lunker.
   const double middle = 0.5 * (part_min[0] + part_max[0]);
   const bool lunker_low = center[0] < middle;
-  std::array<std::array<double, 3>, 2> box{
+  const std::array<std::array<double, 3>, 2> box{
       {{lunker_low ? middle : part_min[0] - 1.0, part_min[1] - 1.0, part_min[2] - 1.0},
        {lunker_low ? part_max[0] + 1.0 : middle, part_max[1] + 1.0, part_max[2] + 1.0}}};
-  InspectionZone away{"away", box, {}};
+  InspectionZone away{"away", InspectionRegion({RegionShape::box(box)}), {}, {}};
   away.limits.max_porosity_percent = 0.0;
   away.limits.max_pore_count = 0;
-  InspectionZone whole{"whole", std::nullopt, {}};
+  InspectionZone whole{"whole", {}, {}, {}};
   whole.limits.max_porosity_percent = 100.0;
 
   const Evaluation evaluation = evaluate(result_, {away, whole});
@@ -164,7 +164,7 @@ TEST_F(ReportTest, LooseningCanBeForbidden) {
   const PorosityResult result = analyzePorosity(dataset);
   ASSERT_EQ(result.zones.size(), 1U);
 
-  InspectionZone zone{"no loosening", std::nullopt, {}};
+  InspectionZone zone{"no loosening", {}, {}, {}};
   zone.limits.allow_loosening = false;
   const Evaluation evaluation = evaluate(result, {zone});
   ASSERT_EQ(evaluation.zones.front().criteria.size(), 1U);
@@ -183,14 +183,14 @@ TEST_F(ReportTest, ZonesAreReadFromTheOrder) {
   const auto zones = inspectionZonesFromJson(order);
   ASSERT_EQ(zones.size(), 2U);
   EXPECT_EQ(zones[0].name, "A");
-  ASSERT_TRUE(zones[0].box_mm.has_value());
-  EXPECT_EQ(zones[0].box_mm.value_or(std::array<std::array<double, 3>, 2>{})[1][2], 3.0);
+  ASSERT_EQ(zones[0].region.include().size(), 1U);
+  EXPECT_EQ(zones[0].region.include().front().box_mm[1][2], 3.0);
   EXPECT_EQ(zones[0].limits.max_pore_size_mm, 0.5);
   EXPECT_EQ(zones[0].limits.max_pore_count, 3);
   EXPECT_EQ(zones[0].limits.count_min_size_mm, 0.2);
   EXPECT_FALSE(zones[0].limits.allow_loosening);
   EXPECT_EQ(zones[1].name, "Zone 2");
-  EXPECT_FALSE(zones[1].box_mm.has_value());
+  EXPECT_TRUE(zones[1].region.wholePart());
   EXPECT_FALSE(zones[1].limits.max_pore_size_mm.has_value());
 
   EXPECT_TRUE(inspectionZonesFromJson(Json::object()).empty());

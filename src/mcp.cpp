@@ -158,7 +158,7 @@ const std::vector<Prompt>& prompts() {
   static const std::vector<Prompt> all = {
       {"porosity_check",
        "Porosity inspection of a CT scan against the acceptance limits of an inspection order "
-       "(BDG P 202), with a report.",
+       "(BDG P 202 or BDG P 203 with inspection regions), with a report.",
        Json::array({{{"name", "scan"},
                      {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},
                      {"required", true}},
@@ -177,7 +177,11 @@ const std::vector<Prompt>& prompts() {
        "3. Run run_porosity and summarise the result: pores, largest pore, porosity in percent, "
        "loosened zones.\n"
        "4. Look at the worst region with view_slice through the largest pore.\n"
-       "5. Run run_report with the inspection order {order} (order_path) and state for each "
+       "5. When the order has inspection regions (region, box_mm), run run_inspection_regions "
+       "with it and check with view_slice or view_objects that the regions lie where the "
+       "drawing puts them. A BDG P 203 porosity key from the drawing goes into porosity_key "
+       "as written; PV needs a reference_volume.\n"
+       "6. Run run_report with the inspection order {order} (order_path) and state for each "
        "acceptance limit whether it is met, quoting the values from the report, not estimates.\n"
        "Say clearly that the report from VoxelSieve is the result, not this summary."},
       {"compare_with_cad",

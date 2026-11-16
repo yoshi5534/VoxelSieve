@@ -54,15 +54,6 @@ std::string formatMm(const std::array<double, 3>& p) {
   return formatNumber(p[0], 2) + ", " + formatNumber(p[1], 2) + ", " + formatNumber(p[2], 2);
 }
 
-bool insideBox(const std::array<double, 3>& p_mm, const std::array<std::array<double, 3>, 2>& box) {
-  for (std::size_t a = 0; a < 3; ++a) {
-    if (p_mm[a] < box[0][a] || p_mm[a] >= box[1][a]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /// "100.0 µm" or "330.0 × 330.0 × 600.0 µm", with the slice thickness when it leaves gaps.
 std::string voxelSizeText(const VoxelSize& v) {
   std::string text = v.isotropic()
@@ -349,38 +340,52 @@ void completeMandatory(Json& data, std::span<const Field> fields,
   }
 }
 
-std::string regionText(const InspectionZone& zone) {
-  if (!zone.box_mm) {
-    return "whole part";
-  }
-  const auto& box = *zone.box_mm;
-  return "box from (" + formatMm(box[0]) + ") to (" + formatMm(box[1]) + ") mm";
-}
-
 std::string criterionLabel(const CriterionResult& criterion, const AcceptanceLimits& limits) {
-  if (criterion.name == "max_pore_size_mm") {
-    return "Largest extent of a pore";
-  }
+  static const std::map<std::string, std::string, std::less<>> labels{
+      {"max_pore_size_mm", "Largest extent of a pore"},
+      {"max_porosity_percent", "Porosity (pores and loosened microstructure)"},
+      {"loosening", "Loosened microstructure"},
+      {"max_global_porosity_percent", "Porosity of the whole part (PG)"},
+      {"max_reference_porosity_percent", "Porosity in the reference volume (PV)"},
+      {"max_pore_volume_mm3", "Volume of a pore (Vp)"},
+      {"max_enclosing_diameter_mm", "Pore diameter, enclosing sphere (Øp)"},
+      {"max_equivalent_diameter_mm", "Pore diameter, sphere of equal volume (Øaq)"},
+      {"min_sphericity", "Sphericity of every pore (Ψ)"},
+      {"min_compactness", "Compactness of every pore (C)"},
+      {"min_pore_gap_mm", "Distance between neighbouring pores (Gap)"},
+      {"min_surface_distance_mm", "Distance of a pore to the surface (da)"}};
   if (criterion.name == "max_pore_count") {
     return limits.count_min_size_mm > 0.0
                ? "Number of pores from " + formatNumber(limits.count_min_size_mm, 2) + " mm"
                : "Number of pores";
   }
-  if (criterion.name == "max_porosity_percent") {
-    return "Porosity (pores and loosened microstructure)";
-  }
-  return "Loosened microstructure";
+  const auto it = labels.find(criterion.name);
+  return it != labels.end() ? it->second : criterion.name;
 }
 
 std::string criterionValue(const CriterionResult& criterion, bool limit) {
   const double value = limit ? criterion.limit : criterion.measured;
-  if (criterion.name == "max_pore_size_mm") {
+  const std::string& name = criterion.name;
+  if (!limit && !std::isfinite(value)) {
+    return name == "min_pore_gap_mm" ? "fewer than 2 pores" : "no pore";
+  }
+  if (name == "max_pore_size_mm" || name == "max_enclosing_diameter_mm" ||
+      name == "max_equivalent_diameter_mm") {
     return !limit && value == 0.0 ? "no pore" : formatNumber(value, 2) + " mm";
   }
-  if (criterion.name == "max_porosity_percent") {
+  if (name == "min_pore_gap_mm" || name == "min_surface_distance_mm") {
+    return formatNumber(value, 2) + " mm";
+  }
+  if (name == "max_pore_volume_mm3") {
+    return !limit && value == 0.0 ? "no pore" : formatNumber(value, 3) + " mm³";
+  }
+  if (name.ends_with("_percent")) {
     return formatNumber(value, 3) + " %";
   }
-  if (criterion.name == "loosening") {
+  if (name == "min_sphericity" || name == "min_compactness") {
+    return formatNumber(value, 2);
+  }
+  if (name == "loosening") {
     if (limit) {
       return "not permitted";
     }
@@ -389,7 +394,182 @@ std::string criterionValue(const CriterionResult& criterion, bool limit) {
   return formatNumber(value, 0);
 }
 
+/// The text of a BDG P 203 parameter value: "0,55" or "0.55".
+double keyNumber(std::string_view text, std::string_view parameter) {
+  std::string number(text);
+  std::replace(number.begin(), number.end(), ',', '.');
+  std::size_t used = 0;
+  double value = 0.0;
+  try {
+    value = std::stod(number, &used);
+  } catch (const std::exception&) {
+    used = 0;
+  }
+  if (number.empty() || used != number.size() || value < 0.0) {
+    throw std::invalid_argument("Porosity key: parameter " + std::string(parameter) +
+                                " needs a number, not '" + std::string(text) + "'");
+  }
+  return value;
+}
+
+std::string_view trim(std::string_view text) {
+  while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+    text.remove_prefix(1);
+  }
+  while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+    text.remove_suffix(1);
+  }
+  return text;
+}
+
+/// A pore characteristic that results written before ADR 0031 lack.
+double characteristic(double value, const char* what) {
+  if (std::isnan(value)) {
+    throw std::invalid_argument(std::string("The porosity result has no ") + what +
+                                " of its pores: run the porosity analysis again");
+  }
+  return value;
+}
+
+std::optional<double> optionalNumber(const Json& item, const char* key) {
+  if (!item.contains(key)) {
+    return std::nullopt;
+  }
+  if (!item.at(key).is_number()) {
+    throw std::invalid_argument(std::string("Inspection zone: ") + key + " must be a number");
+  }
+  return item.at(key).get<double>();
+}
+
 }  // namespace
+
+bool DisregardedPores::any() const {
+  return enclosing_diameter_mm || equivalent_diameter_mm || volume_mm3 || sphericity || compactness;
+}
+
+bool DisregardedPores::disregards(const DetectedPore& pore) const {
+  if (enclosing_diameter_mm &&
+      characteristic(pore.enclosing_diameter_mm, "enclosing diameter") <= *enclosing_diameter_mm) {
+    return true;
+  }
+  if (equivalent_diameter_mm && pore.equivalent_diameter_mm <= *equivalent_diameter_mm) {
+    return true;
+  }
+  if (volume_mm3 && pore.volume_mm3 <= *volume_mm3) {
+    return true;
+  }
+  if (sphericity && characteristic(pore.sphericity, "sphericity") >= *sphericity) {
+    return true;
+  }
+  return compactness && characteristic(pore.compactness(), "compactness") >= *compactness;
+}
+
+void applyPorosityKey(std::string_view key, AcceptanceLimits& limits) {
+  std::string_view rest = trim(key);
+  // "BDG P203 – ..." or "BDG P 203 - ...": the guideline, then the parameters.
+  if (rest.starts_with("BDG")) {
+    const auto dash = rest.find_first_of("-\xE2");  // "-" or the first byte of an en dash
+    if (dash == std::string_view::npos) {
+      throw std::invalid_argument("Porosity key: the parameters follow a dash after the guideline");
+    }
+    rest.remove_prefix(dash + (rest[dash] == '-' ? 1 : 3));
+  }
+  // Longest symbols first, so "PROI" is not read as "P..." and "Øaq" not as "Ø".
+  static const std::vector<std::pair<std::string_view, std::string_view>> symbols{
+      {"PROI", "PROI"},
+      {"PG", "PG"},
+      {"PV", "PV"},
+      {"Vp", "Vp"},
+      {"\xC3\x98"
+       "aq",
+       "Daq"},
+      {"\xC3\xB8"
+       "aq",
+       "Daq"},
+      {"Daq", "Daq"},
+      {"\xC3\x98"
+       "p",
+       "Dp"},
+      {"\xC3\xB8"
+       "p",
+       "Dp"},
+      {"Dp", "Dp"},
+      {"\xC3\x98", "Dp"},
+      {"\xC3\xB8", "Dp"},
+      {"D", "Dp"},
+      {"\xCE\xA8", "Psi"},
+      {"\xCF\x88", "Psi"},
+      {"Psi", "Psi"},
+      {"psi", "Psi"},
+      {"Gap", "Gap"},
+      {"da", "da"},
+      {"C", "C"},
+      {"Z", "Z"}};
+  std::size_t parameters = 0;
+  while (!rest.empty()) {
+    const auto slash = rest.find('/');
+    const std::string_view token = trim(rest.substr(0, slash));
+    rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash + 1);
+    if (token.empty()) {
+      continue;
+    }
+    std::string_view body = token;
+    const bool disregard = body.size() > 1 && body.front() == 'U';
+    if (disregard) {
+      body.remove_prefix(1);
+    }
+    const auto symbol = std::find_if(symbols.begin(), symbols.end(),
+                                     [&](const auto& s) { return body.starts_with(s.first); });
+    if (symbol == symbols.end()) {
+      throw std::invalid_argument("Porosity key: unknown parameter '" + std::string(token) + "'");
+    }
+    const std::string_view name = symbol->second;
+    const double value = keyNumber(trim(body.substr(symbol->first.size())), token);
+    ++parameters;
+    if (disregard) {
+      DisregardedPores& u = limits.disregard;
+      if (name == "Dp") {
+        u.enclosing_diameter_mm = value;
+      } else if (name == "Daq") {
+        u.equivalent_diameter_mm = value;
+      } else if (name == "Vp") {
+        u.volume_mm3 = value;
+      } else if (name == "Psi") {
+        u.sphericity = value;
+      } else if (name == "C") {
+        u.compactness = value;
+      } else {
+        throw std::invalid_argument("Porosity key: '" + std::string(token) +
+                                    "' does not select pores to disregard");
+      }
+    } else if (name == "PG") {
+      limits.max_global_porosity_percent = value;
+    } else if (name == "PROI") {
+      limits.max_porosity_percent = value;
+    } else if (name == "PV") {
+      limits.max_reference_porosity_percent = value;
+    } else if (name == "Vp") {
+      limits.max_pore_volume_mm3 = value;
+    } else if (name == "Dp") {
+      limits.max_enclosing_diameter_mm = value;
+    } else if (name == "Daq") {
+      limits.max_equivalent_diameter_mm = value;
+    } else if (name == "Psi") {
+      limits.min_sphericity = value;
+    } else if (name == "C") {
+      limits.min_compactness = value;
+    } else if (name == "Gap") {
+      limits.min_pore_gap_mm = value;
+    } else if (name == "da") {
+      limits.min_surface_distance_mm = value;
+    } else if (name == "Z") {
+      limits.max_pore_count = static_cast<std::int64_t>(value);
+    }
+  }
+  if (parameters == 0) {
+    throw std::invalid_argument("Porosity key '" + std::string(key) + "' has no parameters");
+  }
+}
 
 bool ZoneEvaluation::passed() const {
   return std::all_of(criteria.begin(), criteria.end(), [](const auto& c) { return c.passed; });
@@ -408,23 +588,64 @@ double poreSizeMm(const DetectedPore& pore, const VoxelSize& voxel_size) {
   return longest;
 }
 
-Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZone>& zones) {
+Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZone>& zones,
+                    const Dataset* dataset) {
   const VoxelSize& v = result.voxel_size;
+  constexpr double kInfinity = std::numeric_limits<double>::infinity();
   Evaluation evaluation;
   for (const InspectionZone& zone : zones) {
-    const auto inside = [&](const std::array<double, 3>& center_voxels) {
-      return !zone.box_mm || insideBox(toMm(center_voxels, v), *zone.box_mm);
-    };
+    const AcceptanceLimits& limits = zone.limits;
+    const InspectionRegion& region = zone.region;
     ZoneEvaluation out;
     out.name = zone.name;
-    out.part_volume_mm3 = zone.box_mm ? result.partVolumeMm3(*zone.box_mm) : result.part_volume_mm3;
-    for (const DetectedPore& pore : result.pores) {
-      if (!inside(pore.center_voxels)) {
+    out.region = region.description();
+    out.key = zone.key;
+    out.limits = limits;
+    out.part_volume_mm3 = regionPartVolumeMm3(result, region, dataset);
+
+    // Pores that count (not disregarded), and those of them in the zone.
+    std::vector<bool> considered(result.pores.size(), true);
+    std::vector<std::size_t> in_zone;
+    double global_void = 0.0;
+    for (std::size_t i = 0; i < result.pores.size(); ++i) {
+      const DetectedPore& pore = result.pores[i];
+      considered[i] = !limits.disregard.disregards(pore);
+      const bool inside = region.contains(v.toMm(pore.center_voxels));
+      if (!considered[i]) {
+        out.disregarded_pores += inside ? 1 : 0;
         continue;
       }
+      global_void += pore.volume_mm3;
+      if (inside) {
+        in_zone.push_back(i);
+      }
+    }
+
+    struct Extreme {
+      double value;
+      int pore = 0;
+    };
+    Extreme volume{0.0};
+    Extreme enclosing{0.0};
+    Extreme equivalent{0.0};
+    Extreme sphericity{kInfinity};
+    Extreme compactness{kInfinity};
+    Extreme surface{kInfinity};
+    const auto grow = [](Extreme& e, double value, int id) {
+      if (value > e.value) {
+        e = {value, id};
+      }
+    };
+    const auto shrink = [](Extreme& e, double value, int id) {
+      if (value < e.value) {
+        e = {value, id};
+      }
+    };
+    for (const std::size_t i : in_zone) {
+      const DetectedPore& pore = result.pores[i];
       const double size = poreSizeMm(pore, v);
       ++out.pore_count;
-      if (size >= zone.limits.count_min_size_mm) {
+      if (size >= limits.count_min_size_mm) {
         ++out.counted_pores;
       }
       if (size > out.largest_pore_size_mm) {
@@ -432,9 +653,25 @@ Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZo
         out.largest_pore_id = pore.id;
       }
       out.void_volume_mm3 += pore.volume_mm3;
+      grow(volume, pore.volume_mm3, pore.id);
+      grow(equivalent, pore.equivalent_diameter_mm, pore.id);
+      if (limits.max_enclosing_diameter_mm) {
+        grow(enclosing, characteristic(pore.enclosing_diameter_mm, "enclosing diameter"), pore.id);
+      }
+      if (limits.min_sphericity) {
+        shrink(sphericity, characteristic(pore.sphericity, "sphericity"), pore.id);
+      }
+      if (limits.min_compactness) {
+        shrink(compactness, characteristic(pore.compactness(), "compactness"), pore.id);
+      }
+      if (limits.min_surface_distance_mm) {
+        shrink(surface, characteristic(pore.surface_distance_mm, "surface distance"), pore.id);
+      }
     }
+    double zones_void = 0.0;
     for (const PorosityZone& loosened : result.zones) {
-      if (inside(loosened.center_voxels)) {
+      zones_void += loosened.void_volume_mm3;
+      if (region.contains(v.toMm(loosened.center_voxels))) {
         ++out.loosening_zones;
         out.void_volume_mm3 += loosened.void_volume_mm3;
       }
@@ -442,32 +679,99 @@ Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZo
     out.porosity_percent =
         out.part_volume_mm3 > 0.0 ? 100.0 * out.void_volume_mm3 / out.part_volume_mm3 : 0.0;
 
-    const AcceptanceLimits& limits = zone.limits;
+    const auto at_most = [&](const char* name, double measured, double limit, int pore = 0) {
+      CriterionResult c{name, measured, limit, !(measured > limit), {}};
+      if (pore > 0) {
+        c.note = "pore " + std::to_string(pore);
+      }
+      out.criteria.push_back(std::move(c));
+    };
+    const auto at_least = [&](const char* name, double measured, double limit, int pore = 0) {
+      CriterionResult c{name, measured, limit, !(measured < limit), {}};
+      if (pore > 0) {
+        c.note = "pore " + std::to_string(pore);
+      }
+      out.criteria.push_back(std::move(c));
+    };
     if (limits.max_pore_size_mm) {
-      out.criteria.push_back({"max_pore_size_mm", out.largest_pore_size_mm,
-                              *limits.max_pore_size_mm,
-                              out.largest_pore_size_mm <= *limits.max_pore_size_mm});
+      at_most("max_pore_size_mm", out.largest_pore_size_mm, *limits.max_pore_size_mm,
+              out.largest_pore_id);
     }
     if (limits.max_pore_count) {
-      out.criteria.push_back({"max_pore_count", static_cast<double>(out.counted_pores),
-                              static_cast<double>(*limits.max_pore_count),
-                              out.counted_pores <= *limits.max_pore_count});
+      at_most("max_pore_count", static_cast<double>(out.counted_pores),
+              static_cast<double>(*limits.max_pore_count));
     }
     if (limits.max_porosity_percent) {
-      out.criteria.push_back({"max_porosity_percent", out.porosity_percent,
-                              *limits.max_porosity_percent,
-                              out.porosity_percent <= *limits.max_porosity_percent});
+      at_most("max_porosity_percent", out.porosity_percent, *limits.max_porosity_percent);
     }
     if (!limits.allow_loosening) {
-      out.criteria.push_back(
-          {"loosening", static_cast<double>(out.loosening_zones), 0.0, out.loosening_zones == 0});
+      out.criteria.push_back({"loosening",
+                              static_cast<double>(out.loosening_zones),
+                              0.0,
+                              out.loosening_zones == 0,
+                              {}});
+    }
+    if (limits.max_global_porosity_percent) {
+      const double global = result.part_volume_mm3 > 0.0
+                                ? 100.0 * (global_void + zones_void) / result.part_volume_mm3
+                                : 0.0;
+      at_most("max_global_porosity_percent", global, *limits.max_global_porosity_percent);
+    }
+    if (limits.max_reference_porosity_percent) {
+      if (!limits.reference_volume) {
+        throw std::invalid_argument("Inspection zone '" + zone.name +
+                                    "': PV needs a reference_volume");
+      }
+      const ReferencePlacement placement =
+          maxReferencePorosity(result, region, *limits.reference_volume, considered);
+      CriterionResult c{"max_reference_porosity_percent", placement.porosity_percent,
+                        *limits.max_reference_porosity_percent,
+                        placement.porosity_percent <= *limits.max_reference_porosity_percent,
+                        limits.reference_volume->description()};
+      c.note += placement.found ? " at " + formatMm(placement.center_mm) + " mm"
+                                : ", no placement in the part covers a pore";
+      out.criteria.push_back(std::move(c));
+    }
+    if (limits.max_pore_volume_mm3) {
+      at_most("max_pore_volume_mm3", volume.value, *limits.max_pore_volume_mm3, volume.pore);
+    }
+    if (limits.max_enclosing_diameter_mm) {
+      at_most("max_enclosing_diameter_mm", enclosing.value, *limits.max_enclosing_diameter_mm,
+              enclosing.pore);
+    }
+    if (limits.max_equivalent_diameter_mm) {
+      at_most("max_equivalent_diameter_mm", equivalent.value, *limits.max_equivalent_diameter_mm,
+              equivalent.pore);
+    }
+    if (limits.min_sphericity) {
+      at_least("min_sphericity", sphericity.value, *limits.min_sphericity, sphericity.pore);
+    }
+    if (limits.min_compactness) {
+      at_least("min_compactness", compactness.value, *limits.min_compactness, compactness.pore);
+    }
+    if (limits.min_pore_gap_mm) {
+      const PoreGap gap = smallestPoreGap(result, in_zone);
+      CriterionResult c{"min_pore_gap_mm",
+                        gap.gap_mm,
+                        *limits.min_pore_gap_mm,
+                        !(gap.gap_mm < *limits.min_pore_gap_mm),
+                        {}};
+      if (gap.first > 0) {
+        c.note = "pores " + std::to_string(gap.first) + " and " + std::to_string(gap.second);
+      }
+      out.criteria.push_back(std::move(c));
+    }
+    if (limits.min_surface_distance_mm) {
+      at_least("min_surface_distance_mm", surface.value, *limits.min_surface_distance_mm,
+               surface.pore);
     }
     evaluation.zones.push_back(std::move(out));
   }
   return evaluation;
 }
 
-std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order) {
+std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
+                                                    const std::filesystem::path& base_dir) {
   std::vector<InspectionZone> zones;
   const auto acceptance = order.find("acceptance");
   if (acceptance == order.end() || !acceptance->contains("zones")) {
@@ -476,30 +780,59 @@ std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order)
   for (const Json& item : acceptance->at("zones")) {
     InspectionZone zone;
     zone.name = item.value("name", "Zone " + std::to_string(zones.size() + 1));
-    if (item.contains("box_mm")) {
-      const Json& box = item.at("box_mm");
-      const auto is_point = [](const Json& p) {
-        return p.is_array() && p.size() == 3 &&
-               std::all_of(p.begin(), p.end(), [](const Json& c) { return c.is_number(); });
-      };
-      if (!box.is_array() || box.size() != 2 || !is_point(box[0]) || !is_point(box[1])) {
-        throw std::invalid_argument("Inspection zone '" + zone.name +
-                                    "': box_mm must be [[x0, y0, z0], [x1, y1, z1]]");
+    try {
+      zone.region = InspectionRegion::fromJson(item, base_dir);
+      AcceptanceLimits& limits = zone.limits;
+      if (item.contains("porosity_key")) {
+        zone.key = item.at("porosity_key").get<std::string>();
+        applyPorosityKey(zone.key, limits);
       }
-      zone.box_mm = box.get<std::array<std::array<double, 3>, 2>>();
+      // Fields given explicitly win over the key.
+      const auto set = [&](const char* key, std::optional<double>& limit) {
+        if (const auto value = optionalNumber(item, key)) {
+          limit = value;
+        }
+      };
+      set("max_pore_size_mm", limits.max_pore_size_mm);
+      if (item.contains("max_pore_count")) {
+        limits.max_pore_count = item.at("max_pore_count").get<std::int64_t>();
+      }
+      limits.count_min_size_mm = item.value("count_min_size_mm", 0.0);
+      set("max_porosity_percent", limits.max_porosity_percent);
+      limits.allow_loosening = item.value("allow_loosening", true);
+      set("max_global_porosity_percent", limits.max_global_porosity_percent);
+      set("max_reference_porosity_percent", limits.max_reference_porosity_percent);
+      set("max_pore_volume_mm3", limits.max_pore_volume_mm3);
+      set("max_enclosing_diameter_mm", limits.max_enclosing_diameter_mm);
+      set("max_equivalent_diameter_mm", limits.max_equivalent_diameter_mm);
+      set("min_sphericity", limits.min_sphericity);
+      set("min_compactness", limits.min_compactness);
+      set("min_pore_gap_mm", limits.min_pore_gap_mm);
+      set("min_surface_distance_mm", limits.min_surface_distance_mm);
+      if (item.contains("reference_volume")) {
+        limits.reference_volume = ReferenceVolume::fromJson(item.at("reference_volume"));
+      }
+      if (item.contains("disregard")) {
+        const Json& u = item.at("disregard");
+        DisregardedPores& d = limits.disregard;
+        const auto set_u = [&](const char* key, std::optional<double>& limit) {
+          if (const auto value = optionalNumber(u, key)) {
+            limit = value;
+          }
+        };
+        set_u("enclosing_diameter_mm", d.enclosing_diameter_mm);
+        set_u("equivalent_diameter_mm", d.equivalent_diameter_mm);
+        set_u("volume_mm3", d.volume_mm3);
+        set_u("sphericity", d.sphericity);
+        set_u("compactness", d.compactness);
+      }
+      if (limits.max_reference_porosity_percent && !limits.reference_volume) {
+        throw std::invalid_argument(
+            R"(PV needs a reference_volume, for example {"shape": "cube", "edge_mm": 5})");
+      }
+    } catch (const std::invalid_argument& error) {
+      throw std::invalid_argument("Inspection zone '" + zone.name + "': " + error.what());
     }
-    AcceptanceLimits& limits = zone.limits;
-    if (item.contains("max_pore_size_mm")) {
-      limits.max_pore_size_mm = item.at("max_pore_size_mm").get<double>();
-    }
-    if (item.contains("max_pore_count")) {
-      limits.max_pore_count = item.at("max_pore_count").get<std::int64_t>();
-    }
-    limits.count_min_size_mm = item.value("count_min_size_mm", 0.0);
-    if (item.contains("max_porosity_percent")) {
-      limits.max_porosity_percent = item.at("max_porosity_percent").get<double>();
-    }
-    limits.allow_loosening = item.value("allow_loosening", true);
     zones.push_back(std::move(zone));
   }
   return zones;
@@ -552,10 +885,16 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
   Json pores = Json::array();
   for (std::size_t i = 0; i < std::min(by_size.size(), kMaxListedPores); ++i) {
     const DetectedPore& pore = *by_size[i];
+    const auto optional = [](double value, int decimals) {
+      return std::isfinite(value) ? formatNumber(value, decimals) : std::string("–");
+    };
     pores.push_back({{"id", pore.id},
                      {"position", formatMm(toMm(pore.center_voxels, v))},
                      {"size", formatNumber(poreSizeMm(pore, v), 2)},
                      {"diameter", formatNumber(pore.equivalent_diameter_mm, 2)},
+                     {"enclosing_diameter", optional(pore.enclosing_diameter_mm, 2)},
+                     {"sphericity", optional(pore.sphericity, 2)},
+                     {"surface_distance", optional(pore.surface_distance_mm, 2)},
                      {"volume", formatNumber(pore.volume_mm3, 4)}});
   }
   data["has_pores"] = !pores.empty();
@@ -575,29 +914,39 @@ nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& res
   data["zones"] = zones;
 
   if (!evaluation.zones.empty()) {
-    const auto inspection_zones = inspectionZonesFromJson(order);
     Json evaluated = Json::array();
-    for (std::size_t i = 0; i < evaluation.zones.size(); ++i) {
-      const ZoneEvaluation& zone = evaluation.zones[i];
-      const InspectionZone& spec = inspection_zones.at(i);
+    bool p203 = false;
+    for (const ZoneEvaluation& zone : evaluation.zones) {
       Json criteria = Json::array();
       for (const CriterionResult& criterion : zone.criteria) {
-        criteria.push_back({{"label", criterionLabel(criterion, spec.limits)},
+        criteria.push_back({{"label", criterionLabel(criterion, zone.limits)},
+                            {"note", criterion.note},
                             {"measured", criterionValue(criterion, false)},
                             {"limit", criterionValue(criterion, true)},
                             {"passed", criterion.passed},
                             {"verdict", criterion.passed ? "passed" : "failed"}});
+        p203 =
+            p203 || (criterion.name != "max_pore_size_mm" && criterion.name != "max_pore_count" &&
+                     criterion.name != "max_porosity_percent" && criterion.name != "loosening");
       }
-      evaluated.push_back({{"name", zone.name},
-                           {"region", regionText(spec)},
-                           {"part_volume", formatNumber(zone.part_volume_mm3, 1) + " mm³"},
-                           {"criteria", criteria},
-                           {"passed", zone.passed()},
-                           {"verdict", zone.passed() ? "passed" : "failed"}});
+      p203 = p203 || !zone.key.empty() || zone.limits.disregard.any();
+      Json item = {{"name", zone.name},
+                   {"region", zone.region},
+                   {"key", zone.key},
+                   {"part_volume", formatNumber(zone.part_volume_mm3, 1) + " mm³"},
+                   {"criteria", criteria},
+                   {"passed", zone.passed()},
+                   {"verdict", zone.passed() ? "passed" : "failed"}};
+      if (zone.disregarded_pores > 0) {
+        item["disregarded"] = std::to_string(zone.disregarded_pores) +
+                              (zone.disregarded_pores == 1 ? " pore" : " pores") + " disregarded";
+      }
+      evaluated.push_back(std::move(item));
     }
+    const std::string default_guideline = p203 ? "BDG P 203" : "BDG P 202";
     const std::string guideline = order.contains("acceptance")
-                                      ? order["acceptance"].value("guideline", "BDG P 202")
-                                      : "BDG P 202";
+                                      ? order["acceptance"].value("guideline", default_guideline)
+                                      : default_guideline;
     data["evaluation"] = {{"guideline", guideline},
                           {"zones", evaluated},
                           {"passed", evaluation.passed()},
