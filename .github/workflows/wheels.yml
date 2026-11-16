@@ -1,0 +1,201 @@
+name: Python wheels
+
+# Builds the wheels of the Python package (ADR 0031) for Linux, Windows and macOS, one per
+# platform for Python 3.12 and newer (stable ABI), with libvoxelsieve and the libraries from vcpkg
+# inside, plus the source distribution. Every wheel is installed into a fresh environment and the
+# package's tests run on it with the oldest and the newest Python it serves. When a release is
+# published on GitHub, the wheels and the sdist are attached to it, carrying the version of the
+# release tag; otherwise they are workflow artifacts. Uploading to PyPI stays off until the
+# maintainer sets up trusted publishing for this workflow on pypi.org (environment `pypi`) and sets
+# the repository variable PUBLISH_PYPI to true. Run by hand with a tag, the workflow rebuilds the
+# wheels of that release and replaces the ones attached to it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose wheels to rebuild and replace (empty builds the branch)
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - .github/workflows/wheels.yml
+      - pyproject.toml
+      - python/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  wheel:
+    name: Wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: release
+            platform: linux
+          - os: windows-2022
+            preset: windows
+            platform: windows
+          - os: macos-15
+            preset: macos
+            platform: macos
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      MACOSX_DEPLOYMENT_TARGET: "13.3"
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Version
+        run: |
+          # The package takes its version from CMakeLists.txt (pyproject.toml); a release build
+          # writes the tag's version there first.
+          if [[ -n "$TAG" ]]; then
+            version="${TAG#v}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::No version x.y.z in tag '$TAG'"
+              exit 1
+            fi
+            sed -i.bak "s/^  set(VOXELSIEVE_VERSION [0-9.]*)$/  set(VOXELSIEVE_VERSION $version)/" CMakeLists.txt
+            rm CMakeLists.txt.bak
+            grep -q "set(VOXELSIEVE_VERSION $version)" CMakeLists.txt
+          fi
+      - uses: actions/setup-python@v5
+        id: py313
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-python@v5
+        id: py312
+        with:
+          python-version: "3.12"
+      - name: Pythons
+        run: |
+          py312='${{ steps.py312.outputs.python-path }}'
+          py313='${{ steps.py313.outputs.python-path }}'
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            py312="$(cygpath -u "$py312")"
+            py313="$(cygpath -u "$py313")"
+          fi
+          echo "PY312=$py312" >> "$GITHUB_ENV"
+          echo "PY313=$py313" >> "$GITHUB_ENV"
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build autoconf autoconf-archive \
+            automake libtool pkg-config patchelf
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja autoconf autoconf-archive automake libtool pkg-config
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up vcpkg
+        id: vcpkg
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            # The same cache as the Linux CI jobs.
+            echo "VCPKG_ROOT=/home/runner/vcpkg" >> "$GITHUB_ENV"
+            echo "archives=$HOME/.cache/vcpkg/archives" >> "$GITHUB_OUTPUT"
+            echo "key=vcpkg-$(g++ -dumpfullversion)-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}" >> "$GITHUB_OUTPUT"
+            VCPKG_ROOT=/home/runner/vcpkg tools/setup-vcpkg.sh
+          else
+            temp="$RUNNER_TEMP"
+            if [[ "$RUNNER_OS" == Windows ]]; then temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+            echo "VCPKG_ROOT=$temp/vcpkg" >> "$GITHUB_ENV"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$temp/vcpkg-archives" >> "$GITHUB_ENV"
+            mkdir -p "$temp/vcpkg-archives"
+            echo "archives=$temp/vcpkg-archives" >> "$GITHUB_OUTPUT"
+            echo "key=vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/**') }}-complete" >> "$GITHUB_OUTPUT"
+            VCPKG_ROOT="$temp/vcpkg" tools/setup-vcpkg.sh
+          fi
+      - name: Restore binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.vcpkg.outputs.archives }}
+          key: ${{ steps.vcpkg.outputs.key }}
+      - name: Build the wheel
+        run: |
+          "$PY312" -m pip install --upgrade pip build
+          "$PY312" -m build --wheel --outdir raw .
+      - name: Repair (Linux, macOS)
+        # The libraries are in the wheel already; auditwheel and delocate check that nothing
+        # outside it is needed and give the wheel the platform tag it qualifies for.
+        run: |
+          mkdir -p dist
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            "$PY312" -m pip install auditwheel
+            "$PY312" -m auditwheel show raw/*.whl
+            "$PY312" -m auditwheel repair -w dist raw/*.whl
+          elif [[ "$RUNNER_OS" == macOS ]]; then
+            "$PY312" -m pip install delocate
+            delocate-listdeps --all raw/*.whl
+            delocate-wheel -w dist -v raw/*.whl
+          else
+            cp raw/*.whl dist/
+          fi
+          ls -l dist
+      - name: Source distribution (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          "$PY312" -m build --sdist --outdir dist .
+      - name: Test the wheel
+        # Outside the checkout, so that the installed package is tested and not the sources.
+        working-directory: ${{ runner.temp }}
+        run: |
+          ws="$GITHUB_WORKSPACE"
+          if [[ "$RUNNER_OS" == Windows ]]; then ws="$(cygpath -m "$ws")"; fi
+          for python in "$PY312" "$PY313"; do
+            rm -rf venv
+            "$python" -m venv venv
+            if [[ "$RUNNER_OS" == Windows ]]; then bin=venv/Scripts; else bin=venv/bin; fi
+            "$bin/python" -m pip install "$ws"/dist/*.whl
+            "$bin/python" -c "import voxelsieve; print(voxelsieve.__version__, voxelsieve.__file__)"
+            "$bin/python" -m unittest discover -s "$ws/python/tests"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*
+      - name: Attach to the release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+  pypi:
+    # Off until trusted publishing is set up on pypi.org for this repository, workflow
+    # (wheels.yml) and environment (pypi), and the repository variable PUBLISH_PYPI is true.
+    name: Publish to PyPI
+    needs: wheel
+    if: (github.event.release.tag_name || inputs.tag) != '' && vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

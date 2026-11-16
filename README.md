@@ -548,6 +548,25 @@ A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
 `voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
 `docs/adr/0008-gui-projects-operations-ui.md`.
 
+## Python
+
+The `voxelsieve` package reads datasets of any size as numpy arrays, writes numpy volumes (also a
+`numpy.memmap` of a raw file) as datasets, runs your own numpy or SciPy code brick by brick on
+scans larger than memory, and runs every operation as a step of a project:
+
+```python
+import voxelsieve as vs
+
+ds = vs.Dataset.open("scan.vsieve")
+slab = ds[400:410]                       # (z, y, x) numpy array; only the bricks it touches load
+project = vs.Project.create("casting.vsproj", "Casting 4711")
+project.run("open_dataset", path=ds.path)
+print(project.run("porosity").summary)
+```
+
+Install with `pip install .` from a checkout (with `VCPKG_ROOT` set as for the build). See
+[docs/python.md](docs/python.md) and `docs/adr/0031-python-package.md`.
+
 ## GUI
 
 `vs-gui` starts the GUI and prints its address, by default http://localhost:8410. The browser
