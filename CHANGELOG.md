@@ -7,7 +7,7 @@
   datasets written from numpy arrays and memory-mapped raw files, your own processing brick by
   brick into a new dataset (`write_derived_dataset`), material labels as arrays, and projects
   that run every operation by id with its parameters, as the GUI does (`docs/python.md`,
-  ADR 0031).
+  ADR 0031). Releases carry wheels for Linux, Windows and macOS (Python 3.12 and newer).
 
 - **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a
   temporary file, which Windows keeps in memory instead of writing it to disk while memory

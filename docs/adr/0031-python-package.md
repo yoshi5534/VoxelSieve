@@ -56,9 +56,13 @@ A package `voxelsieve` in `python/`: a small extension module `voxelsieve._core`
 - Python users get numpy access and every analysis; binding work for a new analysis is nil.
 - Typed results (pores as a table, meshes as arrays) are not bound yet; the result files are
   JSON, PNG, STL and VDB, which Python reads with its usual libraries.
-- Wheels on PyPI need builds per platform and Python version with the libraries from vcpkg
-  inside (for example with cibuildwheel); publishing is a separate step. Until then the package
-  is built from source. nanobind's stable ABI could make one wheel per platform serve Python
-  3.12 and newer.
+- **Wheels** (`.github/workflows/wheels.yml`) are built natively on the CI runners of the
+  release packages, with the same vcpkg caches: one wheel per platform with nanobind's stable
+  ABI (`cp312-abi3`, Python 3.12 and newer), repaired with auditwheel and delocate, installed
+  into a fresh environment and tested with Python 3.12 and 3.13, and attached to the release with
+  the sdist. Built on Ubuntu 24.04, the Linux wheel needs a glibc as new (manylinux_2_39); older
+  distributions, older Pythons and other platforms build from the sdist. Uploading to PyPI is a
+  job of the same workflow that stays off until trusted publishing is set up on pypi.org and the
+  repository variable `PUBLISH_PYPI` is true.
 - Reconstruction is not part of VoxelSieve; a bridge to reconstruction frameworks in Python can
   build on `write_dataset`.

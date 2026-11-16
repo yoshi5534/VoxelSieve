@@ -8,7 +8,15 @@ projects the GUI and the MCP server open. Design: [ADR 0031](adr/0031-python-pac
 
 ## Install
 
-The package is built from source with pip; CMake builds libvoxelsieve and the extension module.
+Every release carries wheels for Linux (x86-64, glibc of Ubuntu 24.04 or newer), Windows (x64)
+and macOS (Apple silicon, 13.3 or newer), one per platform for Python 3.12 and newer, with
+libvoxelsieve and its libraries inside:
+
+```sh
+pip install voxelsieve-<version>-cp312-abi3-<platform>.whl   # from the release's assets
+```
+
+Other platforms and Python versions build from source. The package is built with pip; CMake builds libvoxelsieve and the extension module.
 The C++ dependencies come from vcpkg, as for the command-line tools ([Build](../README.md#build)):
 
 ```sh

@@ -2,7 +2,10 @@
 # the pure Python package python/voxelsieve around it. nanobind comes from Python (pip), not from
 # vcpkg: it is a build tool of the Python package, like scikit-build-core, which builds it with
 # `pip install .` (pyproject.toml).
-find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+# Wheels use the stable ABI of Python 3.12 (one wheel per platform for 3.12 and newer, ADR 0031);
+# scikit-build-core then asks for Development.SABIModule.
+find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module
+             ${SKBUILD_SABI_COMPONENT})
 if(NOT nanobind_DIR)
   execute_process(COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
                   OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE nanobind_DIR
@@ -13,11 +16,10 @@ if(NOT nanobind_DIR)
 endif()
 find_package(nanobind CONFIG REQUIRED)
 
-nanobind_add_module(_core NB_STATIC core.cpp)
-# nanobind's headers do not pass VoxelSieve's warnings (-Wshadow); include them as system headers.
-get_target_property(_vs_nanobind_includes nanobind-static INTERFACE_INCLUDE_DIRECTORIES)
-set_target_properties(nanobind-static PROPERTIES
-  INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_vs_nanobind_includes}")
+nanobind_add_module(_core STABLE_ABI NB_STATIC core.cpp)
+# nanobind's headers do not pass VoxelSieve's warnings (-Wshadow); include them as system headers
+# (a directory given with -isystem and -I counts as a system directory).
+target_include_directories(_core SYSTEM PRIVATE "${nanobind_DIR}/../include")
 target_link_libraries(_core PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings)
 target_compile_definitions(_core PRIVATE VOXELSIEVE_PYTHON_VERSION="${PROJECT_VERSION}")
 
@@ -59,6 +61,11 @@ if(SKBUILD)
         "^/lib/" "^/lib64/" "^/usr/lib/" "^/usr/lib64/" "^/System/" "[/\\\\][Ss]ystem32[/\\\\]"
       LIBRARY DESTINATION voxelsieve
       RUNTIME DESTINATION voxelsieve)
+  endif()
+  if(WIN32)
+    # The C++ runtime (msvcp140.dll and friends), which Python itself does not ship.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION voxelsieve)
+    include(InstallRequiredSystemLibraries)
   endif()
 endif()
 
