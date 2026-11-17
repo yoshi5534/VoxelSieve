@@ -548,7 +548,11 @@ Correction depthCorrection(const Coarse& coarse, const DatasetInfo& info,
     }
   }
   // The spread of the main material: other materials and pores left out as for the fit.
-  std::vector<float> corrected(after.begin(), after.end());
+  std::vector<float> corrected;
+  corrected.reserve(after.size());
+  for (const double value : after) {
+    corrected.push_back(static_cast<float>(value));
+  }
   const double centre = median(corrected);
   for (float& value : corrected) {
     value = static_cast<float>(std::abs(value - centre));
