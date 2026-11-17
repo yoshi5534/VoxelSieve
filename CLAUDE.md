@@ -37,7 +37,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     layers, anode overhang, particles, voids; ADR 0029) and `cells.hpp` synthetic cells for it
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
     its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
-    any per-voxel processing that keeps the part
+    any per-voxel processing that keeps the part; `beam_hardening.hpp` beam hardening
+    correction (cupping and streaks) by reprojection of the coarse level, or by depth (ADR 0033)
   - `materials.hpp` segmentation into material classes, the material volume and scoring against
     labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
     trained with the PyTorch scripts in `tools/models/` (segmentation, and denoising from the noisy
@@ -59,7 +60,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
   a battery cell order and an example plugin (`examples/plugins/histogram`)
 - `python/` the Python package `voxelsieve` (nanobind module `_core` in `core.cpp`, numpy access,
   projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`

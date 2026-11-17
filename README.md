@@ -31,6 +31,7 @@ assistant, using sample data. The tools:
 | `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
 | `vs-segment` | dataset → material classes by grey value or a learned model (`--model`), scored against labels |
 | `vs-denoise` | dataset → denoised dataset (non-local means or a learned model); `--benchmark` compares them |
+| `vs-beam-hardening` | dataset → dataset without cupping and streaks from beam hardening; `--measure` the cupping |
 | `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
 | `vs-thickness` | dataset → wall thickness at every surface point (ray or sphere), thin and thick regions, coloured PLY; `--volume-map` the thickness of every material voxel |
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |

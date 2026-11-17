@@ -299,6 +299,7 @@ TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   EXPECT_NE(registry.find("measure_dimensions"), nullptr);
   EXPECT_NE(registry.find("first_article_report"), nullptr);
   EXPECT_NE(registry.find("denoise"), nullptr);
+  EXPECT_NE(registry.find("beam_hardening"), nullptr);
   EXPECT_NE(registry.find("isolate_part"), nullptr);
   EXPECT_NE(registry.find("material_meshes"), nullptr);
 

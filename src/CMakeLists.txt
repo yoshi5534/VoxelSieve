@@ -54,6 +54,7 @@ add_library(voxelsieve SHARED
   dataset.cpp
   dataset_reader.cpp
   denoise.cpp
+  beam_hardening.cpp
   isolate.cpp
   measure.cpp
   diconde.cpp

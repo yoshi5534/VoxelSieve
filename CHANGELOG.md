@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Beam hardening correction**: the operation `beam_hardening` and the tool `vs-beam-hardening`
+  remove cupping and the dark streaks between dense or thick regions from a reconstructed scan
+  and write a new dataset, without projections or a spectrum. Every slice across the rotation
+  axis of a coarse level is projected again; the path lengths to the powers 2 and 3 are
+  reconstructed and added with the weights that make the material most uniform. On synthetic
+  scans of a cylinder with dense rods, less than 1 % of the contrast is left beside the noise. A
+  simpler method scales the grey values by their depth below the surface, for one material when
+  the rotation axis is unknown. Both report the material grey value by depth and the cupping
+  before and after (`--measure` only measures it; ADR 0033).
+
 - **Porosity after BDG P 203 in freely defined regions**: inspection zones are regions made of
   boxes, spheres, cylinders and closed meshes, minus excluded ones; in a project a region can be
   a mesh object, such as one drawn on the CAD model, and follows its pose. The new operation
