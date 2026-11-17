@@ -15,6 +15,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/synthetic.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -58,6 +59,7 @@ Grey values and artefacts:
   --blur <mm>                 Unsharpness: sigma of a Gaussian point spread function (default 0)
   --rings <n>                 Number of ring artefacts around the z axis (default 0)
   --ring-strength <sigma>     Ring amplitude in grey values (default 300)
+  --threads <N>               Threads of all parallel work (default all cores)
   --telemetry <file>          Write time and resource use per phase as JSON
   -h, --help                  Show this help
 )";
@@ -90,6 +92,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--box") {

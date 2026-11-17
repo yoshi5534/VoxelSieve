@@ -72,6 +72,7 @@ add_library(voxelsieve SHARED
   thickness_map.cpp
   dimensional.cpp
   render.cpp
+  resources.cpp
   synthetic.cpp
   telemetry.cpp
   tiff.cpp

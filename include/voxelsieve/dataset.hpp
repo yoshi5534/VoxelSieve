@@ -170,6 +170,9 @@ class BrickCache {
   ~BrickCache();
 
   [[nodiscard]] std::size_t budget() const;
+  /// Changes the budget; bricks over a smaller one are evicted at once, except the most recently
+  /// used.
+  void setBudget(std::size_t budget_bytes);
   /// Bricks and bytes cached for all datasets; hits and misses are counted per dataset.
   [[nodiscard]] CacheStats stats() const;
 
@@ -181,9 +184,11 @@ class BrickCache {
 
 /// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.
 ///
-/// Opening reads only index.json. Bricks are loaded on demand into an LRU cache whose memory is
-/// bounded by `cache_bytes`; the most recently used brick is always kept, even if it alone exceeds
-/// the budget. Returned bricks stay valid while the caller holds them, also after eviction.
+/// Opening reads only index.json. Bricks are loaded on demand into an LRU cache with a memory
+/// budget; the most recently used brick is always kept, even if it alone exceeds the budget.
+/// Returned bricks stay valid while the caller holds them, also after eviction. Datasets opened
+/// without a cache of their own share one cache (`sharedCache`), so the datasets an operation
+/// opens add no budgets.
 ///
 /// Voxel coordinates are per level: level-L voxel (i, j, k) covers level-0 voxels
 /// [i * 2^L, (i + 1) * 2^L) on each axis. All methods may be called from several threads.
@@ -193,10 +198,21 @@ class Dataset {
   using BrickFunction =
       std::function<void(const std::array<std::int64_t, 3>& brick, const GreyGrid& grid)>;
 
-  static constexpr std::size_t kDefaultCacheBytes = std::size_t{1} << 30U;
+  /// Budget of the shared cache unless set: a quarter of the usable memory
+  /// (`usableMemoryBytes`), at least 2 GiB but at most half of it; 1 GiB when it is unknown. Halo
+  /// reads of T threads need T × 27 bricks at once, which a fixed 1 GiB could not hold.
+  [[nodiscard]] static std::size_t defaultCacheBytes();
+  /// The cache of the datasets opened without one. It lives while a dataset or a caller holds it;
+  /// the next one starts empty.
+  [[nodiscard]] static std::shared_ptr<BrickCache> sharedCache();
+  /// Sets the budget of the shared cache, now and for later ones; 0 restores the default.
+  static void setSharedCacheBytes(std::size_t bytes);
 
+  /// Opens a dataset whose bricks go into the shared cache.
   [[nodiscard]] static Dataset open(const std::filesystem::path& dir,
-                                    std::size_t cache_bytes = kDefaultCacheBytes,
+                                    BrickLoading loading = BrickLoading::kFull);
+  /// Opens a dataset with a cache of its own.
+  [[nodiscard]] static Dataset open(const std::filesystem::path& dir, std::size_t cache_bytes,
                                     BrickLoading loading = BrickLoading::kFull);
   /// Opens a dataset whose bricks go into a cache shared with other datasets.
   [[nodiscard]] static Dataset open(const std::filesystem::path& dir,

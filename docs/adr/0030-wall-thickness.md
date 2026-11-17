@@ -61,7 +61,10 @@ the distance mask (ADR 0009, `scanSurface`); the operation `wall_thickness` and 
   for its verdict.
 - **Scale.** Only the mesh lives in memory (bounded by the triangle budget); the grey values are
   read along the rays through the brick cache, with the vertices sorted by brick and processed
-  in parallel so that one task reads few bricks (ADR 0004).
+  in parallel so that one task reads few bricks (ADR 0004). The bricks follow a Morton curve
+  and their tasks go through a pipeline with four tokens per thread, so the bricks in use are a
+  small window moving along the curve: with a 1 GiB cache a 2048³ scan reads level 0 3.2 times
+  instead of 46 times, and the phase takes 11 s instead of 37 s.
 
 ## Consequences
 

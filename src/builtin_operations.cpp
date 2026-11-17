@@ -3215,8 +3215,7 @@ class ExportDiconde final : public Operation {
     applyInspectionOrder(order, options, evaluation ? &*evaluation : nullptr);
 
     const auto dir = context.output_dir / "diconde";
-    const auto dataset = Dataset::open(context.inputs.at("dataset"), Dataset::kDefaultCacheBytes,
-                                       BrickLoading::kOnAccess);
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const DicondeSeries volume = writeDicondeDataset(dataset, dir / "volume", options);
     Json series = Json::array({{{"directory", "volume"},
                                 {"series_uid", volume.series_uid},

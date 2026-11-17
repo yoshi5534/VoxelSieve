@@ -1,10 +1,14 @@
 #include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
+#include <future>
 #include <iterator>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -16,6 +20,7 @@
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -53,9 +58,29 @@ struct BrickCache::Impl {
   std::mutex mutex;
   std::list<Entry> lru;  // most recently used first
   std::map<Key, std::list<Entry>::iterator> entries;
+  /// Bricks a thread is loading; other threads that need one wait for it.
+  std::map<Key, std::shared_future<Dataset::BrickPtr>> in_flight;
   CacheStats stats;  // bricks and bytes; hits and misses are counted per dataset
   std::atomic<std::uint64_t> next_dataset{1};
+
+  /// Moves the least recently used bricks over the budget to `evicted`; the caller holds the lock.
+  void evict(std::list<Entry>& evicted) {
+    while (stats.bytes > budget && lru.size() > 1) {
+      stats.bytes -= lru.back().bytes;
+      entries.erase(lru.back().key);
+      evicted.splice(evicted.end(), lru, std::prev(lru.end()));
+    }
+    stats.bricks = lru.size();
+  }
 };
+
+namespace {
+
+std::mutex g_shared_cache_mutex;
+std::weak_ptr<BrickCache> g_shared_cache;  // guarded by g_shared_cache_mutex
+std::size_t g_shared_cache_bytes = 0;      // 0: the default; guarded by g_shared_cache_mutex
+
+}  // namespace
 
 BrickCache::BrickCache(std::size_t budget_bytes) : impl_(std::make_unique<Impl>()) {
   impl_->budget = budget_bytes;
@@ -63,7 +88,17 @@ BrickCache::BrickCache(std::size_t budget_bytes) : impl_(std::make_unique<Impl>(
 
 BrickCache::~BrickCache() = default;
 
-std::size_t BrickCache::budget() const { return impl_->budget; }
+std::size_t BrickCache::budget() const {
+  const std::scoped_lock lock(impl_->mutex);
+  return impl_->budget;
+}
+
+void BrickCache::setBudget(std::size_t budget_bytes) {
+  std::list<Impl::Entry> evicted;  // freed after the lock is released, see Dataset::Impl::brick
+  const std::scoped_lock lock(impl_->mutex);
+  impl_->budget = budget_bytes;
+  impl_->evict(evicted);
+}
 
 CacheStats BrickCache::stats() const {
   const std::scoped_lock lock(impl_->mutex);
@@ -127,6 +162,8 @@ struct Dataset::Impl {
     }
     const Key key{id, static_cast<std::uint64_t>(level_index), static_cast<std::uint64_t>(brick[0]),
                   static_cast<std::uint64_t>(brick[1]), static_cast<std::uint64_t>(brick[2])};
+    std::promise<BrickPtr> loaded;
+    std::shared_future<BrickPtr> pending;
     {
       const std::scoped_lock lock(cache->mutex);
       if (const auto it = cache->entries.find(key); it != cache->entries.end()) {
@@ -134,10 +171,43 @@ struct Dataset::Impl {
         ++hits;
         return it->second->grid;
       }
-      ++misses;
+      if (const auto it = cache->in_flight.find(key); it != cache->in_flight.end()) {
+        pending = it->second;
+        ++hits;
+      } else {
+        cache->in_flight.emplace(key, loaded.get_future().share());
+        ++misses;
+      }
+    }
+    // Another thread loads this brick: wait for it instead of decoding it a second time. The
+    // loader runs isolated (below), so it never waits for a task of this thread.
+    if (pending.valid()) {
+      return pending.get();
     }
 
-    // Load outside the lock so other threads keep using the cache.
+    // Load outside the lock so other threads keep using the cache. Evicted bricks are destroyed
+    // only after the waiting threads have their brick.
+    std::list<Entry> evicted;
+    BrickPtr grid;
+    try {
+      tbb::this_task_arena::isolate([&] { grid = load(key, level_index, brick, evicted); });
+    } catch (...) {
+      {
+        const std::scoped_lock lock(cache->mutex);
+        cache->in_flight.erase(key);
+      }
+      loaded.set_exception(std::current_exception());
+      throw;
+    }
+    loaded.set_value(grid);
+    return grid;
+  }
+
+  /// Reads a brick and puts it into the cache, under the budget; bricks pushed out go to
+  /// `evicted`, to be destroyed after the lock is released: OpenVDB frees a tree with TBB tasks,
+  /// and a thread waiting for them may pick up another brick() call on this cache.
+  BrickPtr load(const Key& key, int level_index, const Index3& brick,
+                std::list<Entry>& evicted) const {
     const bool on_access = loading == BrickLoading::kOnAccess;
     BrickPtr grid =
         std::make_shared<const GreyGrid>(readBrick(brickPath(dir, level_index, brick), on_access));
@@ -158,9 +228,6 @@ struct Dataset::Impl {
       }
     }
 
-    // Evicted bricks are destroyed after the lock is released: OpenVDB frees a tree with TBB
-    // tasks, and a thread waiting for them may pick up another brick() call on this cache.
-    std::list<Entry> evicted;
     const std::scoped_lock lock(cache->mutex);
     CacheStats& stats = cache->stats;
     for (const auto& [measured_key, measured_bytes] : measured) {
@@ -169,18 +236,11 @@ struct Dataset::Impl {
         it->second->bytes = measured_bytes;
       }
     }
-    if (const auto it = cache->entries.find(key); it != cache->entries.end()) {
-      return it->second->grid;  // another thread loaded it meanwhile
-    }
+    cache->in_flight.erase(key);
     cache->lru.push_front({key, grid, bytes});
     cache->entries.emplace(key, cache->lru.begin());
     stats.bytes += bytes;
-    while (stats.bytes > cache->budget && cache->lru.size() > 1) {
-      stats.bytes -= cache->lru.back().bytes;
-      cache->entries.erase(cache->lru.back().key);
-      evicted.splice(evicted.end(), cache->lru, std::prev(cache->lru.end()));
-    }
-    stats.bricks = cache->lru.size();
+    cache->evict(evicted);
     return grid;
   }
 
@@ -199,6 +259,42 @@ Dataset::Dataset(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Dataset::Dataset(Dataset&&) noexcept = default;
 Dataset& Dataset::operator=(Dataset&&) noexcept = default;
 Dataset::~Dataset() = default;
+
+std::size_t Dataset::defaultCacheBytes() {
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  const std::uint64_t memory = usableMemoryBytes();
+  if (memory == 0) {
+    return static_cast<std::size_t>(kGiB);
+  }
+  return static_cast<std::size_t>(std::max(memory / 4, std::min(2 * kGiB, memory / 2)));
+}
+
+std::shared_ptr<BrickCache> Dataset::sharedCache() {
+  const std::scoped_lock lock(g_shared_cache_mutex);
+  auto cache = g_shared_cache.lock();
+  if (!cache) {
+    cache = std::make_shared<BrickCache>(g_shared_cache_bytes > 0 ? g_shared_cache_bytes
+                                                                  : defaultCacheBytes());
+    g_shared_cache = cache;
+  }
+  return cache;
+}
+
+void Dataset::setSharedCacheBytes(std::size_t bytes) {
+  std::shared_ptr<BrickCache> cache;
+  {
+    const std::scoped_lock lock(g_shared_cache_mutex);
+    g_shared_cache_bytes = bytes;
+    cache = g_shared_cache.lock();
+  }
+  if (cache) {
+    cache->setBudget(bytes > 0 ? bytes : defaultCacheBytes());
+  }
+}
+
+Dataset Dataset::open(const std::filesystem::path& dir, BrickLoading loading) {
+  return open(dir, sharedCache(), loading);
+}
 
 Dataset Dataset::open(const std::filesystem::path& dir, std::size_t cache_bytes,
                       BrickLoading loading) {
@@ -316,38 +412,46 @@ void Dataset::readRegion(int level, const Box& box, std::span<float> out, float 
     first[i] = box.min[i] / size;
     last[i] = (box.max[i] - 1) / size;
   }
+  std::vector<Index3> bricks;
   for (std::int64_t bz = first[2]; bz <= last[2]; ++bz) {
     for (std::int64_t by = first[1]; by <= last[1]; ++by) {
       for (std::int64_t bx = first[0]; bx <= last[0]; ++bx) {
-        const BrickPtr grid = impl_->brick(level, {bx, by, bz});
-        if (!grid) {
-          continue;
+        if (impl_->hasBrick(level, {bx, by, bz})) {
+          bricks.push_back({bx, by, bz});
         }
-        const Box brick_box = impl_->brickBox(level, {bx, by, bz});
-        Box part;
-        for (std::size_t i = 0; i < 3; ++i) {
-          part.min[i] = std::max(box.min[i], brick_box.min[i]);
-          part.max[i] = std::min(box.max[i], brick_box.max[i]);
-        }
-        grid->visit([&](const auto& typed) {
-          const auto accessor = typed.getConstAccessor();
-          typename std::decay_t<decltype(typed)>::ValueType value{};
-          for (std::int64_t z = part.min[2]; z < part.max[2]; ++z) {
-            for (std::int64_t y = part.min[1]; y < part.max[1]; ++y) {
-              auto index = static_cast<std::size_t>(
-                  (part.min[0] - box.min[0]) +
-                  box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])));
-              for (std::int64_t x = part.min[0]; x < part.max[0]; ++x, ++index) {
-                if (accessor.probeValue(toCoord({x, y, z}), value)) {
-                  out[index] = static_cast<float>(value);
-                }
-              }
-            }
-          }
-        });
       }
     }
   }
+  // The bricks fill disjoint parts of `out`, so a region of many bricks is read in parallel.
+  // Isolated: a caller may hold a lock, and while it waits here it must not pick up other work
+  // that takes the same lock.
+  tbb::this_task_arena::isolate([&] {
+    tbb::parallel_for(std::size_t{0}, bricks.size(), [&](std::size_t b) {
+      const BrickPtr grid = impl_->brick(level, bricks[b]);
+      const Box brick_box = impl_->brickBox(level, bricks[b]);
+      Box part;
+      for (std::size_t i = 0; i < 3; ++i) {
+        part.min[i] = std::max(box.min[i], brick_box.min[i]);
+        part.max[i] = std::min(box.max[i], brick_box.max[i]);
+      }
+      grid->visit([&](const auto& typed) {
+        const auto accessor = typed.getConstAccessor();
+        typename std::decay_t<decltype(typed)>::ValueType value{};
+        for (std::int64_t z = part.min[2]; z < part.max[2]; ++z) {
+          for (std::int64_t y = part.min[1]; y < part.max[1]; ++y) {
+            auto index = static_cast<std::size_t>(
+                (part.min[0] - box.min[0]) +
+                box.size(0) * ((y - box.min[1]) + box.size(1) * (z - box.min[2])));
+            for (std::int64_t x = part.min[0]; x < part.max[0]; ++x, ++index) {
+              if (accessor.probeValue(toCoord({x, y, z}), value)) {
+                out[index] = static_cast<float>(value);
+              }
+            }
+          }
+        }
+      });
+    });
+  });
 }
 
 void Dataset::forEachBrick(int level, const BrickFunction& function) const {

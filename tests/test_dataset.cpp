@@ -1,27 +1,34 @@
 #include <gtest/gtest.h>
+#include <tbb/parallel_for.h>
 #include <zlib.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <latch>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/vdb.hpp"
@@ -929,6 +936,108 @@ TEST_F(DatasetReaderTest, DatasetsShareOneCacheBudget) {
   EXPECT_EQ(first.cacheStats().bricks, cache->stats().bricks);
   (void)first.brick(0, bricks.back());
   EXPECT_EQ(first.cacheStats().hits, 1U);
+}
+
+TEST_F(DatasetReaderTest, DatasetsWithoutACacheShareOne) {
+  (void)writeReference();
+  {
+    const Dataset first = Dataset::open(dir_);
+    const Dataset second = Dataset::open(dir_, BrickLoading::kOnAccess);
+    const Dataset own = Dataset::open(dir_, std::size_t{1} << 20U);
+    EXPECT_EQ(first.cache(), second.cache());
+    EXPECT_EQ(first.cache(), Dataset::sharedCache());
+    EXPECT_NE(own.cache(), first.cache());
+    EXPECT_EQ(first.cache()->budget(), Dataset::defaultCacheBytes());
+
+    // A smaller budget evicts at once.
+    for (const Index3& brick : first.level(0).bricks) {
+      (void)first.brick(0, brick);
+    }
+    ASSERT_GT(first.cache()->stats().bricks, 1U);
+    Dataset::setSharedCacheBytes(1);
+    EXPECT_EQ(first.cache()->budget(), 1U);
+    EXPECT_EQ(first.cache()->stats().bricks, 1U);
+  }
+  // The budget set holds for the next shared cache too, until the default is restored.
+  EXPECT_EQ(Dataset::sharedCache()->budget(), 1U);
+  Dataset::setSharedCacheBytes(0);
+  EXPECT_EQ(Dataset::sharedCache()->budget(), Dataset::defaultCacheBytes());
+}
+
+TEST_F(DatasetReaderTest, ConcurrentRequestsLoadABrickOnce) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, std::size_t{1} << 30U);
+  for (const Index3& brick : dataset.level(0).bricks) {
+    constexpr int kThreads = 8;
+    std::latch start(kThreads);
+    std::vector<const GreyGrid*> seen(kThreads, nullptr);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; ++i) {
+      threads.emplace_back([&, i] {
+        start.arrive_and_wait();
+        seen[static_cast<std::size_t>(i)] = dataset.brick(0, brick).get();
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    EXPECT_NE(seen.front(), nullptr);
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), seen.front()), kThreads);
+  }
+  EXPECT_EQ(dataset.cacheStats().misses, dataset.level(0).bricks.size());
+}
+
+#ifndef _WIN32
+// OpenVDB copies files it loads on access to a temp file unless told not to (readBrick).
+TEST_F(DatasetReaderTest, LoadingOnAccessWritesNoTempCopies) {
+  (void)writeReference();
+  const std::filesystem::path temp = dir_.string() + "_openvdb_temp";
+  std::filesystem::create_directories(temp);
+  setenv("OPENVDB_TEMP_DIR", temp.c_str(), 1);  // NOLINT(concurrency-mt-unsafe): no threads yet
+  {
+    const Dataset dataset = Dataset::open(dir_, BrickLoading::kOnAccess);
+    std::vector<Dataset::BrickPtr> held;
+    for (const Index3& brick : dataset.level(0).bricks) {
+      held.push_back(dataset.brick(0, brick));
+      const Box box = dataset.brickBox(0, brick);
+      (void)dataset.sample(0, box.min);
+    }
+    ASSERT_FALSE(held.empty());
+    EXPECT_TRUE(std::filesystem::is_empty(temp));
+  }
+  unsetenv("OPENVDB_TEMP_DIR");  // NOLINT(concurrency-mt-unsafe)
+  std::filesystem::remove_all(temp);
+}
+#endif
+
+TEST(CacheBudget, DefaultFollowsTheMemory) {
+  constexpr std::size_t kGiB = std::size_t{1} << 30U;
+  const std::uint64_t memory = usableMemoryBytes();
+  ASSERT_GT(memory, 0U);
+  const std::size_t budget = Dataset::defaultCacheBytes();
+  EXPECT_GE(budget, memory / 4);
+  EXPECT_LE(budget, std::max<std::uint64_t>(memory / 4, memory / 2));
+  EXPECT_GE(budget, std::min<std::uint64_t>(2 * kGiB, memory / 2));
+}
+
+TEST(ThreadLimit, LimitsAndRestoresParallelism) {
+  const int all = threadLimit();
+  setThreadLimit(2);
+  EXPECT_EQ(threadLimit(), 2);
+  std::atomic<int> busy{0};
+  std::atomic<int> most{0};
+  tbb::parallel_for(0, 64, [&](int) {
+    const int now = ++busy;
+    int seen = most.load();
+    while (now > seen && !most.compare_exchange_weak(seen, now)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    --busy;
+  });
+  EXPECT_LE(most.load(), 2);
+  setThreadLimit(0);
+  EXPECT_EQ(threadLimit(), all);
+  EXPECT_THROW(setThreadLimit(-1), std::invalid_argument);
 }
 
 TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {

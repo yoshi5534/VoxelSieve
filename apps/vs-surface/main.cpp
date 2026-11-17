@@ -15,6 +15,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -37,7 +38,8 @@ Options:
   --stl <file>            Also write the surface as a triangle mesh (mm, dataset coordinates)
   --vdb <file>            Also write it as a narrow-band level set "surface" for Blender/Houdini
   --json <file>           Also write the header as JSON
-  --cache <MB>            Brick cache size (default 1024)
+  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -50,7 +52,6 @@ struct Options {
   std::filesystem::path vdb;
   std::filesystem::path json;
   voxelsieve::SurfaceOptions surface;
-  std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
 };
 
@@ -86,8 +87,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.surface.iso_value = std::stof(next());
     } else if (arg == "--level") {
       options.surface.compression_level = std::stoi(next());
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (!arg.starts_with("-") && options.dataset.empty()) {
       options.dataset = arg;
     } else {
@@ -135,7 +136,7 @@ int main(int argc, char** argv) {
     const auto start = std::chrono::steady_clock::now();
     std::filesystem::path file = options->info;
     if (file.empty()) {
-      const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+      const auto dataset = voxelsieve::Dataset::open(options->dataset);
       (void)voxelsieve::writeSurface(dataset, options->out, options->surface);
       file = options->out;
     }

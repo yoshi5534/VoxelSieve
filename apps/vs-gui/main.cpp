@@ -28,6 +28,7 @@
 #include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
 #include "voxelsieve/mcp.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace {
 
@@ -66,6 +67,9 @@ Options:
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
                         PATH) are loaded too
+  --cache <MB>          Brick cache of the datasets operations read (default a quarter of
+                        the memory); the slice views keep their own 1024 MB
+  --threads <N>         Threads of all parallel work (default all cores)
   -h, --help            Show this help
 )";
 
@@ -136,6 +140,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.reopen = false;
     } else if (arg == "--plugins") {
       options.plugins.push_back(expandHome(next()));
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg.starts_with("-")) {
       throw std::invalid_argument("Unknown argument " + std::string(arg));
     } else {

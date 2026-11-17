@@ -44,7 +44,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     the built-in templates are `resources/report_template.html` and
     `resources/first_article_template.html` (first article report), compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
-    the phases of new long-running code with `TelemetryPhase`
+    the phases of new long-running code with `TelemetryPhase`; `resources.hpp` usable memory, the
+    process's thread limit and the `--cache`/`--threads` options every tool takes. Open datasets
+    without a cache of their own, so they share the one budget (`Dataset::sharedCache`)
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
     `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), and their
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,

@@ -25,6 +25,7 @@
 #include "voxelsieve/parts.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/synthetic.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -61,7 +62,8 @@ Options:
   --json <file>           Also write the result as JSON
   --slices <png>          Also write a z slice of the input and the result side by side
   --slice-z <z>           The slice to write (default: the middle)
-  --cache <MB>            Brick cache size (default 1024)
+  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 
@@ -82,7 +84,6 @@ struct Options {
   std::filesystem::path benchmark;
   double bench_noise = 1000.0;
   double bench_voxel = 0.25;
-  std::size_t cache_mb = 1024;
   voxelsieve::DenoiseOptions denoise;
   std::filesystem::path telemetry;
 };
@@ -133,8 +134,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.slices = next();
     } else if (arg == "--slice-z") {
       options.slice_z = std::stoll(next());
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--benchmark") {
@@ -405,7 +406,7 @@ int runBenchmark(const Options& options) {
   std::filesystem::remove_all(input);
   (void)voxelsieve::writeDataset(noisy, input, sieve);
   variants.push_back({"noisy", input, 0.0});
-  const auto dataset = voxelsieve::Dataset::open(input, options.cache_mb << 20U);
+  const auto dataset = voxelsieve::Dataset::open(input);
 
   voxelsieve::DenoiseOptions nlm = options.denoise;
   nlm.method = voxelsieve::DenoiseMethod::kNonLocalMeans;
@@ -437,7 +438,7 @@ int runBenchmark(const Options& options) {
            "contrast | Small lunker CNR | Lunkers found | False pores | Zones |\n"
         << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
   for (const Variant& variant : variants) {
-    datasets.push_back(voxelsieve::Dataset::open(variant.dir, options.cache_mb << 20U));
+    datasets.push_back(voxelsieve::Dataset::open(variant.dir));
     const voxelsieve::Dataset& data = datasets.back();
     const auto score = voxelsieve::scoreDenoising(data, clean);
     const auto porosity = voxelsieve::analyzePorosity(data);
@@ -514,7 +515,7 @@ int main(int argc, char** argv) {
       return status;
     }
     const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+    const auto dataset = voxelsieve::Dataset::open(options->dataset);
     voxelsieve::DenoiseOptions denoise = options->denoise;
     std::optional<voxelsieve::Model> model;
     if (!options->model.empty()) {
@@ -531,7 +532,7 @@ int main(int argc, char** argv) {
               << "neighbours " << std::setprecision(2) << info.noise.correlation(1, 0, 0) << ", "
               << info.noise.correlation(0, 1, 0) << ", " << info.noise.correlation(0, 0, 1) << ")\n"
               << std::setprecision(1);
-    const auto output = voxelsieve::Dataset::open(options->out, options->cache_mb << 20U);
+    const auto output = voxelsieve::Dataset::open(options->out);
     const double after = voxelsieve::estimateNoise(output, 1).sigma;
     std::cout << "noise after        " << after << '\n'
               << "bricks             " << info.dataset.levels.front().bricks.size() << ", "

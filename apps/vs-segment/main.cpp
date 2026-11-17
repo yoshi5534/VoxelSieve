@@ -20,6 +20,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/model.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
@@ -53,7 +54,8 @@ Options:
   --region <x0,y0,z0,x1,y1,z1>
                           Score only this box, for example data a model was not trained on
   --json <file>           Also write the materials and scores as JSON
-  --cache <MB>            Brick cache size (default 1024)
+  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -67,7 +69,6 @@ struct Options {
   std::vector<std::filesystem::path> truth;
   std::string folder = "target";
   int join_axis = 2;
-  std::size_t cache_mb = 1024;
   voxelsieve::SegmentationOptions segmentation;
   voxelsieve::ModelSegmentationOptions model_options;
   std::filesystem::path telemetry;
@@ -146,8 +147,8 @@ std::optional<Options> parse(int argc, char** argv) {
         throw std::invalid_argument("--join must be x, y or z");
       }
       options.join_axis = axis[0] - 'x';
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else {
       throw std::invalid_argument("Unknown option: " + std::string(arg));
     }
@@ -170,7 +171,7 @@ int main(int argc, char** argv) {
     voxelsieve::Telemetry telemetry("vs-segment");
     const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+    const auto dataset = voxelsieve::Dataset::open(options->dataset);
     voxelsieve::MaterialVolumeInfo info;
     if (options->model.empty()) {
       info = voxelsieve::segmentMaterials(dataset, options->out, options->segmentation);

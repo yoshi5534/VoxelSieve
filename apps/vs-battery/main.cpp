@@ -25,6 +25,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace {
@@ -76,7 +77,8 @@ Options:
   --min-void <voxels>       Smallest void reported (default 8)
   --max-end-deviation <mm>  Layer ends farther than this from the median end of their edge
                             (lost layers, tabs) are left out of the overhang (default 1)
-  --cache <MB>              Brick cache size (default 1024)
+  --cache <MB>              Brick cache of all datasets (default a quarter of the memory)
+  --threads <N>             Threads of all parallel work (default all cores)
   --telemetry <file>        Write time and resource use per phase as JSON
 
 Synthetic cell (writes <prefix>.raw and <prefix>.json with the ground truth):
@@ -101,7 +103,6 @@ struct Options {
   std::filesystem::path dataset;
   std::filesystem::path out;
   voxelsieve::BatteryOptions battery;
-  std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
   std::filesystem::path order;
   std::filesystem::path report_template;
@@ -202,8 +203,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.list_cells = true;
     } else if (arg == "--pixel-size") {
       options.battery.image_pixel_mm = std::stod(next());
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--cell") {
       const auto type = typeOf(next());
       const auto keep = cell;
@@ -489,7 +490,7 @@ int main(int argc, char** argv) {
       const auto start = std::chrono::steady_clock::now();
       voxelsieve::BatteryResult result;
       if (options->images.empty()) {
-        const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+        const auto dataset = voxelsieve::Dataset::open(options->dataset);
         result = voxelsieve::analyzeBattery(dataset, options->battery);
       } else {
         result = voxelsieve::analyzeBatteryImages(

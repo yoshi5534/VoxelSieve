@@ -30,6 +30,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
@@ -105,6 +106,7 @@ Options:
                           few slices spread over the volume, its sections and histogram with
                           the estimated threshold. A staged input rewrites it sharper as more
                           slices are copied. The import reads every slice only once
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -147,6 +149,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--dims") {

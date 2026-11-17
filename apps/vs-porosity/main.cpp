@@ -14,6 +14,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace {
@@ -32,7 +33,8 @@ Options:
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
   --materials <dir>       Material volume of the dataset (vs-segment): each material is compared
                           with its own grey value, so a darker material is no zone
-  --cache <MB>            Brick cache size (default 1024)
+  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -42,7 +44,6 @@ struct Options {
   std::filesystem::path out;
   std::filesystem::path materials;
   voxelsieve::PorosityOptions porosity;
-  std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
 };
 
@@ -70,8 +71,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.porosity.min_zone_void_fraction = std::stod(next());
     } else if (arg == "--materials") {
       options.materials = next();
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (!arg.starts_with("-") && options.dataset.empty()) {
       options.dataset = arg;
     } else {
@@ -96,7 +97,7 @@ int main(int argc, char** argv) {
     voxelsieve::Telemetry telemetry("vs-porosity");
     const voxelsieve::TelemetryScope scope(telemetry);
     const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+    const auto dataset = voxelsieve::Dataset::open(options->dataset);
     std::optional<voxelsieve::MaterialVolume> materials;
     voxelsieve::PorosityOptions porosity = options->porosity;
     if (!options->materials.empty()) {

@@ -707,6 +707,13 @@ GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
   GreyGrid grid;
   if (delay_load) {
     openvdb::io::File vdb(file.string());
+#ifndef _WIN32
+    // OpenVDB otherwise copies every file below 500 MB to a private temp file before mapping it:
+    // a second write and read of each brick, and temp space beside the dataset. Bricks are not
+    // changed once written. Windows keeps the copy: a mapped file cannot be deleted there, and the
+    // GUI deletes the steps of a history it discards while it may still show their datasets.
+    vdb.setCopyMaxBytes(0);
+#endif
     vdb.open(/*delayLoad=*/true);
     grid = GreyGrid::fromBase(vdb.readGrid("density"));
     vdb.close();

@@ -2,6 +2,7 @@
 
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
+#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
@@ -162,10 +163,10 @@ std::pair<int, int> planeAxes(int axis) {
   return axis == 0 ? std::pair{1, 2} : (axis == 1 ? std::pair{0, 2} : std::pair{0, 1});
 }
 
-Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const Index3& lo,
-                const Index3& hi, float fill) {
+/// Reads a plane into `plane`, reusing its memory.
+void readPlaneInto(Plane& plane, const VolumeView& volume, int axis, std::int64_t index,
+                   const Index3& lo, const Index3& hi, float fill) {
   const auto [u, v] = planeAxes(axis);
-  Plane plane;
   plane.u_axis = u;
   plane.v_axis = v;
   plane.u0 = lo[at(u)];
@@ -181,6 +182,12 @@ Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const In
   box.max[at(axis)] = index + 1;
   plane.values.resize(at(box.voxelCount()));
   volume.readRegion(box, plane.values, fill);
+}
+
+Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const Index3& lo,
+                const Index3& hi, float fill) {
+  Plane plane;
+  readPlaneInto(plane, volume, axis, index, lo, hi, fill);
   return plane;
 }
 
@@ -1196,11 +1203,15 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
   const auto particle = static_cast<float>(result.particle_threshold);
   const auto gas = static_cast<float>(result.void_threshold);
   const Index3 dims = info.dims;
+  // The limit holds for all threads together, so that no more than about kMaxFindingVoxels pile
+  // up before the error: counted per thread, each of them could collect that many.
+  std::atomic<std::size_t> found{0};
   std::atomic<bool> too_many{false};
   dataset.forEachGrid(0, [&](const Index3& /*brick*/, const auto& grid) {
     Found& b = bright.local();
     Found& d = dark.local();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+    for (auto leaf = grid.tree().cbeginLeaf(); leaf && !too_many; ++leaf) {
+      const std::size_t before = b.size() + d.size();
       for (auto it = leaf->cbeginValueOn(); it; ++it) {
         const auto value = static_cast<float>(*it);
         if (value < particle && value > gas) {
@@ -1214,9 +1225,9 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
         const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
         (value >= particle ? b : d).emplace_back(key, value);
       }
-      if (b.size() + d.size() > kMaxFindingVoxels) {
+      if (found.fetch_add(b.size() + d.size() - before) + (b.size() + d.size() - before) >
+          kMaxFindingVoxels) {
         too_many = true;
-        return;
       }
     }
   });
@@ -1771,12 +1782,15 @@ void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, C
       image.valid_across = std::clamp<std::int64_t>(
           static_cast<std::int64_t>(std::floor((wall - across_from) / data.step)) - 1, 0, across);
     }
+    // One plane buffer per thread for all its rows, instead of a new one per row.
+    tbb::enumerable_thread_specific<Plane> planes;
     tbb::parallel_for(
         tbb::blocked_range<std::int64_t>(0, rows),
         [&](const tbb::blocked_range<std::int64_t>& range) {
+          Plane& plane = planes.local();
           for (std::int64_t s = range.begin(); s != range.end(); ++s) {
             const std::int64_t index = start + (side == 0 ? -s : s);
-            const Plane plane = readPlane(volume, a, index, lo, hi, info.air_level);
+            readPlaneInto(plane, volume, a, index, lo, hi, info.air_level);
             const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
             for (int j = 0; j < n_angles; ++j) {
               const double angle = 2.0 * kPi * j / n_angles;

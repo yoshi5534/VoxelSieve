@@ -127,3 +127,21 @@ quantiles, grey 0 and 65535 left out as clipped or masked values), and puts the 
 valley towards the next peak when that valley lies at least 5 % of the highest bin below both
 peaks. Without such a valley below Otsu's split (air and one material) the threshold stays
 Otsu's. Both sieves use the same estimate (`detail::airThreshold`).
+
+## Amendment: one cache budget from the memory (2026-11-17)
+
+A fixed 1 GiB budget per dataset was too small and too many at once: halo reads of T threads need
+T × 27 bricks, so the wall thickness of a 2048³ scan read level 0 46 times, and every dataset an
+operation opened added another 1 GiB.
+
+- Datasets opened without a cache of their own share one process-wide cache
+  (`Dataset::sharedCache`). Its budget is a quarter of the usable memory (installed, or the
+  cgroup limit on Linux), at least 2 GiB but at most half of the memory
+  (`Dataset::defaultCacheBytes`). Every command-line tool takes `--cache <MB>` for it and
+  `--threads <N>` to limit the threads of all parallel work (`resources.hpp`). The GUI's slice
+  views keep their own cache (ADR 0008).
+- Two threads that need the same brick no longer both decode it: the second waits for the
+  first, whose load runs isolated in TBB so that it never waits for the waiting thread.
+- Region reads read their bricks in parallel.
+- At 2048³ the wall thickness took 29 s instead of 59 s and read level 0 once; surface 33 s
+  instead of 41 s (1.9 instead of 9.4 times); porosity read it 1.1 instead of 9.8 times.

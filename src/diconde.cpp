@@ -16,10 +16,12 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -416,10 +418,20 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
   }
   const Vec3 normal{options.pose.rotation[2], options.pose.rotation[5], options.pose.rotation[8]};
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
+  // The slices are written from slabs of many slices read at once: read one by one, every slice
+  // decoded all bricks of its layer again (ADR 0004). The slab takes a sixteenth of the memory
+  // (the source may need twice as much while reading), at most one layer of 256 slices.
+  const std::uint64_t memory = usableMemoryBytes();
+  const std::uint64_t slab_bytes =
+      std::max<std::uint64_t>(memory > 0 ? memory / 16 : 0, std::uint64_t{256} << 20U);
+  const std::int64_t slab_depth = std::clamp<std::int64_t>(
+      static_cast<std::int64_t>(slab_bytes / (slice_voxels * sizeof(std::uint16_t))), 1, 256);
+  std::vector<std::uint16_t> slab;
+  std::int64_t slab_start = 0;
   std::mutex common_mutex;
-  tbb::parallel_for(std::int64_t{0}, dims[2], [&](std::int64_t z) {
-    std::vector<std::uint16_t> pixels(slice_voxels);
-    source.readRegion({{0, 0, z}, {dims[0], dims[1], z + 1}}, pixels);
+  const auto write_slice = [&](std::int64_t z) {
+    const std::span<const std::uint16_t> pixels(
+        slab.data() + static_cast<std::size_t>(z - slab_start) * slice_voxels, slice_voxels);
     DcmFileFormat file;
     DcmDataset& data = *file.getDataset();
     {
@@ -449,7 +461,13 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
     check(file.saveFile(path.string().c_str(), EXS_LittleEndianExplicit, EET_ExplicitLength,
                         EGL_recalcGL, EPD_noChange, 0, 0, EWM_fileformat),
           "writing " + path.string());
-  });
+  };
+  for (slab_start = 0; slab_start < dims[2]; slab_start += slab_depth) {
+    const std::int64_t slab_end = std::min(slab_start + slab_depth, dims[2]);
+    slab.resize(slice_voxels * static_cast<std::size_t>(slab_end - slab_start));
+    source.readRegion({{0, 0, slab_start}, {dims[0], dims[1], slab_end}}, slab);
+    tbb::parallel_for(slab_start, slab_end, write_slice);
+  }
   return series;
 }
 
