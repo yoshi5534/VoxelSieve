@@ -887,10 +887,14 @@ struct MaterialVolume::Impl {
     }
     openvdb::Int32Grid::ConstPtr grid;
     if (std::binary_search(sorted_bricks.begin(), sorted_bricks.end(), index)) {
-      openvdb::io::File file(brickFile(dir, index).string());
+      const std::filesystem::path path = brickFile(dir, index);
+      openvdb::io::File file(path.string());
       file.open(false);
       grid = openvdb::gridConstPtrCast<openvdb::Int32Grid>(file.readGrid("material"));
       file.close();
+      std::error_code error;
+      const auto size = std::filesystem::file_size(path, error);
+      countRead(CountedRead::kBrickFile, error ? 0 : size);
     }
     // Evicted grids are destroyed after the lock is released: a tree frees its nodes in a
     // parallel loop, and a task this thread picks up there may come back here for the lock.

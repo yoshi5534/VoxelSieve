@@ -17,6 +17,7 @@
 
 #include "detail/network.hpp"
 #include "detail/pages.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -186,6 +187,8 @@ void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) c
       offset += row_length;
     }
   }
+  // Reads of a mapping are page faults, which no process counter reports as bytes read.
+  countRead(CountedRead::kMappedFile, offset * bytes);
 }
 
 /// The decompressed bytes of a gzip file, read forward; going back starts again.

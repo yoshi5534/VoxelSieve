@@ -23,6 +23,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(VOXELSIEVE_BUILD_TESTS "Build unit tests" ON)
 option(VOXELSIEVE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(VOXELSIEVE_SCALE_TESTS
+       "Add the scale tests (label scale): every tool on a 512^3 phantom against recorded peaks" OFF)
 option(VOXELSIEVE_INSTALL_RUNTIME_DEPS
        "Install the shared libraries the programs need next to them, for self-contained packages" OFF)
 

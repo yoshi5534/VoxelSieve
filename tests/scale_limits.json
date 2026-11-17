@@ -1,0 +1,28 @@
+{
+  "windows-16t": {
+    "256": {
+      "compare": {"own_peak_mb": 698.30, "brick_reread": 0.00},
+      "denoise": {"own_peak_mb": 318.80, "brick_reread": 1.81},
+      "phantom": {"own_peak_mb": 42.20},
+      "porosity": {"own_peak_mb": 78.00, "brick_reread": 1.01},
+      "report": {"own_peak_mb": 999.70, "brick_reread": 1.01},
+      "segment": {"own_peak_mb": 337.30, "brick_reread": 1.01},
+      "sieve": {"own_peak_mb": 97.50},
+      "surface": {"own_peak_mb": 400.50, "brick_reread": 1.01},
+      "thickness": {"own_peak_mb": 717.60, "brick_reread": 1.01},
+      "thicknessmap": {"own_peak_mb": 708.20, "brick_reread": 1.19}
+    },
+    "512": {
+      "compare": {"own_peak_mb": 874.10, "brick_reread": 0.00},
+      "denoise": {"own_peak_mb": 515.00, "brick_reread": 3.28},
+      "phantom": {"own_peak_mb": 74.20},
+      "porosity": {"own_peak_mb": 348.80, "brick_reread": 1.50},
+      "report": {"own_peak_mb": 1327.40, "brick_reread": 1.50},
+      "segment": {"own_peak_mb": 2655.50, "brick_reread": 1.00},
+      "sieve": {"own_peak_mb": 621.20},
+      "surface": {"own_peak_mb": 1567.00, "brick_reread": 2.75},
+      "thickness": {"own_peak_mb": 932.10, "brick_reread": 1.00},
+      "thicknessmap": {"own_peak_mb": 929.80, "brick_reread": 1.31}
+    }
+  }
+}

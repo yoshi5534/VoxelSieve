@@ -27,6 +27,18 @@
       }
     },
     {
+      "name": "tsan",
+      "inherits": "base",
+      "displayName": "ThreadSanitizer, with the dependencies built for it (GCC)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-g1",
+        "CMAKE_CXX_FLAGS": "-O1 -fsanitize=thread -fno-omit-frame-pointer -Wno-tsan",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-voxelsieve-tsan",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed_tsan"
+      }
+    },
+    {
       "name": "windows",
       "inherits": "base",
       "displayName": "Windows x64, MSVC, release (run from a Developer PowerShell)",
@@ -52,10 +64,17 @@
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" },
     { "name": "windows", "configurePreset": "windows" },
     { "name": "macos", "configurePreset": "macos" }
   ],
   "testPresets": [
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": { "outputOnFailure": true },
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1" }
+    },
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
     { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
