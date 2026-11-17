@@ -3,6 +3,7 @@
 #include <openvdb/io/File.h>
 #include <openvdb/tools/Morphology.h>
 #include <openvdb/tree/LeafManager.h>
+#include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
@@ -20,7 +21,10 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <span>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "detail/components.hpp"
 #include "detail/png.hpp"
@@ -706,35 +710,30 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
       kept.push_back(&component);
     }
   }
-  std::vector<openvdb::BoolGrid::Ptr> shells(kept.size());
-  tbb::parallel_for(std::size_t{0}, kept.size(), [&](std::size_t i) {
-    auto shell = openvdb::BoolGrid::create(false);
-    auto shell_acc = shell->getAccessor();
-    for (const Coord& c : *kept[i]) {
-      shell_acc.setValueOn(c);
-    }
-    openvdb::tools::dilateActiveValues(shell->tree(), 1, openvdb::tools::NN_FACE_EDGE_VERTEX);
-    // Dilation prunes fully active leaves of large pores into tiles; iterate voxels, not tiles.
-    shell->tree().voxelizeActiveTiles();
-    shells[i] = shell;
-  });
-  auto all_shells = openvdb::BoolGrid::create(false);
-  std::map<Coord, BlockStats> material_blocks = scan.blocks;
   for (std::size_t i = 0; i < kept.size(); ++i) {
     for (const Coord& c : *kept[i]) {
       label_acc.setValue(c, static_cast<int>(i) + 1);
     }
-    for (auto leaf = shells[i]->tree().cbeginLeaf(); leaf; ++leaf) {
-      // A block is one leaf, so a leaf of the shell marks its block.
-      if (!leaf->isEmpty()) {
-        material_blocks.erase(blockOf(leaf->origin()));
-      }
-    }
-    all_shells->tree().topologyUnion(shells[i]->tree());
     DetectedPore pore;
     pore.id = static_cast<int>(i) + 1;
     pore.voxel_count = static_cast<std::int64_t>(kept[i]->size());
     result.pores.push_back(pore);
+  }
+  // The shells of all pores in one grid: the pore voxels dilated by one voxel. A grid per pore
+  // cost about 300 KB each, mostly empty internal nodes, so 10^5 pores took 30 GB. The shell of
+  // a pore is the voxels with one of its voxels in their 26-neighbourhood; shells of pores close
+  // together overlap, as before.
+  auto all_shells = openvdb::BoolGrid::create(false);
+  all_shells->tree().topologyUnion(result.pore_labels->tree());
+  openvdb::tools::dilateActiveValues(all_shells->tree(), 1, openvdb::tools::NN_FACE_EDGE_VERTEX);
+  // Dilation prunes fully active leaves of large pores into tiles; iterate voxels, not tiles.
+  all_shells->tree().voxelizeActiveTiles();
+  std::map<Coord, BlockStats> material_blocks = scan.blocks;
+  for (auto leaf = all_shells->tree().cbeginLeaf(); leaf; ++leaf) {
+    // A block is one leaf, so a leaf of the shells marks its block.
+    if (!leaf->isEmpty()) {
+      material_blocks.erase(blockOf(leaf->origin()));
+    }
   }
 
   // Blocks at the surface or at a pore: sums over their voxels outside the pore shells, apart
@@ -858,41 +857,95 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
   }
 
-  // Pore volumes from the grey values of the pore and its shell.
-  tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
-    DetectedPore& pore = result.pores[i];
-    Dataset::Sampler grey(dataset, 0);
-    const auto labels = result.pore_labels->getConstAccessor();
+  // Pore volumes from the grey values of the pore and its shell: each leaf of the shells sums its
+  // voxels per pore, and the sums of the leaves are added up in leaf order, so the result does
+  // not depend on the threads.
+  struct PoreSums {
     double void_sum = 0.0;
     double weight_sum = 0.0;
     std::array<double, 3> weighted{};
     std::array<double, 3> lo{1e18, 1e18, 1e18};
     std::array<double, 3> hi{-1e18, -1e18, -1e18};
-    for (auto it = shells[i]->cbeginValueOn(); it; ++it) {
-      const Coord c = it.getCoord();
-      const auto p = toArray(c);
-      const double material = reference.at(c);
-      const auto value = grey({c.x(), c.y(), c.z()});
-      // Voxels outside the kept region are air.
-      const double fraction = value ? (material - *value) / (material - air) : 1.0;
-      void_sum += fraction;
-      const double weight = std::clamp(fraction, 0.0, 1.0);
-      weight_sum += weight;
-      for (std::size_t a = 0; a < 3; ++a) {
-        weighted[a] += weight * p[a];
-        if (labels.getValue(c) == pore.id) {
-          lo[a] = std::min(lo[a], p[a]);
-          hi[a] = std::max(hi[a], p[a]);
+  };
+  std::vector<const openvdb::BoolTree::LeafNodeType*> shell_leaves;
+  for (auto leaf = all_shells->tree().cbeginLeaf(); leaf; ++leaf) {
+    shell_leaves.push_back(&*leaf);
+  }
+  std::vector<std::vector<std::pair<int, PoreSums>>> leaf_sums(shell_leaves.size());
+  tbb::parallel_for(
+      tbb::blocked_range<std::size_t>(0, shell_leaves.size()),
+      [&](const tbb::blocked_range<std::size_t>& range) {
+        Dataset::Sampler grey(dataset, 0);
+        const auto labels = result.pore_labels->getConstAccessor();
+        for (std::size_t l = range.begin(); l != range.end(); ++l) {
+          std::vector<std::pair<int, PoreSums>>& sums = leaf_sums[l];
+          for (auto it = shell_leaves[l]->cbeginValueOn(); it; ++it) {
+            const Coord c = it.getCoord();
+            // The pores this voxel is in the shell of.
+            std::array<int, 27> near{};
+            std::size_t n_near = 0;
+            for (int dz = -1; dz <= 1; ++dz) {
+              for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                  const int label = labels.getValue(c.offsetBy(dx, dy, dz));
+                  const std::span<const int> seen = std::span(near).first(n_near);
+                  if (label > 0 && std::ranges::find(seen, label) == seen.end()) {
+                    near[n_near++] = label;
+                  }
+                }
+              }
+            }
+            const auto p = toArray(c);
+            const double material = reference.at(c);
+            const auto value = grey({c.x(), c.y(), c.z()});
+            // Voxels outside the kept region are air.
+            const double fraction = value ? (material - *value) / (material - air) : 1.0;
+            const double weight = std::clamp(fraction, 0.0, 1.0);
+            const int own = labels.getValue(c);
+            for (std::size_t k = 0; k < n_near; ++k) {
+              auto entry = std::find_if(sums.begin(), sums.end(),
+                                        [&](const auto& s) { return s.first == near[k]; });
+              if (entry == sums.end()) {
+                entry = sums.insert(sums.end(), {near[k], PoreSums{}});
+              }
+              PoreSums& s = entry->second;
+              s.void_sum += fraction;
+              s.weight_sum += weight;
+              for (std::size_t a = 0; a < 3; ++a) {
+                s.weighted[a] += weight * p[a];
+                if (own == near[k]) {
+                  s.lo[a] = std::min(s.lo[a], p[a]);
+                  s.hi[a] = std::max(s.hi[a], p[a]);
+                }
+              }
+            }
+          }
         }
+      });
+  std::vector<PoreSums> pore_sums(result.pores.size());
+  for (const auto& sums : leaf_sums) {
+    for (const auto& [label, s] : sums) {
+      PoreSums& total = pore_sums[static_cast<std::size_t>(label - 1)];
+      total.void_sum += s.void_sum;
+      total.weight_sum += s.weight_sum;
+      for (std::size_t a = 0; a < 3; ++a) {
+        total.weighted[a] += s.weighted[a];
+        total.lo[a] = std::min(total.lo[a], s.lo[a]);
+        total.hi[a] = std::max(total.hi[a], s.hi[a]);
       }
     }
-    pore.volume_mm3 = std::max(0.0, void_sum) * voxel_volume;
+  }
+  leaf_sums = {};
+  for (std::size_t i = 0; i < result.pores.size(); ++i) {
+    DetectedPore& pore = result.pores[i];
+    const PoreSums& s = pore_sums[i];
+    pore.volume_mm3 = std::max(0.0, s.void_sum) * voxel_volume;
     for (std::size_t a = 0; a < 3; ++a) {
-      pore.center_voxels[a] = weight_sum > 0.0 ? weighted[a] / weight_sum : 0.0;
+      pore.center_voxels[a] = s.weight_sum > 0.0 ? s.weighted[a] / s.weight_sum : 0.0;
     }
-    pore.bounds = boundsOf(lo, hi);
+    pore.bounds = boundsOf(s.lo, s.hi);
     pore.equivalent_diameter_mm = std::cbrt(6.0 * pore.volume_mm3 / std::numbers::pi);
-  });
+  }
 
   // Zones: blocks whose mean lies clearly below the local material level.
   std::map<Coord, double> deficits;
