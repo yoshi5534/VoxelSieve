@@ -4,6 +4,7 @@ add_executable(voxelsieve_tests
   test_components.cpp
   test_dataset.cpp
   test_denoise.cpp
+  test_beam_hardening.cpp
   test_diconde.cpp
   test_dicom.cpp
   test_io.cpp
@@ -112,6 +113,19 @@ add_test(NAME vs_denoise_cli COMMAND vs-denoise ${CMAKE_CURRENT_BINARY_DIR}/cli_
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_denoised.vsieve --search 2)
 set_tests_properties(vs_denoise_cli PROPERTIES DEPENDS "vs_porosity_cli_sieve;vs_denoise_cli_clean"
                      PASS_REGULAR_EXPRESSION "noise after")
+add_test(NAME vs_beam_hardening_cli_clean
+         COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/cli_beam_hardening.vsieve)
+add_test(NAME vs_beam_hardening_cli
+         COMMAND vs-beam-hardening ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve
+                 --out ${CMAKE_CURRENT_BINARY_DIR}/cli_beam_hardening.vsieve --resolution 64
+                 --slices ${CMAKE_CURRENT_BINARY_DIR}/cli_beam_hardening.png)
+set_tests_properties(vs_beam_hardening_cli PROPERTIES
+                     DEPENDS "vs_porosity_cli_sieve;vs_beam_hardening_cli_clean"
+                     PASS_REGULAR_EXPRESSION "cupping +[-0-9.]+ % -> ")
+add_test(NAME vs_beam_hardening_measure_cli
+         COMMAND vs-beam-hardening ${CMAKE_CURRENT_BINARY_DIR}/cli_porosity.vsieve --measure)
+set_tests_properties(vs_beam_hardening_measure_cli PROPERTIES DEPENDS vs_porosity_cli_sieve
+                     PASS_REGULAR_EXPRESSION "cupping +[-0-9.]+ % \\(level")
 # The benchmark on a coarse scan of the housing: non-local means against the noise-free scan.
 add_test(NAME vs_denoise_benchmark_cli
          COMMAND vs-denoise --benchmark ${CMAKE_CURRENT_BINARY_DIR}/cli_denoise_benchmark

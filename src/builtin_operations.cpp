@@ -18,6 +18,7 @@
 #include <stdexcept>
 
 #include "voxelsieve/battery.hpp"
+#include "voxelsieve/beam_hardening.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/denoise.hpp"
@@ -2393,6 +2394,110 @@ class Denoise final : public Operation {
   OperationInfo info_;
 };
 
+Json cuppingJson(const CuppingProfile& profile) {
+  return {{"level", profile.level},
+          {"cupping", profile.cupping},
+          {"depth_mm", profile.depth_mm},
+          {"material_level", profile.level_grey}};
+}
+
+class BeamHardeningCorrection final : public Operation {
+ public:
+  BeamHardeningCorrection() {
+    info_.id = "beam_hardening";
+    info_.title = "Correct beam hardening";
+    info_.description =
+        "Corrects beam hardening of a reconstructed dataset and writes a new dataset with the same "
+        "part; the input stays in the project. Beam hardening darkens the material far from the "
+        "surface (cupping) and between dense or thick regions (streaks). The reprojection method "
+        "projects every slice across the rotation axis again, reconstructs the path lengths to "
+        "the powers 2 to order and adds the combination that makes the material most uniform; it "
+        "needs no spectrum and corrects streaks too. The depth method scales the grey values by "
+        "the material level at their depth below the surface and corrects only cupping of one "
+        "material. The correction is estimated on a coarse level and interpolated. The summary "
+        "gives the cupping before and after. Later steps of the object use the corrected "
+        "dataset.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to correct"}};
+    info_.outputs = {{"dataset", artifact::kDataset, "Corrected dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"method",
+           {{"type", "string"},
+            {"enum", {"reprojection", "depth"}},
+            {"default", "reprojection"},
+            {"description",
+             "reprojection: cupping and streaks, needs the rotation axis; depth: cupping of one "
+             "material only, no geometry needed"}}},
+          {"rotation_axis",
+           {{"type", "string"},
+            {"enum", {"x", "y", "z"}},
+            {"default", "z"},
+            {"description",
+             "Reprojection: rotation axis of the scan; slices across it are "
+             "projected"}}},
+          {"order",
+           {{"type", "integer"},
+            {"minimum", 2},
+            {"maximum", 4},
+            {"default", 3},
+            {"description",
+             "Reprojection: highest power of the path length; 2 suffices for mild hardening, 3 "
+             "also follows hardening that saturates on long paths through dense material"}}},
+          {"resolution",
+           {{"type", "integer"},
+            {"minimum", 8},
+            {"maximum", 2048},
+            {"default", 256},
+            {"description",
+             "Voxels across the largest edge of the level the correction is estimated on"}}},
+          {"value_type", valueTypeParameter()}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    BeamHardeningOptions options;
+    options.method = parseBeamHardeningMethod(p.at("method").get<std::string>());
+    const std::string axis = p.at("rotation_axis").get<std::string>();
+    options.rotation_axis = axis == "x" ? 0 : (axis == "y" ? 1 : 2);
+    options.order = p.at("order").get<int>();
+    options.resolution = p.at("resolution").get<std::int64_t>();
+    options.output.value_type = valueTypeOption(p);
+    options.output.progress = [&context](std::string_view stage, double fraction) {
+      context.progress(stage == "bricks" ? 0.1 + 0.8 * fraction : 0.9 + 0.1 * fraction);
+    };
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const BeamHardeningInfo info =
+        correctBeamHardening(dataset, context.output_dir / "dataset", options);
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << "Cupping " << 100.0 * info.before.cupping
+         << " % -> " << 100.0 * info.after.cupping << " %, material spread " << std::setprecision(0)
+         << info.material_spread_before << " -> " << info.material_spread_after
+         << " grey values (level " << info.level << ")";
+    context.log(text.str());
+    OperationResult result;
+    result.outputs["dataset"] = "dataset";
+    result.summary = datasetSummary(info.dataset);
+    result.summary.update({{"method", std::string(beamHardeningMethodName(info.method))},
+                           {"level", info.level},
+                           {"cupping_before", info.before.cupping},
+                           {"cupping_after", info.after.cupping},
+                           {"material_spread_before", info.material_spread_before},
+                           {"material_spread_after", info.material_spread_after},
+                           {"fit_voxels", info.fit_voxels},
+                           {"profile_before", cuppingJson(info.before)},
+                           {"profile_after", cuppingJson(info.after)}});
+    if (!info.coefficients.empty()) {
+      result.summary["coefficients"] = info.coefficients;
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class IsolatePart final : public Operation {
  public:
   IsolatePart() {
@@ -3417,6 +3522,7 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<MaterialMeshes>());
   registry.add(std::make_shared<MeasureObjects>());
   registry.add(std::make_shared<Denoise>());
+  registry.add(std::make_shared<BeamHardeningCorrection>());
   registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());

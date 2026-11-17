@@ -729,6 +729,37 @@ TEST_F(GuiTest, DenoisesIntoANewDatasetOfTheSameObject) {
   EXPECT_THROW((void)gui.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
 }
 
+TEST_F(GuiTest, CorrectsBeamHardeningIntoANewDatasetOfTheSameObject) {
+  SyntheticSpec spec;
+  spec.cupping = 0.2;
+  spec.cupping_depth_mm = 1.0;
+  const SyntheticScan scan(boxMesh({6.0, 5.0, 4.0}), spec);
+  writeRaw(dir_ / "cupped.raw", scan);
+  writeJson(dir_ / "cupped.json", scan.toJson());
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      gui.call("run_import_raw", {{"path", (dir_ / "cupped.raw").string()}, {"brick_size", 32}});
+  const Json corrected = gui.call("run_beam_hardening", {{"method", "depth"}});
+  ASSERT_EQ(corrected.at("status"), "done");
+  EXPECT_EQ(corrected.at("object"), imported.at("object"));
+  const Json& summary = corrected.at("summary");
+  EXPECT_EQ(summary.at("method"), "depth");
+  EXPECT_GT(summary.at("cupping_before").get<double>(), 0.1);
+  EXPECT_LT(std::abs(summary.at("cupping_after").get<double>()), 0.02);
+  EXPECT_EQ(summary.at("profile_before").at("depth_mm").size(),
+            summary.at("profile_before").at("material_level").size());
+  EXPECT_EQ(summary.at("active_voxels"), imported.at("summary").at("active_voxels"));
+  EXPECT_EQ(gui.call("objects", {}).at("objects").size(), 1U);
+  // Later steps of the object take the corrected dataset.
+  const Json again = gui.call("run_beam_hardening", {{"order", 2}});
+  ASSERT_EQ(again.at("status"), "done");
+  EXPECT_EQ(again.at("inputs").at("dataset").at("step"), corrected.at("id"));
+  EXPECT_EQ(again.at("summary").at("method"), "reprojection");
+  EXPECT_EQ(again.at("summary").at("coefficients").size(), 1U);
+  EXPECT_THROW((void)gui.call("run_beam_hardening", {{"method", "other"}}), std::invalid_argument);
+}
+
 TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
