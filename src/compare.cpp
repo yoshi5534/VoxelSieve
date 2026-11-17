@@ -1171,15 +1171,7 @@ void writePly(const std::filesystem::path& file, const CompareResult& result) {
   ply.add_properties_to_element(
       "face", {"vertex_indices"}, tinyply::Type::INT32, result.mesh.triangles.size(),
       reinterpret_cast<std::uint8_t*>(faces.data()), tinyply::Type::UINT8, 3);
-  const std::filesystem::path partial = file.string() + ".partial";
-  {
-    std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    ply.write(out, true);
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
-  }
-  std::filesystem::rename(partial, file);
+  writeFile(file, [&ply](std::ostream& out) { ply.write(out, true); });
 }
 
 /// Orthographic views of the coloured surface along x, y and z, flat shaded, viewed from the

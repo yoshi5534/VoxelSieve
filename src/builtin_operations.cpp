@@ -111,9 +111,10 @@ std::function<void(const ImportPreview&)> importPreview(const OperationContext& 
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     summary["seconds"] = seconds;
-    std::ofstream(context.output_dir / "preview.json") << summary.dump(2) << '\n';
-    std::ofstream(context.output_dir / "preview.png", std::ios::binary)
-        .write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    // Replaced as the preview gets sharper, while the GUI may read it.
+    writeJson(context.output_dir / "preview.json", summary);
+    writeFile(context.output_dir / "preview.png",
+              std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
     std::ostringstream text;
     text << std::fixed << std::setprecision(1) << "Preview after " << seconds
          << " s: " << preview.slices_read << " of " << preview.source_dims[2] << " slices ("
@@ -253,6 +254,9 @@ class OpenDataset final : public Operation {
   OperationInfo info_;
 };
 
+void addStagingParameters(Json& properties);
+DatasetOptions sieveOptions(const OperationContext& context);
+
 class ImportRaw final : public Operation {
  public:
   ImportRaw() {
@@ -309,6 +313,7 @@ class ImportRaw final : public Operation {
           {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
+    addStagingParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -350,18 +355,8 @@ class ImportRaw final : public Operation {
     if (source.sequentialAccess()) {
       context.log("gzip-compressed: decompressed once, in slice order, into the staging copy");
     }
-    DatasetOptions options;
-    if (p.contains("threshold")) {
-      options.threshold = p.at("threshold").get<float>();
-    }
-    options.margin_voxels = p.at("margin_voxels").get<int>();
-    options.brick_size = p.at("brick_size").get<std::int64_t>();
-    options.min_material_voxels = p.at("min_material_voxels").get<int>();
-    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
-    options.value_type = valueTypeOption(p);
-    options.progress = datasetProgress(context);
-    options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info =
+        writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -430,6 +425,7 @@ class ImportTiff final : public Operation {
           {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
+    addStagingParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -466,18 +462,8 @@ class ImportTiff final : public Operation {
                   " mapped to grey 0 to 65535" +
                   (tiff.value_range ? "" : " (estimated; set value_range)"));
     }
-    DatasetOptions options;
-    if (p.contains("threshold")) {
-      options.threshold = p.at("threshold").get<float>();
-    }
-    options.margin_voxels = p.at("margin_voxels").get<int>();
-    options.brick_size = p.at("brick_size").get<std::int64_t>();
-    options.min_material_voxels = p.at("min_material_voxels").get<int>();
-    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
-    options.value_type = valueTypeOption(p);
-    options.progress = datasetProgress(context);
-    options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(sieved, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info =
+        writeDataset(sieved, context.output_dir / "dataset.vsieve", sieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -505,6 +491,24 @@ class ImportTiff final : public Operation {
   OperationInfo info_;
 };
 
+/// Where an import copies a slow input first (`DatasetOptions::stage_slow_sources`), shared by
+/// every import.
+void addStagingParameters(Json& properties) {
+  properties["staging"] = {
+      {"type", "boolean"},
+      {"default", true},
+      {"description",
+       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
+       "raw file first, so that every slice is decoded once; it needs 2 bytes per voxel of free "
+       "space. Off: read the slices directly, with no temporary file but more decoding"}};
+  properties["staging_dir"] = {
+      {"type", "string"},
+      {"format", "path"},
+      {"description",
+       "Directory of the temporary copy, best a fast local disk; default: the step's directory "
+       "in the project"}};
+}
+
 /// Parameters of the sieve shared by the imports of DICOM stacks and gzipped XML projects.
 void addSieveParameters(Json& properties) {
   properties["threshold"] = {
@@ -528,6 +532,7 @@ void addSieveParameters(Json& properties) {
        "through the part (a pipe), so its inside is kept"}};
   properties["brick_size"] = {{"type", "integer"}, {"minimum", 8}, {"default", 256}};
   properties["value_type"] = valueTypeParameter();
+  addStagingParameters(properties);
 }
 
 DatasetOptions sieveOptions(const OperationContext& context) {
@@ -541,6 +546,10 @@ DatasetOptions sieveOptions(const OperationContext& context) {
   options.min_material_voxels = p.value("min_material_voxels", 1);
   options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
   options.value_type = valueTypeOption(p);
+  options.stage_slow_sources = p.value("staging", true);
+  if (const std::string dir = p.value("staging_dir", std::string()); !dir.empty()) {
+    options.staging_dir = dir;
+  }
   options.progress = datasetProgress(context);
   options.preview = importPreview(context);
   return options;
@@ -1741,7 +1750,7 @@ class Report final : public Operation {
     phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     data.erase("images");
     writeJson(dir / "report.json", data);
     for (const std::string& warning : warnings) {
@@ -2063,11 +2072,9 @@ class MeasureObjects final : public Operation {
       }
       objects.push_back(std::move(json));
     }
-    std::ofstream(dir / "objects.json") << Json{{"stride", info.stride},
-                                                {"objects_found", info.objects_found},
-                                                {"objects", objects}}
-                                               .dump(2)
-                                        << '\n';
+    writeJson(
+        dir / "objects.json",
+        Json{{"stride", info.stride}, {"objects_found", info.objects_found}, {"objects", objects}});
     OperationResult result;
     result.outputs["measurements"] = "measurements";
     // The summary keeps the largest objects; the files hold all.
@@ -2505,7 +2512,7 @@ OperationResult movedResult(const OperationContext& context, const std::vector<s
   summary["translation_mm"] = motion.translation;
   Json record = summary;
   record["poses"] = poses;
-  std::ofstream(context.output_dir / "pose.json") << record.dump(2) << '\n';
+  writeJson(context.output_dir / "pose.json", record);
   OperationResult result;
   result.outputs["pose"] = "pose.json";
   result.summary = std::move(summary);
@@ -3033,7 +3040,7 @@ class FirstArticleReport final : public Operation {
     phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     std::filesystem::copy_file(measurement_dir / "characteristics.csv",
                                dir / "characteristics.csv");
     data.erase("images");
@@ -3104,7 +3111,7 @@ class BatteryReport final : public Operation {
     const TelemetryPhase phase("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     data.erase("images");
     for (Json& edge : data.at("battery").at("edges")) {
       edge.erase("image");

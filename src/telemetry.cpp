@@ -47,6 +47,8 @@
 #include <utility>
 #include <vector>
 
+#include "voxelsieve/io.hpp"
+
 namespace voxelsieve {
 namespace {
 
@@ -873,11 +875,7 @@ void reportTelemetry(Telemetry& telemetry, const std::filesystem::path& file) {
   const Json record = telemetry.finish();
   std::cerr << formatTelemetry(record);
   if (!file.empty()) {
-    std::ofstream out(file);
-    out << record.dump(1) << '\n';
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
+    writeFile(file, record.dump(1) + '\n');
   }
 }
 

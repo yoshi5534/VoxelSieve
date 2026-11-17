@@ -17,6 +17,7 @@
 #include <boost/iostreams/device/array.hpp>
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <boost/iostreams/stream.hpp>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -29,6 +30,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <type_traits>
 
 #if defined(_WIN32)
@@ -39,6 +42,8 @@
 #include "detail/pages.hpp"
 #include "detail/preview.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/uninitialized.hpp"
@@ -119,6 +124,33 @@ class ProgressCounter {
 // decodes every slice again for each brick it touches whenever the slices of a brick layer do
 // not fit into the source's own cache.
 
+constexpr std::string_view kStagingPrefix = ".voxelsieve-staging-";
+
+/// Removes the staging copies in `dir` of processes that no longer run: a process that was killed
+/// or crashed leaves its copy, 2 bytes per voxel of the scan. Copies of running processes stay.
+void removeStaleCopies(const std::filesystem::path& dir) {
+  std::error_code error;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, error)) {
+    const std::string name = entry.path().filename().string();
+    if (!name.starts_with(kStagingPrefix) || !name.ends_with(".raw")) {
+      continue;
+    }
+    // .voxelsieve-staging-<process>-<stamp>.raw; older copies have no process id.
+    const std::string rest = name.substr(kStagingPrefix.size());
+    const auto dash = rest.find('-');
+    if (dash == std::string::npos) {
+      continue;
+    }
+    std::uint64_t process = 0;
+    const auto [end, parsed] = std::from_chars(rest.data(), rest.data() + dash, process);
+    if (parsed != std::errc() || end != rest.data() + dash || processRunning(process)) {
+      continue;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(entry.path(), ignored);
+  }
+}
+
 /// A temporary raw copy of a source, removed on destruction. The slices of the preview are copied
 /// first, round by round, coarse to fine, then the rest, so the preview costs no extra reading.
 class StagedSource {
@@ -131,6 +163,7 @@ class StagedSource {
         progress_(options.progress, "staging", static_cast<std::size_t>(dims_[2])) {
     const std::uint64_t bytes = product(dims_) * sizeof(std::uint16_t);
     std::filesystem::create_directories(dir);
+    removeStaleCopies(dir);
     const std::uint64_t available = std::filesystem::space(dir).available;
     if (available < bytes) {
       constexpr double kGb = 1024.0 * 1024.0 * 1024.0;
@@ -140,8 +173,10 @@ class StagedSource {
           std::to_string(static_cast<double>(available) / kGb) +
           " GB are free; choose another staging directory or turn staging off");
     }
+    // The process id in the name tells a copy in use from one left by a process that ended.
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    path_ = dir / (".voxelsieve-staging-" + std::to_string(stamp) + ".raw");
+    path_ = dir / (std::string(kStagingPrefix) + std::to_string(processId()) + "-" +
+                   std::to_string(stamp) + ".raw");
     try {
       boost::iostreams::mapped_file_params params(path_.string());
       params.flags = boost::iostreams::mapped_file::readwrite;
@@ -687,11 +722,8 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
     std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
   }
 
-  std::ofstream index(dir / "index.json");
-  index << toJson(info).dump(2) << '\n';
-  if (!index) {
-    throw std::runtime_error("Cannot write " + (dir / "index.json").string());
-  }
+  // Last and whole: a dataset whose write was interrupted has no index.json, and never half of one.
+  writeJson(dir / "index.json", toJson(info));
 }
 
 }  // namespace

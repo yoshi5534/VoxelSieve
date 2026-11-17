@@ -8,6 +8,7 @@
 #include <map>
 #include <stdexcept>
 
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -157,6 +158,10 @@ Project Project::open(const std::filesystem::path& dir) {
     if (step.status == "running") {
       step.status = "failed";
       step.messages.emplace_back("Interrupted: the application ended while the step was running");
+      // Its partial outputs go, as those of a step that failed: an interrupted import can leave a
+      // staging copy of the whole scan there.
+      std::error_code ignored;
+      std::filesystem::remove_all(project.stepDir(step), ignored);
       changed = true;
     }
     project.next_id_ = std::max(project.next_id_, step.id + 1);
@@ -582,7 +587,7 @@ const Step& Project::run(
   }
   const Json record = telemetry.finish();
   stored.telemetry = telemetrySummary(record);
-  std::ofstream(dir / kTelemetryFile) << record.dump() << '\n';
+  writeFile(dir / kTelemetryFile, record.dump() + '\n');
   stored.finished = nowUtc();
   save();
   return stored;
@@ -658,12 +663,8 @@ const SavedView& Project::saveView(const std::string& name, const Json& state,
   view.has_image = !png.empty();
   if (view.has_image) {
     std::filesystem::create_directories(dir_ / "views");
-    const auto file = viewImage(view.id);
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
+    writeFile(viewImage(view.id),
+              std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
   }
   ++next_view_id_;
   saved_views_.push_back(std::move(view));
@@ -736,16 +737,8 @@ Json Project::toJson() const {
 }
 
 void Project::save() const {
-  const auto file = dir_ / "project.json";
-  const auto temporary = dir_ / "project.json.tmp";
-  {
-    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-    out << toJson().dump(2) << "\n";
-    if (!out) {
-      throw std::runtime_error("Cannot write " + temporary.string());
-    }
-  }
-  std::filesystem::rename(temporary, file);  // atomic on POSIX: never a half-written project
+  // Through a temporary file: never a half-written project, also on a full disk.
+  writeJson(dir_ / "project.json", toJson());
 }
 
 }  // namespace voxelsieve

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "detail/png.hpp"
+#include "voxelsieve/io.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -556,14 +557,7 @@ void writePng(const RenderImage& image, const std::filesystem::path& file) {
   const auto png =
       detail::encodePng(static_cast<std::uint32_t>(image.width),
                         static_cast<std::uint32_t>(image.height), image.channels, image.pixels);
-  std::ofstream out(file, std::ios::binary);
-  if (!out) {
-    throw std::runtime_error("Cannot write " + file.string());
-  }
-  out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
-  if (!out) {
-    throw std::runtime_error("Cannot write " + file.string());
-  }
+  writeFile(file, std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
 }
 
 void drawBalloon(RenderImage& image, double x, double y, double anchor_x, double anchor_y,

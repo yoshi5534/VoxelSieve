@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "voxelsieve/io.hpp"
+
 namespace voxelsieve {
 namespace {
 
@@ -84,21 +86,19 @@ Mesh readStl(const std::filesystem::path& path) {
 }
 
 void writeStl(const std::filesystem::path& path, const Mesh& mesh) {
-  std::ofstream out(path, std::ios::binary);
-  const std::string header(kBinaryHeaderBytes, ' ');
-  out.write(header.data(), static_cast<std::streamsize>(header.size()));
-  const auto count = static_cast<std::uint32_t>(mesh.triangles.size());
-  out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-  const std::array<float, 3> normal{0.0F, 0.0F, 0.0F};
-  const std::uint16_t attributes = 0;
-  for (const Triangle& triangle : mesh.triangles) {
-    out.write(reinterpret_cast<const char*>(normal.data()), sizeof(normal));
-    out.write(reinterpret_cast<const char*>(triangle.data()), sizeof(Triangle));
-    out.write(reinterpret_cast<const char*>(&attributes), sizeof(attributes));
-  }
-  if (!out) {
-    throw std::runtime_error("Write failed: " + path.string());
-  }
+  writeFile(path, [&mesh](std::ostream& out) {
+    const std::string header(kBinaryHeaderBytes, ' ');
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto count = static_cast<std::uint32_t>(mesh.triangles.size());
+    out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    const std::array<float, 3> normal{0.0F, 0.0F, 0.0F};
+    const std::uint16_t attributes = 0;
+    for (const Triangle& triangle : mesh.triangles) {
+      out.write(reinterpret_cast<const char*>(normal.data()), sizeof(normal));
+      out.write(reinterpret_cast<const char*>(triangle.data()), sizeof(Triangle));
+      out.write(reinterpret_cast<const char*>(&attributes), sizeof(attributes));
+    }
+  });
 }
 
 Bounds meshBounds(const Mesh& mesh) {

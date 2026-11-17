@@ -7,12 +7,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#elif defined(__APPLE__)
-#include <sys/sysctl.h>
 #else
+#include <signal.h>
 #include <unistd.h>
 
+#include <cerrno>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#else
 #include <fstream>
+#endif
 #endif
 
 #include <cstddef>
@@ -85,6 +89,30 @@ void setThreadLimit(int threads) {
 int threadLimit() {
   return static_cast<int>(
       tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
+}
+
+std::uint64_t processId() {
+#if defined(_WIN32)
+  return GetCurrentProcessId();
+#else
+  return static_cast<std::uint64_t>(getpid());
+#endif
+}
+
+bool processRunning(std::uint64_t id) {
+#if defined(_WIN32)
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(id));
+  if (process == nullptr) {
+    // No such process; any other error (such as no access) means it exists.
+    return GetLastError() != ERROR_INVALID_PARAMETER;
+  }
+  DWORD code = 0;
+  const bool running = GetExitCodeProcess(process, &code) == 0 || code == STILL_ACTIVE;
+  CloseHandle(process);
+  return running;
+#else
+  return kill(static_cast<pid_t>(id), 0) == 0 || errno != ESRCH;
+#endif
 }
 
 bool applyResourceOption(std::string_view arg, const std::function<std::string()>& value) {

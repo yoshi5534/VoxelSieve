@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/vdb.hpp"
 
@@ -389,13 +390,7 @@ MeasureInfo measureSamples(std::span<const std::uint8_t> ids,
   return result;
 }
 
-}  // namespace
-
-void writeObjectsCsv(const std::filesystem::path& file, const MeasureInfo& info) {
-  std::ofstream out(file);
-  if (!out) {
-    throw std::runtime_error("Cannot write " + file.string());
-  }
+void writeObjectRows(std::ostream& out, const MeasureInfo& info) {
   out << std::setprecision(8);
   out << "object,material,material_name,voxels,volume_mm3,surface_mm2,centroid_x_mm,centroid_y_mm,"
          "centroid_z_mm,min_x_mm,min_y_mm,min_z_mm,max_x_mm,max_y_mm,max_z_mm,length_1_mm,"
@@ -418,6 +413,12 @@ void writeObjectsCsv(const std::filesystem::path& file, const MeasureInfo& info)
     }
     out << ',' << (object.touches_border ? "true" : "false") << '\n';
   }
+}
+
+}  // namespace
+
+void writeObjectsCsv(const std::filesystem::path& file, const MeasureInfo& info) {
+  writeFile(file, [&info](std::ostream& out) { writeObjectRows(out, info); });
 }
 
 }  // namespace voxelsieve

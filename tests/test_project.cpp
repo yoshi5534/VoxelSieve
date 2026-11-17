@@ -186,12 +186,16 @@ TEST_F(ProjectTest, InvalidRequestsLeaveTheProjectUnchanged) {
 TEST_F(ProjectTest, InterruptedStepIsMarkedFailedOnOpen) {
   auto project = Project::create(dir_ / "p", "Test");
   project.run(registry_, "make_number");
+  const std::filesystem::path step_dir = project.stepDir(project.steps()[0]);
+  ASSERT_TRUE(std::filesystem::exists(step_dir));
   Json json = project.toJson();
   json["steps"][0]["status"] = "running";
   std::ofstream(dir_ / "p" / "project.json") << json.dump();
   const auto reopened = Project::open(dir_ / "p");
   EXPECT_EQ(reopened.steps()[0].status, "failed");
   EXPECT_FALSE(reopened.latest("number").has_value());
+  // Its partial outputs are gone, as those of a failed step.
+  EXPECT_FALSE(std::filesystem::exists(step_dir));
 }
 
 TEST_F(ProjectTest, SaveAsContinuesInTheCopy) {

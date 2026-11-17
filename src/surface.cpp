@@ -28,6 +28,7 @@
 
 #include "detail/png.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/io.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -569,7 +570,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   const std::filesystem::path temporary = file.string() + ".partial";
   std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
   if (!out) {
-    throw std::runtime_error("Cannot write " + temporary.string());
+    throwWriteError(file);
   }
   out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
   std::uint64_t position = kMagic.size();
@@ -629,7 +630,9 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   out.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
   out.close();
   if (!out) {
-    throw std::runtime_error("Cannot write " + temporary.string());
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throwWriteError(file);
   }
   std::filesystem::rename(temporary, file);
   info.file_bytes = std::filesystem::file_size(file);

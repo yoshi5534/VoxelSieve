@@ -23,6 +23,7 @@
 
 #include "detail/blocks.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
@@ -197,16 +198,10 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
   std::ofstream out(path, std::ios::binary);
   out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   out.close();
-  // A full disk is the usual cause of a failed write; say so rather than leave a file that only
-  // shows later as "not a VDB file".
-  std::error_code error;
-  const auto space =
-      std::filesystem::space(path.parent_path().empty() ? "." : path.parent_path(), error);
-  if (!error && space.available < (std::uintmax_t{1} << 20)) {
-    throw std::runtime_error("No space left on the device while writing " + path.string());
-  }
   if (!out) {
-    throw std::runtime_error("Cannot write " + path.string());
+    // Says when the disk is full, rather than leave a file that only shows later as "not a VDB
+    // file".
+    throwWriteError(path);
   }
 }
 

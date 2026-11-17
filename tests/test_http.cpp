@@ -323,7 +323,8 @@ TEST_F(HttpTest, SavesViewsWithLargePicturesAndKeepsThemAcrossOperations) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   // While the operation runs on its copy of the project, views are still saved ...
-  EXPECT_EQ(call("view_set", {{"state", {{"stage", "view"}}}}).status, 200U);
+  const Reply set = call("view_set", {{"state", {{"stage", "view"}}}});
+  EXPECT_EQ(set.status, 200U) << set.body;
   const Reply saved = call(
       "view_save", {{"name", "Übersicht"}, {"image_base64", "data:image/png;base64," + encoded}});
   ASSERT_EQ(saved.status, 200U) << saved.body;

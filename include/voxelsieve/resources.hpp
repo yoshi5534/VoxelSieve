@@ -19,6 +19,12 @@ void setThreadLimit(int threads);
 /// The most threads parallel work of the process uses.
 [[nodiscard]] int threadLimit();
 
+/// The id of this process.
+[[nodiscard]] std::uint64_t processId();
+
+/// Whether a process with this id runs (or may run: true when the system does not say).
+[[nodiscard]] bool processRunning(std::uint64_t id);
+
 /// For command-line tools, which all take these options: applies `--cache <MB>` (budget of the
 /// shared brick cache, `Dataset::setSharedCacheBytes`) or `--threads <N>` (`setThreadLimit`).
 /// `value` reads the option's value. Returns false for any other argument.

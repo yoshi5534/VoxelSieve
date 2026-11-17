@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "voxelsieve/compare.hpp"
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -2451,17 +2452,8 @@ std::string characteristicsCsv(const nlohmann::json& measurement) {
 void writeMeasurement(const Measurement& measurement, const Mesh& cad,
                       const std::filesystem::path& dir) {
   std::filesystem::create_directories(dir);
-  {
-    std::ofstream out(dir / "measurement.json", std::ios::binary);
-    out << measurement.json.dump(2) << '\n';
-    if (!out) {
-      throw std::runtime_error("Cannot write " + (dir / "measurement.json").string());
-    }
-  }
-  {
-    std::ofstream out(dir / "characteristics.csv", std::ios::binary);
-    out << characteristicsCsv(measurement.json);
-  }
+  writeJson(dir / "measurement.json", measurement.json);
+  writeFile(dir / "characteristics.csv", characteristicsCsv(measurement.json));
   const IndexedMesh mesh = indexedMesh(cad);
   const Json& elements = measurement.json.at("elements");
   const Json& characteristics = measurement.json.at("characteristics");

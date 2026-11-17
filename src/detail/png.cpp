@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "voxelsieve/io.hpp"
+
 namespace voxelsieve::detail {
 
 GreyImage decodeGreyPng(std::span<const std::uint8_t> png) {
@@ -77,11 +79,7 @@ std::vector<std::uint8_t> encodePng(std::uint32_t width, std::uint32_t height, i
 void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::uint32_t height,
                  std::span<const std::uint8_t> rgb) {
   const std::vector<std::uint8_t> png = encodePng(width, height, 3, rgb);
-  std::ofstream out(path, std::ios::binary);
-  out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
-  if (!out) {
-    throw std::runtime_error("Cannot write " + path.string());
-  }
+  writeFile(path, std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
 }
 
 void writeRgbPng(const std::filesystem::path& path, std::uint32_t width, std::uint32_t height,

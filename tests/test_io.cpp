@@ -1,7 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <ostream>
 #include <stdexcept>
+#include <string>
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
@@ -42,6 +47,40 @@ TEST_F(IoTest, ReadRawRejectsWrongDimensions) {
   const auto path = dir_ / "small.raw";
   writeRaw(path, volume);
   EXPECT_THROW((void)readRaw(path, {4, 4, 5}, 1.0), std::runtime_error);
+}
+
+std::string contents(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+TEST_F(IoTest, FilesAreReplacedOnlyWhenWrittenCompletely) {
+  const auto path = dir_ / "result.json";
+  writeFile(path, "first");
+  EXPECT_EQ(contents(path), "first");
+  writeFile(path, "second");
+  EXPECT_EQ(contents(path), "second");
+
+  // A failed write (as on a full disk) keeps the file as it was and leaves nothing behind.
+  EXPECT_THROW(writeFile(path,
+                         [](std::ostream& out) {
+                           out << "half";
+                           out.setstate(std::ios::badbit);
+                         }),
+               std::runtime_error);
+  EXPECT_EQ(contents(path), "second");
+  // So does an error of the writer itself.
+  EXPECT_THROW(writeFile(path, [](std::ostream&) { throw std::invalid_argument("no"); }),
+               std::invalid_argument);
+  EXPECT_EQ(contents(path), "second");
+  std::size_t files = 0;
+  for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator(dir_)) {
+    ++files;
+  }
+  EXPECT_EQ(files, 1U);
+
+  // A file in a directory that does not exist cannot be written.
+  EXPECT_THROW(writeFile(dir_ / "missing" / "x.json", "x"), std::runtime_error);
 }
 
 TEST(PhantomJson, ContainsGroundTruth) {

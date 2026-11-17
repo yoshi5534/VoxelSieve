@@ -564,11 +564,23 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
     EXPECT_NE(entry.path().extension(), ".raw") << entry.path();
   }
 
-  // Staged elsewhere: that directory is left empty.
+  // Staged elsewhere: that directory is left empty, but for copies of processes still running.
+  // A copy that a process left when it ended is removed; process 999999999 never runs.
   options.staging_dir = dir_ / "scratch";
+  std::filesystem::create_directories(options.staging_dir);
+  const auto left = options.staging_dir / ".voxelsieve-staging-999999999-1.raw";
+  const auto in_use =
+      options.staging_dir / (".voxelsieve-staging-" + std::to_string(processId()) + "-1.raw");
+  std::ofstream(left) << "left";
+  std::ofstream(in_use) << "in use";
   (void)writeDataset(SlowPhantomSource(phantom), dir_ / "elsewhere", options);
   expectSameDataset(dir_ / "direct", dir_ / "elsewhere");
+  EXPECT_FALSE(std::filesystem::exists(left));
+  EXPECT_TRUE(std::filesystem::exists(in_use));
+  std::filesystem::remove(in_use);
   EXPECT_TRUE(std::filesystem::is_empty(dir_ / "scratch"));
+  EXPECT_FALSE(processRunning(999999999));
+  EXPECT_TRUE(processRunning(processId()));
 
   // Read directly when staging is off.
   options.stage_slow_sources = false;

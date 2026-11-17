@@ -464,22 +464,20 @@ void writeModel(const std::filesystem::path& path, const ModelSpec& spec) {
       {"halo", spec.halo},
       {"materials", materials},
       {"layers", layers}}.dump();
-  std::ofstream out(path, std::ios::binary);
-  const std::uint64_t header_size = header.size();
-  out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
-  out.write(reinterpret_cast<const char*>(&header_size), sizeof(header_size));
-  out.write(header.data(), static_cast<std::streamsize>(header.size()));
-  for (const ModelLayer& layer : spec.layers) {
-    if (layer.op == "conv") {
-      out.write(reinterpret_cast<const char*>(layer.weights.data()),
-                static_cast<std::streamsize>(layer.weights.size() * sizeof(float)));
-      out.write(reinterpret_cast<const char*>(layer.bias.data()),
-                static_cast<std::streamsize>(layer.bias.size() * sizeof(float)));
+  writeFile(path, [&](std::ostream& out) {
+    const std::uint64_t header_size = header.size();
+    out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
+    out.write(reinterpret_cast<const char*>(&header_size), sizeof(header_size));
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    for (const ModelLayer& layer : spec.layers) {
+      if (layer.op == "conv") {
+        out.write(reinterpret_cast<const char*>(layer.weights.data()),
+                  static_cast<std::streamsize>(layer.weights.size() * sizeof(float)));
+        out.write(reinterpret_cast<const char*>(layer.bias.data()),
+                  static_cast<std::streamsize>(layer.bias.size() * sizeof(float)));
+      }
     }
-  }
-  if (!out) {
-    throw std::runtime_error("Cannot write model " + path.string());
-  }
+  });
 }
 
 Tensor Model::forward(std::span<const float> grey, const std::array<std::int64_t, 3>& dims) const {

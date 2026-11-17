@@ -112,6 +112,8 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose
   geometry is known analytically. Defect analyses are scored against `SyntheticScan` ground truth. Prefer asserting against the analytic ground truth over
   snapshot values.
+- Write result files with `writeFile`/`writeJson` (`io.hpp`): they go through a temporary file,
+  so a file is never left half written, and a full disk is an error that says so.
 - Keep dependencies minimal; adding one needs a short ADR and goes into `vcpkg.json`.
 - File formats, compression and crypto always come from an established library (libtiff, libzip,
   libpng, tinyply, Boost.Iostreams, OpenVDB, nlohmann/json, …), never our own parser, codec or
