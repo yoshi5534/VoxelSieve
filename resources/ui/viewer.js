@@ -10,7 +10,10 @@
 'use strict';
 
 const TILE = 256;
-const MAX_TILES = 160;          // cached tiles, about 0.5 MB each
+// Cached tiles: three screens of tiles for the volume and each layer shown, at least MIN_TILES,
+// at most MAX_TILES (about 0.8 MB each with its rendered canvas, so about 500 MB).
+const MIN_TILES = 160;
+const MAX_TILES = 640;
 const MAX_REQUESTS = 4;         // concurrent tile requests
 const AXIS_NAMES = ['x', 'y', 'z'];
 const IN_PLANE = [[1, 2], [0, 2], [0, 1]];
@@ -327,7 +330,10 @@ class SliceViewer {
   }
 
   level() {
-    const level = Math.floor(Math.log2(1 / this.zoom));
+    // From device pixels per voxel: on a display with two device pixels per CSS pixel, the level
+    // of CSS pixels would show every voxel blurred over two device pixels.
+    const ratio = window.devicePixelRatio || 1;
+    const level = Math.floor(Math.log2(1 / (this.zoom * ratio)));
     return Math.min(Math.max(level, 0), this.maxLevel());
   }
 
@@ -461,6 +467,9 @@ class SliceViewer {
 
     const level = this.level();
     const visible = this.visibleTiles(level);
+    // Tiles drawn from here on belong to this frame, which eviction keeps.
+    this.frameStart = performance.now();
+    this.visibleCount = visible.length;
     // Coarser tiles first as placeholders, then the wanted level on top. Until every visible tile
     // of the current slice is there, the nearest slice that is complete stands in for it, so
     // scrolling shows whole slices instead of a black flash per step or a mix of tiles from
@@ -650,10 +659,22 @@ class SliceViewer {
     }
   }
 
+  /// Tiles to keep: three screens of tiles for the volume and each layer shown, within the limits.
+  tileCapacity() {
+    const screens = 3 * (this.visibleCount ?? 0) * (1 + this.shownLayers('volume').length);
+    return Math.min(MAX_TILES, Math.max(MIN_TILES, screens));
+  }
+
+  /// Drops the least recently used tiles over the capacity. Tiles drawn in the current frame and
+  /// those loaded since stay, also over it: dropping them would load them again at once, and a
+  /// view with more tiles than the capacity would never finish.
   evict() {
-    if (this.tiles.size <= MAX_TILES) return;
-    const oldest = [...this.tiles.entries()].sort((a, b) => a[1].used - b[1].used);
-    for (const [key] of oldest.slice(0, this.tiles.size - MAX_TILES)) this.tiles.delete(key);
+    const capacity = this.tileCapacity();
+    if (this.tiles.size <= capacity) return;
+    const frame = this.frameStart ?? 0;
+    const oldest = [...this.tiles.entries()].filter(([, tile]) => tile.used < frame)
+      .sort((a, b) => a[1].used - b[1].used);
+    for (const [key] of oldest.slice(0, this.tiles.size - capacity)) this.tiles.delete(key);
   }
 
   /// Window from the 0.5 and 99.5 percentiles of the visible tiles of the current slice.
