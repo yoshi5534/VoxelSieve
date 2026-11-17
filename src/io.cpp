@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "voxelsieve/resources.hpp"
@@ -134,7 +136,21 @@ void writeFile(const std::filesystem::path& path, const std::function<void(std::
     if (!out) {
       throwWriteError(path);
     }
-    std::filesystem::rename(partial, path);
+    // Windows cannot replace a file that another program holds open for a moment, such as a
+    // virus scanner looking at a new file or a reader of the previous version: try again shortly.
+    constexpr int kAttempts = 20;
+    for (int attempt = 1;; ++attempt) {
+      std::error_code error;
+      std::filesystem::rename(partial, path, error);
+      if (!error) {
+        break;
+      }
+      if (attempt == kAttempts) {
+        throw std::filesystem::filesystem_error("Cannot replace " + path.string(), partial, path,
+                                                error);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
   } catch (...) {
     discard();
     throw;

@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -698,7 +699,7 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
   const auto [memory_total, memory_available] = systemMemoryMb();
   d.peak_per_phase = resetPeakMemory();
   d.system = {{"cores", std::thread::hardware_concurrency()},
-              {"threads", tbb::this_task_arena::max_concurrency()},
+              {"threads", std::min(tbb::this_task_arena::max_concurrency(), threadLimit())},
               {"allocator", allocatorName()},
               {"memory_total_mb", rounded(memory_total, 0)},
               {"memory_available_mb", rounded(memory_available, 0)},

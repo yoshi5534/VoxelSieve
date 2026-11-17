@@ -29,6 +29,7 @@
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -808,7 +809,8 @@ WallThicknessResult analyzeWallThickness(const Dataset& dataset, const SurfaceMa
   int reported_percent = -1;
   using Task = std::pair<std::size_t, std::size_t>;
   std::size_t next_task = 0;
-  const auto tokens = 4 * static_cast<std::size_t>(tbb::this_task_arena::max_concurrency());
+  const auto tokens = 4 * static_cast<std::size_t>(
+                              std::min(tbb::this_task_arena::max_concurrency(), threadLimit()));
   tbb::parallel_pipeline(
       tokens, tbb::make_filter<void, Task>(tbb::filter_mode::serial_in_order,
                                            [&](tbb::flow_control& control) -> Task {
