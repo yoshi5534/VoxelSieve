@@ -244,6 +244,27 @@ TiffPage currentPage(TIFF* tiff) {
   if (page.chunk_height == 0 || page.chunk_count < chunks_down * page.chunks_across) {
     throw std::runtime_error("TIFF image with missing strips or tiles");
   }
+  page.big_endian = TIFFIsBigEndian(tiff) != 0;
+  if (readableInPlace(page)) {
+    // Every strip or tile must hold its whole rows, else the image is read through libtiff.
+    const std::uint64_t chunk_bytes = std::uint64_t{page.chunk_width} * page.chunk_height *
+                                      static_cast<std::uint64_t>(page.bits / 8);
+    page.chunk_offsets.resize(page.chunk_count);
+    for (std::uint32_t c = 0; c < page.chunk_count; ++c) {
+      int error = 0;
+      page.chunk_offsets[c] = TIFFGetStrileOffsetWithErr(tiff, c, &error);
+      const std::uint64_t stored = TIFFGetStrileByteCountWithErr(tiff, c, &error);
+      const bool last_strip = TIFFIsTiled(tiff) == 0 && c + 1 == page.chunk_count;
+      const std::uint64_t rows_left =
+          last_strip ? page.height - std::uint64_t{c} * page.chunk_height : page.chunk_height;
+      const std::uint64_t needed =
+          last_strip ? rows_left * page.chunk_width * (page.bits / 8) : chunk_bytes;
+      if (error != 0 || stored < needed) {
+        page.chunk_offsets.clear();
+        break;
+      }
+    }
+  }
   // Pixel size: from an OME-XML image description, else a centimetre resolution, an inch
   // resolution that is not a printing default such as 72 or 300 dpi, or pixels per unit of a
   // key=value image description. The slice spacing comes from the OME-XML or a key=value image
@@ -358,6 +379,12 @@ void MemoryBytes::read(std::uint64_t offset, std::span<std::uint8_t> out) const 
     throw std::runtime_error("Read beyond the end of a TIFF image");
   }
   std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset), out.size(), out.begin());
+}
+
+bool readableInPlace(const TiffPage& page) {
+  return page.compression == COMPRESSION_NONE && page.samples_per_pixel == 1 &&
+         page.sample_format == SAMPLEFORMAT_UINT && page.photometric == PHOTOMETRIC_MINISBLACK &&
+         (page.bits == 8 || page.bits == 16) && page.predictor == PREDICTOR_NONE;
 }
 
 std::vector<TiffPage> readTiffPages(const ByteSource& bytes, std::size_t max_pages) {

@@ -47,8 +47,10 @@ class TiffStackSource final : public VolumeSource {
   [[nodiscard]] ValueMapping valueMapping() const override;
   /// 8 bit for 8-bit integer slices.
   [[nodiscard]] SampleType sampleType() const override;
-  /// True: slices are decoded strip by strip, and a slice in a ZIP archive as a whole.
-  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  /// Slices are decoded strip by strip, and a slice in a ZIP archive as a whole.
+  /// False for uncompressed 8- and 16-bit slices in local files, which are read in place like a
+  /// raw file (ADR 0011); true for compressed slices, archives and network shares.
+  [[nodiscard]] bool slowRandomAccess() const override;
   /// Empties the cache of decoded strips and tiles and drops the pages of a ZIP archive.
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;

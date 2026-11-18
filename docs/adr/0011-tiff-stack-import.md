@@ -78,3 +78,15 @@ file browser marks TIFF files, ZIP archives and directories with TIFF slices as 
   message; they can be added to `decodeTiffChunk` when real data needs them.
 - Proprietary raw headers remain the main input for industrial scans; vendor formats are only
   read from publicly documented layouts.
+
+## Amendment: uncompressed slices are read in place (2026-11-18)
+
+Staging copied every TIFF stack, also uncompressed local slices, which need no decoding: a stack
+of 300 GB needed 300 GB of temporary space beside the dataset. Now the directory of every slice
+records where its strips or tiles start (`TiffPage::chunk_offsets`, only for uncompressed
+single-sample unsigned 8- and 16-bit images, black at zero). Such slices are read in place
+through memory-mapped files, kept in a pool of the 1024 used last, like a raw file: no decoding,
+no chunk cache, no reopening of the file for every strip. `slowRandomAccess()` is false for a
+stack whose first slice is stored so, in local files; compressed slices, archives and network
+shares are staged as before, and a single slice stored otherwise is still decoded. The passes
+let the mapped pages go now and then, as for a raw input.

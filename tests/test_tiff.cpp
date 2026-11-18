@@ -345,6 +345,9 @@ TEST_F(TiffTest, ReadsAllEncodings) {
     EXPECT_EQ(source.bitsPerSample(), c.spec.bits);
     // A dataset keeps 8-bit slices in 8 bits (ADR 0021).
     EXPECT_EQ(source.sampleType(), c.spec.bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16);
+    // Uncompressed 8- and 16-bit slices are read in place and need no staging copy.
+    EXPECT_EQ(source.slowRandomAccess(),
+              c.spec.compression != COMPRESSION_NONE || c.spec.bits > 16);
     expectGreyValues(source, c.spec.bits);
   }
 }
@@ -397,22 +400,31 @@ TEST(Tiff, DecodesFloatSlices) {
 }
 
 TEST_F(TiffTest, ReadsRegionsAcrossChunks) {
-  TiffSpec spec;
-  spec.tile = 16;
-  spec.compression = 8;
-  const TiffStackSource source(writeStack(spec));
-  const Box box{{13, 5, 2}, {35, 20, 5}};
-  std::vector<std::uint16_t> values(std::size_t{22} * 15 * 3);
-  source.readRegion(box, values);
-  std::size_t i = 0;
-  for (std::int64_t z = 2; z < 5; ++z) {
-    for (std::int64_t y = 5; y < 20; ++y) {
-      for (std::int64_t x = 13; x < 35; ++x, ++i) {
-        ASSERT_EQ(values[i], greyValue(x, y, z, 16)) << x << "," << y << "," << z;
+  // Decoded (deflate) and read in place (uncompressed), in tiles and in strips.
+  for (const int compression : {COMPRESSION_ADOBE_DEFLATE, COMPRESSION_NONE}) {
+    for (const bool tiles : {true, false}) {
+      SCOPED_TRACE(std::to_string(compression) + (tiles ? " tiles" : " strips"));
+      TiffSpec spec;
+      spec.tile = tiles ? 16 : 0;
+      spec.rows_per_strip = tiles ? 0 : 6;
+      spec.compression = compression;
+      spec.big_endian = !tiles;
+      const TiffStackSource source(writeStack(
+          spec, "regions_" + std::to_string(compression) + (tiles ? "_tiles" : "_strips")));
+      const Box box{{13, 5, 2}, {35, 20, 5}};
+      std::vector<std::uint16_t> values(std::size_t{22} * 15 * 3);
+      source.readRegion(box, values);
+      std::size_t i = 0;
+      for (std::int64_t z = 2; z < 5; ++z) {
+        for (std::int64_t y = 5; y < 20; ++y) {
+          for (std::int64_t x = 13; x < 35; ++x, ++i) {
+            ASSERT_EQ(values[i], greyValue(x, y, z, 16)) << x << "," << y << "," << z;
+          }
+        }
       }
+      EXPECT_THROW(source.readRegion(Box{{0, 0, 0}, {41, 1, 1}}, values), std::out_of_range);
     }
   }
-  EXPECT_THROW(source.readRegion(Box{{0, 0, 0}, {41, 1, 1}}, values), std::out_of_range);
 }
 
 TEST_F(TiffTest, SortsSlicesNaturally) {
@@ -444,6 +456,12 @@ TEST_F(TiffTest, ReadsMultiPageFiles) {
   writeFile(dir_ / "volume.tiff", writeTiff(spec, pages));
   const TiffStackSource source(dir_ / "volume.tiff");
   expectGreyValues(source, 16);
+  // Uncompressed, the pages are read in place from the one file.
+  spec.compression = COMPRESSION_NONE;
+  writeFile(dir_ / "plain.tiff", writeTiff(spec, pages));
+  const TiffStackSource plain(dir_ / "plain.tiff");
+  EXPECT_FALSE(plain.slowRandomAccess());
+  expectGreyValues(plain, 16);
 }
 
 TEST_F(TiffTest, ReadsVoxelSize) {
