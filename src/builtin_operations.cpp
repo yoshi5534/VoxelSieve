@@ -499,7 +499,8 @@ void addStagingParameters(Json& properties) {
       {"default", true},
       {"description",
        "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
-       "raw file first, so that every slice is decoded once; it needs 2 bytes per voxel of free "
+       "raw file first, so that every slice is decoded once; it needs 1 or 2 bytes per voxel (as "
+       "the input) of free "
        "space. Off: read the slices directly, with no temporary file but more decoding"}};
   properties["staging_dir"] = {
       {"type", "string"},

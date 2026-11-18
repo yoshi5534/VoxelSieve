@@ -161,9 +161,11 @@ class StagedSource {
                const DatasetOptions& options)
       : input_(source),
         dims_(source.dims()),
+        narrow_(source.sampleType() == SampleType::kUInt8),
         copied_(static_cast<std::size_t>(dims_[2]), 0),
         progress_(options.progress, "staging", static_cast<std::size_t>(dims_[2])) {
-    const std::uint64_t bytes = product(dims_) * sizeof(std::uint16_t);
+    // In the input's width: 8-bit input takes half the space.
+    const std::uint64_t bytes = product(dims_) * (narrow_ ? 1U : 2U);
     std::filesystem::create_directories(dir);
     removeStaleCopies(dir);
     const std::uint64_t available = std::filesystem::space(dir).available;
@@ -235,8 +237,9 @@ class StagedSource {
         });
     file_.close();
     raw_ = std::make_unique<MappedRawSource>(
-        path_, RawLayout{dims_, input_.voxelSize(), SampleType::kUInt16, std::endian::native,
-                         std::uint64_t{0}});
+        path_,
+        RawLayout{dims_, input_.voxelSize(), narrow_ ? SampleType::kUInt8 : SampleType::kUInt16,
+                  std::endian::native, std::uint64_t{0}});
   }
 
   [[nodiscard]] const VolumeSource& source() const { return *raw_; }
@@ -246,19 +249,38 @@ class StagedSource {
   /// `visit(k, data)` for each before its pages are let go.
   template <typename Slice, typename Visit>
   void copy(std::size_t count, const Slice& slice, const Visit& visit) {
-    auto* data = reinterpret_cast<std::uint16_t*>(file_.data());
     const auto slice_voxels = static_cast<std::size_t>(dims_[0] * dims_[1]);
     const auto copy_slice = [&](std::size_t k) {
       const std::int64_t z = slice(k);
       if (copied_[static_cast<std::size_t>(z)] != 0) {
         return;
       }
-      std::uint16_t* target = data + static_cast<std::size_t>(z) * slice_voxels;
-      input_.readRegion(Box{{0, 0, z}, {dims_[0], dims_[1], z + 1}}, {target, slice_voxels});
-      visit(k, target);
+      const Box box{{0, 0, z}, {dims_[0], dims_[1], z + 1}};
+      void* target = nullptr;
+      std::size_t target_bytes = 0;
+      if (narrow_) {
+        // Read in 16 bit, stored in 8: every value of an 8-bit source is at most 255.
+        std::vector<std::uint16_t>& wide = wide_.local();
+        wide.resize(slice_voxels);
+        input_.readRegion(box, wide);
+        visit(k, wide.data());
+        auto* narrow = reinterpret_cast<std::uint8_t*>(file_.data()) +
+                       static_cast<std::size_t>(z) * slice_voxels;
+        std::transform(wide.begin(), wide.end(), narrow,
+                       [](std::uint16_t v) { return static_cast<std::uint8_t>(v); });
+        target = narrow;
+        target_bytes = slice_voxels;
+      } else {
+        auto* wide = reinterpret_cast<std::uint16_t*>(file_.data()) +
+                     static_cast<std::size_t>(z) * slice_voxels;
+        input_.readRegion(box, {wide, slice_voxels});
+        visit(k, wide);
+        target = wide;
+        target_bytes = slice_voxels * sizeof(std::uint16_t);
+      }
       // The slice is written; its pages go to the file cache instead of staying in the
       // process's memory (Windows kept the whole copy in the working set).
-      detail::releaseMappedPages(target, slice_voxels * sizeof(std::uint16_t));
+      detail::releaseMappedPages(target, target_bytes);
       copied_[static_cast<std::size_t>(z)] = 1;
       progress_.step();
     };
@@ -288,6 +310,8 @@ class StagedSource {
 
   const VolumeSource& input_;
   Index3 dims_;
+  bool narrow_ = false;  // 8-bit input, staged in 8 bit
+  tbb::enumerable_thread_specific<std::vector<std::uint16_t>> wide_;
   // One flag per slice; each is written by the one task that copies the slice.
   std::vector<std::uint8_t> copied_;
   ProgressCounter progress_;

@@ -499,8 +499,10 @@ TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
 /// A phantom that claims slow random access, like a TIFF stack, and counts the voxels read.
 class SlowPhantomSource final : public VolumeSource {
  public:
-  explicit SlowPhantomSource(const PhantomSpec& spec, bool slow = true)
-      : phantom_(spec), slow_(slow) {}
+  explicit SlowPhantomSource(const PhantomSpec& spec, bool slow = true,
+                             SampleType type = SampleType::kUInt16)
+      : phantom_(spec), slow_(slow), type_(type) {}
+  [[nodiscard]] SampleType sampleType() const override { return type_; }
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return phantom_.dims(); }
   [[nodiscard]] VoxelSize voxelSize() const override { return phantom_.voxelSize(); }
   [[nodiscard]] bool slowRandomAccess() const override { return slow_; }
@@ -513,6 +515,7 @@ class SlowPhantomSource final : public VolumeSource {
  private:
   PhantomSource phantom_;
   bool slow_ = true;
+  SampleType type_ = SampleType::kUInt16;
   mutable std::atomic<std::int64_t> voxels_read_ = 0;
 };
 
@@ -599,6 +602,32 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
   parts.push_back(std::make_unique<SlowPhantomSource>(half));
   EXPECT_TRUE(ConcatSource(std::move(parts), 2).slowRandomAccess());
   EXPECT_FALSE(PhantomSource(half).slowRandomAccess());
+}
+
+TEST_F(DatasetTest, StagesEightBitInputInEightBit) {
+  // Grey values of at most 255: an 8-bit scan, staged in 8 bit and stored as UInt8 grids.
+  PhantomSpec phantom = spec();
+  phantom.air_value = 20;
+  phantom.material_value = 200;
+  phantom.noise_sigma = 0.0;
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.stage_slow_sources = false;
+  (void)writeDataset(SlowPhantomSource(phantom, true, SampleType::kUInt8), dir_ / "direct",
+                     options);
+  options.stage_slow_sources = true;
+  std::vector<std::string> stages;
+  options.progress = [&stages](std::string_view stage, double) {
+    if (stages.empty() || stages.back() != stage) {
+      stages.emplace_back(stage);
+    }
+  };
+  const SlowPhantomSource source(phantom, true, SampleType::kUInt8);
+  const DatasetInfo info = writeDataset(source, dir_ / "staged", options);
+  EXPECT_EQ(stages.front(), "staging");
+  EXPECT_EQ(info.value_type, ValueType::kUInt8);
+  EXPECT_EQ(source.voxelsRead(), phantom.dims[0] * phantom.dims[1] * phantom.dims[2]);
+  expectSameDataset(dir_ / "direct", dir_ / "staged");
 }
 
 TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {

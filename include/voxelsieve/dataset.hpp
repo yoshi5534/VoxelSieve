@@ -47,7 +47,8 @@ struct DatasetOptions {
   /// Where outside air enters (see SieveOptions::outside_air_axes).
   AirAxes outside_air_axes = kAllAxes;
   /// Sources with slow random access (`VolumeSource::slowRandomAccess`, such as TIFF stacks) are
-  /// first copied slice by slice to a temporary raw file of 2 bytes per voxel, so that every
+  /// first copied slice by slice to a temporary raw file in the input's width (1 or 2 bytes per
+  /// voxel), so that every
   /// slice is decoded once instead of once per brick. Off: they are read directly.
   bool stage_slow_sources = true;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.

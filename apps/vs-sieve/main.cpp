@@ -98,7 +98,7 @@ Options:
   --min-material <n>      Voxels above threshold for an 8^3 block to count as material
                           (default 1); raise it for noisy scans
   --staging-dir <dir>     TIFF stacks, datasets: where the input is first copied to a temporary
-                          raw file (2 bytes per voxel), so every slice is decoded only once
+                          raw file (1 or 2 bytes per voxel, as the input), so every slice is decoded once
                           (default: the output directory)
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
