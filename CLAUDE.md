@@ -14,7 +14,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     stacks (`DicomStackSource`, DCMTK, ADR 0019); `diconde.hpp` DICONDE metadata and
     export of volumes, material labels and pores as indications (ADR 0024)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
-    and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
+    (an interrupted import resumes from the journal it leaves in the output directory) and
+    `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
     `preview.hpp` the first look at a volume that every import shows before its passes, from
     slices the staging copy reads first (ADR 0020)
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
@@ -30,7 +31,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
-    PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
+    PNG and VDB output (the pore labels store the inside of large pores as tiles: visit tiles,
+    not only leaves); `orientation.hpp` fibre directions and fibre families of composites from
     the structure tensor (ADR 0028); `battery.hpp` battery cell inspection (housing, electrode
     layers, anode overhang, particles, voids; ADR 0029) and `cells.hpp` synthetic cells for it
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
