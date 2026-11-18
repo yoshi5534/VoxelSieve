@@ -101,6 +101,8 @@ class SurfaceMask {
   ~SurfaceMask();
 
   [[nodiscard]] const SurfaceInfo& info() const;
+  /// The .vss file it was opened from.
+  [[nodiscard]] const std::filesystem::path& file() const;
 
   /// Code of a level-0 voxel; voxels outside the volume are air.
   [[nodiscard]] std::uint8_t code(const std::array<std::int64_t, 3>& voxel) const;
@@ -136,7 +138,9 @@ struct IndexedMesh {
 /// `adaptivity` > 0, flat regions are meshed with larger triangles (see volumeToMesh); when the
 /// mesh still has more than `max_triangles`, the surface is sampled at 2, 4, ... times the voxel
 /// size until it fits. The first sampling is chosen from the band voxels in the header, so a large
-/// surface is never meshed at full resolution; memory follows `max_triangles`.
+/// surface is never meshed at full resolution; memory follows `max_triangles`. The mesh is cached
+/// beside the .vss file (`<file>.mesh-<max_triangles>-<adaptivity>.bin`) and read from there
+/// while the surface file is unchanged.
 [[nodiscard]] IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
                                              double adaptivity = 0.25);
 

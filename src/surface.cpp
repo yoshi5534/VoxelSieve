@@ -23,6 +23,7 @@
 #include <initializer_list>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -670,6 +671,7 @@ struct DecodedChunk {
 }  // namespace
 
 struct SurfaceMask::Impl {
+  std::filesystem::path file;
   boost::iostreams::mapped_file_source mapped;
   SurfaceInfo info;
   Index3 grid{};
@@ -810,6 +812,7 @@ SurfaceMask::~SurfaceMask() = default;
 
 SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cache_bytes) {
   auto impl = std::make_unique<Impl>();
+  impl->file = file;
   impl->mapped.open(file.string());
   if (!impl->mapped.is_open()) {
     throw std::runtime_error("Cannot open " + file.string());
@@ -1224,8 +1227,111 @@ Mesh SurfaceMask::toMesh(double adaptivity) const {
   return mesh;
 }
 
+namespace {
+
+constexpr std::string_view kMeshCacheMagic = "VSMESH1\n";
+
+/// The file a display mesh of `surface` with these settings is cached in, beside it.
+std::filesystem::path meshCacheFile(const std::filesystem::path& surface, std::size_t max_triangles,
+                                    double adaptivity) {
+  return surface.string() + ".mesh-" + std::to_string(max_triangles) + "-" +
+         std::to_string(std::llround(adaptivity * 1000.0)) + ".bin";
+}
+
+/// What a cached mesh must have been made from: the surface file's size and time.
+std::array<std::uint64_t, 2> meshCacheStamp(const std::filesystem::path& surface) {
+  return {static_cast<std::uint64_t>(std::filesystem::file_size(surface)),
+          static_cast<std::uint64_t>(
+              std::filesystem::last_write_time(surface).time_since_epoch().count())};
+}
+
+/// The cached mesh, or none when there is no cache of this surface or it is damaged.
+std::optional<IndexedMesh> readMeshCache(const std::filesystem::path& file,
+                                         const std::array<std::uint64_t, 2>& stamp) {
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::array<char, kMeshCacheMagic.size()> magic{};
+  std::array<std::uint64_t, 4> head{};  // stamp, then point and triangle counts
+  in.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+  in.read(reinterpret_cast<char*>(head.data()), sizeof(head));
+  if (!in || std::string_view(magic.data(), magic.size()) != kMeshCacheMagic ||
+      head[0] != stamp[0] || head[1] != stamp[1]) {
+    return std::nullopt;
+  }
+  const std::uint64_t expected = kMeshCacheMagic.size() + sizeof(head) +
+                                 head[2] * sizeof(std::array<float, 3>) +
+                                 head[3] * sizeof(std::array<std::uint32_t, 3>);
+  std::error_code error;
+  if (std::filesystem::file_size(file, error) != expected || error) {
+    return std::nullopt;
+  }
+  IndexedMesh mesh;
+  mesh.points.resize(static_cast<std::size_t>(head[2]));
+  mesh.triangles.resize(static_cast<std::size_t>(head[3]));
+  in.read(reinterpret_cast<char*>(mesh.points.data()),
+          static_cast<std::streamsize>(mesh.points.size() * sizeof(mesh.points[0])));
+  in.read(reinterpret_cast<char*>(mesh.triangles.data()),
+          static_cast<std::streamsize>(mesh.triangles.size() * sizeof(mesh.triangles[0])));
+  for (const auto& t : mesh.triangles) {
+    if (t[0] >= mesh.points.size() || t[1] >= mesh.points.size() || t[2] >= mesh.points.size()) {
+      return std::nullopt;
+    }
+  }
+  return in ? std::optional<IndexedMesh>(std::move(mesh)) : std::nullopt;
+}
+
+/// Caches `mesh` beside the surface; a directory that cannot be written keeps no cache.
+void writeMeshCache(const std::filesystem::path& file, const std::array<std::uint64_t, 2>& stamp,
+                    const IndexedMesh& mesh) {
+  try {
+    writeFile(file, [&](std::ostream& out) {
+      const std::array<std::uint64_t, 4> head{stamp[0], stamp[1], mesh.points.size(),
+                                              mesh.triangles.size()};
+      out.write(kMeshCacheMagic.data(), static_cast<std::streamsize>(kMeshCacheMagic.size()));
+      out.write(reinterpret_cast<const char*>(head.data()), sizeof(head));
+      out.write(reinterpret_cast<const char*>(mesh.points.data()),
+                static_cast<std::streamsize>(mesh.points.size() * sizeof(mesh.points[0])));
+      out.write(reinterpret_cast<const char*>(mesh.triangles.data()),
+                static_cast<std::streamsize>(mesh.triangles.size() * sizeof(mesh.triangles[0])));
+    });
+  } catch (const std::exception&) {
+    // Only a cache: the mesh is made again next time.
+  }
+}
+
+IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, double adaptivity);
+
+}  // namespace
+
+const std::filesystem::path& SurfaceMask::file() const { return impl_->file; }
+
 IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
                                double adaptivity) {
+  // Cached beside the surface (ADR 0009): the GUI, the report, the comparison and the thickness
+  // all ask for the same mesh, which takes seconds to make from a large surface.
+  std::array<std::uint64_t, 2> stamp{};
+  std::filesystem::path cache;
+  try {
+    stamp = meshCacheStamp(mask.file());
+    cache = meshCacheFile(mask.file(), max_triangles, adaptivity);
+    if (std::optional<IndexedMesh> cached = readMeshCache(cache, stamp)) {
+      return std::move(*cached);
+    }
+  } catch (const std::filesystem::filesystem_error&) {
+    cache.clear();
+  }
+  IndexedMesh mesh = makeDisplayMesh(mask, max_triangles, adaptivity);
+  if (!cache.empty()) {
+    writeMeshCache(cache, stamp, mesh);
+  }
+  return mesh;
+}
+
+namespace {
+
+IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, double adaptivity) {
   constexpr int kMaxCoarsening = 5;
   const SurfaceInfo& info = mask.info();
   const VoxelSize& v = info.voxel_size;
@@ -1265,6 +1371,8 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
     }
   }
 }
+
+}  // namespace
 
 void writeSurfaceImages(const SurfaceMask& mask, const std::filesystem::path& dir,
                         std::int64_t max_pixels) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -408,6 +409,25 @@ TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
   const IndexedMesh coarse = surfaceDisplayMesh(mask, budget);
   EXPECT_LE(coarse.triangles.size(), budget);
   EXPECT_GT(coarse.triangles.size(), budget / 20);
+
+  // Both meshes are cached beside the surface and read back unchanged.
+  const std::filesystem::path cache =
+      (dir_ / "surface.vss").string() + ".mesh-" + std::to_string(budget) + "-250.bin";
+  ASSERT_TRUE(std::filesystem::exists(cache));
+  const IndexedMesh cached = surfaceDisplayMesh(mask, budget);
+  EXPECT_EQ(cached.points, coarse.points);
+  EXPECT_EQ(cached.triangles, coarse.triangles);
+  // A damaged cache, or one of an older surface, is made again.
+  std::filesystem::resize_file(cache, 100);
+  EXPECT_EQ(surfaceDisplayMesh(mask, budget).triangles, coarse.triangles);
+  EXPECT_GT(std::filesystem::file_size(cache), 100U);
+  std::filesystem::last_write_time(
+      dir_ / "surface.vss",
+      std::filesystem::last_write_time(dir_ / "surface.vss") + std::chrono::seconds(5));
+  const auto stale = std::filesystem::last_write_time(cache);
+  EXPECT_EQ(surfaceDisplayMesh(SurfaceMask::open(dir_ / "surface.vss"), budget).triangles,
+            coarse.triangles);
+  EXPECT_NE(std::filesystem::last_write_time(cache), stale);
 }
 
 TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {
