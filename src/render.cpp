@@ -143,17 +143,30 @@ void drawLine(RenderImage& image, double x0, double y0, double x1, double y1, do
   }
 }
 
-/// One layer of samples: nearest (or farthest) depth with the normal and colour there.
+/// One layer of samples: nearest (or farthest) depth with the normal and colour there. Normal
+/// and colour are kept in single precision, 32 instead of 56 bytes per sample: a report image
+/// with supersampling has some ten million samples per layer.
 struct Layer {
   std::vector<double> depth;
-  std::vector<Vec> normal;
-  std::vector<Vec> color;
+  std::vector<std::array<float, 3>> normals;
+  std::vector<std::array<float, 3>> colors;
   bool keep_far = false;
 
   Layer(std::size_t samples, bool far) : keep_far(far) {
     depth.assign(samples, far ? -kFar : kFar);
-    normal.resize(samples);
-    color.resize(samples);
+    normals.resize(samples);
+    colors.resize(samples);
+  }
+  void set(std::size_t i, double z, const Vec& n, const Vec& c) {
+    depth[i] = z;
+    normals[i] = {static_cast<float>(n[0]), static_cast<float>(n[1]), static_cast<float>(n[2])};
+    colors[i] = {static_cast<float>(c[0]), static_cast<float>(c[1]), static_cast<float>(c[2])};
+  }
+  [[nodiscard]] Vec normal(std::size_t i) const {
+    return {normals[i][0], normals[i][1], normals[i][2]};
+  }
+  [[nodiscard]] Vec color(std::size_t i) const {
+    return {colors[i][0], colors[i][1], colors[i][2]};
   }
   [[nodiscard]] bool covered(std::size_t i) const { return std::isfinite(depth[i]); }
   [[nodiscard]] bool wins(std::size_t i, double z) const {
@@ -295,9 +308,7 @@ void rasterizeMesh(const RenderScene& scene, const Camera& camera, int width, in
                                  : uniform;
           for (Layer* layer : layers) {
             if (layer->wins(i, z)) {
-              layer->depth[i] = z;
-              layer->normal[i] = n;
-              layer->color[i] = c;
+              layer->set(i, z, n, c);
             }
           }
         }
@@ -331,9 +342,7 @@ void rasterizeSpheres(const RenderScene& scene, const Camera& camera, int width,
         if (!layer.wins(i, z)) {
           continue;
         }
-        layer.depth[i] = z;
-        layer.normal[i] = dx * camera.right + dy * camera.up + dz * camera.towards;
-        layer.color[i] = color;
+        layer.set(i, z, dx * camera.right + dy * camera.up + dz * camera.towards, color);
       }
     }
   }
@@ -480,10 +489,10 @@ RenderImage render(const RenderScene& scene, const RenderView& view) {
             if (glass && back.covered(i) && back.depth[i] > opaque_depth) {
               // Opaque geometry hides the far wall.
             } else if (glass && back.covered(i)) {
-              over(shade(light, back.normal[i], back.color[i], 1.0, 0.0), 0.6 * opacity);
+              over(shade(light, back.normal(i), back.color(i), 1.0, 0.0), 0.6 * opacity);
             }
             if (opaque.covered(i)) {
-              Vec c = shade(light, opaque.normal[i], opaque.color[i], ao[i], 0.22);
+              Vec c = shade(light, opaque.normal(i), opaque.color(i), ao[i], 0.22);
               // Dark outline where the depth jumps: silhouettes and steps.
               bool edge = false;
               for (const auto& [dx, dy] :
@@ -504,7 +513,7 @@ RenderImage render(const RenderScene& scene, const RenderView& view) {
               over(c, 1.0);
             }
             if (glass && front.covered(i) && front.depth[i] <= opaque_depth) {
-              const Vec n = front.normal[i];
+              const Vec n = front.normal(i);
               const double facing = std::abs(dot(n, camera.towards));
               // Tinted glass that darkens towards the rims, so the outline stays readable on the
               // light backdrop, with a highlight from the key light.
@@ -512,7 +521,7 @@ RenderImage render(const RenderScene& scene, const RenderView& view) {
               const double a = std::min(0.9, opacity + (0.8 - opacity) * fresnel);
               const double gloss =
                   0.5 * std::pow(std::max(0.0, std::abs(dot(n, light.half))), 64.0);
-              const Vec tint = (0.55 + 0.45 * facing) * front.color[i];
+              const Vec tint = (0.55 + 0.45 * facing) * front.color(i);
               over({std::min(1.0, tint[0] + gloss), std::min(1.0, tint[1] + gloss),
                     std::min(1.0, tint[2] + gloss)},
                    a);
