@@ -49,8 +49,10 @@ struct DatasetOptions {
   AirAxes outside_air_axes = kAllAxes;
   /// Sources with slow random access (`VolumeSource::slowRandomAccess`, such as TIFF stacks) are
   /// first copied slice by slice to a temporary raw file in the input's width (1 or 2 bytes per
-  /// voxel), so that every
-  /// slice is decoded once instead of once per brick. Off: they are read directly.
+  /// voxel), so that every slice is decoded once instead of once per brick. The copy is written
+  /// with plain writes, as many slices at once as the work memory holds; with
+  /// `min_material_voxels` 1, pass 1 (histogram, block maxima) is taken while the slices pass, so
+  /// the copy is read once, by pass 2. Off: they are read directly.
   bool stage_slow_sources = true;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.
   std::filesystem::path staging_dir;

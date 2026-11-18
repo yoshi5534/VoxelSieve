@@ -155,6 +155,13 @@ void removeStaleCopies(const std::filesystem::path& dir) {
   }
 }
 
+/// Result of pass 1: histogram and the k-th largest grey value of every 8^3 block.
+struct BlockStatistics {
+  Histogram histogram;
+  std::vector<std::uint16_t> block_kth;
+  Index3 block_dims{};
+};
+
 /// A temporary raw copy of a source, removed on destruction. The slices of the preview are copied
 /// first, round by round, coarse to fine, then the rest, so the preview costs no extra reading.
 class StagedSource {
@@ -184,23 +191,30 @@ class StagedSource {
     path_ = dir / (std::string(kStagingPrefix) + std::to_string(processId()) + "-" +
                    std::to_string(stamp) + ".raw");
     try {
-      boost::iostreams::mapped_file_params params(path_.string());
-      params.flags = boost::iostreams::mapped_file::readwrite;
+      // Written with plain positioned writes, not through a read-write mapping: the system bounds
+      // the dirty pages of writes, and nothing then ties the decoders to the speed of the disk
+      // through page faults (review finding D2). The file has its size at once, so slices
+      // written out of order leave no gaps to fill later.
+      std::ofstream(path_, std::ios::binary).close();
+      std::filesystem::resize_file(path_, bytes);
 #if defined(_WIN32)
       // A temporary file: Windows keeps its pages in memory instead of writing them to disk while
       // memory suffices. Written back, the copy stalled the next pass for half a minute with all
-      // cores idle. The attribute applies to handles opened after it is set, so the file is made
-      // first and mapped as an existing file.
-      std::ofstream(path_, std::ios::binary).close();
-      std::filesystem::resize_file(path_, bytes);
+      // cores idle. The attribute applies to handles opened after it is set.
       (void)SetFileAttributesW(path_.c_str(), FILE_ATTRIBUTE_TEMPORARY);
-#else
-      params.new_file_size = static_cast<boost::iostreams::stream_offset>(bytes);
 #endif
-      file_.open(params);
+      out_.open(path_, std::ios::binary | std::ios::in | std::ios::out);
+      if (!out_) {
+        throwWriteError(path_);
+      }
     } catch (...) {
       remove();
       throw;
+    }
+    // Pass 1 on the way (the block maxima need k = 1): every slice passes through memory once.
+    if (options.min_material_voxels == 1) {
+      block_dims_ = ceilDiv3(dims_, kBlockSize);
+      block_max_ = std::vector<std::atomic<std::uint16_t>>(product(block_dims_));
     }
   }
   StagedSource(const StagedSource&) = delete;
@@ -237,7 +251,12 @@ class StagedSource {
             preview->count(slice);
           }
         });
-    file_.close();
+    out_.close();
+    if (out_.fail()) {
+      throwWriteError(path_);
+    }
+    wide_.clear();  // the slice buffers of the threads
+    narrow_buffers_.clear();
     raw_ = std::make_unique<MappedRawSource>(
         path_,
         RawLayout{dims_, input_.voxelSize(), narrow_ ? SampleType::kUInt8 : SampleType::kUInt16,
@@ -245,6 +264,26 @@ class StagedSource {
   }
 
   [[nodiscard]] const VolumeSource& source() const { return *raw_; }
+
+  /// Pass 1 of the copied slices, taken while they were in memory: nothing when k > 1.
+  [[nodiscard]] std::optional<BlockStatistics> statistics() const {
+    if (block_max_.empty()) {
+      return std::nullopt;
+    }
+    BlockStatistics stats;
+    stats.block_dims = block_dims_;
+    stats.block_kth.reserve(block_max_.size());
+    for (const auto& value : block_max_) {
+      stats.block_kth.push_back(value.load());
+    }
+    stats.histogram.assign(kHistogramBins, 0);
+    histograms_.combine_each([&](const Histogram& local) {
+      for (std::size_t i = 0; i < kHistogramBins; ++i) {
+        stats.histogram[i] += local[i];
+      }
+    });
+    return stats;
+  }
 
  private:
   /// Copies slices `slice(0)` to `slice(count - 1)` that were not copied before, calling
@@ -258,31 +297,30 @@ class StagedSource {
         return;
       }
       const Box box{{0, 0, z}, {dims_[0], dims_[1], z + 1}};
-      const void* target = nullptr;
-      std::size_t target_bytes = 0;
+      std::vector<std::uint16_t>& wide = wide_.local();
+      wide.resize(slice_voxels);
+      input_.readRegion(box, wide);
+      visit(k, wide.data());
+      collect(z, wide);
+      const char* data = reinterpret_cast<const char*>(wide.data());
+      std::size_t bytes = slice_voxels * sizeof(std::uint16_t);
       if (narrow_) {
         // Read in 16 bit, stored in 8: every value of an 8-bit source is at most 255.
-        std::vector<std::uint16_t>& wide = wide_.local();
-        wide.resize(slice_voxels);
-        input_.readRegion(box, wide);
-        visit(k, wide.data());
-        auto* narrow = reinterpret_cast<std::uint8_t*>(file_.data()) +
-                       static_cast<std::size_t>(z) * slice_voxels;
-        std::transform(wide.begin(), wide.end(), narrow,
+        std::vector<std::uint8_t>& narrow = narrow_buffers_.local();
+        narrow.resize(slice_voxels);
+        std::transform(wide.begin(), wide.end(), narrow.begin(),
                        [](std::uint16_t v) { return static_cast<std::uint8_t>(v); });
-        target = narrow;
-        target_bytes = slice_voxels;
-      } else {
-        auto* wide = reinterpret_cast<std::uint16_t*>(file_.data()) +
-                     static_cast<std::size_t>(z) * slice_voxels;
-        input_.readRegion(box, {wide, slice_voxels});
-        visit(k, wide);
-        target = wide;
-        target_bytes = slice_voxels * sizeof(std::uint16_t);
+        data = reinterpret_cast<const char*>(narrow.data());
+        bytes = slice_voxels;
       }
-      // The slice is written; its pages go to the file cache instead of staying in the
-      // process's memory (Windows kept the whole copy in the working set).
-      detail::releaseMappedPages(target, target_bytes);
+      {
+        const std::scoped_lock lock(write_mutex_);
+        out_.seekp(static_cast<std::streamoff>(static_cast<std::uint64_t>(z) * bytes));
+        out_.write(data, static_cast<std::streamsize>(bytes));
+        if (!out_) {
+          throwWriteError(path_);
+        }
+      }
       copied_[static_cast<std::size_t>(z)] = 1;
       progress_.step();
     };
@@ -293,18 +331,45 @@ class StagedSource {
       }
       return;
     }
-    // One slice per task: each slice is decoded exactly once, all cores in parallel.
-    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, count, 1), [&](const auto& range) {
-      for (std::size_t k = range.begin(); k != range.end(); ++k) {
-        copy_slice(k);
+    // One slice per task: each slice is decoded exactly once, in parallel, as many at once as the
+    // work memory holds (a slice and its 8-bit copy per task, ADR 0031).
+    detail::runInFlight(count, tasksInMemory(slice_voxels * 3), copy_slice);
+  }
+
+  /// Adds a slice to the histogram and the block maxima of pass 1.
+  void collect(std::int64_t z, const std::vector<std::uint16_t>& slice) {
+    if (block_max_.empty()) {
+      return;
+    }
+    Histogram& histogram = histograms_.local();
+    std::vector<std::uint16_t>& row_max = row_max_.local();
+    const std::int64_t bz = z / kBlockSize;
+    for (std::int64_t by = 0; by < block_dims_[1]; ++by) {
+      row_max.assign(static_cast<std::size_t>(block_dims_[0]), 0);
+      for (std::int64_t y = by * kBlockSize; y < std::min((by + 1) * kBlockSize, dims_[1]); ++y) {
+        const std::uint16_t* line = slice.data() + y * dims_[0];
+        for (std::int64_t x = 0; x < dims_[0]; ++x) {
+          ++histogram[line[x]];
+          std::uint16_t& current = row_max[static_cast<std::size_t>(x / kBlockSize)];
+          current = std::max(current, line[x]);
+        }
       }
-    });
+      // Slices of one block layer run at once: the maximum is merged atomically.
+      for (std::int64_t bx = 0; bx < block_dims_[0]; ++bx) {
+        std::atomic<std::uint16_t>& target =
+            block_max_[static_cast<std::size_t>(bx + block_dims_[0] * (by + block_dims_[1] * bz))];
+        std::uint16_t seen = target.load();
+        const std::uint16_t value = row_max[static_cast<std::size_t>(bx)];
+        while (value > seen && !target.compare_exchange_weak(seen, value)) {
+        }
+      }
+    }
   }
 
   void remove() {
     raw_.reset();
-    if (file_.is_open()) {
-      file_.close();
+    if (out_.is_open()) {
+      out_.close();
     }
     std::error_code ignored;
     std::filesystem::remove(path_, ignored);
@@ -314,11 +379,18 @@ class StagedSource {
   Index3 dims_;
   bool narrow_ = false;  // 8-bit input, staged in 8 bit
   tbb::enumerable_thread_specific<std::vector<std::uint16_t>> wide_;
+  tbb::enumerable_thread_specific<std::vector<std::uint8_t>> narrow_buffers_;
   // One flag per slice; each is written by the one task that copies the slice.
   std::vector<std::uint8_t> copied_;
   ProgressCounter progress_;
   std::filesystem::path path_;
-  boost::iostreams::mapped_file file_;
+  std::fstream out_;
+  std::mutex write_mutex_;
+  // Pass 1 while staging (k = 1).
+  Index3 block_dims_{};
+  std::vector<std::atomic<std::uint16_t>> block_max_;
+  mutable tbb::combinable<Histogram> histograms_{[] { return Histogram(kHistogramBins, 0); }};
+  tbb::enumerable_thread_specific<std::vector<std::uint16_t>> row_max_;
   std::unique_ptr<MappedRawSource> raw_;
 };
 
@@ -328,12 +400,6 @@ class StagedSource {
 // above it, so the threshold may still be chosen after the pass and the result matches the
 // voxel count of the in-memory sieve. Only one value per block is kept (2 bytes); the k largest
 // values live in per-task heaps for one row of blocks.
-
-struct BlockStatistics {
-  Histogram histogram;
-  std::vector<std::uint16_t> block_kth;
-  Index3 block_dims{};
-};
 
 /// Lets the pages of a staged copy go now and then while it is read; the passes read each part
 /// of it about once, so pages read long ago are only memory taken from others.
@@ -1116,8 +1182,20 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   const VolumeSource* released = staged || !input.slowRandomAccess() ? &source : nullptr;
   PageRelease rows_release(released, 1024);
   BlockStatistics stats;
+  std::optional<BlockStatistics> staged_stats;
+  if (staged && !journal) {
+    staged_stats = staged->statistics();
+  }
   if (journal) {
     stats = std::move(journal->stats);
+  } else if (staged_stats) {
+    // Taken while the slices were copied: the copy is not read a second time for it (4.2).
+    stats = std::move(*staged_stats);
+    if (options.progress) {
+      options.progress("histogram", 1.0);  // done with the staging
+    }
+    std::filesystem::create_directories(dir);
+    writePass1(dir, journal_key, stats);
   } else {
     stats = collectBlockStatistics(source, options.min_material_voxels, options, rows_release);
     std::filesystem::create_directories(dir);
