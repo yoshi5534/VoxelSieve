@@ -50,8 +50,10 @@ class DicomStackSource final : public VolumeSource {
   [[nodiscard]] ValueMapping valueMapping() const override;
   /// 8 bit for unsigned samples of at most 8 bits stored.
   [[nodiscard]] SampleType sampleType() const override;
-  /// True: every slice is a file that is parsed as a whole.
-  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  /// False when every slice is an uncompressed file on a local disk, whose pixel data is read in
+  /// place like a raw file (ADR 0019); true for compressed slices and ZIP archives, which are
+  /// parsed as a whole.
+  [[nodiscard]] bool slowRandomAccess() const override;
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 

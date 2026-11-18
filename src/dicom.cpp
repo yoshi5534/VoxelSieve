@@ -22,7 +22,10 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/mapped_read.hpp"
+#include "detail/network.hpp"
 #include "detail/zip.hpp"
+#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
@@ -72,6 +75,10 @@ struct SliceHeader {
   std::optional<std::array<double, 2>> pixel_spacing;  // between rows (y), between columns (x)
   std::optional<double> slice_thickness;
   std::optional<double> spacing_between_slices;
+  /// Stored uncompressed, little-endian: the pixel data can be read from the file directly.
+  bool native = false;
+  /// Where the pixel data starts in the file when it can be read in place, else 0.
+  std::uint64_t pixel_offset = 0;
 };
 
 OFFilename fileName(const std::filesystem::path& path) { return {path.string().c_str()}; }
@@ -168,6 +175,9 @@ std::optional<SliceHeader> readHeader(const DicomFiles& files, const std::filesy
   DcmDataset& data = *file.getDataset();
   SliceHeader header;
   header.path = path;
+  const DcmXfer xfer(data.getOriginalXfer());
+  header.native = xfer.isLittleEndian() && !xfer.usesEncapsulatedFormat() &&
+                  xfer.getStreamCompression() == ESC_none;
   if (data.findAndGetUint16(DCM_Rows, header.rows).bad() ||
       data.findAndGetUint16(DCM_Columns, header.columns).bad() || header.rows == 0 ||
       header.columns == 0) {
@@ -274,6 +284,42 @@ std::once_flag codecs_registered;
 
 }  // namespace
 
+/// Where the pixel data of an uncompressed single-frame slice file starts, or 0 when it cannot be
+/// read in place: Pixel Data is the last element, so its value ends the file, and the element
+/// header just before it (tag, VR, length) must say so; otherwise (trailing padding, odd layouts)
+/// the slice is decoded by DCMTK.
+std::uint64_t pixelOffset(const SliceHeader& header) {
+  if (!header.native || header.frames != 1 || header.samples_per_pixel != 1 ||
+      (header.bits_allocated != 8 && header.bits_allocated != 16)) {
+    return 0;
+  }
+  std::uint64_t bytes = std::uint64_t{header.rows} * header.columns * (header.bits_allocated / 8);
+  bytes += bytes % 2;  // values have even length
+  std::error_code error;
+  const std::uint64_t size = std::filesystem::file_size(header.path, error);
+  if (error || size < bytes + 12) {
+    return 0;
+  }
+  const std::uint64_t offset = size - bytes;
+  std::array<unsigned char, 12> head{};
+  std::ifstream in(header.path, std::ios::binary);
+  in.seekg(static_cast<std::streamoff>(offset - head.size()));
+  in.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size()));
+  if (!in) {
+    return 0;
+  }
+  const auto u32 = [&](std::size_t at) {
+    return std::uint32_t{head[at]} | (std::uint32_t{head[at + 1]} << 8U) |
+           (std::uint32_t{head[at + 2]} << 16U) | (std::uint32_t{head[at + 3]} << 24U);
+  };
+  constexpr std::uint32_t kPixelDataTag = 0x0010'7FE0U;  // (7FE0,0010), group first, little-endian
+  // Explicit VR: tag, "OW"/"OB", two reserved bytes, 32-bit length.
+  const bool explicit_vr = u32(0) == kPixelDataTag && head[4] == 'O' &&
+                           (head[5] == 'W' || head[5] == 'B') && u32(8) == bytes;
+  // Implicit VR: tag and 32-bit length.
+  const bool implicit_vr = u32(4) == kPixelDataTag && u32(8) == bytes;
+  return explicit_vr || implicit_vr ? offset : 0;
+}
 struct DicomStackSource::Impl {
   DicomStackOptions options;
   DicomFiles source;
@@ -290,6 +336,11 @@ struct DicomStackSource::Impl {
   mutable std::list<std::pair<std::size_t, Slice>> lru;
   mutable std::unordered_map<std::size_t, std::list<std::pair<std::size_t, Slice>>::iterator>
       cached;
+
+  /// Whether every slice is read from its file in place (ADR 0019 amended), through a pool of
+  /// mapped files.
+  bool in_place = false;
+  detail::MappedFilePool mapped;
 
   void open(const std::vector<std::filesystem::path>& candidates);
   [[nodiscard]] Slice slice(std::size_t z) const;
@@ -388,6 +439,12 @@ void DicomStackSource::Impl::open(const std::vector<std::filesystem::path>& cand
   files.reserve(slices.size());
   for (const SliceHeader& slice : slices) {
     files.push_back(slice.path);
+  }
+  // Uncompressed slice files on a local disk are read in place, without staging (ADR 0019).
+  if (source.archive().empty() && !detail::onNetworkShare(slices.front().path)) {
+    tbb::parallel_for(std::size_t{0}, slices.size(),
+                      [&](std::size_t i) { slices[i].pixel_offset = pixelOffset(slices[i]); });
+    in_place = std::ranges::all_of(slices, [](const SliceHeader& s) { return s.pixel_offset > 0; });
   }
 }
 
@@ -541,6 +598,7 @@ void DicomStackSource::releaseMemory() const {
   impl_->cached.clear();
   impl_->lru.clear();
   impl_->source.releasePages();
+  impl_->mapped.clear();
 }
 
 void DicomStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
@@ -555,6 +613,43 @@ void DicomStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) 
   const std::int64_t nx = box.size(0);
   const std::int64_t ny = box.size(1);
   const std::int64_t width = impl_->dims[0];
+  if (impl_->in_place) {
+    // Rows straight from the mapped files, with the conversion of decode().
+    std::uint64_t copied = 0;
+    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+      const SliceHeader& header = impl_->slices[static_cast<std::size_t>(z)];
+      const auto file = impl_->mapped.get(static_cast<std::size_t>(z), header.path);
+      const auto* data = reinterpret_cast<const std::uint8_t*>(file->data()) + header.pixel_offset;
+      const std::size_t bytes = header.bits_allocated / 8;
+      const std::uint32_t mask = (std::uint32_t{1} << header.bits_stored) - 1U;
+      const std::uint32_t sign = std::uint32_t{1} << (header.bits_stored - 1);
+      const bool is_signed = header.pixel_representation == 1;
+      detail::prefetchMappedPages(data + (box.min[1] * width + box.min[0]) * bytes,
+                                  static_cast<std::size_t>(((ny - 1) * width + nx)) * bytes);
+      detail::readMapped(header.path.string(), [&] {
+        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+          const std::uint8_t* row = data + (y * width + box.min[0]) * bytes;
+          std::uint16_t* target = out.data() + ((z - box.min[2]) * ny + (y - box.min[1])) * nx;
+          for (std::int64_t x = 0; x < nx; ++x) {
+            const std::uint32_t raw =
+                bytes == 2 ? std::uint32_t{row[2 * x]} | (std::uint32_t{row[2 * x + 1]} << 8U)
+                           : std::uint32_t{row[x]};
+            const std::uint32_t stored = raw & mask;
+            target[x] =
+                is_signed
+                    ? static_cast<std::uint16_t>(
+                          static_cast<std::int32_t>(stored) -
+                          ((stored & sign) != 0U ? static_cast<std::int32_t>(mask) + 1 : 0) + 32768)
+                    : static_cast<std::uint16_t>(stored);
+          }
+        }
+      });
+      copied += static_cast<std::uint64_t>(nx * ny) * bytes;
+    }
+    // Reads of a mapping are page faults, which no process counter reports as bytes read.
+    countRead(CountedRead::kMappedFile, copied);
+    return;
+  }
   for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
     const auto slice = impl_->slice(static_cast<std::size_t>(z));
     for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
@@ -581,6 +676,8 @@ const std::string& DicomStackSource::seriesUid() const { return impl_->slices.fr
 const std::vector<std::pair<std::string, std::size_t>>& DicomStackSource::otherSeries() const {
   return impl_->other_series;
 }
+
+bool DicomStackSource::slowRandomAccess() const { return !impl_->in_place; }
 
 SampleType DicomStackSource::sampleType() const {
   return bitsStored() <= 8 && !isSigned() ? SampleType::kUInt8 : SampleType::kUInt16;
