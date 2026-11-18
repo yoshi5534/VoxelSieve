@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "detail/mapped_read.hpp"
 #include "detail/network.hpp"
 #include "detail/pages.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -133,6 +134,7 @@ void InterpolatedSource::readRegion(const Box& box, std::span<std::uint16_t> out
 
 struct MappedRawSource::Mapping {
   boost::iostreams::mapped_file_source file;
+  std::string path;
 };
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path,
@@ -160,6 +162,7 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLay
                              "exceeds the size of " +
                              path.string());
   }
+  mapping_->path = path.string();
   mapping_->file.open(path.string());
   if (!mapping_->file.is_open()) {
     throw std::runtime_error("Cannot map " + path.string());
@@ -179,14 +182,24 @@ void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) c
   const std::size_t bytes = sampleBytes(layout_.sample_type);
   const auto* data = reinterpret_cast<const unsigned char*>(mapping_->file.data()) + header_bytes_;
   const auto row_length = static_cast<std::size_t>(box.size(0));
-  std::size_t offset = 0;
+  // Read ahead: the rows of each slice of the region lie in one span of the file.
   for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-      const auto first = static_cast<std::size_t>(box.min[0] + dims[0] * (y + dims[1] * z));
-      convertSamples(data + first * bytes, row_length, layout_, &out[offset]);
-      offset += row_length;
-    }
+    const auto first = static_cast<std::size_t>(box.min[0] + dims[0] * (box.min[1] + dims[1] * z));
+    const auto last =
+        static_cast<std::size_t>(box.max[0] + dims[0] * (box.max[1] - 1 + dims[1] * z));
+    detail::prefetchMappedPages(data + first * bytes, (last - first) * bytes);
   }
+  std::size_t offset = 0;
+  // An I/O error while reading the mapping becomes an exception instead of ending the process.
+  detail::readMapped(mapping_->path, [&] {
+    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+        const auto first = static_cast<std::size_t>(box.min[0] + dims[0] * (y + dims[1] * z));
+        convertSamples(data + first * bytes, row_length, layout_, &out[offset]);
+        offset += row_length;
+      }
+    }
+  });
   // Reads of a mapping are page faults, which no process counter reports as bytes read.
   countRead(CountedRead::kMappedFile, offset * bytes);
 }

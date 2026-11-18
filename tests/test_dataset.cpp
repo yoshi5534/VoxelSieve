@@ -2,6 +2,23 @@
 #include <tbb/parallel_for.h>
 #include <zlib.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <csignal>
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define VOXELSIEVE_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define VOXELSIEVE_TEST_SANITIZED 1
+#endif
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -25,6 +42,7 @@
 #include <utility>
 #include <vector>
 
+#include "detail/mapped_read.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
@@ -1380,6 +1398,34 @@ TEST_F(DatasetReaderTest, BrickSweepKeepsItsTasksInMemoryAndPinsTheHalo) {
       sweep);
   EXPECT_EQ(most.load(), 1);
   EXPECT_EQ(visited.load(), dataset.level(0).bricks.size());
+}
+
+/// What a failed read of a file mapping raises: an I/O error of the device.
+void failMappedRead() {
+#if defined(_WIN32)
+  RaiseException(EXCEPTION_IN_PAGE_ERROR, 0, 0, nullptr);
+#else
+  (void)std::raise(SIGBUS);
+#endif
+}
+
+TEST(MappedRead, ReadErrorsOfAMappingBecomeExceptions) {
+#if !defined(_WIN32) && defined(VOXELSIEVE_TEST_SANITIZED)
+  GTEST_SKIP() << "the sanitizers handle SIGBUS themselves";
+#endif
+  int value = 0;
+  detail::readMapped("scan.raw", [&] { value = 1; });
+  EXPECT_EQ(value, 1);
+  EXPECT_THROW(detail::readMapped("scan.raw", [] { failMappedRead(); }), std::runtime_error);
+  // Other exceptions pass unchanged, and the next read is guarded again.
+  EXPECT_THROW(detail::readMapped("scan.raw", [] { throw std::invalid_argument("other"); }),
+               std::invalid_argument);
+  try {
+    detail::readMapped("scan.raw", [] { failMappedRead(); });
+    FAIL() << "expected an exception";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("scan.raw"), std::string::npos);
+  }
 }
 
 }  // namespace

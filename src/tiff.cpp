@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "detail/mapped_read.hpp"
 #include "detail/network.hpp"
 #include "detail/tiff.hpp"
 #include "detail/zip.hpp"
@@ -191,34 +192,51 @@ struct TiffStackSource::Impl {
     const std::int64_t cw = page.chunk_width;
     const std::int64_t ch = page.chunk_height;
     std::uint64_t copied = 0;
-    for (std::int64_t y = y0; y < y1; ++y) {
-      std::uint16_t* row = out + (y - y0) * stride;
-      for (std::int64_t x = x0; x < x1;) {
-        const std::int64_t column = x / cw;
-        const std::int64_t x_end = std::min(x1, (column + 1) * cw);
-        const auto chunk = static_cast<std::size_t>((y / ch) * page.chunks_across + column);
+    // Read ahead: the rows of the region in each chunk lie in one span of the file.
+    for (std::int64_t cy = y0 / ch; cy <= (y1 - 1) / ch; ++cy) {
+      const std::int64_t first_row = std::max(y0, cy * ch) - cy * ch;
+      const std::int64_t last_row = std::min(y1, (cy + 1) * ch) - 1 - cy * ch;
+      for (std::int64_t column = x0 / cw; column <= (x1 - 1) / cw; ++column) {
+        const auto chunk = static_cast<std::size_t>(cy * page.chunks_across + column);
         const std::uint64_t start =
-            page.chunk_offsets[chunk] +
-            static_cast<std::uint64_t>(((y % ch) * cw + (x - column * cw)) * bytes);
-        const auto count = static_cast<std::size_t>(x_end - x);
-        if (start + count * static_cast<std::uint64_t>(bytes) > size) {
-          throw std::runtime_error("TIFF strip outside its file: " + slices[z].file.string());
+            page.chunk_offsets[chunk] + static_cast<std::uint64_t>(first_row * cw * bytes);
+        const auto span = static_cast<std::uint64_t>((last_row - first_row + 1) * cw * bytes);
+        if (start + span <= size) {
+          detail::prefetchMappedPages(data + start, span);
         }
-        const std::uint8_t* p = data + start;
-        std::uint16_t* target = row + (x - x0);
-        if (bytes == 1) {
-          std::copy_n(p, count, target);
-        } else if (page.big_endian) {
-          for (std::size_t i = 0; i < count; ++i) {
-            target[i] = static_cast<std::uint16_t>((p[2 * i] << 8U) | p[2 * i + 1]);
-          }
-        } else {
-          std::memcpy(target, p, count * sizeof(std::uint16_t));
-        }
-        copied += count * static_cast<std::uint64_t>(bytes);
-        x = x_end;
       }
     }
+    // An I/O error while reading the mapping becomes an exception instead of ending the process.
+    detail::readMapped(slices[z].file.string(), [&] {
+      for (std::int64_t y = y0; y < y1; ++y) {
+        std::uint16_t* row = out + (y - y0) * stride;
+        for (std::int64_t x = x0; x < x1;) {
+          const std::int64_t column = x / cw;
+          const std::int64_t x_end = std::min(x1, (column + 1) * cw);
+          const auto chunk = static_cast<std::size_t>((y / ch) * page.chunks_across + column);
+          const std::uint64_t start =
+              page.chunk_offsets[chunk] +
+              static_cast<std::uint64_t>(((y % ch) * cw + (x - column * cw)) * bytes);
+          const auto count = static_cast<std::size_t>(x_end - x);
+          if (start + count * static_cast<std::uint64_t>(bytes) > size) {
+            throw std::runtime_error("TIFF strip outside its file: " + slices[z].file.string());
+          }
+          const std::uint8_t* p = data + start;
+          std::uint16_t* target = row + (x - x0);
+          if (bytes == 1) {
+            std::copy_n(p, count, target);
+          } else if (page.big_endian) {
+            for (std::size_t i = 0; i < count; ++i) {
+              target[i] = static_cast<std::uint16_t>((p[2 * i] << 8U) | p[2 * i + 1]);
+            }
+          } else {
+            std::memcpy(target, p, count * sizeof(std::uint16_t));
+          }
+          copied += count * static_cast<std::uint64_t>(bytes);
+          x = x_end;
+        }
+      }
+    });
     // Reads of a mapping are page faults, which no process counter reports as bytes read.
     countRead(CountedRead::kMappedFile, copied);
   }

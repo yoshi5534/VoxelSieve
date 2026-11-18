@@ -61,6 +61,7 @@ add_library(voxelsieve SHARED
   detail/components.cpp
   detail/sweep.cpp
   detail/convolution.cpp
+  detail/mapped_read.cpp
   detail/network.cpp
   detail/png.cpp
   detail/tiff.cpp
