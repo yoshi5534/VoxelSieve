@@ -753,6 +753,7 @@ MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model
     material.voxel_count = counts[static_cast<std::size_t>(material.id)];
     material.volume_mm3 = static_cast<double>(material.voxel_count) * voxel_mm3;
   }
+  detail::writeMaterialLevels(dir, info);
   detail::writeMaterialVolumeInfo(dir, info);
   return info;
 }

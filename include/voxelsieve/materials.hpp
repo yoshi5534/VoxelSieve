@@ -69,6 +69,10 @@ struct MaterialVolumeInfo {
   int min_neighbours = 0;
   std::vector<Material> materials;
   std::vector<std::array<std::int64_t, 3>> bricks;
+  /// Bricks of the coarser label levels 1, 2, … (format version 2): a level-L voxel holds the
+  /// material most of the 2 × 2 × 2 level-(L − 1) voxels below it have, for overlays of large
+  /// scans. Empty for volumes written before.
+  std::vector<std::vector<std::array<std::int64_t, 3>>> levels;
   /// Name of the learned model that made the volume; empty for the threshold segmentation.
   std::string model;
 };
@@ -97,6 +101,11 @@ class MaterialVolume {
   /// Material ids (0 = air) of every `stride`-th level-0 voxel of `box`, starting at box.min, x
   /// fastest; `out.size()` must be the product of ceil(box.size(a) / stride).
   void readRegion(const Box& box, std::span<std::uint8_t> out, std::int64_t stride = 1) const;
+
+  /// Material ids of the voxels of `box` in label level `level` (0: the full resolution, up to
+  /// `info().levels.size()`), whose voxel (i, j, k) covers level-0 voxels [i 2^L, (i + 1) 2^L)
+  /// per axis; x fastest. Reads the bricks of that level only.
+  void readLevel(int level, const Box& box, std::span<std::uint8_t> out) const;
 
  private:
   struct Impl;

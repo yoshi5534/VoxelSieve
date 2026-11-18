@@ -102,7 +102,13 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     footprint0.min[normal] = request.index;
     footprint0.max[normal] = request.index + 1;
     std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
-    materials->readRegion(footprint0, ids, stride);
+    if (shift > 0 && shift <= materials->info().levels.size()) {
+      // The label level of this zoom: the majority of each block, from its own small bricks
+      // instead of every 2^level-th voxel of the full-resolution bricks.
+      materials->readLevel(static_cast<int>(shift), box, ids);
+    } else {
+      materials->readRegion(footprint0, ids, stride);
+    }
     for (std::int64_t y = 0; y < box.size(va); ++y) {
       const std::int64_t row = box.min[va] - request.origin[1] + y;
       const std::int64_t column = box.min[ua] - request.origin[0];
@@ -406,7 +412,11 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
       footprint0.max[a] = std::min(box.max[a] << shift, info.dims[a]);
     }
     std::vector<std::uint8_t> ids(preview.overlay.size());
-    materials->readRegion(footprint0, ids, std::int64_t{1} << shift);
+    if (shift > 0 && shift <= materials->info().levels.size()) {
+      materials->readLevel(static_cast<int>(shift), box, ids);
+    } else {
+      materials->readRegion(footprint0, ids, std::int64_t{1} << shift);
+    }
     for (std::size_t i = 0; i < ids.size(); ++i) {
       if (ids[i] != 0 && preview.overlay[i] == 0) {
         preview.overlay[i] =
