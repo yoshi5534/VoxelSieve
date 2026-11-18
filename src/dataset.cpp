@@ -11,6 +11,7 @@
 #include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
+#include <tbb/task_group.h>
 
 #include <algorithm>
 #include <atomic>
@@ -24,6 +25,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -719,11 +721,160 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
     setGridProperties(empty.base(), top.level, info.voxel_size);
     writeBrick(dir / "overview.vdb", empty);
   } else {
-    std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb");
+    // Overwritten: a resumed import may have written it before.
+    std::filesystem::copy_file(brickPath(dir, top.level, top.bricks.front()), dir / "overview.vdb",
+                               std::filesystem::copy_options::overwrite_existing);
   }
 
   // Last and whole: a dataset whose write was interrupted has no index.json, and never half of one.
   writeJson(dir / "index.json", toJson(info));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Journal of an import, so that an interrupted one resumes: import.json says what was imported,
+// pass1.bin holds the result of pass 1 (the k-th largest value of every block and the histogram),
+// bricks.log one line per finished level-0 brick with its active voxels. Brick files are written
+// through a temporary file, so a listed brick is whole.
+
+constexpr std::string_view kJournalFile = "import.json";
+constexpr std::string_view kPass1File = "pass1.bin";
+constexpr std::string_view kBricksLog = "bricks.log";
+constexpr int kJournalVersion = 1;
+
+/// What must match for an import to resume: the input's size and the options that shape bricks.
+nlohmann::json journalKey(const DatasetInfo& info, const DatasetOptions& options) {
+  nlohmann::json key = {
+      {"dims", info.dims},
+      {"brick_size", options.brick_size},
+      {"margin_voxels", options.margin_voxels},
+      {"min_material_voxels", options.min_material_voxels},
+      {"value_type", std::string(valueTypeName(info.value_type))},
+      {"outside_air_axes", airAxesName(options.outside_air_axes)},
+      {"value_mapping",
+       {{"offset", info.value_mapping.offset}, {"scale", info.value_mapping.scale}}}};
+  key["threshold"] = options.threshold ? nlohmann::json(*options.threshold) : nlohmann::json();
+  writeVoxelSize(key, info.voxel_size);
+  return key;
+}
+
+struct Journal {
+  BlockStatistics stats;
+  std::map<Index3, std::int64_t> finished;  // level-0 brick -> active voxels, 0 when empty
+};
+
+void writePass1(const std::filesystem::path& dir, const nlohmann::json& key,
+                const BlockStatistics& stats) {
+  writeFile(dir / kPass1File, [&](std::ostream& out) {
+    out.write(reinterpret_cast<const char*>(stats.block_kth.data()),
+              static_cast<std::streamsize>(stats.block_kth.size() * sizeof(std::uint16_t)));
+    out.write(reinterpret_cast<const char*>(stats.histogram.data()),
+              static_cast<std::streamsize>(stats.histogram.size() * sizeof(Histogram::value_type)));
+  });
+  writeJson(dir / kJournalFile, {{"format", "voxelsieve-import"},
+                                 {"version", kJournalVersion},
+                                 {"key", key},
+                                 {"block_dims", stats.block_dims},
+                                 {"blocks", stats.block_kth.size()},
+                                 {"bins", stats.histogram.size()}});
+}
+
+/// The journal in `dir`, or none; throws when it was written for another input or options.
+std::optional<Journal> readJournal(const std::filesystem::path& dir, const nlohmann::json& key) {
+  std::ifstream head_in(dir / kJournalFile);
+  if (!head_in) {
+    return std::nullopt;
+  }
+  const nlohmann::json head = nlohmann::json::parse(head_in, nullptr, /*allow_exceptions=*/false);
+  if (head.is_discarded() || head.value("format", "") != "voxelsieve-import" ||
+      head.value("version", 0) != kJournalVersion) {
+    return std::nullopt;
+  }
+  if (head.at("key") != key) {
+    throw std::invalid_argument(
+        "The output directory " + dir.string() +
+        " holds an interrupted import of another input or with other options; remove it to "
+        "start again, or import with the same options to resume");
+  }
+  Journal journal;
+  journal.stats.block_dims = head.at("block_dims").get<Index3>();
+  journal.stats.block_kth.resize(head.at("blocks").get<std::size_t>());
+  journal.stats.histogram.resize(head.at("bins").get<std::size_t>());
+  std::ifstream in(dir / kPass1File, std::ios::binary);
+  in.read(reinterpret_cast<char*>(journal.stats.block_kth.data()),
+          static_cast<std::streamsize>(journal.stats.block_kth.size() * sizeof(std::uint16_t)));
+  in.read(
+      reinterpret_cast<char*>(journal.stats.histogram.data()),
+      static_cast<std::streamsize>(journal.stats.histogram.size() * sizeof(Histogram::value_type)));
+  if (!in || product(journal.stats.block_dims) != journal.stats.block_kth.size()) {
+    return std::nullopt;  // pass 1 was not written completely: run it again
+  }
+  // Lines cut off by the interruption are left out; their bricks are built again.
+  std::ifstream log(dir / kBricksLog);
+  std::string line;
+  while (std::getline(log, line)) {
+    Index3 brick{};
+    std::int64_t active = -1;
+    const char* p = line.data();
+    const char* end = line.data() + line.size();
+    bool ok = true;
+    for (std::int64_t* value : {&brick[0], &brick[1], &brick[2], &active}) {
+      while (p < end && *p == ' ') {
+        ++p;
+      }
+      const auto [next, error] = std::from_chars(p, end, *value);
+      ok = ok && error == std::errc();
+      p = next;
+    }
+    if (ok && active >= 0 && p == end) {
+      journal.finished[brick] = active;
+    }
+  }
+  return journal;
+}
+
+/// Appends finished bricks to bricks.log, a whole line at a time.
+class BrickLog {
+ public:
+  explicit BrickLog(const std::filesystem::path& file) : path_(file), out_(file, std::ios::app) {
+    if (!out_) {
+      throwWriteError(path_);
+    }
+  }
+  void add(const Index3& brick, std::int64_t active) {
+    const std::string line = std::to_string(brick[0]) + " " + std::to_string(brick[1]) + " " +
+                             std::to_string(brick[2]) + " " + std::to_string(active) + "\n";
+    const std::scoped_lock lock(mutex_);
+    out_ << line;
+    out_.flush();
+    if (!out_) {
+      throwWriteError(path_);
+    }
+  }
+
+ private:
+  std::filesystem::path path_;
+  std::mutex mutex_;
+  std::ofstream out_;
+};
+
+/// Removes the temporary files of writes that a process which ended left in `dir` and below.
+void removeStalePartials(const std::filesystem::path& dir) {
+  std::error_code error;
+  for (auto it = std::filesystem::recursive_directory_iterator(dir, error);
+       !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+    const std::string name = it->path().filename().string();
+    const auto at = name.rfind(".partial-");
+    if (at == std::string::npos) {
+      continue;
+    }
+    std::uint64_t pid = 0;
+    const char* first = name.data() + at + std::string_view(".partial-").size();
+    if (std::from_chars(first, name.data() + name.size(), pid).ec == std::errc() &&
+        !processRunning(pid)) {
+      std::error_code ignored;
+      std::filesystem::remove(it->path(), ignored);
+    }
+  }
 }
 
 }  // namespace
@@ -794,9 +945,6 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
       options.min_material_voxels > kBlockSize * kBlockSize * kBlockSize) {
     throw std::invalid_argument("min_material_voxels must be between 1 and 512");
   }
-  if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
-    throw std::invalid_argument("Output directory is not empty: " + dir.string());
-  }
   const ValueType native =
       input.sampleType() == SampleType::kUInt8 ? ValueType::kUInt8 : ValueType::kUInt16;
   if (options.value_type == ValueType::kUInt8 && native != ValueType::kUInt8) {
@@ -816,11 +964,32 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   info.min_material_voxels = options.min_material_voxels;
   info.outside_air_axes = options.outside_air_axes;
 
+  // An interrupted import of the same input with the same options resumes from its journal;
+  // anything else in the directory is an error. Copies and partial files of processes that ended
+  // are no content.
+  const nlohmann::json journal_key = journalKey(info, options);
+  std::optional<Journal> journal;
+  if (std::filesystem::exists(dir)) {
+    removeStaleCopies(dir);
+    removeStalePartials(dir);
+  }
+  if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
+    if (options.resume && !std::filesystem::exists(dir / "index.json")) {
+      journal = readJournal(dir, journal_key);
+    }
+    if (!journal) {
+      throw std::invalid_argument("Output directory is not empty: " + dir.string());
+    }
+  }
+  const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
+  const std::size_t remaining =
+      product(brick_dims) - (journal ? journal->finished.size() : std::size_t{0});
+
   // A source read in one pass (gzip) is always copied: read in place, every brick would start
-  // the stream again.
+  // the stream again. A resumed import with every brick done reads no more of the input.
   const bool sequential = input.sequentialAccess();
   std::unique_ptr<StagedSource> staged;
-  if ((options.stage_slow_sources && input.slowRandomAccess()) || sequential) {
+  if (remaining > 0 && ((options.stage_slow_sources && input.slowRandomAccess()) || sequential)) {
     staged = std::make_unique<StagedSource>(
         input, options.staging_dir.empty() ? dir : options.staging_dir, options);
   }
@@ -862,48 +1031,116 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   const VolumeSource& source = staged ? staged->source() : input;
 
   std::optional<TelemetryPhase> phase(std::in_place, "pass 1 (histogram)");
-  PageRelease rows_release(staged ? &source : nullptr, 1024);
-  const BlockStatistics stats =
-      collectBlockStatistics(source, options.min_material_voxels, options, rows_release);
+  // The pages of a mapped input go now and then, as those of the staged copy: the passes read
+  // each part about once, and a mapped 300 GB raw file would otherwise push the rest of the
+  // machine into paging. Slow sources (TIFF, DICOM) would drop their decoded caches instead.
+  const VolumeSource* released = staged || !input.slowRandomAccess() ? &source : nullptr;
+  PageRelease rows_release(released, 1024);
+  BlockStatistics stats;
+  if (journal) {
+    stats = std::move(journal->stats);
+  } else {
+    stats = collectBlockStatistics(source, options.min_material_voxels, options, rows_release);
+    std::filesystem::create_directories(dir);
+    writePass1(dir, journal_key, stats);
+  }
   const detail::ThresholdResult estimate = detail::airThreshold(stats.histogram);
   info.threshold = options.threshold.value_or(estimate.threshold);
   info.air_level = estimate.air_level;
   const BlockGrid blocks = classifyBlocks(stats, info.threshold, options.outside_air_axes);
 
+  // The bricks need about the kept blocks in the stored width (CT noise hardly compresses), and a
+  // seventh more for the coarser levels: say so now rather than after hours of writing.
+  if (remaining > 0) {
+    const auto kept = static_cast<std::uint64_t>(
+        std::count_if(blocks.states.begin(), blocks.states.end(),
+                      [](BlockState s) { return s != BlockState::kOutsideAir; }));
+    const std::uint64_t value_bytes = info.value_type == ValueType::kUInt8    ? 1
+                                      : info.value_type == ValueType::kUInt16 ? 2
+                                                                              : 4;
+    const double fraction_left =
+        static_cast<double>(remaining) / static_cast<double>(product(brick_dims));
+    const auto needed = static_cast<std::uint64_t>(
+        static_cast<double>(kept * kBlockSize * kBlockSize * kBlockSize * value_bytes) *
+        (fraction_left + 1.0 / 7.0));
+    std::error_code error;
+    const auto space = std::filesystem::space(dir, error);
+    if (!error && space.available < needed) {
+      constexpr double kGb = 1024.0 * 1024.0 * 1024.0;
+      throw std::runtime_error("The dataset needs about " +
+                               std::to_string(static_cast<double>(needed) / kGb) + " GB in " +
+                               dir.string() + ", but only " +
+                               std::to_string(static_cast<double>(space.available) / kGb) +
+                               " GB are free; free some space and run the import again to resume");
+    }
+  }
+
   // Level 0.
   phase.reset();
   phase.emplace("pass 2 (bricks)");
   LevelInfo level0{0, info.dims, info.voxel_size, {}};
-  const Index3 brick_dims = ceilDiv3(info.dims, options.brick_size);
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
   std::mutex mutex;
-  ProgressCounter brick_progress(options.progress, "bricks", product(brick_dims));
-  PageRelease bricks_release(staged ? &source : nullptr, 16);
+  ProgressCounter brick_progress(options.progress, "bricks", remaining);
+  PageRelease bricks_release(released, 16);
+  std::optional<BrickLog> log(std::in_place, dir / kBricksLog);
+  if (journal) {
+    for (const auto& [brick, active] : journal->finished) {
+      if (active > 0) {
+        level0.bricks.push_back(brick);
+        info.active_voxel_count += active;
+      }
+    }
+  }
   tbb::enumerable_thread_specific<UninitializedVector<std::uint16_t>> buffers;
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
-    const GreyGrid grid =
-        buildBrick(info.value_type, source, blocks, brick, options, buffers.local());
-    bricks_release.step();
-    brick_progress.step();
-    if (!grid) {
+    if (journal && journal->finished.contains(brick)) {
       return;
     }
-    setGridProperties(grid.base(), 0, info.voxel_size);
-    grid.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
-    writeBrick(brickPath(dir, 0, brick), grid);
-    // Counted outside the lock: OpenVDB counts with TBB tasks, and a thread waiting for them may
-    // run another brick of this loop, which would then block on the lock it holds.
-    const auto active = static_cast<std::int64_t>(grid.base().activeVoxelCount());
-    const std::scoped_lock lock(mutex);
-    level0.bricks.push_back(brick);
-    info.active_voxel_count += active;
+    // In a context of its own: once another brick fails, TBB cancels the loops nested in the
+    // others too, and OpenVDB's algorithms then leave half-built trees behind. Isolated, every
+    // brick in work is finished and listed before the failure reaches the caller.
+    tbb::task_group_context context(tbb::task_group_context::isolated);
+    tbb::task_group group(context);
+    // Isolated as well: waiting for it, this thread takes no other brick, whose buffer it shares.
+    tbb::this_task_arena::isolate([&] {
+      group.run_and_wait([&] {
+        const GreyGrid grid =
+            buildBrick(info.value_type, source, blocks, brick, options, buffers.local());
+        bricks_release.step();
+        if (!grid) {
+          log->add(brick, 0);
+          brick_progress.step();
+          return;
+        }
+        setGridProperties(grid.base(), 0, info.voxel_size);
+        grid.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
+        writeBrick(brickPath(dir, 0, brick), grid);
+        // Counted outside the lock: OpenVDB counts with TBB tasks, and a thread waiting for them
+        // may run another brick of this loop, which would then block on the lock it holds.
+        const auto active = static_cast<std::int64_t>(grid.base().activeVoxelCount());
+        log->add(brick, active);
+        {
+          const std::scoped_lock lock(mutex);
+          level0.bricks.push_back(brick);
+          info.active_voxel_count += active;
+        }
+        brick_progress.step();
+      });
+    });
   });
+  log.reset();  // closed, so that it can be removed at the end
   std::sort(level0.bricks.begin(), level0.bricks.end());
   info.levels.push_back(std::move(level0));
 
   phase.reset();
   writeCoarseLevels(dir, info, options.progress);
+  // The dataset is whole: the journal is no longer needed.
+  for (const std::string_view name : {kJournalFile, kPass1File, kBricksLog}) {
+    std::error_code ignored;
+    std::filesystem::remove(dir / name, ignored);
+  }
   return info;
 }
 

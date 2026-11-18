@@ -66,6 +66,9 @@ Grey values are stored in the input's width, 8 or 16 bit, unchanged (docs/adr/00
 Several inputs are joined one after another along --join (default z) into one volume, for scans
 reconstructed in parts. Their other dimensions and voxel sizes must match.
 
+An interrupted import into a dataset directory resumes when it is run again with the same input
+and options: the first pass and the bricks already written are skipped.
+
 Output:
   <dir>                   Bricked multi-resolution dataset (streaming, any volume size;
                           see docs/adr/0004). Used for every --out not ending in .vdb.

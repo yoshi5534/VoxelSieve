@@ -70,6 +70,11 @@ struct DatasetOptions {
   /// that stage done, 0 to 1.
   /// Called from one thread at a time, at most once per whole percent of a stage.
   std::function<void(std::string_view stage, double fraction)> progress;
+  /// An import that was interrupted leaves a journal in the output directory (import.json, the
+  /// result of pass 1 and the finished bricks). Written again into that directory with the same
+  /// input size and options, it resumes: pass 1 and the finished bricks are skipped (a slow
+  /// source is staged again). Off, or with other options, the directory must be empty.
+  bool resume = true;
 };
 
 struct LevelInfo {

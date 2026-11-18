@@ -499,10 +499,11 @@ TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
 /// A phantom that claims slow random access, like a TIFF stack, and counts the voxels read.
 class SlowPhantomSource final : public VolumeSource {
  public:
-  explicit SlowPhantomSource(const PhantomSpec& spec) : phantom_(spec) {}
+  explicit SlowPhantomSource(const PhantomSpec& spec, bool slow = true)
+      : phantom_(spec), slow_(slow) {}
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return phantom_.dims(); }
   [[nodiscard]] VoxelSize voxelSize() const override { return phantom_.voxelSize(); }
-  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  [[nodiscard]] bool slowRandomAccess() const override { return slow_; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
     voxels_read_ += box.voxelCount();
     phantom_.readRegion(box, out);
@@ -511,6 +512,7 @@ class SlowPhantomSource final : public VolumeSource {
 
  private:
   PhantomSource phantom_;
+  bool slow_ = true;
   mutable std::atomic<std::int64_t> voxels_read_ = 0;
 };
 
@@ -614,6 +616,53 @@ TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   options.min_material_voxels = 1;
   (void)writeDataset(source, dir_, options);
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+}
+
+TEST_F(DatasetTest, InterruptedImportResumesWithTheFinishedBricks) {
+  const PhantomSpec phantom = spec();
+  DatasetOptions options;
+  options.brick_size = 16;
+  const SlowPhantomSource fresh(phantom, /*slow=*/false);
+  (void)writeDataset(fresh, dir_ / "whole", options);
+
+  // Interrupted half way through the bricks: the journal stays, the dataset is not there yet.
+  DatasetOptions interrupted = options;
+  interrupted.progress = [](std::string_view stage, double fraction) {
+    if (stage == "bricks" && fraction >= 0.5) {
+      throw std::runtime_error("interrupted");
+    }
+  };
+  const auto out = dir_ / "resumed";
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, interrupted), std::runtime_error);
+  EXPECT_TRUE(std::filesystem::exists(out / "import.json"));
+  EXPECT_FALSE(std::filesystem::exists(out / "index.json"));
+  // A partial file that the interrupted process left is no content.
+  std::ofstream(out / "level0" / "0_0_0.vdb.partial-999999999-0") << "cut off";
+
+  // With other options the directory is not taken for this import.
+  DatasetOptions other = options;
+  other.margin_voxels = 5;
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, other), std::invalid_argument);
+  DatasetOptions no_resume = options;
+  no_resume.resume = false;
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, no_resume), std::invalid_argument);
+
+  // The same options resume: no pass 1, and only the bricks not done yet are read.
+  std::vector<std::string> stages;
+  options.progress = [&stages](std::string_view stage, double) {
+    if (stages.empty() || stages.back() != stage) {
+      stages.emplace_back(stage);
+    }
+  };
+  const SlowPhantomSource resumed(phantom, /*slow=*/false);
+  (void)writeDataset(resumed, out, options);
+  EXPECT_EQ(stages, (std::vector<std::string>{"bricks", "levels"}));
+  EXPECT_LT(resumed.voxelsRead(), fresh.voxelsRead() * 3 / 4);
+  expectSameDataset(dir_ / "whole", out);
+  for (const char* name : {"import.json", "pass1.bin", "bricks.log"}) {
+    EXPECT_FALSE(std::filesystem::exists(out / name)) << name;
+  }
+  EXPECT_FALSE(std::filesystem::exists(out / "level0" / "0_0_0.vdb.partial-999999999-0"));
 }
 
 // Value types (ADR 0021).

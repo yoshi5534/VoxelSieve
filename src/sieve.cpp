@@ -211,14 +211,9 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
   std::ostringstream buffer(std::ios::binary);
   archive.writeTo(buffer, grids);
   const std::string bytes = std::move(buffer).str();
-  std::ofstream out(path, std::ios::binary);
-  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  out.close();
-  if (!out) {
-    // Says when the disk is full, rather than leave a file that only shows later as "not a VDB
-    // file".
-    throwWriteError(path);
-  }
+  // Through a temporary file: a brick file exists only once it is whole, which an interrupted
+  // import relies on to resume, and a full disk is an error that says so.
+  writeFile(path, bytes);
 }
 
 AirAxes parseAirAxes(std::string_view text) {
