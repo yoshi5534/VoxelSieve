@@ -606,29 +606,33 @@ std::vector<SurfacePoint> surfacePoints(const SurfaceMask& mask, const Box& box,
     clamped.min[a] = std::clamp<std::int64_t>(clamped.min[a], 0, info.dims[a]);
     clamped.max[a] = std::clamp<std::int64_t>(clamped.max[a], clamped.min[a], info.dims[a]);
   }
-  std::vector<SurfacePoint> points;
   if (clamped.voxelCount() == 0) {
-    return points;
+    return {};
   }
   const std::int64_t step = std::max(stride, 1);
-  // Slabs along z with a margin of one voxel below and two above for the differences.
-  constexpr std::int64_t kSlab = 32;
-  for (std::int64_t z0 = clamped.min[2]; z0 < clamped.max[2]; z0 += kSlab) {
-    const std::int64_t z1 = std::min(z0 + kSlab, clamped.max[2]);
+  std::array<float, 256> decoded{};
+  for (int c = 0; c <= info.maxCode(); ++c) {
+    decoded[static_cast<std::size_t>(c)] =
+        decodeSurfaceDistance(static_cast<std::uint8_t>(c), info.bits, info.band_voxels);
+  }
+  // Slabs along z of whole sample planes, in parallel; each is read with a margin of one voxel
+  // below and a step and two above, for the crossings to the next sample and the differences.
+  const std::int64_t planes_per_slab = std::max<std::int64_t>(1, 32 / step);
+  const std::int64_t samples_z = (clamped.size(2) + step - 1) / step;
+  const std::int64_t slabs = (samples_z + planes_per_slab - 1) / planes_per_slab;
+  std::vector<std::vector<SurfacePoint>> found(static_cast<std::size_t>(slabs));
+  tbb::parallel_for(std::int64_t{0}, slabs, [&](std::int64_t slab) {
+    const std::int64_t z0 = clamped.min[2] + slab * planes_per_slab * step;
+    const std::int64_t z1 = std::min(z0 + planes_per_slab * step, clamped.max[2]);
     Box read = clamped;
     read.min[2] = z0;
     read.max[2] = z1;
     for (std::size_t a = 0; a < 3; ++a) {
       read.min[a] = std::max<std::int64_t>(read.min[a] - 1, 0);
-      read.max[a] = std::min<std::int64_t>(read.max[a] + 2, info.dims[a]);
+      read.max[a] = std::min<std::int64_t>(read.max[a] + step + 1, info.dims[a]);
     }
     std::vector<std::uint8_t> codes(static_cast<std::size_t>(read.voxelCount()));
     mask.readCodes(read, codes);
-    std::array<float, 256> decoded{};
-    for (int c = 0; c <= info.maxCode(); ++c) {
-      decoded[static_cast<std::size_t>(c)] =
-          decodeSurfaceDistance(static_cast<std::uint8_t>(c), info.bits, info.band_voxels);
-    }
     const std::int64_t nx = read.size(0);
     const std::int64_t ny = read.size(1);
     const auto at = [&](std::int64_t x, std::int64_t y, std::int64_t z) -> double {
@@ -642,36 +646,47 @@ std::vector<SurfacePoint> surfacePoints(const SurfaceMask& mask, const Box& box,
               0.5 * (at(x, y + 1, z) - at(x, y - 1, z)) / v[1],
               0.5 * (at(x, y, z + 1) - at(x, y, z - 1)) / v[2]};
     };
+    std::vector<SurfacePoint>& points = found[static_cast<std::size_t>(slab)];
     for (std::int64_t z = z0; z < z1; z += step) {
       for (std::int64_t y = clamped.min[1]; y < clamped.max[1]; y += step) {
         for (std::int64_t x = clamped.min[0]; x < clamped.max[0]; x += step) {
-          const double d0 = at(x, y, z);
           for (std::size_t axis = 0; axis < 3; ++axis) {
-            std::array<std::int64_t, 3> next{x, y, z};
-            ++next[axis];
-            if (next[axis] >= info.dims[axis]) {
-              continue;
+            // Along the grid line to the next sample, so that a surface between two samples, such
+            // as a plane normal to the axis, is found as well: the first crossing on the way.
+            std::array<std::int64_t, 3> p{x, y, z};
+            const std::int64_t end = std::min(p[axis] + step, info.dims[axis] - 1);
+            double d0 = at(p[0], p[1], p[2]);
+            for (; p[axis] < end; ++p[axis]) {
+              std::array<std::int64_t, 3> next = p;
+              ++next[axis];
+              const double d1 = at(next[0], next[1], next[2]);
+              if ((d0 < 0.0) == (d1 < 0.0)) {
+                d0 = d1;
+                continue;
+              }
+              const double t = d0 / (d0 - d1);
+              Vec position{static_cast<double>(p[0]), static_cast<double>(p[1]),
+                           static_cast<double>(p[2])};
+              position[axis] += t;
+              for (std::size_t k = 0; k < 3; ++k) {
+                position[k] *= v[k];
+              }
+              const Vec g =
+                  (1.0 - t) * gradient(p[0], p[1], p[2]) + t * gradient(next[0], next[1], next[2]);
+              points.push_back({position, normalized(g)});
+              break;
             }
-            const double d1 = at(next[0], next[1], next[2]);
-            if ((d0 < 0.0) == (d1 < 0.0)) {
-              continue;
-            }
-            const double t = d0 / (d0 - d1);
-            Vec position{static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)};
-            position[axis] += t;
-            for (std::size_t k = 0; k < 3; ++k) {
-              position[k] *= v[k];
-            }
-            const Vec g = (1.0 - t) * gradient(x, y, z) + t * gradient(next[0], next[1], next[2]);
-            points.push_back({position, normalized(g)});
           }
         }
       }
     }
+  });
+  std::vector<SurfacePoint> points;
+  for (const auto& part : found) {
+    points.insert(points.end(), part.begin(), part.end());
   }
   return points;
 }
-
 nlohmann::json toJson(const GeometricElement& element) {
   Json json = {{"type", toString(element.type)}};
   switch (element.type) {
