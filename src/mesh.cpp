@@ -88,7 +88,7 @@ Mesh readStl(const std::filesystem::path& path) {
     in.clear();
     in.seekg(0);
   }
-  std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   if (bytes.starts_with("solid")) {
     Mesh mesh = readAsciiStl(bytes, path);
     if (!mesh.triangles.empty()) {

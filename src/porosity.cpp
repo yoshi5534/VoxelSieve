@@ -1597,17 +1597,10 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
   if (!in) {
     throw std::runtime_error("No porosity result in " + dir.string());
   }
-  const nlohmann::json json = nlohmann::json::parse(in);
+  // Pores and zones are taken over as they are parsed and dropped from the document: as a JSON
+  // tree, 10^7 pores would take some 18 GB.
   PorosityResult result;
-  result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
-  result.air_level = json.at("air_level").get<float>();
-  result.material_level = json.at("material_level").get<float>();
-  for (const auto& level : json.value("material_levels", nlohmann::json::array())) {
-    result.material_levels[level.at("id").get<int>()] = level.at("level").get<float>();
-  }
-  result.noise_sigma = json.at("noise_sigma").get<double>();
-  result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
-  for (const nlohmann::json& item : json.at("pores")) {
+  const auto read_pore = [](const nlohmann::json& item) {
     DetectedPore pore;
     pore.id = item.at("id").get<int>();
     pore.voxel_count = item.at("voxel_count").get<std::int64_t>();
@@ -1616,9 +1609,9 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     pore.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
     pore.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
     pore.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
-    result.pores.push_back(pore);
-  }
-  for (const nlohmann::json& item : json.at("zones")) {
+    return pore;
+  };
+  const auto read_zone = [](const nlohmann::json& item) {
     PorosityZone zone;
     zone.id = item.at("id").get<int>();
     zone.block_count = item.at("block_count").get<std::int64_t>();
@@ -1627,8 +1620,33 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     zone.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
     zone.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
     zone.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
-    result.zones.push_back(zone);
+    return zone;
+  };
+  std::string list;  // the top-level array being parsed
+  const nlohmann::json json = nlohmann::json::parse(
+      in, [&](int depth, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+        using Event = nlohmann::json::parse_event_t;
+        if (depth == 1 && event == Event::key) {
+          list = parsed.get<std::string>();
+        } else if (depth == 2 && event == Event::object_end &&
+                   (list == "pores" || list == "zones")) {
+          if (list == "pores") {
+            result.pores.push_back(read_pore(parsed));
+          } else {
+            result.zones.push_back(read_zone(parsed));
+          }
+          return false;  // taken over: not kept in the document
+        }
+        return true;
+      });
+  result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
+  result.air_level = json.at("air_level").get<float>();
+  result.material_level = json.at("material_level").get<float>();
+  for (const auto& level : json.value("material_levels", nlohmann::json::array())) {
+    result.material_levels[level.at("id").get<int>()] = level.at("level").get<float>();
   }
+  result.noise_sigma = json.at("noise_sigma").get<double>();
+  result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
   if (std::filesystem::exists(dir / "analysis.vdb")) {
     initializeVdb();
     openvdb::io::File file((dir / "analysis.vdb").string());

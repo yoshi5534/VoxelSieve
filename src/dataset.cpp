@@ -256,7 +256,7 @@ class StagedSource {
         return;
       }
       const Box box{{0, 0, z}, {dims_[0], dims_[1], z + 1}};
-      void* target = nullptr;
+      const void* target = nullptr;
       std::size_t target_bytes = 0;
       if (narrow_) {
         // Read in 16 bit, stored in 8: every value of an 8-bit source is at most 255.
@@ -783,7 +783,12 @@ nlohmann::json journalKey(const DatasetInfo& info, const DatasetOptions& options
 
 struct Journal {
   BlockStatistics stats;
-  std::map<Index3, std::int64_t> finished;  // level-0 brick -> active voxels, 0 when empty
+  /// Level-0 bricks with their active voxels (0 when empty), sorted by brick.
+  std::vector<std::pair<Index3, std::int64_t>> finished;
+  [[nodiscard]] bool isFinished(const Index3& brick) const {
+    return std::binary_search(finished.begin(), finished.end(), std::pair{brick, std::int64_t{0}},
+                              [](const auto& a, const auto& b) { return a.first < b.first; });
+  }
 };
 
 void writePass1(const std::filesystem::path& dir, const nlohmann::json& key,
@@ -850,9 +855,15 @@ std::optional<Journal> readJournal(const std::filesystem::path& dir, const nlohm
       p = next;
     }
     if (ok && active >= 0 && p == end) {
-      journal.finished[brick] = active;
+      journal.finished.emplace_back(brick, active);
     }
   }
+  // Sorted by brick, a brick listed twice once.
+  std::sort(journal.finished.begin(), journal.finished.end());
+  journal.finished.erase(
+      std::unique(journal.finished.begin(), journal.finished.end(),
+                  [](const auto& a, const auto& b) { return a.first == b.first; }),
+      journal.finished.end());
   return journal;
 }
 
@@ -1119,7 +1130,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   tbb::enumerable_thread_specific<UninitializedVector<std::uint16_t>> buffers;
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
     const Index3 brick = unravel(i, brick_dims);
-    if (journal && journal->finished.contains(brick)) {
+    if (journal && journal->isFinished(brick)) {
       return;
     }
     // In a context of its own: once another brick fails, TBB cancels the loops nested in the
