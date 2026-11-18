@@ -4,8 +4,8 @@
 #include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
-#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_pipeline.h>
 #include <tbb/task_arena.h>
 
 #include <algorithm>
@@ -14,7 +14,9 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
@@ -29,6 +31,7 @@
 #include "detail/material_volume.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/uninitialized.hpp"
@@ -41,7 +44,6 @@ using Index3 = std::array<std::int64_t, 3>;
 using Json = nlohmann::json;
 
 constexpr int kFormatVersion = 1;
-constexpr std::size_t kCachedBricks = 64;
 constexpr int kMaxMaterials = 8;
 
 // Colours of the material classes, from light to dense.
@@ -718,112 +720,147 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       todo.push_back(brick);
     }
   }
-  // Work buffers of one brick, reused by the next brick on the same thread: fresh memory for
-  // every brick cost more time in page faults than the filters themselves.
+  // Work buffers of one brick, reused by the next brick: fresh memory for every brick cost more
+  // time in page faults than the filters themselves. 14 bytes per voxel of a brick with its halo
+  // (about 240 MB for 256^3); the bricks in work are as many as a share of the memory holds, not
+  // one per core.
   struct BrickWork {
     UninitializedVector<float> grey;
-    UninitializedVector<float> above;
     UninitializedVector<float> neighbours;
     UninitializedVector<float> material_sum;
     UninitializedVector<std::uint8_t> state;
     UninitializedVector<std::uint8_t> next;
   };
-  tbb::enumerable_thread_specific<BrickWork> workspaces;
-  tbb::parallel_for(std::size_t{0}, todo.size(), [&](std::size_t i) {
-    // Isolated, so a thread waiting for the filters of its brick does not start another brick
-    // and hold two in memory, or use its work buffers twice.
-    tbb::this_task_arena::isolate([&] {
-      const Index3& brick = todo[i];
-      const Box inner = dataset.brickBox(0, brick);
-      Box outer;
-      for (std::size_t a = 0; a < 3; ++a) {
-        outer.min[a] = std::max<std::int64_t>(inner.min[a] - halo, 0);
-        outer.max[a] = std::min<std::int64_t>(inner.max[a] + halo, info.dims[a]);
-      }
-      const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
-      const auto voxels = static_cast<std::size_t>(outer.voxelCount());
-      BrickWork& work = workspaces.local();
-      auto& [grey, above, neighbours, material_sum, state, next] = work;
-      grey.resize(voxels);
-      dataset.readRegion(0, outer, grey, info.air_level);
-      // Above the threshold, and how many of the 3^3 neighbourhood are.
-      above.resize(voxels);
-      std::transform(grey.begin(), grey.end(), above.begin(),
-                     [&](float value) { return value > info.air_threshold ? 1.0F : 0.0F; });
-      neighbours.assign(above.begin(), above.end());
-      material_sum.resize(voxels);
-      std::transform(grey.begin(), grey.end(), above.begin(), material_sum.begin(),
-                     std::multiplies<>());
-      for (std::size_t a = 0; a < 3; ++a) {
-        boxFilterAxis(neighbours, size, a, 1);
-        boxFilterAxis(material_sum, size, a, 1);
-      }
-      // Box filters give means; the counts are these times the neighbourhood size, which is 27
-      // except at the region border. Using means keeps the criterion the same there.
-      const float min_fraction = static_cast<float>(options.min_neighbours) / 27.0F;
-      // 2: material, 1: may grow into material, 0: air.
-      state.resize(voxels);
-      for (std::size_t v = 0; v < grey.size(); ++v) {
-        state[v] = above[v] > 0.0F && neighbours[v] >= min_fraction - 1e-4F ? 2
-                   : grey[v] > info.grow_threshold                          ? 1
-                                                                            : 0;
-      }
-      const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
-      for (int g = 0; g < options.grow_steps; ++g) {
-        next.assign(state.begin(), state.end());
-        tbb::parallel_for(std::int64_t{0}, size[2], [&](std::int64_t z) {
-          for (std::int64_t y = 0; y < size[1]; ++y) {
-            for (std::int64_t x = 0; x < size[0]; ++x) {
-              const std::int64_t index = x + step[1] * y + step[2] * z;
-              if (state[static_cast<std::size_t>(index)] != 1) {
-                continue;
+  const std::uint64_t brick_voxels =
+      static_cast<std::uint64_t>(std::pow(static_cast<double>(info.brick_size + 2 * halo), 3.0));
+  const auto threads = static_cast<std::uint64_t>(
+      std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
+  const std::size_t in_work = static_cast<std::size_t>(std::clamp<std::uint64_t>(
+      usableMemoryBytes() / 8 / std::max<std::uint64_t>(1, brick_voxels * 14), 1, threads));
+  std::mutex pool_mutex;
+  std::vector<std::unique_ptr<BrickWork>> pool;
+  std::size_t next_brick = 0;
+  tbb::parallel_pipeline(
+      in_work,
+      tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
+                                          [&](tbb::flow_control& control) -> std::size_t {
+                                            if (next_brick == todo.size()) {
+                                              control.stop();
+                                              return 0;
+                                            }
+                                            return next_brick++;
+                                          }) &
+          tbb::make_filter<std::size_t, void>(tbb::filter_mode::parallel, [&](std::size_t i) {
+            std::unique_ptr<BrickWork> taken;
+            {
+              const std::scoped_lock lock(pool_mutex);
+              if (!pool.empty()) {
+                taken = std::move(pool.back());
+                pool.pop_back();
               }
-              const Index3 p{x, y, z};
+            }
+            if (!taken) {
+              taken = std::make_unique<BrickWork>();
+            }
+            // Isolated, so a thread waiting for the filters of its brick does not start another
+            // brick and hold two in memory.
+            tbb::this_task_arena::isolate([&] {
+              const Index3& brick = todo[i];
+              const Box inner = dataset.brickBox(0, brick);
+              Box outer;
               for (std::size_t a = 0; a < 3; ++a) {
-                if ((p[a] > 0 && state[static_cast<std::size_t>(index - step[a])] == 2) ||
-                    (p[a] + 1 < size[a] && state[static_cast<std::size_t>(index + step[a])] == 2)) {
-                  next[static_cast<std::size_t>(index)] = 2;
-                  break;
+                outer.min[a] = std::max<std::int64_t>(inner.min[a] - halo, 0);
+                outer.max[a] = std::min<std::int64_t>(inner.max[a] + halo, info.dims[a]);
+              }
+              const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
+              const auto voxels = static_cast<std::size_t>(outer.voxelCount());
+              auto& [grey, neighbours, material_sum, state, next] = *taken;
+              grey.resize(voxels);
+              dataset.readRegion(0, outer, grey, info.air_level);
+              // Above the threshold, and how many of the 3^3 neighbourhood are.
+              neighbours.resize(voxels);
+              std::transform(grey.begin(), grey.end(), neighbours.begin(),
+                             [&](float value) { return value > info.air_threshold ? 1.0F : 0.0F; });
+              material_sum.resize(voxels);
+              std::transform(grey.begin(), grey.end(), neighbours.begin(), material_sum.begin(),
+                             std::multiplies<>());
+              for (std::size_t a = 0; a < 3; ++a) {
+                boxFilterAxis(neighbours, size, a, 1);
+                boxFilterAxis(material_sum, size, a, 1);
+              }
+              // Box filters give means; the counts are these times the neighbourhood size, which is
+              // 27 except at the region border. Using means keeps the criterion the same there.
+              const float min_fraction = static_cast<float>(options.min_neighbours) / 27.0F;
+              // 2: material, 1: may grow into material, 0: air.
+              state.resize(voxels);
+              for (std::size_t v = 0; v < grey.size(); ++v) {
+                state[v] = grey[v] > info.air_threshold && neighbours[v] >= min_fraction - 1e-4F ? 2
+                           : grey[v] > info.grow_threshold ? 1
+                                                           : 0;
+              }
+              const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
+              for (int g = 0; g < options.grow_steps; ++g) {
+                next.assign(state.begin(), state.end());
+                tbb::parallel_for(std::int64_t{0}, size[2], [&](std::int64_t z) {
+                  for (std::int64_t y = 0; y < size[1]; ++y) {
+                    for (std::int64_t x = 0; x < size[0]; ++x) {
+                      const std::int64_t index = x + step[1] * y + step[2] * z;
+                      if (state[static_cast<std::size_t>(index)] != 1) {
+                        continue;
+                      }
+                      const Index3 p{x, y, z};
+                      for (std::size_t a = 0; a < 3; ++a) {
+                        if ((p[a] > 0 && state[static_cast<std::size_t>(index - step[a])] == 2) ||
+                            (p[a] + 1 < size[a] &&
+                             state[static_cast<std::size_t>(index + step[a])] == 2)) {
+                          next[static_cast<std::size_t>(index)] = 2;
+                          break;
+                        }
+                      }
+                    }
+                  }
+                });
+                state.swap(next);
+              }
+
+              auto grid = openvdb::Int32Grid::create(0);
+              auto accessor = grid->getAccessor();
+              auto& local = counts.local();
+              for (std::int64_t z = inner.min[2]; z < inner.max[2]; ++z) {
+                for (std::int64_t y = inner.min[1]; y < inner.max[1]; ++y) {
+                  for (std::int64_t x = inner.min[0]; x < inner.max[0]; ++x) {
+                    const auto index =
+                        static_cast<std::size_t>((x - outer.min[0]) + step[1] * (y - outer.min[1]) +
+                                                 step[2] * (z - outer.min[2]));
+                    if (state[index] != 2) {
+                      continue;
+                    }
+                    // Mean grey value of the material voxels around it; a grown voxel has none
+                    // above the threshold nearby only if the growth passed through several, so fall
+                    // back to itself.
+                    const float value = neighbours[index] > 0.0F
+                                            ? material_sum[index] / neighbours[index]
+                                            : grey[index];
+                    const int id = classOf(value, info.materials);
+                    ++local[static_cast<std::size_t>(id)];
+                    accessor.setValue(openvdb::Coord(static_cast<int>(x), static_cast<int>(y),
+                                                     static_cast<int>(z)),
+                                      id);
+                  }
                 }
               }
-            }
-          }
-        });
-        state.swap(next);
-      }
-
-      auto grid = openvdb::Int32Grid::create(0);
-      auto accessor = grid->getAccessor();
-      auto& local = counts.local();
-      for (std::int64_t z = inner.min[2]; z < inner.max[2]; ++z) {
-        for (std::int64_t y = inner.min[1]; y < inner.max[1]; ++y) {
-          for (std::int64_t x = inner.min[0]; x < inner.max[0]; ++x) {
-            const auto index = static_cast<std::size_t>(
-                (x - outer.min[0]) + step[1] * (y - outer.min[1]) + step[2] * (z - outer.min[2]));
-            if (state[index] != 2) {
-              continue;
-            }
-            // Mean grey value of the material voxels around it; a grown voxel has none above the
-            // threshold nearby only if the growth passed through several, so fall back to itself.
-            const float value =
-                neighbours[index] > 0.0F ? material_sum[index] / neighbours[index] : grey[index];
-            const int id = classOf(value, info.materials);
-            ++local[static_cast<std::size_t>(id)];
-            accessor.setValue(
-                openvdb::Coord(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)), id);
-          }
-        }
-      }
-      if (grid->activeVoxelCount() == 0) {
-        return;
-      }
-      grid->setName("material");
-      grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
-      writeVdb(brickFile(dir, brick), {grid});
-      const std::scoped_lock lock(mutex);
-      info.bricks.push_back(brick);
-    });
-  });
+              if (grid->activeVoxelCount() == 0) {
+                return;
+              }
+              grid->setName("material");
+              grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
+              detail::writeMaterialBrick(dir, brick, *grid);
+              const std::scoped_lock lock(mutex);
+              info.bricks.push_back(brick);
+            });
+            const std::scoped_lock lock(pool_mutex);
+            pool.push_back(std::move(taken));
+          }));
   std::sort(info.bricks.begin(), info.bricks.end());
   counts.combine_each([&](const std::vector<std::int64_t>& local) {
     for (Material& material : info.materials) {
@@ -875,14 +912,24 @@ struct MaterialVolume::Impl {
   std::filesystem::path dir;
   MaterialVolumeInfo info;
   std::vector<std::array<std::int64_t, 3>> sorted_bricks;
+  /// Bytes of label grids kept; the least recently used go first.
+  std::size_t budget = 0;
   mutable std::mutex mutex;
-  mutable std::map<Index3, openvdb::Int32Grid::ConstPtr> cache;
+  struct Cached {
+    openvdb::Int32Grid::ConstPtr grid;
+    std::size_t bytes = 0;
+    std::list<Index3>::iterator position;
+  };
+  mutable std::map<Index3, Cached> cache;
+  mutable std::list<Index3> lru;  // most recent first
+  mutable std::size_t used = 0;
 
   [[nodiscard]] openvdb::Int32Grid::ConstPtr brick(const Index3& index) const {
     {
       const std::scoped_lock lock(mutex);
       if (const auto it = cache.find(index); it != cache.end()) {
-        return it->second;
+        lru.splice(lru.begin(), lru, it->second.position);
+        return it->second.grid;
       }
     }
     openvdb::Int32Grid::ConstPtr grid;
@@ -898,13 +945,23 @@ struct MaterialVolume::Impl {
     }
     // Evicted grids are destroyed after the lock is released: a tree frees its nodes in a
     // parallel loop, and a task this thread picks up there may come back here for the lock.
-    std::map<Index3, openvdb::Int32Grid::ConstPtr> evicted;
+    std::vector<openvdb::Int32Grid::ConstPtr> evicted;
+    const std::size_t bytes = grid ? static_cast<std::size_t>(grid->memUsage()) : 64;
     {
       const std::scoped_lock lock(mutex);
-      if (cache.size() >= kCachedBricks) {
-        evicted.swap(cache);
+      if (const auto it = cache.find(index); it != cache.end()) {
+        return it->second.grid;  // loaded by another thread meanwhile
       }
-      cache[index] = grid;
+      lru.push_front(index);
+      cache.emplace(index, Cached{grid, bytes, lru.begin()});
+      used += bytes;
+      while (used > budget && lru.size() > 1) {
+        const auto oldest = cache.find(lru.back());
+        used -= oldest->second.bytes;
+        evicted.push_back(std::move(oldest->second.grid));
+        cache.erase(oldest);
+        lru.pop_back();
+      }
     }
     return grid;
   }
@@ -922,6 +979,10 @@ MaterialVolume MaterialVolume::open(const std::filesystem::path& dir) {
   impl->info = readMaterialVolumeInfo(dir);
   impl->sorted_bricks = impl->info.bricks;
   std::sort(impl->sorted_bricks.begin(), impl->sorted_bricks.end());
+  // A share of the memory: the labels of a brick are a quarter of its grey values or less, and
+  // pruned label bricks of uniform material take little more than their boundaries.
+  impl->budget = static_cast<std::size_t>(
+      std::max<std::uint64_t>(std::uint64_t{256} << 20U, usableMemoryBytes() / 32));
   return MaterialVolume(std::move(impl));
 }
 
@@ -1130,6 +1191,12 @@ std::filesystem::path materialBrickFile(const std::filesystem::path& dir,
   return dir / "level0" /
          (std::to_string(brick[0]) + "_" + std::to_string(brick[1]) + "_" +
           std::to_string(brick[2]) + ".vdb");
+}
+
+void writeMaterialBrick(const std::filesystem::path& dir, const std::array<std::int64_t, 3>& brick,
+                        openvdb::Int32Grid& grid) {
+  grid.tree().prune();
+  writeVdb(materialBrickFile(dir, brick), {grid.copyGrid()});
 }
 
 void writeMaterialVolumeInfo(const std::filesystem::path& dir, const MaterialVolumeInfo& info) {
