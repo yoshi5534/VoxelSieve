@@ -222,6 +222,23 @@ std::optional<VoxelSize> voxelSizeParameter(const Json& p,
   return size;
 }
 
+/// What an operation on the dataset of input `port` needs, from its active voxels (ADR 0031):
+/// `memory` and `output` bytes per active voxel. Rough figures from the 2048^3 scale benchmark;
+/// nothing when the input is no dataset.
+OperationEstimate perActiveVoxel(const OperationContext& context, const std::string& port,
+                                 double memory, double output) {
+  const auto it = context.inputs.find(port);
+  if (it == context.inputs.end()) {
+    return {};
+  }
+  std::error_code error;
+  if (!std::filesystem::exists(it->second / "index.json", error)) {
+    return {};
+  }
+  const auto voxels = static_cast<double>(readDatasetInfo(it->second).active_voxel_count);
+  return {static_cast<std::uint64_t>(voxels * memory), static_cast<std::uint64_t>(voxels * output)};
+}
+
 class OpenDataset final : public Operation {
  public:
   OpenDataset() {
@@ -816,6 +833,9 @@ class Porosity final : public Operation {
              "no zone of loosened microstructure"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.5, 0.2);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -912,6 +932,9 @@ class FibreOrientation final : public Operation {
             {"description", "Blocks less directional than this are left out of the families"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1110,6 +1133,9 @@ class BatteryInspection final : public Operation {
     info_.parameters = {{"type", "object"}, {"properties", properties}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.3, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1212,6 +1238,9 @@ class Surface final : public Operation {
           {"vdb", {{"type", "boolean"}, {"default", false}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1524,6 +1553,11 @@ class WallThickness final : public Operation {
              "comparison (each face may deviate by it)"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    // The volume map is a float per material voxel, with its coarser levels.
+    const bool map = context.params.value("volume_map", false);
+    return perActiveVoxel(context, "dataset", 0.2, map ? 5.0 : 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1860,6 +1894,9 @@ class SegmentMaterials final : public Operation {
             {"description", "Colours of the classes as #rrggbb, in order"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -2129,6 +2166,9 @@ class SegmentWithModel final : public Operation {
         {"required", {"model_path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -2213,6 +2253,9 @@ class Denoise final : public Operation {
           {"value_type", valueTypeParameter()}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 2.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -2353,6 +2396,9 @@ class IsolatePart final : public Operation {
              "Grey value above which a voxel is material; default: the dataset's"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.3, 2.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;

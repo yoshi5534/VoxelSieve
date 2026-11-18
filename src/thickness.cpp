@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/sweep.hpp"
 #include "detail/thickness.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
@@ -40,17 +41,6 @@ using Json = nlohmann::json;
 using Method = WallThicknessOptions::Method;
 
 constexpr float kNotMeasured = std::numeric_limits<float>::quiet_NaN();
-
-/// Position of a brick on a Morton (Z-order) curve: bricks close on the curve are close in space.
-std::uint64_t mortonKey(const std::array<std::uint64_t, 3>& brick) {
-  std::uint64_t key = 0;
-  for (std::uint64_t bit = 0; bit < 21; ++bit) {
-    for (std::uint64_t axis = 0; axis < 3; ++axis) {
-      key |= ((brick[axis] >> bit) & 1U) << (3 * bit + axis);
-    }
-  }
-  return key;
-}
 
 Vec operator+(const Vec& a, const Vec& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
 Vec operator-(const Vec& a, const Vec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
@@ -769,7 +759,7 @@ WallThicknessResult analyzeWallThickness(const Dataset& dataset, const SurfaceMa
       const auto voxel = static_cast<std::int64_t>(std::floor(mesh.points[i][k] / v[k]));
       b[k] = static_cast<std::uint64_t>(std::max<std::int64_t>(voxel, 0) / brick);
     }
-    return mortonKey(b);
+    return detail::mortonKey(b);
   };
   std::vector<std::uint64_t> keys(mesh.points.size(), 0);
   for (const std::uint32_t i : order) {

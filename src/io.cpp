@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -101,6 +102,26 @@ nlohmann::json phantomToJson(const PhantomSpec& spec) {
         {"pores", pores},
         {"material_volume_mm3", phantomMaterialVolumeMm3(spec)}}},
   };
+}
+
+void requireFreeSpace(const std::filesystem::path& dir, std::uint64_t bytes,
+                      std::string_view what) {
+  std::error_code error;
+  const auto space = std::filesystem::space(dir, error);
+  if (error || space.available >= bytes) {
+    return;  // unknown: the writers report a full disk
+  }
+  constexpr double kGb = 1024.0 * 1024.0 * 1024.0;
+  const auto gb = [](double value) {
+    std::ostringstream text;
+    text.precision(value < 10.0 ? 2 : 3);
+    text << value;
+    return text.str();
+  };
+  throw std::runtime_error(std::string(what) + " needs about " +
+                           gb(static_cast<double>(bytes) / kGb) + " GB in " + dir.string() +
+                           ", but only " + gb(static_cast<double>(space.available) / kGb) +
+                           " GB are free");
 }
 
 void throwWriteError(const std::filesystem::path& path) {

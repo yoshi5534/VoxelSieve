@@ -33,7 +33,8 @@ Options:
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
   --materials <dir>       Material volume of the dataset (vs-segment): each material is compared
                           with its own grey value, so a darker material is no zone
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

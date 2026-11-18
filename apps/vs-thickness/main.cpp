@@ -67,7 +67,8 @@ Options:
                           smallest extent of the part, at most 64 voxels); time and memory grow
                           with it
   --max-triangles <n>     Triangle budget of the measured surface (default 2000000)
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

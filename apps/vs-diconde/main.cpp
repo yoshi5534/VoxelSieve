@@ -41,7 +41,8 @@ Options:
   --description <text>    Series description of the volume
   --info <path>           Show a series instead of writing one
   --json <file>           With --info: also write what was found as JSON
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

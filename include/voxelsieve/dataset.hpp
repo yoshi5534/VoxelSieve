@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -125,13 +126,23 @@ struct DerivedDatasetOptions {
   /// Called with the stage ("bricks", then "levels") and the fraction of it done, 0 to 1, from
   /// one thread at a time.
   std::function<void(std::string_view stage, double fraction)> progress;
+  /// Names the processing and its parameters, for resuming (ADR 0031). Set, the run keeps a
+  /// journal in `dir`, and a run that was interrupted resumes when it is started again into the
+  /// same directory with the same input, value type and key: the bricks it finished are kept,
+  /// `values` is not called for them, but `finished` is. Empty: `dir` must not exist or be empty.
+  std::string resume_key;
+  /// Called for each brick that a resumed run kept from before, with its box, before the other
+  /// bricks; processing that sums up its values reads them from the brick written before.
+  std::function<void(const std::array<std::int64_t, 3>& brick, const Box& box)> finished;
 };
 
 /// Writes a dataset with the bricks, active voxels and metadata of `input` and level-0 grey values
 /// from `values`, for processing that keeps the part but changes its grey values, such as
-/// denoising (ADR 0025). `values` is called for one brick after the other (it may work in
-/// parallel inside); the coarser levels are then built from the new values. `dir` must not exist
-/// or be empty. Memory use is bounded by a few bricks, independent of the volume size.
+/// denoising (ADR 0025). `values` is called for one brick after the other, with zeroed values
+/// (it may work in parallel inside); building and writing the bricks runs in parallel behind it.
+/// The coarser levels are then built from the new values. `dir` must not exist or be empty,
+/// unless it holds an interrupted run to resume (`resume_key`). Memory use is bounded by a few
+/// bricks, independent of the volume size.
 DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::path& dir,
                                 const BrickValues& values,
                                 const DerivedDatasetOptions& options = {});
@@ -151,6 +162,8 @@ struct CacheStats {
   std::uint64_t misses = 0;
   std::size_t bricks = 0;  // bricks currently cached
   std::size_t bytes = 0;   // memory of the cached bricks
+  std::size_t pinned = 0;  // cached bricks that callers hold (pinned), which are not evicted
+  std::size_t pinned_bytes = 0;
 };
 
 /// How the brick cache loads bricks.
@@ -158,8 +171,8 @@ enum class BrickLoading : std::uint8_t {
   /// The whole brick is read; best when an algorithm visits most of its voxels.
   kFull,
   /// Only the topology is read at first and the voxel values of an 8^3 leaf on first access, from
-  /// the memory-mapped file; best for sparse access such as slices. The cache re-measures the
-  /// memory of its bricks whenever it loads one, so the budget still holds.
+  /// the memory-mapped file; best for sparse access such as slices. The cache charges such a brick
+  /// the memory of all its leaves when it loads it, so the budget holds however many are read.
   kOnAccess,
 };
 
@@ -188,11 +201,23 @@ class BrickCache {
   std::unique_ptr<Impl> impl_;
 };
 
+/// How `Dataset::forEachBrick` works through the bricks (ADR 0031).
+struct BrickSweep {
+  /// Voxels around its brick that a call reads as well (through `readRegion`, `sample` or a
+  /// `Sampler`). The bricks they fall into are pinned during the call, so neighbouring calls
+  /// find them in the cache instead of reading them again.
+  std::int64_t halo = 0;
+  /// Memory one call needs besides the bricks. It sets how many calls run at once
+  /// (`tasksInMemory`); 0: one per thread.
+  std::uint64_t task_bytes = 0;
+};
+
 /// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.
 ///
 /// Opening reads only index.json. Bricks are loaded on demand into an LRU cache with a memory
 /// budget; the most recently used brick is always kept, even if it alone exceeds the budget.
-/// Returned bricks stay valid while the caller holds them, also after eviction. Datasets opened
+/// A returned brick is pinned while the caller holds it (ADR 0031): it stays in the cache and
+/// counts against the budget; only bricks that no caller holds are evicted. Datasets opened
 /// without a cache of their own share one cache (`sharedCache`), so the datasets an operation
 /// opens add no budgets.
 ///
@@ -204,9 +229,9 @@ class Dataset {
   using BrickFunction =
       std::function<void(const std::array<std::int64_t, 3>& brick, const GreyGrid& grid)>;
 
-  /// Budget of the shared cache unless set: a quarter of the usable memory
-  /// (`usableMemoryBytes`), at least 2 GiB but at most half of it; 1 GiB when it is unknown. Halo
-  /// reads of T threads need T × 27 bricks at once, which a fixed 1 GiB could not hold.
+  /// Budget of the shared cache unless set: a third of the process's memory budget
+  /// (`memoryBudgetBytes`, ADR 0031), at least 2 GiB but at most half of it. Halo reads of T
+  /// threads need T × 27 bricks at once, which a fixed 1 GiB could not hold.
   [[nodiscard]] static std::size_t defaultCacheBytes();
   /// The cache of the datasets opened without one. It lives while a dataset or a caller holds it;
   /// the next one starts empty.
@@ -272,19 +297,34 @@ class Dataset {
   };
 
   /// Copies the voxels of `box` into `out`, x fastest, writing `fill` where no voxel is active.
-  /// `box` must lie inside the level and `out.size()` must equal `box.voxelCount()`.
+  /// `box` must lie inside the level and `out.size()` must equal `box.voxelCount()`. Copies leaf
+  /// by leaf. The `uint16_t` and `uint8_t` overloads take half or a quarter of the memory of
+  /// `float` for algorithms that only compare grey values; they need a dataset of that type or a
+  /// narrower one (`uint8` into `uint16`) and throw std::invalid_argument otherwise.
   void readRegion(int level, const Box& box, std::span<float> out, float fill = 0.0F) const;
+  void readRegion(int level, const Box& box, std::span<std::uint16_t> out,
+                  std::uint16_t fill = 0) const;
+  void readRegion(int level, const Box& box, std::span<std::uint8_t> out,
+                  std::uint8_t fill = 0) const;
 
-  /// Calls `function` for every stored brick of `level`, in parallel.
+  /// Calls `function` for every stored brick of `level`, in parallel: the bricks along a Morton
+  /// curve, so that the bricks in use are a small window that moves through the volume, and
+  /// at most as many calls at once as `sweep` allows. Each call runs isolated: while it waits for
+  /// its own parallel work, its thread starts no other brick.
+  void forEachBrick(int level, const BrickFunction& function, const BrickSweep& sweep) const;
   void forEachBrick(int level, const BrickFunction& function) const;
 
-  /// Calls `function(brick, grid)` for every stored brick of `level`, in parallel, with the typed
-  /// grid (`openvdb::FloatGrid`, `UInt16Grid` or `UInt8Grid`): `function` is a generic lambda.
+  /// Calls `function(brick, grid)` for every stored brick of `level` like `forEachBrick`, with
+  /// the typed grid (`openvdb::FloatGrid`, `UInt16Grid` or `UInt8Grid`): `function` is a generic
+  /// lambda.
   template <class Function>
-  void forEachGrid(int level, Function&& function) const {
-    forEachBrick(level, [&](const std::array<std::int64_t, 3>& brick, const GreyGrid& grid) {
-      grid.visit([&](const auto& typed) { function(brick, typed); });
-    });
+  void forEachGrid(int level, Function&& function, const BrickSweep& sweep = {}) const {
+    forEachBrick(
+        level,
+        [&](const std::array<std::int64_t, 3>& brick, const GreyGrid& grid) {
+          grid.visit([&](const auto& typed) { function(brick, typed); });
+        },
+        sweep);
   }
 
   /// Hits and misses of this dataset; bricks and bytes of its cache, which may be shared.

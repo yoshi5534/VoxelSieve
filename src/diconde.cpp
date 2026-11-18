@@ -328,8 +328,15 @@ class DatasetSource final : public VolumeSource {
                                                            : SampleType::kUInt16;
   }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
+    const float air = dataset_.info().air_level;
+    if (dataset_.info().value_type != ValueType::kFloat) {
+      // Integer grey values straight into the output, without a float copy (ADR 0031).
+      dataset_.readRegion(0, box, out,
+                          static_cast<std::uint16_t>(std::clamp(std::lround(air), 0L, 65535L)));
+      return;
+    }
     std::vector<float> values(out.size());
-    dataset_.readRegion(0, box, values, dataset_.info().air_level);
+    dataset_.readRegion(0, box, values, air);
     std::ranges::transform(values, out.begin(), [](float value) {
       return static_cast<std::uint16_t>(std::clamp(std::lround(value), 0L, 65535L));
     });
@@ -419,11 +426,11 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
   const Vec3 normal{options.pose.rotation[2], options.pose.rotation[5], options.pose.rotation[8]};
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
   // The slices are written from slabs of many slices read at once: read one by one, every slice
-  // decoded all bricks of its layer again (ADR 0004). The slab takes a sixteenth of the memory
-  // (the source may need twice as much while reading), at most one layer of 256 slices.
-  const std::uint64_t memory = usableMemoryBytes();
+  // decoded all bricks of its layer again (ADR 0004). The slab takes a third of the work memory
+  // (ADR 0031; the source may need as much again while reading), at most one layer of 256
+  // slices.
   const std::uint64_t slab_bytes =
-      std::max<std::uint64_t>(memory > 0 ? memory / 16 : 0, std::uint64_t{256} << 20U);
+      std::max<std::uint64_t>(workMemoryBytes() / 3, std::uint64_t{256} << 20U);
   const std::int64_t slab_depth = std::clamp<std::int64_t>(
       static_cast<std::int64_t>(slab_bytes / (slice_voxels * sizeof(std::uint16_t))), 1, 256);
   std::vector<std::uint16_t> slab;

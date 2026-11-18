@@ -49,7 +49,8 @@ Options:
   --min-pore <voxels>     Smallest pore reported (default 3)
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

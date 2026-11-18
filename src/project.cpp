@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -561,6 +562,13 @@ const Step& Project::run(
   try {
     OperationResult result;
     {
+      // Checked before the run (ADR 0031): the disk space of its outputs, and its memory beside
+      // the operations running already, which it waits for when they leave too little.
+      const OperationEstimate estimate = operation->estimate(context);
+      if (estimate.output_bytes > 0) {
+        requireFreeSpace(dir, estimate.output_bytes, info.title);
+      }
+      const Admission admission = admitOperation(estimate.memory_bytes, cancel);
       const TelemetryScope scope(telemetry);
       result = operation->run(context);
     }

@@ -10,6 +10,7 @@
 #include <tbb/combinable.h>
 #include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_pipeline.h>
 #include <tbb/task_arena.h>
 #include <tbb/task_group.h>
 
@@ -43,6 +44,7 @@
 #include "detail/blocks.hpp"
 #include "detail/pages.hpp"
 #include "detail/preview.hpp"
+#include "detail/sweep.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/resources.hpp"
@@ -763,6 +765,7 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
 constexpr std::string_view kJournalFile = "import.json";
 constexpr std::string_view kPass1File = "pass1.bin";
 constexpr std::string_view kBricksLog = "bricks.log";
+constexpr std::string_view kDerivedJournalFile = "derived.json";
 constexpr int kJournalVersion = 1;
 
 /// What must match for an import to resume: the input's size and the options that shape bricks.
@@ -807,6 +810,8 @@ void writePass1(const std::filesystem::path& dir, const nlohmann::json& key,
                                  {"bins", stats.histogram.size()}});
 }
 
+std::vector<std::pair<Index3, std::int64_t>> readBrickLog(const std::filesystem::path& file);
+
 /// The journal in `dir`, or none; throws when it was written for another input or options.
 std::optional<Journal> readJournal(const std::filesystem::path& dir, const nlohmann::json& key) {
   std::ifstream head_in(dir / kJournalFile);
@@ -837,8 +842,15 @@ std::optional<Journal> readJournal(const std::filesystem::path& dir, const nlohm
   if (!in || product(journal.stats.block_dims) != journal.stats.block_kth.size()) {
     return std::nullopt;  // pass 1 was not written completely: run it again
   }
-  // Lines cut off by the interruption are left out; their bricks are built again.
-  std::ifstream log(dir / kBricksLog);
+  journal.finished = readBrickLog(dir / kBricksLog);
+  return journal;
+}
+
+/// The bricks listed in a bricks.log with their active voxels, sorted by brick. Lines cut off by
+/// an interruption are left out; their bricks are built again.
+std::vector<std::pair<Index3, std::int64_t>> readBrickLog(const std::filesystem::path& file) {
+  std::vector<std::pair<Index3, std::int64_t>> finished;
+  std::ifstream log(file);
   std::string line;
   while (std::getline(log, line)) {
     Index3 brick{};
@@ -855,16 +867,48 @@ std::optional<Journal> readJournal(const std::filesystem::path& dir, const nlohm
       p = next;
     }
     if (ok && active >= 0 && p == end) {
-      journal.finished.emplace_back(brick, active);
+      finished.emplace_back(brick, active);
     }
   }
   // Sorted by brick, a brick listed twice once.
-  std::sort(journal.finished.begin(), journal.finished.end());
-  journal.finished.erase(
-      std::unique(journal.finished.begin(), journal.finished.end(),
-                  [](const auto& a, const auto& b) { return a.first == b.first; }),
-      journal.finished.end());
-  return journal;
+  std::sort(finished.begin(), finished.end());
+  finished.erase(std::unique(finished.begin(), finished.end(),
+                             [](const auto& a, const auto& b) { return a.first == b.first; }),
+                 finished.end());
+  return finished;
+}
+
+/// The level-0 brick of a derived dataset: the active voxels of `in` with the values of `grey`
+/// (one per voxel of `box`, x fastest), in `type`; NaN removes a voxel.
+GreyGrid derivedBrick(const GreyGrid& in, ValueType type, const Box& box,
+                      const std::vector<float>& grey) {
+  return in.visit([&](const auto& typed) {
+    GreyGrid result = GreyGrid::create(type);
+    result.visit([&](auto& grid) {
+      using Tree = typename std::decay_t<decltype(grid)>::TreeType;
+      using Value = typename Tree::ValueType;
+      grid.setTree(std::make_shared<Tree>(typed.tree(), Value{0}, openvdb::TopologyCopy()));
+      grid.tree().voxelizeActiveTiles();
+      for (auto leaf = grid.tree().beginLeaf(); leaf; ++leaf) {
+        for (auto it = leaf->beginValueOn(); it; ++it) {
+          const openvdb::Coord c = it.getCoord();
+          const float value = grey[static_cast<std::size_t>(
+              (c.x() - box.min[0]) +
+              box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))];
+          if (std::isnan(value)) {
+            it.setValueOff();
+          } else if constexpr (std::is_same_v<Value, float>) {
+            it.setValue(value);
+          } else {
+            constexpr double kMax = std::numeric_limits<Value>::max();
+            it.setValue(static_cast<Value>(std::clamp(std::round(double{value}), 0.0, kMax)));
+          }
+        }
+      }
+      openvdb::tools::pruneInactive(grid.tree());  // leaves whose voxels were all removed
+    });
+    return result;
+  });
 }
 
 /// Appends finished bricks to bricks.log, a whole line at a time.
@@ -1181,9 +1225,6 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
 
 DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::path& dir,
                                 const BrickValues& values, const DerivedDatasetOptions& options) {
-  if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
-    throw std::invalid_argument("Output directory is not empty: " + dir.string());
-  }
   const DatasetInfo& source = input.info();
   if (options.value_type == ValueType::kUInt8 && source.value_type != ValueType::kUInt8) {
     throw std::invalid_argument(
@@ -1196,62 +1237,148 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
   info.levels.assign(1, source.levels.front());
   const LevelInfo& level0 = info.levels.front();
 
+  // A run with a resume key leaves a journal; a later run of the same processing of the same
+  // input resumes it and skips the finished bricks (ADR 0031).
+  nlohmann::json key;
+  if (!options.resume_key.empty()) {
+    key = {{"dims", source.dims},
+           {"brick_size", source.brick_size},
+           {"bricks", level0.bricks.size()},
+           {"active_voxel_count", source.active_voxel_count},
+           {"value_type", std::string(valueTypeName(info.value_type))},
+           {"processing", options.resume_key}};
+  }
+  std::vector<std::pair<Index3, std::int64_t>> finished;
+  if (std::filesystem::exists(dir)) {
+    removeStalePartials(dir);
+  }
+  if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
+    std::ifstream head_in(dir / kDerivedJournalFile);
+    const nlohmann::json head =
+        head_in ? nlohmann::json::parse(head_in, nullptr, /*allow_exceptions=*/false)
+                : nlohmann::json();
+    const bool journal = !key.is_null() && !std::filesystem::exists(dir / "index.json") &&
+                         head.is_object() && head.value("format", "") == "voxelsieve-derived";
+    if (!journal) {
+      throw std::invalid_argument("Output directory is not empty: " + dir.string());
+    }
+    if (head.at("key") != key) {
+      throw std::invalid_argument("The output directory " + dir.string() +
+                                  " holds an interrupted run of other processing or of another "
+                                  "input; remove it to start again");
+    }
+    finished = readBrickLog(dir / kBricksLog);
+  } else if (!key.is_null()) {
+    std::filesystem::create_directories(dir);
+    writeJson(dir / kDerivedJournalFile,
+              {{"format", "voxelsieve-derived"}, {"version", kJournalVersion}, {"key", key}});
+  }
+
   std::optional<TelemetryPhase> phase(std::in_place, "bricks");
   std::filesystem::create_directories(brickPath(dir, 0, {0, 0, 0}).parent_path());
-  ProgressCounter progress(options.progress, "bricks", level0.bricks.size());
   std::vector<Index3> kept;
+  std::vector<Index3> todo;
   for (const Index3& brick : level0.bricks) {
-    const Box box = input.brickBox(0, brick);
-    std::vector<float> grey(static_cast<std::size_t>(box.voxelCount()));
-    values(brick, box, grey);
-    if (grey.size() != static_cast<std::size_t>(box.voxelCount())) {
-      throw std::logic_error("Derived brick values do not match the brick");
+    const auto it =
+        std::lower_bound(finished.begin(), finished.end(), std::pair{brick, std::int64_t{0}},
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (it != finished.end() && it->first == brick) {
+      if (it->second > 0) {
+        kept.push_back(brick);
+        info.active_voxel_count += it->second;
+      }
+      if (options.finished) {
+        options.finished(brick, input.brickBox(0, brick));
+      }
+    } else {
+      todo.push_back(brick);
     }
-    const Dataset::BrickPtr in = input.brick(0, brick);
-    const GreyGrid out = in->visit([&](const auto& typed) {
-      GreyGrid result = GreyGrid::create(info.value_type);
-      result.visit([&](auto& grid) {
-        using Tree = typename std::decay_t<decltype(grid)>::TreeType;
-        using Value = typename Tree::ValueType;
-        grid.setTree(std::make_shared<Tree>(typed.tree(), Value{0}, openvdb::TopologyCopy()));
-        grid.tree().voxelizeActiveTiles();
-        for (auto leaf = grid.tree().beginLeaf(); leaf; ++leaf) {
-          for (auto it = leaf->beginValueOn(); it; ++it) {
-            const openvdb::Coord c = it.getCoord();
-            const float value = grey[static_cast<std::size_t>(
-                (c.x() - box.min[0]) +
-                box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))];
-            if (std::isnan(value)) {
-              it.setValueOff();
-            } else if constexpr (std::is_same_v<Value, float>) {
-              it.setValue(value);
-            } else {
-              constexpr double kMax = std::numeric_limits<Value>::max();
-              it.setValue(static_cast<Value>(std::clamp(std::round(double{value}), 0.0, kMax)));
-            }
-          }
-        }
-        openvdb::tools::pruneInactive(grid.tree());  // leaves whose voxels were all removed
-      });
-      return result;
-    });
-    const auto active = static_cast<std::int64_t>(out.base().activeVoxelCount());
-    progress.step();
-    if (active == 0) {
-      continue;  // every voxel removed: the brick is outside air now
-    }
-    setGridProperties(out.base(), 0, info.voxel_size);
-    out.base().insertMeta("voxelsieve_threshold", openvdb::FloatMetadata(info.threshold));
-    writeBrick(brickPath(dir, 0, brick), out);
-    info.active_voxel_count += active;
-    kept.push_back(brick);
   }
+  // Along a Morton curve: processing that reads a halo finds the neighbours in the cache.
+  detail::mortonSort(todo);
+  ProgressCounter progress(options.progress, "bricks", todo.size());
+  std::optional<BrickLog> log;
+  if (!key.is_null()) {
+    log.emplace(dir / kBricksLog);
+  }
+
+  // `values` runs for one brick after the other; building, compressing and writing the bricks
+  // runs in parallel behind it, as many as the work memory holds (X8).
+  struct Item {
+    Index3 brick{};
+    Box box;
+    std::shared_ptr<std::vector<float>> grey;
+  };
+  detail::WorkPool<std::vector<float>> pool;
+  const auto brick_voxels =
+      static_cast<std::uint64_t>(source.brick_size * source.brick_size * source.brick_size);
+  std::mutex mutex;
+  std::size_t next = 0;
+  tbb::parallel_pipeline(
+      tasksInMemory(
+          brick_voxels *
+          (sizeof(float) + 2 * std::uint64_t{info.value_type == ValueType::kFloat ? 4U : 2U})),
+      tbb::make_filter<void, Item>(
+          tbb::filter_mode::serial_in_order,
+          [&](tbb::flow_control& control) -> Item {
+            if (next == todo.size()) {
+              control.stop();
+              return {};
+            }
+            Item item;
+            item.brick = todo[next++];
+            item.box = input.brickBox(0, item.brick);
+            auto taken = pool.take();
+            item.grey = std::shared_ptr<std::vector<float>>(taken.release(), taken.get_deleter());
+            // Zeroed like a new vector; reused memory costs no page faults.
+            item.grey->assign(static_cast<std::size_t>(item.box.voxelCount()), 0.0F);
+            values(item.brick, item.box, *item.grey);
+            if (item.grey->size() != static_cast<std::size_t>(item.box.voxelCount())) {
+              throw std::logic_error("Derived brick values do not match the brick");
+            }
+            return item;
+          }) &
+          tbb::make_filter<Item, void>(tbb::filter_mode::parallel, [&](const Item& item) {
+            // In a context of its own, isolated, like the bricks of writeDataset: a failure
+            // elsewhere must not cancel OpenVDB's loops halfway through this brick.
+            tbb::task_group_context context(tbb::task_group_context::isolated);
+            tbb::task_group group(context);
+            tbb::this_task_arena::isolate([&] {
+              group.run_and_wait([&] {
+                const GreyGrid out = derivedBrick(*input.brick(0, item.brick), info.value_type,
+                                                  item.box, *item.grey);
+                const auto active = static_cast<std::int64_t>(out.base().activeVoxelCount());
+                if (active > 0) {
+                  setGridProperties(out.base(), 0, info.voxel_size);
+                  out.base().insertMeta("voxelsieve_threshold",
+                                        openvdb::FloatMetadata(info.threshold));
+                  writeBrick(brickPath(dir, 0, item.brick), out);
+                }
+                if (log) {
+                  log->add(item.brick, active);
+                }
+                {
+                  const std::scoped_lock lock(mutex);
+                  if (active > 0) {
+                    kept.push_back(item.brick);
+                    info.active_voxel_count += active;
+                  }
+                }
+                progress.step();
+              });
+            });
+          }));
+  log.reset();
+  std::sort(kept.begin(), kept.end());
   info.levels.front().bricks = std::move(kept);
   phase.reset();
   writeCoarseLevels(dir, info, options.progress);
+  for (const std::string_view name : {kDerivedJournalFile, kBricksLog}) {
+    std::error_code ignored;
+    std::filesystem::remove(dir / name, ignored);
+  }
   return info;
 }
-
 DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
   std::ifstream in(dir / "index.json");
   if (!in) {

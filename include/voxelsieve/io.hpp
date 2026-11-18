@@ -40,6 +40,10 @@ void writeFile(const std::filesystem::path& path, const std::function<void(std::
 /// `writeFile` of a text or a block of bytes.
 void writeFile(const std::filesystem::path& path, std::string_view bytes);
 
+/// Throws std::runtime_error naming what when dir's device has less than ytes free. Does
+/// nothing when the free space cannot be read.
+void requireFreeSpace(const std::filesystem::path& dir, std::uint64_t bytes, std::string_view what);
+
 /// Throws std::runtime_error about a failed write of `path`, naming a full disk as the reason
 /// when its device has (almost) no space left.
 [[noreturn]] void throwWriteError(const std::filesystem::path& path);

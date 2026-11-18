@@ -1105,10 +1105,66 @@ TEST(CacheBudget, DefaultFollowsTheMemory) {
   constexpr std::size_t kGiB = std::size_t{1} << 30U;
   const std::uint64_t memory = usableMemoryBytes();
   ASSERT_GT(memory, 0U);
+  EXPECT_EQ(memoryBudgetBytes(), memory / 4 * 3);
   const std::size_t budget = Dataset::defaultCacheBytes();
   EXPECT_GE(budget, memory / 4);
   EXPECT_LE(budget, std::max<std::uint64_t>(memory / 4, memory / 2));
   EXPECT_GE(budget, std::min<std::uint64_t>(2 * kGiB, memory / 2));
+
+  // The shared cache and the work memory follow a budget that is set.
+  const auto cache = Dataset::sharedCache();
+  setMemoryBudget(std::uint64_t{6} * kGiB);
+  EXPECT_EQ(memoryBudgetBytes(), 6 * kGiB);
+  EXPECT_EQ(cache->budget(), 2 * kGiB);
+  EXPECT_EQ(workMemoryBytes(), 4 * kGiB);
+  EXPECT_EQ(tasksInMemory(kGiB), std::min<std::size_t>(4, static_cast<std::size_t>(threadLimit())));
+  EXPECT_EQ(tasksInMemory(64 * kGiB), 1U);
+  {
+    // Every cache counts against the budget.
+    const BrickCache own(kGiB);
+    EXPECT_EQ(workMemoryBytes(), 3 * kGiB);
+  }
+  setMemoryBudget(0);
+  EXPECT_EQ(cache->budget(), Dataset::defaultCacheBytes());
+}
+
+TEST(CacheBudget, AdmissionWaitsUntilTheOperationsFit) {
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  setMemoryBudget(6 * kGiB);  // 4 GiB of work memory beside the shared cache
+  {
+    Admission first = admitOperation(3 * kGiB);
+    EXPECT_EQ(admittedOperations(), 1);
+    EXPECT_EQ(workMemoryBytes(), 4 * kGiB);
+    // Fits beside the first: admitted at once, and both get half of the work memory.
+    {
+      const Admission small = admitOperation(kGiB);
+      EXPECT_EQ(workMemoryBytes(), 2 * kGiB);
+    }
+    // Does not fit: waits until the first is done.
+    std::atomic<bool> admitted{false};
+    std::thread second([&] {
+      const Admission waiting = admitOperation(2 * kGiB);
+      admitted = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(admitted.load());
+    first = Admission();
+    second.join();
+    EXPECT_TRUE(admitted.load());
+    EXPECT_EQ(admittedOperations(), 0);
+
+    // A waiting operation stops when it is cancelled.
+    const Admission big = admitOperation(4 * kGiB);
+    const std::atomic<bool> cancel{true};
+    EXPECT_THROW((void)admitOperation(kGiB, &cancel), std::runtime_error);
+    EXPECT_EQ(admittedOperations(), 1);
+  }
+  // More than the work memory still runs when it is alone.
+  {
+    const Admission alone = admitOperation(64 * kGiB);
+    EXPECT_EQ(admittedOperations(), 1);
+  }
+  setMemoryBudget(0);
 }
 
 TEST(ThreadLimit, LimitsAndRestoresParallelism) {
@@ -1153,6 +1209,177 @@ TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
       EXPECT_GT(active, 0);
     }
   }
+}
+
+TEST_F(DatasetReaderTest, InterruptedDerivedDatasetResumes) {
+  (void)writeReference();
+  const Dataset input = Dataset::open(dir_);
+  const auto doubled = [&](const Index3& /*brick*/, const Box& box, std::vector<float>& values) {
+    input.readRegion(0, box, values);
+    for (float& value : values) {
+      value = value > 30000.0F ? std::numeric_limits<float>::quiet_NaN() : value / 2.0F;
+    }
+  };
+  const std::filesystem::path fresh_dir = dir_.string() + "_fresh";
+  const std::filesystem::path resumed_dir = dir_.string() + "_resumed";
+  std::filesystem::remove_all(fresh_dir);
+  std::filesystem::remove_all(resumed_dir);
+  const DatasetInfo fresh = writeDerivedDataset(input, fresh_dir, doubled);
+
+  DerivedDatasetOptions options;
+  options.resume_key = "halved";
+  std::size_t calls = 0;
+  const std::size_t stop = input.level(0).bricks.size() / 2;
+  EXPECT_THROW((void)writeDerivedDataset(
+                   input, resumed_dir,
+                   [&](const Index3& brick, const Box& box, std::vector<float>& values) {
+                     if (++calls == stop) {
+                       throw std::runtime_error("interrupted");
+                     }
+                     doubled(brick, box, values);
+                   },
+                   options),
+               std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(resumed_dir / "index.json"));
+
+  // Other processing into the same directory is refused; the same resumes.
+  DerivedDatasetOptions other = options;
+  other.resume_key = "other";
+  EXPECT_THROW((void)writeDerivedDataset(input, resumed_dir, doubled, other),
+               std::invalid_argument);
+  EXPECT_THROW((void)writeDerivedDataset(input, resumed_dir, doubled), std::invalid_argument);
+  std::size_t again = 0;
+  std::size_t kept = 0;
+  options.finished = [&](const Index3&, const Box&) { ++kept; };
+  const DatasetInfo resumed = writeDerivedDataset(
+      input, resumed_dir,
+      [&](const Index3& brick, const Box& box, std::vector<float>& values) {
+        ++again;
+        doubled(brick, box, values);
+      },
+      options);
+  EXPECT_GT(kept, 0U);
+  EXPECT_EQ(kept + again, input.level(0).bricks.size());
+  EXPECT_EQ(resumed.active_voxel_count, fresh.active_voxel_count);
+  EXPECT_EQ(resumed.levels.front().bricks, fresh.levels.front().bricks);
+  EXPECT_FALSE(std::filesystem::exists(resumed_dir / "derived.json"));
+  const Dataset a = Dataset::open(fresh_dir);
+  const Dataset b = Dataset::open(resumed_dir);
+  const Box all{{0, 0, 0}, a.info().dims};
+  std::vector<float> va(static_cast<std::size_t>(all.voxelCount()));
+  std::vector<float> vb(va.size());
+  a.readRegion(0, all, va, -1.0F);
+  b.readRegion(0, all, vb, -1.0F);
+  EXPECT_EQ(va, vb);
+  std::filesystem::remove_all(fresh_dir);
+  std::filesystem::remove_all(resumed_dir);
+}
+
+TEST_F(DatasetReaderTest, TypedRegionsMatchTheFloatRegion) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  ASSERT_EQ(dataset.info().value_type, ValueType::kUInt16);
+  const Box box{{3, 17, 30}, {101, 70, 99}};
+  const auto voxels = static_cast<std::size_t>(box.voxelCount());
+  std::vector<float> grey(voxels);
+  std::vector<std::uint16_t> narrow(voxels);
+  dataset.readRegion(0, box, grey, 7.0F);
+  dataset.readRegion(0, box, narrow, std::uint16_t{7});
+  for (std::size_t i = 0; i < voxels; ++i) {
+    ASSERT_EQ(static_cast<float>(narrow[i]), grey[i]) << i;
+  }
+  std::vector<std::uint8_t> bytes(voxels);
+  EXPECT_THROW(dataset.readRegion(0, box, std::span<std::uint8_t>(bytes)), std::invalid_argument);
+}
+
+TEST_F(DatasetReaderTest, RegionsReadTilesAndLeavesAlike) {
+  // A brick with a constant tile and a partly active leaf, read through the dataset.
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  const Index3 index = dataset.level(0).bricks.front();
+  const Box box = dataset.brickBox(0, index);
+  auto grid = UInt16Grid::create(0);
+  const openvdb::Coord tile(static_cast<int>(box.min[0]), static_cast<int>(box.min[1]),
+                            static_cast<int>(box.min[2]));
+  grid->tree().addTile(1, tile, 1234, true);
+  grid->tree().setValueOn(tile + openvdb::Coord(9, 1, 2), 77);
+  grid->setName("density");
+  openvdb::io::File(brickPath(dir_, 0, index).string()).write({grid});
+  const Dataset fresh = Dataset::open(dir_, std::size_t{1} << 30U);
+  std::vector<std::uint16_t> values(static_cast<std::size_t>(box.voxelCount()));
+  fresh.readRegion(0, box, values, std::uint16_t{1});
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto x = static_cast<std::int64_t>(i) % box.size(0);
+    const auto y = static_cast<std::int64_t>(i) / box.size(0) % box.size(1);
+    const auto z = static_cast<std::int64_t>(i) / box.size(0) / box.size(1);
+    const auto value = fresh.sample(0, {box.min[0] + x, box.min[1] + y, box.min[2] + z});
+    ASSERT_EQ(values[i], value ? static_cast<std::uint16_t>(*value) : 1) << i;
+  }
+  EXPECT_EQ(values[0], 1234);
+  EXPECT_EQ(values[static_cast<std::size_t>(9 + box.size(0) * (1 + box.size(1) * 2))], 77);
+}
+
+TEST_F(DatasetReaderTest, HeldBricksArePinnedAndOnAccessBricksChargedFully) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, 1);
+  const auto& bricks = dataset.level(0).bricks;
+  ASSERT_GT(bricks.size(), 3U);
+  {
+    const Dataset::BrickPtr held = dataset.brick(0, bricks.front());
+    for (const Index3& brick : bricks) {
+      (void)dataset.brick(0, brick);
+    }
+    // The held brick stayed in the cache: asking again is a hit, not a second copy.
+    const std::uint64_t misses = dataset.cacheStats().misses;
+    EXPECT_EQ(dataset.brick(0, bricks.front()), held);
+    EXPECT_EQ(dataset.cacheStats().misses, misses);
+    const CacheStats stats = dataset.cacheStats();
+    EXPECT_EQ(stats.pinned, 1U);
+    EXPECT_GT(stats.pinned_bytes, 0U);
+    EXPECT_EQ(stats.bricks, 2U);  // the held brick and the most recent one
+  }
+  EXPECT_EQ(dataset.cacheStats().pinned, 0U);
+
+  // A brick loaded on access counts with all its leaves before any is read.
+  const Dataset on_access = Dataset::open(dir_, std::size_t{1} << 30U, BrickLoading::kOnAccess);
+  const Dataset::BrickPtr brick = on_access.brick(0, bricks.front());
+  const auto leaves = brick->visit([](const auto& grid) { return grid.tree().leafCount(); });
+  EXPECT_GE(on_access.cacheStats().bytes, leaves * 512 * sizeof(std::uint16_t));
+}
+
+TEST_F(DatasetReaderTest, BrickSweepKeepsItsTasksInMemoryAndPinsTheHalo) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, std::size_t{1} << 30U);
+  std::atomic<int> busy{0};
+  std::atomic<int> most{0};
+  std::atomic<std::size_t> visited{0};
+  BrickSweep sweep;
+  sweep.task_bytes = std::uint64_t{1} << 62U;  // one task at a time
+  sweep.halo = 1;
+  dataset.forEachBrick(
+      0,
+      [&](const Index3& brick, const GreyGrid&) {
+        const int now = ++busy;
+        int seen = most.load();
+        while (now > seen && !most.compare_exchange_weak(seen, now)) {
+        }
+        // The brick and its stored neighbours are pinned.
+        std::size_t stored = 0;
+        for (std::int64_t dz = -1; dz <= 1; ++dz) {
+          for (std::int64_t dy = -1; dy <= 1; ++dy) {
+            for (std::int64_t dx = -1; dx <= 1; ++dx) {
+              stored += dataset.hasBrick(0, {brick[0] + dx, brick[1] + dy, brick[2] + dz}) ? 1 : 0;
+            }
+          }
+        }
+        EXPECT_EQ(dataset.cacheStats().pinned, stored);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        --busy;
+        ++visited;
+      },
+      sweep);
+  EXPECT_EQ(most.load(), 1);
+  EXPECT_EQ(visited.load(), dataset.level(0).bricks.size());
 }
 
 }  // namespace

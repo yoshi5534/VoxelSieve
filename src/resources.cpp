@@ -19,13 +19,20 @@
 #endif
 #endif
 
+#include <tbb/task_arena.h>
+
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
+#include "detail/memory.hpp"
 #include "voxelsieve/dataset.hpp"
 
 namespace voxelsieve {
@@ -50,7 +57,97 @@ std::uint64_t cgroupMemoryLimit() {
 std::mutex g_threads_mutex;
 std::unique_ptr<tbb::global_control> g_threads;  // guarded by g_threads_mutex
 
+std::atomic<std::uint64_t> g_memory_budget{0};  // 0: the default
+
+/// Operations admitted, and the bytes they claimed.
+std::mutex g_admission_mutex;
+std::condition_variable g_admission_changed;
+int g_admitted = 0;                  // guarded by g_admission_mutex
+std::uint64_t g_admitted_bytes = 0;  // guarded by g_admission_mutex
+std::atomic<int> g_admitted_count{0};
+
+/// The budget less the caches, at least an eighth of it.
+std::uint64_t workMemoryTotal() {
+  const std::uint64_t budget = memoryBudgetBytes();
+  const std::uint64_t caches = detail::cacheBudgetBytes();
+  return std::max(caches < budget ? budget - caches : 0, budget / 8);
+}
+
 }  // namespace
+
+std::uint64_t memoryBudgetBytes() {
+  if (const std::uint64_t set = g_memory_budget.load(); set > 0) {
+    return set;
+  }
+  const std::uint64_t memory = usableMemoryBytes();
+  return memory > 0 ? memory / 4 * 3 : std::uint64_t{4} << 30U;
+}
+
+void setMemoryBudget(std::uint64_t bytes) {
+  g_memory_budget = bytes;
+  // A shared cache of the default size follows the budget.
+  detail::sharedCacheFollowsBudget();
+}
+
+std::uint64_t workMemoryBytes() {
+  return workMemoryTotal() / static_cast<std::uint64_t>(std::max(1, g_admitted_count.load()));
+}
+
+std::size_t tasksInMemory(std::uint64_t task_bytes) {
+  const auto threads = static_cast<std::uint64_t>(
+      std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
+  return static_cast<std::size_t>(std::clamp<std::uint64_t>(
+      workMemoryBytes() / std::max<std::uint64_t>(task_bytes, 1), 1, threads));
+}
+
+Admission::Admission(std::uint64_t bytes) : bytes_(bytes), admitted_(true) {}
+
+Admission::Admission(Admission&& other) noexcept
+    : bytes_(std::exchange(other.bytes_, 0)), admitted_(std::exchange(other.admitted_, false)) {}
+
+Admission& Admission::operator=(Admission&& other) noexcept {
+  if (this != &other) {
+    release();
+    bytes_ = std::exchange(other.bytes_, 0);
+    admitted_ = std::exchange(other.admitted_, false);
+  }
+  return *this;
+}
+
+Admission::~Admission() { release(); }
+
+void Admission::release() {
+  if (!admitted_) {
+    return;
+  }
+  {
+    const std::scoped_lock lock(g_admission_mutex);
+    --g_admitted;
+    g_admitted_bytes -= bytes_;
+    g_admitted_count = g_admitted;
+  }
+  g_admission_changed.notify_all();
+  admitted_ = false;
+  bytes_ = 0;
+}
+
+Admission admitOperation(std::uint64_t bytes, const std::atomic<bool>* cancel) {
+  std::unique_lock lock(g_admission_mutex);
+  while (g_admitted > 0 && g_admitted_bytes + bytes > workMemoryTotal()) {
+    if (cancel != nullptr && cancel->load()) {
+      throw std::runtime_error("Cancelled");
+    }
+    // Woken when an operation is done; the timeout looks at `cancel` again.
+    g_admission_changed.wait_for(lock, std::chrono::milliseconds(100));
+  }
+  ++g_admitted;
+  g_admitted_bytes += bytes;
+  g_admitted_count = g_admitted;
+  // Constructed under the lock, so the counts and the admission agree.
+  return Admission(bytes);
+}
+
+int admittedOperations() { return g_admitted_count.load(); }
 
 std::uint64_t usableMemoryBytes() {
 #if defined(_WIN32)
@@ -116,6 +213,10 @@ bool processRunning(std::uint64_t id) {
 }
 
 bool applyResourceOption(std::string_view arg, const std::function<std::string()>& value) {
+  if (arg == "--memory") {
+    setMemoryBudget(static_cast<std::uint64_t>(std::stoull(value())) << 20U);
+    return true;
+  }
   if (arg == "--cache") {
     Dataset::setSharedCacheBytes(static_cast<std::size_t>(std::stoull(value())) << 20U);
     return true;

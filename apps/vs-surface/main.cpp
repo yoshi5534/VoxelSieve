@@ -38,7 +38,8 @@ Options:
   --stl <file>            Also write the surface as a triangle mesh (mm, dataset coordinates)
   --vdb <file>            Also write it as a narrow-band level set "surface" for Blender/Houdini
   --json <file>           Also write the header as JSON
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

@@ -77,7 +77,8 @@ Options:
   --min-void <voxels>       Smallest void reported (default 8)
   --max-end-deviation <mm>  Layer ends farther than this from the median end of their edge
                             (lost layers, tabs) are left out of the overhang (default 1)
-  --cache <MB>              Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>             Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>              Brick cache of all datasets (default a third of the memory budget)
   --threads <N>             Threads of all parallel work (default all cores)
   --telemetry <file>        Write time and resource use per phase as JSON
 

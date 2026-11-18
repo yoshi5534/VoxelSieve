@@ -67,8 +67,9 @@ Options:
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
                         PATH) are loaded too
-  --cache <MB>          Brick cache of the datasets operations read (default a quarter of
-                        the memory); the slice views keep their own 1024 MB
+  --memory <MB>         Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>          Brick cache of the datasets operations read (default a third of
+                        the budget); the slice views keep a sixteenth of the budget
   --threads <N>         Threads of all parallel work (default all cores)
   -h, --help            Show this help
 )";

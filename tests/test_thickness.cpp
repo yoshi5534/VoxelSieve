@@ -574,6 +574,35 @@ TEST_F(ThicknessMapTest, MapsTheWallsOfTheHollowBox) {
   EXPECT_NEAR(histogram, 1.0, 1e-9);
 }
 
+TEST_F(ThicknessMapTest, AnInterruptedMapResumesWithTheSameStatistics) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  scan(PhantomSource(spec));
+  ThicknessMapOptions options;
+  options.max_thickness_mm = 4.0;
+  const ThicknessMapResult fresh = map(options);
+  std::filesystem::remove_all(dir_ / "out");
+
+  ThicknessMapOptions interrupted = options;
+  interrupted.progress = [](double fraction) {
+    if (fraction > 0.4 && fraction < 0.9) {
+      throw std::runtime_error("interrupted");
+    }
+  };
+  EXPECT_THROW((void)map(interrupted), std::runtime_error);
+  ASSERT_TRUE(std::filesystem::exists(dir_ / "out" / "thickness_map" / "bricks.log"));
+  const ThicknessMapResult resumed = map(options);
+  EXPECT_EQ(resumed.material_voxels, fresh.material_voxels);
+  EXPECT_NEAR(resumed.mean_mm, fresh.mean_mm, 1e-9);
+  EXPECT_NEAR(resumed.std_mm, fresh.std_mm, 1e-9);
+  EXPECT_EQ(resumed.min_mm, fresh.min_mm);
+  EXPECT_EQ(resumed.max_mm, fresh.max_mm);
+  EXPECT_EQ(resumed.histogram, fresh.histogram);
+  const auto [share, known] = matches(spec, 0.1);
+  EXPECT_GT(share, 0.99);
+  // A finished map is not written again.
+  EXPECT_THROW((void)map(options), std::invalid_argument);
+}
+
 TEST_F(ThicknessMapTest, FollowsThePitchOfLongVoxels) {
   const PhantomSpec spec = hollowBox(VoxelSize{0.1, 0.1, 0.15});
   scan(PhantomSource(spec));

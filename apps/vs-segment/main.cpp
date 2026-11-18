@@ -54,7 +54,8 @@ Options:
   --region <x0,y0,z0,x1,y1,z1>
                           Score only this box, for example data a model was not trained on
   --json <file>           Also write the materials and scores as JSON
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

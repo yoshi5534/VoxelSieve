@@ -62,7 +62,8 @@ Options:
   --json <file>           Also write the result as JSON
   --slices <png>          Also write a z slice of the input and the result side by side
   --slice-z <z>           The slice to write (default: the middle)
-  --cache <MB>            Brick cache of all datasets (default a quarter of the memory)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

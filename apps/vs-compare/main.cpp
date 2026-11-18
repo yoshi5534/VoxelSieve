@@ -48,6 +48,7 @@ Options:
   --non-rigid-stiffness <s>
                           Resistance against stretching (default 1): high values let only thin
                           sections bend, low values follow almost any smooth deviation
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

@@ -109,6 +109,7 @@ Options:
                           few slices spread over the volume, its sections and histogram with
                           the estimated threshold. A staged input rewrites it sharper as more
                           slices are copied. The import reads every slice only once
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help

@@ -240,6 +240,21 @@ class MapBuilder {
     }
   }
 
+  /// Adds the thickness values of a brick written before (a resumed map) to the statistics.
+  void restore(const GreyGrid& written, const Box& box) {
+    std::vector<float> values(static_cast<std::size_t>(box.voxelCount()), kNaN);
+    written.visit([&](const auto& grid) {
+      for (auto it = grid.cbeginValueOn(); it; ++it) {
+        const openvdb::Coord c = it.getCoord();
+        values[static_cast<std::size_t>(
+            (c.x() - box.min[0]) +
+            box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))] =
+            static_cast<float>(*it);
+      }
+    });
+    collect(box, values);
+  }
+
   [[nodiscard]] const Accumulator& total() const { return total_; }
   [[nodiscard]] const std::vector<BlockStats>& blocks() const { return blocks_; }
   [[nodiscard]] std::int64_t blockSize() const { return block_; }
@@ -746,7 +761,8 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
     throw std::invalid_argument("The surface does not belong to the dataset");
   }
   const std::filesystem::path map_dir = dir / "thickness_map";
-  if (std::filesystem::exists(map_dir) && !std::filesystem::is_empty(map_dir)) {
+  // An interrupted map (no index.json yet) resumes below.
+  if (std::filesystem::exists(map_dir / "index.json")) {
     throw std::invalid_argument("A thickness map exists already in " + dir.string());
   }
   const VoxelSize& pitch = info.voxel_size;
@@ -781,6 +797,17 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
                      options.max_wall_mm);
   DerivedDatasetOptions derived;
   derived.value_type = ValueType::kFloat;
+  // A map that was interrupted resumes with the bricks it finished, whose values go into the
+  // statistics again (ADR 0031).
+  derived.resume_key = nlohmann::json{{"map", "wall thickness"},
+                                      {"iso_value", result.iso_value},
+                                      {"max_thickness_mm", result.max_thickness_mm},
+                                      {"min_wall_mm", options.min_wall_mm},
+                                      {"max_wall_mm", options.max_wall_mm}}
+                           .dump();
+  derived.finished = [&](const Index3& brick, const Box& box) {
+    builder.restore(readBrick(brickPath(map_dir, 0, brick), false), box);
+  };
   if (options.progress) {
     derived.progress = [&options](std::string_view stage, double fraction) {
       options.progress(stage == "bricks" ? 0.9 * fraction : 0.9 + 0.1 * fraction);

@@ -45,8 +45,6 @@ constexpr std::string_view kMagic = "VSSURF1\n";
 constexpr std::string_view kEndMagic = "VSSEND1\n";
 constexpr std::size_t kTableEntryBytes = 17;  // kind, offset, size
 constexpr std::size_t kTrailerBytes = 4 * sizeof(std::uint64_t) + kEndMagic.size();
-/// Chunks processed at the same time by the writer; bounds its memory.
-constexpr std::size_t kChunksInFlight = 4;
 
 enum class BlockKind : std::uint8_t { kOutside = 0, kInside = 1, kSurface = 2 };
 
@@ -582,9 +580,13 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   double material_voxels = 0.0;
 
   const SurfaceWriter writer(dataset, info, resolved);
+  // Chunks in work, as many as the work memory holds (ADR 0031): a chunk with its halo takes its
+  // grey values, their negation, a dense VDB copy and the distances, about 16 bytes per voxel.
+  const auto chunk_edge = static_cast<std::uint64_t>(
+      info.chunk_size + 2 * (static_cast<std::int64_t>(std::ceil(info.band_voxels)) + 3));
   std::size_t next = 0;
   tbb::parallel_pipeline(
-      kChunksInFlight,
+      tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 16),
       tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
                                           [&](tbb::flow_control& control) -> std::size_t {
                                             if (next >= chunk_count) {

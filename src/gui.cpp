@@ -22,6 +22,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/thickness.hpp"
 
 namespace voxelsieve {
@@ -209,7 +210,6 @@ constexpr std::size_t kMaxBrowsedEntries = 5000;
 constexpr std::size_t kOpenDatasets = 2;
 // Open datasets share one brick cache, so keeping more of them open costs only their index.
 constexpr std::size_t kOpenVolumes = 8;
-constexpr std::size_t kViewCacheBytes = std::size_t{1} << 30U;
 // Triangle budget of a volume's surface for its cut lines in slices.
 constexpr std::size_t kCutTriangles = 500000;
 // Colours of the objects in the order they were created, as OBJECT_COLORS in resources/ui/scene.js.
@@ -433,7 +433,10 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
 }
 
 Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
-    : view_cache_(std::make_shared<BrickCache>(kViewCacheBytes)) {
+    // The views' bricks are a share of the memory budget (ADR 0031), at least 512 MB; the cache
+    // counts against the budget, so operations get less work memory.
+    : view_cache_(std::make_shared<BrickCache>(static_cast<std::size_t>(
+          std::max<std::uint64_t>(std::uint64_t{512} << 20U, memoryBudgetBytes() / 16)))) {
   registerBuiltinOperations(registry_);
   for (const auto& dir : plugin_dirs) {
     for (std::string& message : registry_.loadPlugins(dir)) {

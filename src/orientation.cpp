@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "detail/png.hpp"
+#include "detail/sweep.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
@@ -403,13 +404,7 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
   for (std::int64_t z = 0; z < tiles[2]; ++z) {
     for (std::int64_t y = 0; y < tiles[1]; ++y) {
       for (std::int64_t x = 0; x < tiles[0]; ++x) {
-        std::uint64_t key = 0;
-        for (unsigned bit = 0; bit < 21; ++bit) {
-          key |= ((static_cast<std::uint64_t>(x) >> bit) & 1U) << (3U * bit);
-          key |= ((static_cast<std::uint64_t>(y) >> bit) & 1U) << (3U * bit + 1U);
-          key |= ((static_cast<std::uint64_t>(z) >> bit) & 1U) << (3U * bit + 2U);
-        }
-        tile_order.emplace_back(key, Index3{x, y, z});
+        tile_order.emplace_back(detail::mortonKey(Index3{x, y, z}), Index3{x, y, z});
       }
     }
   }
@@ -417,9 +412,11 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
 
   std::optional<TelemetryPhase> phase(std::in_place, "structure tensor");
   std::size_t next = 0;
-  const int threads = std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit()));
+  // A tile in work holds its grey values as floats and a mask byte, halo included.
+  const auto halo = static_cast<std::int64_t>(kernel.size() / 2) + 1;
+  const auto tile_edge = static_cast<std::uint64_t>(per_tile * b + 2 * halo);
   tbb::parallel_pipeline(
-      static_cast<std::size_t>(threads),
+      tasksInMemory(tile_edge * tile_edge * tile_edge * 5),
       tbb::make_filter<void, Index3>(tbb::filter_mode::serial_in_order,
                                      [&](tbb::flow_control& control) -> Index3 {
                                        if (next == tile_order.size()) {
