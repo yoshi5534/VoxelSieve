@@ -82,6 +82,46 @@ TEST(ComponentsTest, MatchesASerialFloodFillOnRandomMasks) {
   }
 }
 
+TEST(ComponentsTest, TilesNumberAndCountLikeTheirVoxels) {
+  initializeVdb();
+  std::mt19937 random(11);
+  // Sparse noise around solid boxes: aligned ones become tiles when pruned, the others leave
+  // full and partial leaves. The pruned mask must give the components of the voxelized one.
+  auto voxels = openvdb::BoolGrid::create(false);
+  auto acc = voxels->getAccessor();
+  std::bernoulli_distribution on(0.08);
+  for (int z = -24; z < 40; ++z) {
+    for (int y = -16; y < 32; ++y) {
+      for (int x = -24; x < 48; ++x) {
+        if (on(random)) {
+          acc.setValueOn(Coord(x, y, z));
+        }
+      }
+    }
+  }
+  voxels->tree().fill(openvdb::CoordBBox(Coord(0, 0, 0), Coord(15, 15, 23)), true, true);
+  voxels->tree().fill(openvdb::CoordBBox(Coord(-21, -13, 5), Coord(-3, 9, 30)), true, true);
+  voxels->tree().fill(openvdb::CoordBBox(Coord(24, -16, -24), Coord(39, -1, -9)), true, true);
+  voxels->tree().voxelizeActiveTiles();
+  auto pruned = voxels->deepCopy();
+  pruned->tree().prune();
+  ASSERT_TRUE(pruned->tree().hasActiveTiles());
+
+  const detail::VoxelComponents reference(voxels->tree());
+  const detail::VoxelComponents components(pruned->tree());
+  ASSERT_EQ(components.size(), reference.size());
+  std::vector<std::uint64_t> sizes(reference.size(), 0);
+  for (auto it = voxels->cbeginValueOn(); it; ++it) {
+    const std::int64_t label = reference.at(it.getCoord());
+    ASSERT_EQ(components.at(it.getCoord()), label) << it.getCoord();
+    ++sizes[static_cast<std::size_t>(label)];
+  }
+  for (std::size_t c = 0; c < sizes.size(); ++c) {
+    EXPECT_EQ(components.componentSize(c), sizes[c]) << c;
+  }
+  EXPECT_EQ(components.cellCount(), reference.cellCount());
+}
+
 TEST(ComponentsTest, JoinsPiecesOnlyThroughCornersAndTiles) {
   initializeVdb();
   auto mask = openvdb::BoolGrid::create(false);

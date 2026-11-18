@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     const auto analysed = std::chrono::steady_clock::now();
 
     std::filesystem::create_directories(options->out);
-    voxelsieve::writeJson(options->out / "porosity.json", voxelsieve::toJson(result));
+    voxelsieve::writePorosityJson(result, options->out / "porosity.json");
     voxelsieve::writePorosityImages(dataset, result, options->out);
     voxelsieve::writePorosityVdb(dataset, result, options->out / "porosity.vdb");
     const auto written = std::chrono::steady_clock::now();

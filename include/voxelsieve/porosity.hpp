@@ -77,7 +77,8 @@ struct PorosityResult {
   std::vector<DetectedPore> pores;  // largest first
   std::vector<PorosityZone> zones;  // largest void volume first
 
-  /// Pore id per pore voxel, level-0 index space.
+  /// Pore id per pore voxel, level-0 index space. The inside of large pores is stored as active
+  /// tiles: read it with accessors or visit tiles too, not only leaves.
   openvdb::Int32Grid::Ptr pore_labels;
   /// Void fraction per 8^3 block (index = block coordinate), active where a zone was flagged.
   openvdb::FloatGrid::Ptr zone_blocks;
@@ -97,12 +98,15 @@ struct PorosityResult {
 };
 
 /// Finds internal pores and zones of lowered density in a sieved dataset (level 0). Streams the
-/// dataset brick by brick; memory grows with the number of voxels below the threshold, not with
-/// the scan size.
+/// dataset brick by brick. Besides the brick cache, memory is about 20 bytes per 8^3 block of the
+/// part (values per block live in grids at block resolution) and grows with the surface of the
+/// voids, not with their voxels: the inside of a large void is stored as tiles.
 [[nodiscard]] PorosityResult analyzePorosity(const Dataset& dataset,
                                              const PorosityOptions& options = {});
 
 [[nodiscard]] nlohmann::json toJson(const PorosityResult& result);
+/// Writes `toJson(result)` to `path` one pore at a time, without the whole document in memory.
+void writePorosityJson(const PorosityResult& result, const std::filesystem::path& path);
 
 /// Saves a result so it can be loaded again: porosity.json plus analysis.vdb with the label,
 /// zone and material grids in index space.

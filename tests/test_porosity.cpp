@@ -14,6 +14,7 @@
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/slice.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/synthetic.hpp"
 #include "voxelsieve/volume.hpp"
@@ -107,6 +108,27 @@ TEST_F(PorosityTest, LargeLunkerCountsEveryVoxel) {
   ASSERT_EQ(result.pores.size(), 1U);
   const double truth = scan.defects().front().void_volume_mm3;
   EXPECT_NEAR(result.pores.front().volume_mm3, truth, 0.03 * truth);
+
+  // The inside of the lunker is stored as tiles of labels, not one value per voxel, and counts
+  // the same voxels.
+  EXPECT_TRUE(result.pore_labels->tree().hasActiveTiles());
+  EXPECT_EQ(static_cast<std::int64_t>(result.pore_labels->activeVoxelCount()),
+            result.pores.front().voxel_count);
+  // The slice overlay shows the pore at its centre, inside the tiles, on every level.
+  const auto center = result.pores.front().center_voxels;
+  const DatasetInfo& info = dataset_->info();
+  for (int level = 0; level < static_cast<int>(info.levels.size()); ++level) {
+    SliceRequest request;
+    request.index = static_cast<std::int64_t>(center[2]);
+    request.level = level;
+    request.size = {dataset_->level(level).dims[0], dataset_->level(level).dims[1]};
+    const SliceImage image = readSlice(*dataset_, request, &result);
+    const auto x = static_cast<std::int64_t>(center[0]) >> level;
+    const auto y = static_cast<std::int64_t>(center[1]) >> level;
+    EXPECT_EQ(image.overlay[static_cast<std::size_t>(y * image.width + x)],
+              static_cast<std::uint8_t>(SliceOverlay::kPore))
+        << "level " << level;
+  }
 }
 
 TEST_F(PorosityTest, TinyBrickCacheGivesTheSameResult) {

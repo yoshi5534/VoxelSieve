@@ -192,6 +192,22 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
   MemoryArchive archive;
   archive.setCompression(openvdb::io::Archive::hasBloscCompression() ? openvdb::io::COMPRESS_BLOSC
                                                                      : openvdb::io::COMPRESS_ZIP);
+  std::uint64_t bytes_in_memory = 0;
+  for (const auto& grid : grids) {
+    bytes_in_memory += grid->memUsage();
+  }
+  constexpr std::uint64_t kLargeGrids = std::uint64_t{256} << 20U;
+  if (bytes_in_memory > kLargeGrids) {
+    // Large grids (results such as the pores of a whole scan) go straight to the file through a
+    // large buffer: in memory, the archive and its copy would take twice the file size.
+    // The buffer outlives the stream, which writeFile closes before it returns.
+    std::vector<char> buffer(std::size_t{8} << 20U);
+    writeFile(path, [&](std::ostream& out) {
+      out.rdbuf()->pubsetbuf(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+      archive.writeTo(out, grids);
+    });
+    return;
+  }
   std::ostringstream buffer(std::ios::binary);
   archive.writeTo(buffer, grids);
   const std::string bytes = std::move(buffer).str();
