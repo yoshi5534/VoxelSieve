@@ -81,7 +81,7 @@ class FeaturePool {
     const std::size_t capacity = values.capacity();
     const std::size_t bytes = capacity * sizeof(float);
     const std::scoped_lock lock(mutex_);
-    if (bytes == 0 || bytes_ + bytes > kMaxBytes) {
+    if (bytes == 0 || bytes_ + bytes > max_bytes_) {
       return;
     }
     bytes_ += bytes;
@@ -89,7 +89,9 @@ class FeaturePool {
   }
 
  private:
-  static constexpr std::size_t kMaxBytes = std::size_t{2} << 30U;
+  /// A quarter of the work memory (ADR 0031), at least 256 MB.
+  std::size_t max_bytes_ = static_cast<std::size_t>(
+      std::max<std::uint64_t>(std::uint64_t{256} << 20U, workMemoryBytes() / 4));
   std::mutex mutex_;
   std::multimap<std::size_t, FeatureValues> free_;  // by capacity
   std::size_t bytes_ = 0;
