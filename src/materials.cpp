@@ -1074,47 +1074,83 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
       throw std::invalid_argument("The scoring region lies outside the volume");
     }
   }
-  // Slabs of one brick height along z keep memory bounded.
-  const std::int64_t slab = info.brick_size;
-  const auto slabs = ceilDiv(scored.size(2), slab);
-  const auto slab_box = [&](std::int64_t s) {
-    return Box{
-        {scored.min[0], scored.min[1], scored.min[2] + s * slab},
-        {scored.max[0], scored.max[1], std::min(scored.min[2] + (s + 1) * slab, scored.max[2])}};
+  // Tiles of the bricks, scored in parallel: memory is a brick of labels and grey values per
+  // thread, and each brick is read once. Components are found by an array per part, indexed by
+  // the 16-bit label, instead of a hash lookup per voxel.
+  const std::int64_t b = info.brick_size;
+  std::vector<Box> tiles;
+  for (std::int64_t z = scored.min[2]; z < scored.max[2]; z = (z / b + 1) * b) {
+    for (std::int64_t y = scored.min[1]; y < scored.max[1]; y = (y / b + 1) * b) {
+      for (std::int64_t x = scored.min[0]; x < scored.max[0]; x = (x / b + 1) * b) {
+        tiles.push_back(
+            {{x, y, z},
+             {std::min((x / b + 1) * b, scored.max[0]), std::min((y / b + 1) * b, scored.max[1]),
+              std::min((z / b + 1) * b, scored.max[2])}});
+      }
+    }
+  }
+  const std::size_t parts = part_starts.size() + 1;
+  constexpr std::size_t kLabels = std::size_t{1} << 16U;
+  const auto key_of = [&](std::int64_t position, std::uint16_t label) {
+    return static_cast<std::size_t>(part(position)) * kLabels + label;
   };
 
   // Pass 1: grey-value histogram per component (bins of 16 grey values).
   constexpr std::size_t kBins = 4096;
-  using Histograms = std::unordered_map<std::uint64_t, std::vector<std::uint32_t>>;
-  Histograms histograms;
-  for (std::int64_t s = 0; s < slabs; ++s) {
-    const Box box = slab_box(s);
-    std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
-    std::vector<float> grey(label.size());
-    labels.readRegion(box, label);
-    dataset.readRegion(0, box, grey, dataset.info().air_level);
-    std::size_t index = 0;
-    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-        for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
-          if (label[index] == 0) {
-            continue;
+  struct Histograms {
+    std::vector<std::int32_t> slot;  // per key: index into `bins`, or -1
+    std::vector<std::vector<std::uint32_t>> bins;
+    std::vector<std::size_t> keys;
+  };
+  tbb::combinable<Histograms> partial_histograms(
+      [&] { return Histograms{std::vector<std::int32_t>(parts * kLabels, -1), {}, {}}; });
+  tbb::parallel_for(std::size_t{0}, tiles.size(), [&](std::size_t t) {
+    tbb::this_task_arena::isolate([&] {
+      const Box& box = tiles[t];
+      std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
+      std::vector<float> grey(label.size());
+      labels.readRegion(box, label);
+      dataset.readRegion(0, box, grey, dataset.info().air_level);
+      Histograms& local = partial_histograms.local();
+      std::size_t index = 0;
+      for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+          for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
+            if (label[index] == 0) {
+              continue;
+            }
+            const Index3 p{x, y, z};
+            const std::size_t key = key_of(p[axis], label[index]);
+            if (local.slot[key] < 0) {
+              local.slot[key] = static_cast<std::int32_t>(local.bins.size());
+              local.bins.emplace_back(kBins, 0U);
+              local.keys.push_back(key);
+            }
+            ++local.bins[static_cast<std::size_t>(local.slot[key])]
+                        [static_cast<std::size_t>(std::clamp(grey[index], 0.0F, 65535.0F)) / 16];
           }
-          const Index3 p{x, y, z};
-          const std::uint64_t key = (std::uint64_t{part(p[axis])} << 16U) | label[index];
-          auto& histogram = histograms[key];
-          if (histogram.empty()) {
-            histogram.assign(kBins, 0);
-          }
-          ++histogram[static_cast<std::size_t>(std::clamp(grey[index], 0.0F, 65535.0F)) / 16];
+        }
+      }
+    });
+  });
+  std::map<std::size_t, std::vector<std::uint32_t>> histograms;  // in key order
+  partial_histograms.combine_each([&](Histograms& local) {
+    for (std::size_t i = 0; i < local.keys.size(); ++i) {
+      auto& histogram = histograms[local.keys[i]];
+      if (histogram.empty()) {
+        histogram = std::move(local.bins[i]);
+      } else {
+        for (std::size_t bin = 0; bin < kBins; ++bin) {
+          histogram[bin] += local.bins[i][bin];
         }
       }
     }
-  }
+    local = {};
+  });
   MaterialScore score;
   const std::size_t classes = info.materials.size() + 1;
   score.components_per_material.assign(classes, 0);
-  std::unordered_map<std::uint64_t, std::uint8_t> truth;
+  std::vector<std::uint8_t> truth(parts * kLabels, 0);
   for (const auto& [key, histogram] : histograms) {
     const std::uint64_t total =
         std::accumulate(histogram.begin(), histogram.end(), std::uint64_t{0});
@@ -1130,28 +1166,43 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
     ++score.components_per_material[id];
   }
 
+  histograms.clear();
+
   // Pass 2: confusion matrix.
-  score.confusion.assign(classes, std::vector<std::int64_t>(classes, 0));
-  for (std::int64_t s = 0; s < slabs; ++s) {
-    const Box box = slab_box(s);
-    std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
-    std::vector<std::uint8_t> segmented(label.size());
-    labels.readRegion(box, label);
-    segmentation.readRegion(box, segmented);
-    std::size_t index = 0;
-    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-        for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
-          std::uint8_t t = 0;
-          if (label[index] != 0) {
-            const Index3 p{x, y, z};
-            t = truth.at((std::uint64_t{part(p[axis])} << 16U) | label[index]);
+  using Confusion = std::vector<std::vector<std::int64_t>>;
+  tbb::combinable<Confusion> partial_confusion(
+      [&] { return Confusion(classes, std::vector<std::int64_t>(classes, 0)); });
+  tbb::parallel_for(std::size_t{0}, tiles.size(), [&](std::size_t t) {
+    tbb::this_task_arena::isolate([&] {
+      const Box& box = tiles[t];
+      std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
+      std::vector<std::uint8_t> segmented(label.size());
+      labels.readRegion(box, label);
+      segmentation.readRegion(box, segmented);
+      Confusion& confusion = partial_confusion.local();
+      std::size_t index = 0;
+      for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+          for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
+            std::uint8_t truth_id = 0;
+            if (label[index] != 0) {
+              const Index3 p{x, y, z};
+              truth_id = truth[key_of(p[axis], label[index])];
+            }
+            ++confusion[truth_id][std::min<std::size_t>(segmented[index], classes - 1)];
           }
-          ++score.confusion[t][std::min<std::size_t>(segmented[index], classes - 1)];
         }
       }
+    });
+  });
+  score.confusion.assign(classes, std::vector<std::int64_t>(classes, 0));
+  partial_confusion.combine_each([&](const Confusion& local) {
+    for (std::size_t t = 0; t < classes; ++t) {
+      for (std::size_t m = 0; m < classes; ++m) {
+        score.confusion[t][m] += local[t][m];
+      }
     }
-  }
+  });
   const auto dice = [](double overlap, double a, double b) {
     return a + b > 0.0 ? 2.0 * overlap / (a + b) : 1.0;
   };
