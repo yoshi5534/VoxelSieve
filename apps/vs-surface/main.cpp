@@ -147,10 +147,9 @@ int main(int argc, char** argv) {
       voxelsieve::writeJson(options->json, voxelsieve::toJson(mask.info()));
     }
     if (!options->stl.empty()) {
-      const auto mesh = mask.toMesh();
-      voxelsieve::writeStl(options->stl, mesh);
-      std::cout << "mesh               " << mesh.triangles.size() << " triangles, "
-                << options->stl.string() << '\n';
+      mask.writeStl(options->stl);  // streamed chunk by chunk
+      std::cout << "mesh               " << (std::filesystem::file_size(options->stl) - 84) / 50
+                << " triangles, " << options->stl.string() << '\n';
     }
     if (!options->vdb.empty()) {
       openvdb::io::File out(options->vdb.string());

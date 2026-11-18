@@ -110,10 +110,15 @@ class SurfaceMask {
   void readCodes(const Box& box, std::span<std::uint8_t> out) const;
 
   /// Narrow-band level set in the dataset's world space (voxel index times voxel size) with the
-  /// decoded distances in mm, for rendering, meshing or export.
-  [[nodiscard]] openvdb::FloatGrid::Ptr toLevelSet() const;
+  /// decoded distances in mm, for rendering, meshing or export. With `coarsening` k > 0 it holds
+  /// every 2^k-th voxel per axis at 2^k times the voxel size, read from the codes directly: memory
+  /// and time shrink with 4^k, as the surface does, and the full-resolution grid is never built.
+  [[nodiscard]] openvdb::FloatGrid::Ptr toLevelSet(int coarsening = 0) const;
   /// Triangle mesh of the zero crossing in mm, dataset world space, outward oriented.
   [[nodiscard]] Mesh toMesh(double adaptivity = 0.0) const;
+  /// Writes the triangles of `toMesh()` as a binary STL file, meshed chunk by chunk and streamed,
+  /// so memory does not grow with the surface. The order of the triangles differs.
+  void writeStl(const std::filesystem::path& file) const;
 
  private:
   struct Impl;
@@ -129,8 +134,9 @@ struct IndexedMesh {
 
 /// Mesh of the surface for display, in level-0 voxel coordinates (voxel index, not mm). With
 /// `adaptivity` > 0, flat regions are meshed with larger triangles (see volumeToMesh); when the
-/// mesh still has more than `max_triangles`, the surface is resampled at 2, 4, ... times the voxel
-/// size until it fits.
+/// mesh still has more than `max_triangles`, the surface is sampled at 2, 4, ... times the voxel
+/// size until it fits. The first sampling is chosen from the band voxels in the header, so a large
+/// surface is never meshed at full resolution; memory follows `max_triangles`.
 [[nodiscard]] IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
                                              double adaptivity = 0.25);
 

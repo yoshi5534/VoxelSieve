@@ -357,6 +357,27 @@ TEST_F(SurfaceTest, LevelSetAndMeshFollowTheCodes) {
   // The mesh encloses the volume counted from the codes.
   const Mesh mesh = mask.toMesh();
   EXPECT_NEAR(meshVolumeMm3(mesh), mask.info().volume_mm3, 0.01 * mask.info().volume_mm3);
+
+  // The STL streamed chunk by chunk holds the same triangles, once each, across chunk faces.
+  ASSERT_GT(mask.info().surface_chunks, 1);
+  mask.writeStl(dir_ / "surface.stl");
+  const Mesh streamed = readStl(dir_ / "surface.stl");
+  EXPECT_EQ(streamed.triangles.size(), mesh.triangles.size());
+  EXPECT_NEAR(meshVolumeMm3(streamed), meshVolumeMm3(mesh), 1e-6 * meshVolumeMm3(mesh));
+
+  // A coarsened level set samples every 4th voxel with the signs of the codes.
+  const auto coarse = mask.toLevelSet(2);
+  EXPECT_NEAR(coarse->voxelSize()[0], 4.0 * v, 1e-12);
+  auto coarse_accessor = coarse->getConstAccessor();
+  for (std::int64_t z = 0; z < dims[2]; z += 4) {
+    for (std::int64_t y = 0; y < dims[1]; y += 4) {
+      for (std::int64_t x = 0; x < dims[0]; x += 4) {
+        const float value = coarse_accessor.getValue(openvdb::Coord(
+            static_cast<int>(x / 4), static_cast<int>(y / 4), static_cast<int>(z / 4)));
+        ASSERT_EQ(value < 0.0F, mask.distance({x, y, z}) < 0.0F) << x << " " << y << " " << z;
+      }
+    }
+  }
 }
 
 TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {

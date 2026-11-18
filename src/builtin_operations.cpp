@@ -1232,7 +1232,7 @@ class Surface final : public Operation {
     writeJson(dir / "surface.json", toJson(info));
     writeSurfaceImages(mask, dir);
     if (p.at("stl").get<bool>()) {
-      writeStl(dir / "surface.stl", mask.toMesh());
+      mask.writeStl(dir / "surface.stl");  // streamed chunk by chunk
     }
     if (p.at("vdb").get<bool>()) {
       openvdb::io::File file((dir / "surface.vdb").string());
