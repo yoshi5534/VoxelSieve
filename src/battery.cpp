@@ -1782,34 +1782,39 @@ void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, C
       image.valid_across = std::clamp<std::int64_t>(
           static_cast<std::int64_t>(std::floor((wall - across_from) / data.step)) - 1, 0, across);
     }
-    // One plane buffer per thread for all its rows, instead of a new one per row.
+    // One plane buffer per thread for all its rows, instead of a new one per row. The rows go in
+    // chunks of 128, each in parallel: all threads read the bricks of one or two brick layers,
+    // which the cache holds, instead of rows from all over the cell at once (X3).
     tbb::enumerable_thread_specific<Plane> planes;
-    tbb::parallel_for(
-        tbb::blocked_range<std::int64_t>(0, rows),
-        [&](const tbb::blocked_range<std::int64_t>& range) {
-          Plane& plane = planes.local();
-          for (std::int64_t s = range.begin(); s != range.end(); ++s) {
-            const std::int64_t index = start + (side == 0 ? -s : s);
-            readPlaneInto(plane, volume, a, index, lo, hi, info.air_level);
-            const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
-            for (int j = 0; j < n_angles; ++j) {
-              const double angle = 2.0 * kPi * j / n_angles;
-              const double c = std::cos(angle);
-              const double sn = std::sin(angle);
-              SectionImage& image = images[at(j)];
-              for (std::int64_t i = 0; i < across; ++i) {
-                const double r = across_from + static_cast<double>(i) * data.step;
-                double sum = 0.0;
-                for (int t = -options.average_voxels; t <= options.average_voxels; ++t) {
-                  const double off = t * data.step;
-                  sum += plane.sample(centre[0] + r * c - off * sn, centre[1] + r * sn + off * c);
+    constexpr std::int64_t layer = 128;
+    for (std::int64_t chunk = 0; chunk < rows; chunk += layer) {
+      tbb::parallel_for(
+          tbb::blocked_range<std::int64_t>(chunk, std::min(rows, chunk + layer)),
+          [&](const tbb::blocked_range<std::int64_t>& range) {
+            Plane& plane = planes.local();
+            for (std::int64_t s = range.begin(); s != range.end(); ++s) {
+              const std::int64_t index = start + (side == 0 ? -s : s);
+              readPlaneInto(plane, volume, a, index, lo, hi, info.air_level);
+              const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
+              for (int j = 0; j < n_angles; ++j) {
+                const double angle = 2.0 * kPi * j / n_angles;
+                const double c = std::cos(angle);
+                const double sn = std::sin(angle);
+                SectionImage& image = images[at(j)];
+                for (std::int64_t i = 0; i < across; ++i) {
+                  const double r = across_from + static_cast<double>(i) * data.step;
+                  double sum = 0.0;
+                  for (int t = -options.average_voxels; t <= options.average_voxels; ++t) {
+                    const double off = t * data.step;
+                    sum += plane.sample(centre[0] + r * c - off * sn, centre[1] + r * sn + off * c);
+                  }
+                  image.values[at(i + across * s)] =
+                      static_cast<float>(sum / (2 * options.average_voxels + 1));
                 }
-                image.values[at(i + across * s)] =
-                    static_cast<float>(sum / (2 * options.average_voxels + 1));
               }
             }
-          }
-        });
+          });
+    }
     std::vector<double> angles(at(n_angles));
     for (int j = 0; j < n_angles; ++j) {
       angles[at(j)] = 360.0 * j / n_angles;
