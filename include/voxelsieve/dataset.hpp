@@ -123,6 +123,10 @@ struct DerivedDatasetOptions {
   /// rounded to the nearest integer and clamped to the type's range, like the coarser levels.
   /// `kUInt8` requires 8-bit input.
   std::optional<ValueType> value_type;
+  /// How the stored values relate to what they measure (value = offset + scale × stored), for
+  /// derived values in other units, such as a thickness in mm stored in 16 bit; `values` computes
+  /// the stored values. Unset: the input's.
+  std::optional<ValueMapping> value_mapping;
   /// Called with the stage ("bricks", then "levels") and the fraction of it done, 0 to 1, from
   /// one thread at a time.
   std::function<void(std::string_view stage, double fraction)> progress;

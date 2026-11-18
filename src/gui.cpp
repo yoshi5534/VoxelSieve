@@ -1130,6 +1130,10 @@ Gui::ThicknessTile Gui::thicknessTile(std::optional<int> thickness_step,
       box.max[va] > box.min[va]) {
     std::vector<float> values(static_cast<std::size_t>(box.voxelCount()));
     map->readRegion(request.level, box, values, std::numeric_limits<float>::quiet_NaN());
+    // Maps are stored in 16 bit with a scale (ADR 0030); NaN stays NaN.
+    for (float& value : values) {
+      value = static_cast<float>(info.value_mapping.toValue(value));
+    }
     for (std::int64_t y = box.min[va]; y < box.max[va]; ++y) {
       for (std::int64_t x = box.min[ua]; x < box.max[ua]; ++x) {
         std::array<std::int64_t, 3> p{};

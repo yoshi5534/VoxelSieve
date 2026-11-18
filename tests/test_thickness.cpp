@@ -542,7 +542,8 @@ class ThicknessMapTest : public ThicknessTest {
           }
           ++known;
           const auto t = sample({x, y, z});
-          matching += t && std::abs(*t - *expected) <= tolerance ? 1 : 0;
+          matching +=
+              t && std::abs(map.info().value_mapping.toValue(*t) - *expected) <= tolerance ? 1 : 0;
         }
       }
     }
@@ -592,11 +593,12 @@ TEST_F(ThicknessMapTest, AnInterruptedMapResumesWithTheSameStatistics) {
   ASSERT_TRUE(std::filesystem::exists(dir_ / "out" / "thickness_map" / "bricks.log"));
   const ThicknessMapResult resumed = map(options);
   EXPECT_EQ(resumed.material_voxels, fresh.material_voxels);
-  EXPECT_NEAR(resumed.mean_mm, fresh.mean_mm, 1e-9);
-  EXPECT_NEAR(resumed.std_mm, fresh.std_mm, 1e-9);
-  EXPECT_EQ(resumed.min_mm, fresh.min_mm);
-  EXPECT_EQ(resumed.max_mm, fresh.max_mm);
-  EXPECT_EQ(resumed.histogram, fresh.histogram);
+  // The kept bricks come back from 16 bit: within a step of max_thickness / 65535.
+  const double step = 4.0 / 65535.0;
+  EXPECT_NEAR(resumed.mean_mm, fresh.mean_mm, step);
+  EXPECT_NEAR(resumed.std_mm, fresh.std_mm, step);
+  EXPECT_NEAR(resumed.min_mm, fresh.min_mm, step);
+  EXPECT_NEAR(resumed.max_mm, fresh.max_mm, step);
   const auto [share, known] = matches(spec, 0.1);
   EXPECT_GT(share, 0.99);
   // A finished map is not written again.

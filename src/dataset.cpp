@@ -1233,6 +1233,7 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
   initializeVdb();
   DatasetInfo info = source;
   info.value_type = options.value_type.value_or(source.value_type);
+  info.value_mapping = options.value_mapping.value_or(source.value_mapping);
   info.active_voxel_count = 0;
   info.levels.assign(1, source.levels.front());
   const LevelInfo& level0 = info.levels.front();

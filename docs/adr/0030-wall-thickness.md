@@ -86,7 +86,7 @@ The surface tells how thick a wall is where it can be seen from outside; a mater
 accumulation inside a casting (a hot spot where a wall meets a flange or a boss) shows only as
 a slightly thicker surface value nearby. `writeThicknessMap` (`thickness.hpp`) writes the local
 thickness of every material voxel, the diameter of the largest sphere inside the material that
-contains it (Hildebrand and Rüegsegger 1997), as a float dataset `thickness_map/` beside the
+contains it (Hildebrand and Rüegsegger 1997), as a dataset `thickness_map/` beside the
 other outputs. The operation `wall_thickness` writes it with `volume_map`, `vs-thickness` with
 `--volume-map`.
 
@@ -113,9 +113,15 @@ other outputs. The operation `wall_thickness` writes it with `volume_map`, `vs-t
   no sphere exceeds, but at most 64 voxels of the finest pitch: time and memory grow with the
   cube of the halo. The value is `2d - p/2` for a distance `d` to the nearest air voxel centre
   and the finest pitch `p`, so a wall of n voxels reads n voxels thick.
-- **Scale.** Bricks are written one at a time through `writeDerivedDataset` (ADR 0004); a tile is
+- **Scale.** Bricks are written through `writeDerivedDataset` (ADR 0004); a tile is
   a brick, halved until tile and halo hold at most 2^26 voxels, so memory stays bounded for any
   scan. Within a tile the transforms and the painting run in parallel over lines and planes.
+- **Storage** (amended 2026-11, ADR 0031). The map is a 16-bit dataset whose value mapping
+  (ADR 0015) gives millimetres: thickness = scale × stored with scale = max_thickness_mm / 65535,
+  a step of a few hundredths of a voxel, at half the size of the floats written before; readers
+  apply the mapping, so older float maps (identity mapping) read the same. An interrupted map
+  resumes from the journal of `writeDerivedDataset`; the bricks it kept go into the statistics
+  again from their stored values.
 - **Statistics and regions.** Volume-weighted statistics (minimum, mean, percentiles, histogram)
   and a fine histogram in `thickness_map.json`, from which the report recomputes shares for the
   limits of an order. Regions thinner than the minimum or thicker than the maximum are the
