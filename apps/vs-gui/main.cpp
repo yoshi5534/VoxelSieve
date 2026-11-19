@@ -35,8 +35,10 @@ namespace {
 constexpr std::string_view kUsage = R"(Usage: vs-gui [options] [<dir>...]
        vs-gui --mcp [options] [<dir>...]
 
-Starts the VoxelSieve GUI: open http://localhost:8410 in a browser for the wizard (choose a
-dataset, run operations, create the report) with the step protocol and undo/redo.
+Starts the VoxelSieve GUI: open the address it prints, http://localhost:8410/?token=...,
+in a browser for the wizard (choose a dataset, run operations, create the report) with the
+step protocol and undo/redo. The token changes with every start; other processes and the
+network cannot use the server without it.
 
 With --mcp it serves the GUI over the Model Context Protocol (JSON-RPC on stdin/stdout)
 instead. Register it with an MCP client as a stdio server, for example:
@@ -249,7 +251,7 @@ int main(int argc, char** argv) {
     }
     voxelsieve::HttpServer server(gui, options->host, options->port);
     std::cerr << "vs-gui: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
-              << ":" << server.port() << "/  (Ctrl+C to stop)\n";
+              << ":" << server.port() << "/?token=" << server.token() << "  (Ctrl+C to stop)\n";
     serveUntilStopped(server);
     return 0;
   } catch (const std::exception& error) {

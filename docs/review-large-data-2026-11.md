@@ -595,6 +595,31 @@ a30c1b8), without phase 2 first. Measured at 2048³, 16 threads, 64 GB:
 - Set size limits and overflow-safe arithmetic for ZIP, `.vss` and TIFF headers, with fuzz
   targets.
 
+**Status (2026-11-19): done, with gaps,** on branch `phase5-control` (on top of
+`phase34-rest`; ADR 0008 amended):
+
+- 5.1: `ProgressToken` (`progress.hpp`) in the options of porosity, surface, segmentation,
+  learned segmentation, orientation, comparison, battery, dimensional and the DICONDE export,
+  filled from the operation context. `BrickSweep`/`runInFlight` check it per brick; their tasks
+  and the parallel stages of the surface and orientation pipelines run in TBB contexts of their
+  own, so a cancellation never cuts OpenVDB loops short. Tests cancel porosity, surface,
+  segmentation and orientation midway. Not measured: the 2 s at 1024³. Serial stretches have no
+  checks (porosity's component merge and VDB output, comparison's fits, battery between its
+  phases), so a cancel can wait for them.
+- 5.2: one cancel flag per run (F8); while a run works on a copy, copy and project save only
+  their part of `project.json`, merged under one lock per file (F2); view caches open outside
+  their lock (F3); at most 64 HTTP connections, and a tile whose client gave up its connection is
+  not computed (F4). Not done: a worker pool with tile generations; `Gui::mutex_` is still held
+  for the calls that need the project.
+- 5.3: runs have a run id; the UI starts operations in the background, follows them through
+  `wait` and resumes them after a reload. Not tested in a browser.
+- 5.4: a random access token per server start, in the printed address and then an HttpOnly,
+  SameSite=Strict cookie (F5). Size limits and overflow-safe range checks for `.vss` (dims,
+  chunks, bounded unpacking), ZIP entries (size against compressed size, 16 GiB) and TIFF
+  (sides up to 2^20, in-place offsets). Instead of libFuzzer targets: tests that open 80 damaged
+  `.vss` files and 240 damaged TIFF slices and archives (fixed seeds) and expect an error or a
+  plausible result, never a crash.
+
 ### Phase 6: 3D view within a VRAM budget (about 4–6 weeks, XL)
 
 Independent of phases 3–5 once phase 2 is in.

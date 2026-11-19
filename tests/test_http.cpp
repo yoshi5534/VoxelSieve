@@ -31,6 +31,9 @@ struct Reply {
   [[nodiscard]] Json json() const { return Json::parse(body); }
 };
 
+/// The access token of the server under test; requests carry it as the UI's cookie.
+std::string g_token;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
 Reply request(unsigned short port, http::verb verb, const std::string& target,
               const std::string& body = "", const std::string& content_type = "application/json",
               const std::string& host = "localhost") {
@@ -39,6 +42,9 @@ Reply request(unsigned short port, http::verb verb, const std::string& target,
   socket.connect({asio::ip::make_address("127.0.0.1"), port});
   http::request<http::string_body> message(verb, target, 11);
   message.set(http::field::host, host);
+  if (!g_token.empty()) {
+    message.set(http::field::cookie, "theme=dark; vs_token=" + g_token);
+  }
   if (!content_type.empty()) {
     message.set(http::field::content_type, content_type);
   }
@@ -98,6 +104,7 @@ class HttpTest : public ::testing::Test {
     std::filesystem::create_directories(dir_);
     gui_.registry().add(std::make_shared<Wait>(release_.get_future().share()));
     server_ = std::make_unique<HttpServer>(gui_, "127.0.0.1", 0);
+    g_token = server_->token();
     thread_ = std::thread([this] { server_->run(); });
   }
   void TearDown() override {
@@ -146,6 +153,33 @@ TEST_F(HttpTest, ServesTheUi) {
     has_porosity = has_porosity || method.at("name") == "run_porosity";
   }
   EXPECT_TRUE(has_porosity);
+}
+
+TEST_F(HttpTest, NeedsTheAccessTokenOfThisStart) {
+  const std::string token = g_token;
+  EXPECT_EQ(token.size(), 32U);
+  g_token.clear();
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/").status, 403U);
+  EXPECT_EQ(request(server_->port(), http::verb::post, "/api/call/project_status", "{}").status,
+            403U);
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/?token=wrong").status, 403U);
+  // The address vs-gui prints: the page sets the cookie the UI's requests then carry.
+  asio::io_context io;
+  asio::ip::tcp::socket socket(io);
+  socket.connect({asio::ip::make_address("127.0.0.1"), server_->port()});
+  http::request<http::empty_body> page(http::verb::get, "/?token=" + token, 11);
+  page.set(http::field::host, "localhost");
+  http::write(socket, page);
+  beast::flat_buffer buffer;
+  http::response<http::string_body> response;
+  http::read(socket, buffer, response);
+  EXPECT_EQ(response.result_int(), 200U);
+  const std::string cookie(response[http::field::set_cookie]);
+  EXPECT_NE(cookie.find("vs_token=" + token), std::string::npos);
+  EXPECT_NE(cookie.find("HttpOnly"), std::string::npos);
+  EXPECT_NE(cookie.find("SameSite=Strict"), std::string::npos);
+  g_token = token;
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/").status, 200U);
 }
 
 TEST_F(HttpTest, RefusesForeignHostsAndNonJsonCalls) {

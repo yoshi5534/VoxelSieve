@@ -226,11 +226,18 @@ TiffPage currentPage(TIFF* tiff) {
   if (page.width == 0 || page.height == 0) {
     throw std::runtime_error("TIFF image of size 0");
   }
+  // Sizes from the file drive allocations: a damaged header must not ask for more than any slice
+  // has (review finding F6).
+  constexpr std::uint32_t kMaxSide = std::uint32_t{1} << 20U;
+  if (page.width > kMaxSide || page.height > kMaxSide || page.bits > 64) {
+    throw std::runtime_error("TIFF image of implausible size");
+  }
   if (TIFFIsTiled(tiff) != 0) {
     page.chunk_width = field<std::uint32_t>(tiff, TIFFTAG_TILEWIDTH, 0);
     page.chunk_height = field<std::uint32_t>(tiff, TIFFTAG_TILELENGTH, 0);
-    if (page.chunk_width == 0 || page.chunk_height == 0) {
-      throw std::runtime_error("TIFF tile of size 0");
+    if (page.chunk_width == 0 || page.chunk_height == 0 || page.chunk_width > kMaxSide ||
+        page.chunk_height > kMaxSide) {
+      throw std::runtime_error("TIFF tile of size 0 or of implausible size");
     }
     page.chunks_across = (page.width + page.chunk_width - 1) / page.chunk_width;
     page.chunk_count = TIFFNumberOfTiles(tiff);

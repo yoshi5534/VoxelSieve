@@ -121,3 +121,20 @@ progress report, for the browser UI as for MCP. Still one operation runs at a ti
 lands in the protocol as with a direct call. Cancelling an MCP call stops the operation only when
 that call runs it, not a `wait` or a call that started it in the background. Destroying the GUI
 cancels a background operation and waits for it.
+
+## Amendment (2026-11): access token and runs in the background
+
+Review of November 2026, phase 5:
+
+- **Token.** The HTTP server makes a random token of 128 bits at every start. vs-gui prints the
+  address with it (`/?token=…`); that page sets the token as the cookie `vs_token`
+  (HttpOnly, SameSite=Strict), which the UI's requests carry. Requests without it, in the query,
+  the cookie or the header X-VoxelSieve-Token, get 403. The Host check stays. Other local
+  processes, and the network with `--host 0.0.0.0`, no longer get the API and its file access.
+- **Runs.** The UI starts operations with `background: true` and follows them through `wait`;
+  each run has a run id and a cancel flag of its own, so a reload finds a running operation
+  again and a cancellation never reaches a later run.
+- **Saves.** While an operation runs on a copy of the project, the copy saves its steps and the
+  project the views; each save merges its part into `project.json` under one lock per file.
+- **Server.** At most 64 connections at once (more get 503); a tile whose client gave up its
+  connection is not computed; view caches open files outside their lock.

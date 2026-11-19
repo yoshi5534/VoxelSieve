@@ -21,7 +21,10 @@ namespace voxelsieve {
 ///                                           then overlay bytes (see readVolumePreview)
 ///
 /// Requests must name the local host in the Host header and API calls must send JSON, which
-/// keeps other web sites open in the same browser from using the server.
+/// keeps other web sites open in the same browser from using the server. Every request must also
+/// carry the access token of this server start (`token()`, review step 5.4): in the address
+/// `/?token=<token>`, whose page sets it as the HttpOnly cookie `vs_token` for the UI's later
+/// requests, in that cookie, or in the header X-VoxelSieve-Token; else 403.
 class HttpServer {
  public:
   /// Binds to `host`:`port`; port 0 picks a free port.
@@ -33,6 +36,8 @@ class HttpServer {
   HttpServer& operator=(HttpServer&&) = delete;
 
   [[nodiscard]] unsigned short port() const;
+  /// The random access token of this server start, 32 hex digits.
+  [[nodiscard]] const std::string& token() const;
   /// Accepts connections until `stop()`; each connection is served on its own thread.
   void run();
   /// Stops accepting, closes open connections and waits for their threads. Thread-safe.

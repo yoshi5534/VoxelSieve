@@ -49,7 +49,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     the phases of new long-running code with `TelemetryPhase`; `resources.hpp` the memory budget of the
     process (ADR 0031: brick caches, work memory, admission of operations), the thread limit and
     the `--memory`/`--cache`/`--threads` options every tool takes; size the work in flight with
-    `tasksInMemory` or a `BrickSweep`, never from the physical memory. Open datasets
+    `tasksInMemory` or a `BrickSweep`, never from the physical memory; `progress.hpp` the
+    `ProgressToken` of the option structs, which long code checks per brick or tile. Open datasets
     without a cache of their own, so they share the one budget (`Dataset::sharedCache`)
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
     `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), and their

@@ -82,19 +82,52 @@ std::vector<char> compress(const std::vector<char>& data, int level) {
   return out;
 }
 
-std::vector<char> decompress(const char* data, std::size_t size, std::size_t expected) {
+/// A sink that keeps at most `limit` bytes and notes when more come: a damaged or hostile file
+/// must not unpack into more memory than its header claims (review finding F6).
+class LimitedSink {
+ public:
+  using char_type = char;
+  using category = boost::iostreams::sink_tag;
+  LimitedSink(std::vector<char>& out, std::size_t limit, bool& overflow)
+      : out_(&out), limit_(limit), overflow_(&overflow) {}
+  std::streamsize write(const char* s, std::streamsize n) {
+    const auto count = static_cast<std::size_t>(n);
+    if (count > limit_ - out_->size()) {
+      *overflow_ = true;  // dropped; reported once the stream is closed
+    } else {
+      out_->insert(out_->end(), s, s + count);
+    }
+    return n;
+  }
+
+ private:
+  std::vector<char>* out_;
+  std::size_t limit_;
+  bool* overflow_;
+};
+
+/// Unpacks a zstd section of about `expected` bytes; more than `limit` is an error.
+std::vector<char> decompress(const char* data, std::size_t size, std::size_t expected,
+                             std::size_t limit) {
   namespace io = boost::iostreams;
   std::vector<char> out;
-  out.reserve(expected);
+  out.reserve(std::min(expected, limit));
+  bool overflow = false;
   {
     io::filtering_ostream stream;
     stream.push(io::zstd_decompressor());
-    stream.push(io::back_inserter(out));
+    stream.push(LimitedSink(out, limit, overflow));
     stream.write(data, static_cast<std::streamsize>(size));
+  }
+  if (overflow) {
+    throw std::runtime_error("Corrupt surface file: a section unpacks to more than it holds");
   }
   return out;
 }
-
+/// Whether [offset, offset + bytes) lies within `size` bytes, without overflow.
+bool within(std::uint64_t offset, std::uint64_t bytes, std::uint64_t size) {
+  return offset <= size && bytes <= size - offset;
+}
 // ---------------------------------------------------------------------------------------------
 // Chunk layout shared by writer and reader.
 
@@ -455,8 +488,18 @@ SurfaceInfo infoFromJson(const Json& json) {
   info.volume_mm3 = json.at("volume_mm3").get<double>();
   info.raw_bytes = json.at("raw_bytes").get<std::uint64_t>();
   if (info.bits < 2 || info.bits > 8 || info.block_size != kBlock || info.chunk_size <= 0 ||
-      info.chunk_size % kBlock != 0) {
+      info.chunk_size % kBlock != 0 || info.chunk_size > 4096) {
     throw std::runtime_error("Unsupported surface file layout");
+  }
+  // Sizes that drive allocations: a damaged header must not ask for more than any scan has.
+  constexpr std::int64_t kMaxAxis = std::int64_t{1} << 20U;
+  for (const std::int64_t d : info.dims) {
+    if (d < 1 || d > kMaxAxis) {
+      throw std::runtime_error("Corrupt surface file: implausible dimensions");
+    }
+  }
+  if (!(info.band_voxels > 0.0) || !(info.band_voxels <= 64.0)) {
+    throw std::runtime_error("Corrupt surface file: implausible band");
   }
   return info;
 }
@@ -478,7 +521,8 @@ FileSections readSections(const char* data, std::size_t size) {
   sections.table_bytes = readU64(trailer + 8);
   const std::uint64_t header_offset = readU64(trailer + 16);
   const std::uint64_t header_bytes = readU64(trailer + 24);
-  if (header_offset + header_bytes > size || sections.table_offset + sections.table_bytes > size) {
+  if (!within(header_offset, header_bytes, size) ||
+      !within(sections.table_offset, sections.table_bytes, size)) {
     throw std::runtime_error("Corrupt surface file trailer");
   }
   sections.info = infoFromJson(
@@ -724,7 +768,9 @@ struct SurfaceMask::Impl {
     const auto block_count = static_cast<std::size_t>(decoded->geometry.blockCount());
     const std::vector<char> payload =
         decompress(mapped.data() + entry.offset, static_cast<std::size_t>(entry.bytes),
-                   block_count * kBlockVoxels);
+                   block_count * kBlockVoxels,
+                   // the kinds of the blocks and at most a byte per voxel of each
+                   block_count * (kBlockVoxels + 1) + 1024);
     const std::size_t kind_bytes = (block_count + 3) / 4;
     if (payload.size() < kind_bytes) {
       throw std::runtime_error("Corrupt surface chunk");
@@ -837,9 +883,12 @@ SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cac
   impl->grid = chunkGrid(impl->info);
   impl->cache_bytes = cache_bytes;
   const auto chunk_count = static_cast<std::size_t>(impl->grid[0] * impl->grid[1] * impl->grid[2]);
-  const std::vector<char> table =
-      decompress(impl->mapped.data() + sections.table_offset,
-                 static_cast<std::size_t>(sections.table_bytes), chunk_count * kTableEntryBytes);
+  if (chunk_count > (std::size_t{1} << 24U)) {
+    throw std::runtime_error("Corrupt surface file: implausible number of chunks");
+  }
+  const std::vector<char> table = decompress(
+      impl->mapped.data() + sections.table_offset, static_cast<std::size_t>(sections.table_bytes),
+      chunk_count * kTableEntryBytes, chunk_count * kTableEntryBytes);
   if (table.size() != chunk_count * kTableEntryBytes) {
     throw std::runtime_error("Corrupt surface chunk table");
   }
@@ -854,7 +903,7 @@ SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cac
     e.kind = static_cast<BlockKind>(kind);
     e.offset = readU64(entry + 1);
     e.bytes = readU64(entry + 9);
-    if (e.offset + e.bytes > impl->mapped.size()) {
+    if (!within(e.offset, e.bytes, impl->mapped.size())) {
       throw std::runtime_error("Corrupt surface chunk table");
     }
   }

@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <random>
 #include <string>
@@ -428,6 +430,47 @@ TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
   EXPECT_EQ(surfaceDisplayMesh(SurfaceMask::open(dir_ / "surface.vss"), budget).triangles,
             coarse.triangles);
   EXPECT_NE(std::filesystem::last_write_time(cache), stale);
+}
+
+TEST_F(SurfaceTest, DamagedSurfaceFilesFailWithAnError) {
+  const auto scan = scanOf("bracket", 0.2, 0.2);
+  const Dataset dataset = sieve(*scan, "scan.vsieve");
+  (void)writeSurface(dataset, dir_ / "surface.vss");
+  std::ifstream in(dir_ / "surface.vss", std::ios::binary);
+  const std::vector<char> valid{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+  ASSERT_GT(valid.size(), 1024U);
+  // Copies with a few bytes changed, half of them in the trailer, header and table at the end,
+  // or cut short; the same in every run (review step 5.4).
+  std::mt19937 random(11);
+  int failed = 0;
+  for (int i = 0; i < 80; ++i) {
+    std::vector<char> copy = valid;
+    if (i % 5 == 4) {
+      copy.resize(random() % copy.size());
+    } else {
+      for (std::uint32_t f = 0, flips = 1 + random() % 8; f < flips; ++f) {
+        const std::size_t at =
+            f % 2 == 0 ? copy.size() - 1 - random() % 512 : random() % copy.size();
+        copy[at] = static_cast<char>(random());
+      }
+    }
+    const auto file = dir_ / ("damaged" + std::to_string(i) + ".vss");
+    std::ofstream(file, std::ios::binary)
+        .write(copy.data(), static_cast<std::streamsize>(copy.size()));
+    try {
+      const SurfaceMask mask = SurfaceMask::open(file);
+      const auto& dims = mask.info().dims;
+      ASSERT_LE(dims[0], std::int64_t{1} << 20U);
+      if (dims[0] * dims[1] * dims[2] <= (std::int64_t{1} << 24U)) {
+        std::vector<std::uint8_t> codes(static_cast<std::size_t>(dims[0] * dims[1] * dims[2]));
+        mask.readCodes({{0, 0, 0}, dims}, codes);
+      }
+    } catch (const std::exception&) {
+      ++failed;
+    }
+  }
+  EXPECT_GT(failed, 10);
 }
 
 TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {

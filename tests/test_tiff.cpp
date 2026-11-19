@@ -889,5 +889,76 @@ TEST_F(TiffTest, GuiBrowsesAndImportsTiffStacks) {
                    0.5 / 65535.0);
 }
 
+/// Damaged copies of a valid file, the same in every run: a few bytes changed (half of them in
+/// the first 256 bytes, where the headers are) or the end cut off (review step 5.4).
+std::vector<std::vector<std::uint8_t>> damagedCopies(const std::vector<std::uint8_t>& bytes,
+                                                     int count) {
+  std::mt19937 random(5);
+  std::vector<std::vector<std::uint8_t>> copies;
+  for (int i = 0; i < count; ++i) {
+    std::vector<std::uint8_t> copy = bytes;
+    if (i % 5 == 4) {
+      copy.resize(random() % copy.size());
+    } else {
+      const auto flips = 1 + random() % 8;
+      for (std::uint32_t f = 0; f < flips; ++f) {
+        std::size_t at = random() % copy.size();
+        if (f % 2 == 0) {
+          at %= std::min<std::size_t>(copy.size(), 256);
+        }
+        copy[at] = static_cast<std::uint8_t>(random());
+      }
+    }
+    copies.push_back(std::move(copy));
+  }
+  return copies;
+}
+
+TEST_F(TiffTest, DamagedSlicesAndArchivesFailWithAnError) {
+  std::vector<std::vector<std::uint32_t>> pages(1, std::vector<std::uint32_t>(40 * 30));
+  for (std::size_t i = 0; i < pages[0].size(); ++i) {
+    pages[0][i] = static_cast<std::uint32_t>(i * 37 % 65536);
+  }
+  TiffSpec strips;
+  strips.width = 40;
+  strips.height = 30;
+  strips.rows_per_strip = 7;
+  TiffSpec tiles = strips;
+  tiles.tile = 16;
+  tiles.compression = COMPRESSION_ADOBE_DEFLATE;
+  int failed = 0;
+  int read = 0;
+  for (const TiffSpec& spec : {strips, tiles}) {
+    const std::vector<std::uint8_t> valid = writeTiff(spec, pages);
+    const std::vector<std::uint8_t> zipped = writeZip({{"stack/s0.tif", valid}}, false);
+    for (const bool archive : {false, true}) {
+      int n = 0;
+      for (const auto& damaged : damagedCopies(archive ? zipped : valid, 60)) {
+        const auto file = dir_ / ("damaged" + std::to_string(n++) + (archive ? ".zip" : ".tif"));
+        writeFile(file, damaged);
+        // Any error is fine; reading garbage, crashing or asking for absurd memory is not.
+        try {
+          const TiffStackSource source(file);
+          // A damaged header may claim another plausible size; it stays within the limits.
+          const auto dims = source.dims();
+          ASSERT_LE(dims[0], std::int64_t{1} << 20U);
+          ASSERT_LE(dims[1], std::int64_t{1} << 20U);
+          if (dims[0] * dims[1] * dims[2] > (std::int64_t{1} << 24U)) {
+            ++read;  // too large to read in a test, but refused nowhere
+            continue;
+          }
+          std::vector<std::uint16_t> voxels(static_cast<std::size_t>(dims[0] * dims[1] * dims[2]));
+          source.readRegion({{0, 0, 0}, dims}, voxels);
+          ++read;
+        } catch (const std::exception&) {
+          ++failed;
+        }
+      }
+    }
+  }
+  EXPECT_GT(failed, 0);
+  EXPECT_EQ(failed + read, 240);
+}
+
 }  // namespace
 }  // namespace voxelsieve

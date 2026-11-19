@@ -201,7 +201,7 @@ struct TiffStackSource::Impl {
         const std::uint64_t start =
             page.chunk_offsets[chunk] + static_cast<std::uint64_t>(first_row * cw * bytes);
         const auto span = static_cast<std::uint64_t>((last_row - first_row + 1) * cw * bytes);
-        if (start + span <= size) {
+        if (start <= size && span <= size - start) {
           detail::prefetchMappedPages(data + start, span);
         }
       }
@@ -218,7 +218,7 @@ struct TiffStackSource::Impl {
               page.chunk_offsets[chunk] +
               static_cast<std::uint64_t>(((y % ch) * cw + (x - column * cw)) * bytes);
           const auto count = static_cast<std::size_t>(x_end - x);
-          if (start + count * static_cast<std::uint64_t>(bytes) > size) {
+          if (start > size || count * static_cast<std::uint64_t>(bytes) > size - start) {
             throw std::runtime_error("TIFF strip outside its file: " + slices[z].file.string());
           }
           const std::uint8_t* p = data + start;
