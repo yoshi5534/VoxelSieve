@@ -620,12 +620,12 @@ void DicomStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) 
       const SliceHeader& header = impl_->slices[static_cast<std::size_t>(z)];
       const auto file = impl_->mapped.get(static_cast<std::size_t>(z), header.path);
       const auto* data = reinterpret_cast<const std::uint8_t*>(file->data()) + header.pixel_offset;
-      const std::size_t bytes = header.bits_allocated / 8;
+      const auto bytes = static_cast<std::int64_t>(header.bits_allocated / 8);
       const std::uint32_t mask = (std::uint32_t{1} << header.bits_stored) - 1U;
       const std::uint32_t sign = std::uint32_t{1} << (header.bits_stored - 1);
       const bool is_signed = header.pixel_representation == 1;
       detail::prefetchMappedPages(data + (box.min[1] * width + box.min[0]) * bytes,
-                                  static_cast<std::size_t>(((ny - 1) * width + nx)) * bytes);
+                                  static_cast<std::size_t>(((ny - 1) * width + nx) * bytes));
       detail::readMapped(header.path.string(), [&] {
         for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
           const std::uint8_t* row = data + (y * width + box.min[0]) * bytes;
@@ -644,7 +644,7 @@ void DicomStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) 
           }
         }
       });
-      copied += static_cast<std::uint64_t>(nx * ny) * bytes;
+      copied += static_cast<std::uint64_t>(nx * ny * bytes);
     }
     // Reads of a mapping are page faults, which no process counter reports as bytes read.
     countRead(CountedRead::kMappedFile, copied);

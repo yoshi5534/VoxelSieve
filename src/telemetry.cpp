@@ -189,8 +189,11 @@ bool readMemory(Counters& c) {
   const HANDLE process = GetCurrentProcess();
   MemoryCountersEx2 memory{};
   memory.cb = sizeof(memory);
+  // Some Windows versions (the CI's Windows Server) take the size but leave the private working
+  // set at 0; they count as having none.
   if (GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
-                           sizeof(memory)) != 0) {
+                           sizeof(memory)) != 0 &&
+      (memory.private_working_set_size > 0 || memory.working_set_size == 0)) {
     c.minor_faults = memory.page_fault_count;
     c.rss_anon_mb = static_cast<double>(memory.private_working_set_size) / kMb;
     c.rss_file_mb =
