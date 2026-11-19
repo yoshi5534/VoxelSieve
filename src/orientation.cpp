@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <map>
+#include <mutex>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -416,15 +418,22 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
   const auto halo = static_cast<std::int64_t>(kernel.size() / 2) + 1;
   const auto tile_edge = static_cast<std::uint64_t>(per_tile * b + 2 * halo);
   ProgressSteps steps(options.progress, tile_order.size());
+  // A cancellation only stops new tiles; tiles in work pass the last stage (TBB does not destroy
+  // the results in flight of a cancelled pipeline), and it is thrown at the end.
+  std::mutex failure_mutex;
+  std::exception_ptr failure;
+  const auto failed = [&] {
+    const std::scoped_lock lock(failure_mutex);
+    return failure != nullptr || options.progress.cancelled();
+  };
   tbb::parallel_pipeline(
       tasksInMemory(tile_edge * tile_edge * tile_edge * 5),
       tbb::make_filter<void, Index3>(tbb::filter_mode::serial_in_order,
                                      [&](tbb::flow_control& control) -> Index3 {
-                                       if (next == tile_order.size()) {
+                                       if (next == tile_order.size() || failed()) {
                                          control.stop();
                                          return {};
                                        }
-                                       steps.step(0);  // cancelled: no further tile
                                        return tile_order[next++].second;
                                      }) &
           tbb::make_filter<Index3, std::vector<OrientationBlock>>(
@@ -448,8 +457,17 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
               tbb::filter_mode::serial_out_of_order,
               [&](const std::vector<OrientationBlock>& tile_blocks) {
                 result.blocks.insert(result.blocks.end(), tile_blocks.begin(), tile_blocks.end());
-                steps.step();
+                try {
+                  steps.step();
+                } catch (...) {
+                  const std::scoped_lock lock(failure_mutex);
+                  failure = std::current_exception();
+                }
               }));
+  if (failure) {
+    std::rethrow_exception(failure);
+  }
+  options.progress.check();
   std::sort(result.blocks.begin(), result.blocks.end(),
             [](const OrientationBlock& l, const OrientationBlock& r) {
               return std::tie(l.block[2], l.block[1], l.block[0]) <

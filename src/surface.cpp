@@ -19,6 +19,7 @@
 #include <boost/iostreams/filtering_stream.hpp>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <initializer_list>
 #include <list>
@@ -634,16 +635,24 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   // A cancelled or failed run leaves no partial file.
   try {
     ProgressSteps steps(options.progress, chunk_count);
+    // A cancellation (or a failed report) only stops new chunks: chunks in work still pass the
+    // last stage, as TBB does not destroy the results in flight of a cancelled pipeline. It is
+    // thrown once the pipeline is done.
+    std::mutex failure_mutex;
+    std::exception_ptr failure;
+    const auto failed = [&] {
+      const std::scoped_lock lock(failure_mutex);
+      return failure != nullptr || options.progress.cancelled();
+    };
     std::size_t next = 0;
     tbb::parallel_pipeline(
         tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 22),
         tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
                                             [&](tbb::flow_control& control) -> std::size_t {
-                                              if (next >= chunk_count) {
+                                              if (next >= chunk_count || failed()) {
                                                 control.stop();
                                                 return 0;
                                               }
-                                              steps.step(0);  // cancelled: no further chunk
                                               return next++;
                                             }) &
             tbb::make_filter<std::size_t, ChunkOutput>(
@@ -668,8 +677,17 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
                   info.surface_blocks += chunk.surface_blocks;
                   info.band_voxel_count += chunk.band_voxels;
                   material_voxels += chunk.material_voxels;
-                  steps.step();
+                  try {
+                    steps.step();
+                  } catch (...) {
+                    const std::scoped_lock lock(failure_mutex);
+                    failure = std::current_exception();
+                  }
                 }));
+    if (failure) {
+      std::rethrow_exception(failure);
+    }
+    options.progress.check();
   } catch (...) {
     out.close();
     std::error_code ignored;
