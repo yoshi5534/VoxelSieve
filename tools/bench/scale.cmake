@@ -4,6 +4,7 @@
 #
 #   cmake -DBIN=build/release/bin -DWORK=/tmp/vs-scale [-DSIZES=256;512;1024] [-DSTEPS=...]
 #         [-DLIMITS=tests/scale_limits.json] [-DRECORD=tests/scale_limits.json] [-DKEEP_INPUT=ON]
+#         [-DTOOL_ARGS=--memory;8192]
 #         -P tools/bench/scale.cmake
 #
 # BIN    directory of the tools (vs-phantom, vs-sieve, ...)
@@ -18,6 +19,7 @@
 #        recorded for this platform, thread count and size; steps without a record pass
 # RECORD writes the measured values into this limits file (created or updated)
 # KEEP_INPUT keeps the phantom's raw file after the sieve
+# TOOL_ARGS options for every tool, a ;-list, such as --memory;8192 (the memory budget, ADR 0031)
 #
 # Columns: own_peak_mb is the peak of the process's own resident memory, mapped_peak_mb that of
 # mapped file pages, which the system can drop at any time; brick_reread is the brick files loaded
@@ -134,7 +136,7 @@ set(measured "")  # entries "size|step|own_peak_tenths|reread" for the limits
 macro(run_step step)
   set(telemetry "${dir}/${step}.telemetry.json")
   message(STATUS "[${n}^3] ${step}")
-  execute_process(COMMAND "${BIN}/${tool}${exe}" ${arguments} --telemetry "${telemetry}"
+  execute_process(COMMAND "${BIN}/${tool}${exe}" ${arguments} ${TOOL_ARGS} --telemetry "${telemetry}"
                   RESULT_VARIABLE result OUTPUT_FILE "${dir}/${step}.log" ERROR_FILE "${dir}/${step}.log")
   set(row "${n},${step},${result}")
   if(result EQUAL 0 AND EXISTS "${telemetry}")

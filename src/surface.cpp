@@ -582,12 +582,13 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
 
   const SurfaceWriter writer(dataset, info, resolved);
   // Chunks in work, as many as the work memory holds (ADR 0031): a chunk with its halo takes its
-  // grey values, their negation, a dense VDB copy and the distances, about 16 bytes per voxel.
+  // grey values, their negation, a dense VDB copy, the distances and the codes: about 22 bytes per
+  // voxel, as measured at 2048^3.
   const auto chunk_edge = static_cast<std::uint64_t>(
       info.chunk_size + 2 * (static_cast<std::int64_t>(std::ceil(info.band_voxels)) + 3));
   std::size_t next = 0;
   tbb::parallel_pipeline(
-      tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 16),
+      tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 22),
       tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
                                           [&](tbb::flow_control& control) -> std::size_t {
                                             if (next >= chunk_count) {
