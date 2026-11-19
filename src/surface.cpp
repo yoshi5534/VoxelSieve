@@ -1282,8 +1282,9 @@ std::optional<IndexedMesh> readMeshCache(const std::filesystem::path& file,
   return in ? std::optional<IndexedMesh>(std::move(mesh)) : std::nullopt;
 }
 
-/// Caches `mesh` beside the surface; a directory that cannot be written keeps no cache.
-void writeMeshCache(const std::filesystem::path& file, const std::array<std::uint64_t, 2>& stamp,
+/// Caches `mesh` beside the surface; false when the directory cannot be written, which then
+/// keeps no cache.
+bool writeMeshCache(const std::filesystem::path& file, const std::array<std::uint64_t, 2>& stamp,
                     const IndexedMesh& mesh) {
   try {
     writeFile(file, [&](std::ostream& out) {
@@ -1297,8 +1298,9 @@ void writeMeshCache(const std::filesystem::path& file, const std::array<std::uin
                 static_cast<std::streamsize>(mesh.triangles.size() * sizeof(mesh.triangles[0])));
     });
   } catch (const std::exception&) {
-    // Only a cache: the mesh is made again next time.
+    return false;  // only a cache: the mesh is made again next time
   }
+  return true;
 }
 
 IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, double adaptivity);
@@ -1324,7 +1326,7 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
   }
   IndexedMesh mesh = makeDisplayMesh(mask, max_triangles, adaptivity);
   if (!cache.empty()) {
-    writeMeshCache(cache, stamp, mesh);
+    (void)writeMeshCache(cache, stamp, mesh);
   }
   return mesh;
 }

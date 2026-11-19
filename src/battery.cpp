@@ -1786,10 +1786,10 @@ void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, C
     // chunks of 128, each in parallel: all threads read the bricks of one or two brick layers,
     // which the cache holds, instead of rows from all over the cell at once (X3).
     tbb::enumerable_thread_specific<Plane> planes;
-    constexpr std::int64_t layer = 128;
-    for (std::int64_t chunk = 0; chunk < rows; chunk += layer) {
+    constexpr std::int64_t kRowChunk = 128;
+    for (std::int64_t chunk = 0; chunk < rows; chunk += kRowChunk) {
       tbb::parallel_for(
-          tbb::blocked_range<std::int64_t>(chunk, std::min(rows, chunk + layer)),
+          tbb::blocked_range<std::int64_t>(chunk, std::min(rows, chunk + kRowChunk)),
           [&](const tbb::blocked_range<std::int64_t>& range) {
             Plane& plane = planes.local();
             for (std::int64_t s = range.begin(); s != range.end(); ++s) {

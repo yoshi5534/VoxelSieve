@@ -1096,6 +1096,7 @@ void writeMaterialLevels(const std::filesystem::path& dir, MaterialVolumeInfo& i
   for (int level = 1; dims[0] > b || dims[1] > b || dims[2] > b; ++level) {
     dims = {ceilDiv(dims[0], 2), ceilDiv(dims[1], 2), ceilDiv(dims[2], 2)};
     std::vector<Index3> parents;
+    parents.reserve(below.size());
     for (const Index3& child : below) {
       parents.push_back({child[0] / 2, child[1] / 2, child[2] / 2});
     }
