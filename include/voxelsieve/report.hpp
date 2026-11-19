@@ -12,14 +12,30 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/region.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
 
-/// Acceptance limits for one inspection zone, following the scheme of BDG P 202 (volume deficits
-/// of castings): size of the largest pore, number of pores, porosity. Every limit is optional; the
-/// values come from the drawing or the customer, not from VoxelSieve.
+/// Pores left out of the evaluation of a zone (BDG P 203: the "U" parameters of the porosity key).
+struct DisregardedPores {
+  /// Pores whose enclosing or equivalent diameter, or volume, is at most this value.
+  std::optional<double> enclosing_diameter_mm;
+  std::optional<double> equivalent_diameter_mm;
+  std::optional<double> volume_mm3;
+  /// Pores at least this round or compact.
+  std::optional<double> sphericity;
+  std::optional<double> compactness;
+
+  [[nodiscard]] bool any() const;
+  [[nodiscard]] bool disregards(const DetectedPore& pore) const;
+};
+
+/// Acceptance limits for one inspection zone, following the schemes of BDG P 202 (volume deficits
+/// of castings: size of the largest pore, number of pores, porosity) and BDG P 203 (porosity by
+/// CT: the parameters of its porosity key). Every limit is optional; the values come from the
+/// drawing or the customer, not from VoxelSieve.
 struct AcceptanceLimits {
   /// Largest extent of a single pore (longest edge of its bounding box).
   std::optional<double> max_pore_size_mm;
@@ -30,26 +46,62 @@ struct AcceptanceLimits {
   std::optional<double> max_porosity_percent;
   /// Whether zones of loosened microstructure are permitted at all.
   bool allow_loosening = true;
+
+  // BDG P 203. The porosity of the zone above is its PROI, of the whole part its PG.
+  /// PG: porosity of the whole part, whatever the region of the zone.
+  std::optional<double> max_global_porosity_percent;
+  /// PV: porosity in the reference volume, placed inside the part (and the region of the zone)
+  /// where it is highest.
+  std::optional<double> max_reference_porosity_percent;
+  std::optional<ReferenceVolume> reference_volume;
+  /// Vp, Øp, Øaq: volume, enclosing and equivalent diameter of the largest pore.
+  std::optional<double> max_pore_volume_mm3;
+  std::optional<double> max_enclosing_diameter_mm;
+  std::optional<double> max_equivalent_diameter_mm;
+  /// Ψ, C: every pore at least this round or compact.
+  std::optional<double> min_sphericity;
+  std::optional<double> min_compactness;
+  /// Gap: distance between neighbouring pores, the material between them.
+  std::optional<double> min_pore_gap_mm;
+  /// da: distance of every pore to the outer surface of the part, the material between them.
+  std::optional<double> min_surface_distance_mm;
+  /// U: pores that count for none of the limits.
+  DisregardedPores disregard;
 };
 
 /// Region of the part with its own limits, for example a sealing face with tighter limits than
-/// the rest. Without a box the zone is the whole part.
+/// the rest. The default region is the whole part.
 struct InspectionZone {
   std::string name;
-  /// Axis-aligned box in mm in the dataset's coordinates (voxel index times voxel size).
-  std::optional<std::array<std::array<double, 3>, 2>> box_mm;
+  InspectionRegion region;
   AcceptanceLimits limits;
+  /// BDG P 203 porosity key the limits came from, as written on the drawing.
+  std::string key;
 };
 
+/// Sets the limits of a BDG P 203 porosity key such as "BDG P203 - PROI2/ Øaq3/ da3/ UØaq1".
+/// Parameters: PG, PROI, PV, Vp, Øp (or Ø), Øaq, Ψ, C, Gap, da, Z, each optionally with the
+/// prefix U for pores to disregard; Dp, Daq, D and Psi may stand for Øp, Øaq, Ø and Ψ, and a
+/// comma for the decimal point. Throws on unknown parameters.
+void applyPorosityKey(std::string_view key, AcceptanceLimits& limits);
+
 struct CriterionResult {
-  std::string name;  // "max_pore_size_mm", "max_pore_count", "max_porosity_percent", "loosening"
+  /// "max_pore_size_mm", "max_pore_count", "max_porosity_percent", "loosening", and for
+  /// BDG P 203 the names of the members of AcceptanceLimits. Names starting with "min_" pass
+  /// when the measured value is at least the limit, the others when it is at most the limit.
+  std::string name;
   double measured = 0.0;
   double limit = 0.0;
   bool passed = true;
+  /// Where the value was found: "pore 3", "pores 2 and 5", the placement of a reference volume.
+  std::string note;
 };
 
 struct ZoneEvaluation {
   std::string name;
+  std::string region;  // description of the region
+  std::string key;     // BDG P 203 porosity key, if given
+  AcceptanceLimits limits;
   double part_volume_mm3 = 0.0;
   std::int64_t pore_count = 0;     // all pores in the zone
   std::int64_t counted_pores = 0;  // pores at least `count_min_size_mm`
@@ -58,6 +110,8 @@ struct ZoneEvaluation {
   double void_volume_mm3 = 0.0;
   double porosity_percent = 0.0;
   std::int64_t loosening_zones = 0;
+  /// Pores in the zone that the limits disregard.
+  std::int64_t disregarded_pores = 0;
   std::vector<CriterionResult> criteria;
   [[nodiscard]] bool passed() const;
 };
@@ -71,13 +125,21 @@ struct Evaluation {
 [[nodiscard]] double poreSizeMm(const DetectedPore& pore, const VoxelSize& voxel_size);
 
 /// Assigns pores and loosened zones to the inspection zones by their centre and checks the limits.
-/// A pore or zone can belong to several overlapping inspection zones.
+/// A pore or zone can belong to several overlapping inspection zones. Throws when a limit needs a
+/// pore characteristic that the result lacks (results written before ADR 0032). With the analysed
+/// `dataset`, the part volume of a region whose boundary runs along the surface of the part is
+/// measured on the voxels there (regionPartVolumeMm3).
 [[nodiscard]] Evaluation evaluate(const PorosityResult& result,
-                                  const std::vector<InspectionZone>& zones);
+                                  const std::vector<InspectionZone>& zones,
+                                  const Dataset* dataset = nullptr);
 
 /// Reads the inspection zones from the "acceptance" section of an inspection order (see
-/// examples/inspection_order.json).
-[[nodiscard]] std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order);
+/// examples/inspection_order.json and examples/inspection_order_p203.json): name, region
+/// (InspectionRegion::fromJson), the limits as fields named like the members of
+/// AcceptanceLimits, "porosity_key" (applyPorosityKey), "reference_volume"
+/// (ReferenceVolume::fromJson) and "disregard". Relative mesh paths are taken from `base_dir`.
+[[nodiscard]] std::vector<InspectionZone> inspectionZonesFromJson(
+    const nlohmann::json& order, const std::filesystem::path& base_dir = {});
 
 /// Everything a report template can use: the inspection order as given, completed with
 /// "not given" for missing mandatory fields, the analysis settings and results formatted

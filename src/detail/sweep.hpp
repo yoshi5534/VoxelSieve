@@ -21,7 +21,7 @@ namespace voxelsieve::detail {
 void mortonSort(std::vector<std::array<std::int64_t, 3>>& bricks);
 
 /// Runs `task(i)` for i = 0 … count − 1, started in that order, with at most `in_flight` running
-/// at once (ADR 0031). Each task runs isolated: a thread that waits inside it for nested parallel
+/// at once (ADR 0034). Each task runs isolated: a thread that waits inside it for nested parallel
 /// work does not start another task, so the memory in use stays that of `in_flight` tasks.
 /// Each task also runs in a TBB context of its own: when one fails or the run is cancelled, no
 /// further task starts, but the tasks running finish their nested parallel work instead of

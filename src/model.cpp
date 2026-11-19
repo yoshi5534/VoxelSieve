@@ -89,7 +89,7 @@ class FeaturePool {
   }
 
  private:
-  /// A quarter of the work memory (ADR 0031), at least 256 MB.
+  /// A quarter of the work memory (ADR 0034), at least 256 MB.
   std::size_t max_bytes_ = static_cast<std::size_t>(
       std::max<std::uint64_t>(std::uint64_t{256} << 20U, workMemoryBytes() / 4));
   std::mutex mutex_;
@@ -687,7 +687,7 @@ MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model
   const double tile_voxels = std::pow(static_cast<double>(options.tile + 2 * halo), 3.0);
   const auto tile_bytes = static_cast<std::uint64_t>(tile_voxels * 4.0 * 2.0 * widest);
   std::mutex mutex;
-  // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0031).
+  // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0034).
   detail::mortonSort(todo);
   detail::runInFlight(
       todo.size(), tasksInMemory(tile_bytes),

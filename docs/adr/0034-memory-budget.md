@@ -1,4 +1,4 @@
-# 0031: Execution context and memory budget
+# 0034: Execution context and memory budget
 
 Status: accepted (2026-11-18)
 

@@ -7,3 +7,5 @@ compile_commands.json
 !tests/data/**
 .vscode/
 .idea/
+__pycache__/
+*.egg-info/

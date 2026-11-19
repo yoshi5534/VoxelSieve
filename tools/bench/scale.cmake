@@ -19,7 +19,7 @@
 #        recorded for this platform, thread count and size; steps without a record pass
 # RECORD writes the measured values into this limits file (created or updated)
 # KEEP_INPUT keeps the phantom's raw file after the sieve
-# TOOL_ARGS options for every tool, a ;-list, such as --memory;8192 (the memory budget, ADR 0031)
+# TOOL_ARGS options for every tool, a ;-list, such as --memory;8192 (the memory budget, ADR 0034)
 #
 # Columns: own_peak_mb is the peak of the process's own resident memory, mapped_peak_mb that of
 # mapped file pages, which the system can drop at any time; brick_reread is the brick files loaded

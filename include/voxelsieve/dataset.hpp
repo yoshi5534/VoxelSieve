@@ -133,7 +133,7 @@ struct DerivedDatasetOptions {
   /// Called with the stage ("bricks", then "levels") and the fraction of it done, 0 to 1, from
   /// one thread at a time.
   std::function<void(std::string_view stage, double fraction)> progress;
-  /// Names the processing and its parameters, for resuming (ADR 0031). Set, the run keeps a
+  /// Names the processing and its parameters, for resuming (ADR 0034). Set, the run keeps a
   /// journal in `dir`, and a run that was interrupted resumes when it is started again into the
   /// same directory with the same input, value type and key: the bricks it finished are kept,
   /// `values` is not called for them, but `finished` is. Empty: `dir` must not exist or be empty.
@@ -208,7 +208,7 @@ class BrickCache {
   std::unique_ptr<Impl> impl_;
 };
 
-/// How `Dataset::forEachBrick` works through the bricks (ADR 0031).
+/// How `Dataset::forEachBrick` works through the bricks (ADR 0034).
 struct BrickSweep {
   /// Voxels around its brick that a call reads as well (through `readRegion`, `sample` or a
   /// `Sampler`). The bricks they fall into are pinned during the call, so neighbouring calls
@@ -225,7 +225,7 @@ struct BrickSweep {
 ///
 /// Opening reads only index.json. Bricks are loaded on demand into an LRU cache with a memory
 /// budget; the most recently used brick is always kept, even if it alone exceeds the budget.
-/// A returned brick is pinned while the caller holds it (ADR 0031): it stays in the cache and
+/// A returned brick is pinned while the caller holds it (ADR 0034): it stays in the cache and
 /// counts against the budget; only bricks that no caller holds are evicted. Datasets opened
 /// without a cache of their own share one cache (`sharedCache`), so the datasets an operation
 /// opens add no budgets.
@@ -239,7 +239,7 @@ class Dataset {
       std::function<void(const std::array<std::int64_t, 3>& brick, const GreyGrid& grid)>;
 
   /// Budget of the shared cache unless set: a third of the process's memory budget
-  /// (`memoryBudgetBytes`, ADR 0031), at least 2 GiB but at most half of it. Halo reads of T
+  /// (`memoryBudgetBytes`, ADR 0034), at least 2 GiB but at most half of it. Halo reads of T
   /// threads need T × 27 bricks at once, which a fixed 1 GiB could not hold.
   [[nodiscard]] static std::size_t defaultCacheBytes();
   /// The cache of the datasets opened without one. It lives while a dataset or a caller holds it;

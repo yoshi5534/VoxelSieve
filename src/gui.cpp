@@ -459,7 +459,7 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
 }
 
 Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
-    // The views' bricks are a share of the memory budget (ADR 0031), at least 512 MB; the cache
+    // The views' bricks are a share of the memory budget (ADR 0034), at least 512 MB; the cache
     // counts against the budget, so operations get less work memory.
     : view_cache_(std::make_shared<BrickCache>(static_cast<std::size_t>(
           std::max<std::uint64_t>(std::uint64_t{512} << 20U, memoryBudgetBytes() / 16)))) {
@@ -2134,15 +2134,17 @@ void Gui::releaseRun() {
 
 std::vector<Gui::RunRequest> Gui::followUps(const Json& step) const {
   std::vector<RunRequest> requests;
-  if (step.at("operation") != "material_meshes" || step.at("status") != "done" ||
-      !step.at("params").value("add_objects", true)) {
+  const auto& operation = step.at("operation").get_ref<const std::string&>();
+  if ((operation != "material_meshes" && operation != "inspection_regions") ||
+      step.at("status") != "done" || !step.at("params").value("add_objects", true)) {
     return requests;
   }
-  // Each material mesh becomes an object at the pose of the segmented volume.
+  // Each material mesh or inspection region becomes an object at the pose of the volume.
   const std::string& owner = step.value("object", "");
   const auto& objects = project().objects();
   const auto object = std::ranges::find(objects, owner, &ProjectObject::id);
-  const std::filesystem::path dir = project().resolve({step.at("id").get<int>(), "meshes"});
+  const std::filesystem::path dir = project().resolve(
+      {step.at("id").get<int>(), operation == "material_meshes" ? "meshes" : "regions"});
   for (const Json& mesh : step.at("summary").at("meshes")) {
     Json params = {{"path", (dir / mesh.at("file").get<std::string>()).string()},
                    {"object_name", mesh.at("name")},

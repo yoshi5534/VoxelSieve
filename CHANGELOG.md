@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Beam hardening correction**: the operation `beam_hardening` and the tool `vs-beam-hardening`
+  remove cupping and the dark streaks between dense or thick regions from a reconstructed scan
+  and write a new dataset, without projections or a spectrum. Every slice across the rotation
+  axis of a coarse level is projected again; the path lengths to the powers 2 and 3 are
+  reconstructed and added with the weights that make the material most uniform. On synthetic
+  scans of a cylinder with dense rods, less than 1 % of the contrast is left beside the noise. A
+  simpler method scales the grey values by their depth below the surface, for one material when
+  the rotation axis is unknown. Both report the material grey value by depth and the cupping
+  before and after (`--measure` only measures it; ADR 0033).
+
+- **Porosity after BDG P 203 in freely defined regions**: inspection zones are regions made of
+  boxes, spheres, cylinders and closed meshes, minus excluded ones; in a project a region can be
+  a mesh object, such as one drawn on the CAD model, and follows its pose. The new operation
+  `inspection_regions` shows them as objects. The porosity analysis measures per pore the
+  enclosing diameter, surface area, sphericity, compactness and distance to the surface, and the
+  report evaluates the porosity key of the drawing (`porosity_key`, e.g. `PV7/ Øp3/ da0,3/
+  UØp0,3`): porosity of the part, the region and a reference volume at its most porous spot,
+  pore volume, diameters, shape, gap between pores, distance to the surface and pores to
+  disregard, each with where it was found (ADR 0032, `examples/inspection_order_p203.json`).
+  Porosity results written before need the analysis run again for these criteria.
+
+- **Python package**: `pip install .` builds the package `voxelsieve`, with numpy access to
+  datasets of any size (`ds[z0:z1, y0:y1, x0:x1]`, every resolution level, bricks one by one),
+  datasets written from numpy arrays and memory-mapped raw files, your own processing brick by
+  brick into a new dataset (`write_derived_dataset`), material labels as arrays, and projects
+  that run every operation by id with its parameters, as the GUI does (`docs/python.md`,
+  ADR 0031). Releases carry wheels for Linux, Windows and macOS (Python 3.12 and newer).
+
 - **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a
   temporary file, which Windows keeps in memory instead of writing it to disk while memory
   suffices. Written back during the brick pass, it had stalled that pass for half a minute with

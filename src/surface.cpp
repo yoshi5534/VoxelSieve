@@ -627,7 +627,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   double material_voxels = 0.0;
 
   const SurfaceWriter writer(dataset, info, resolved);
-  // Chunks in work, as many as the work memory holds (ADR 0031): a chunk with its halo takes its
+  // Chunks in work, as many as the work memory holds (ADR 0034): a chunk with its halo takes its
   // grey values, their negation, a dense VDB copy, the distances and the codes: about 22 bytes per
   // voxel, as measured at 2048^3.
   const auto chunk_edge = static_cast<std::uint64_t>(

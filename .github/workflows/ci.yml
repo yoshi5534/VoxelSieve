@@ -82,8 +82,19 @@ jobs:
           path: ~/.cache/vcpkg/archives
           key: ${{ needs.dependencies.outputs.cache-key }}
           fail-on-cache-miss: true
+      # The release build also builds the Python package and runs its tests (ADR 0031).
+      - name: Set up Python
+        if: matrix.preset == 'release'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install nanobind and numpy
+        if: matrix.preset == 'release'
+        run: python -m pip install nanobind numpy
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: >-
+          cmake --preset ${{ matrix.preset }}
+          ${{ matrix.preset == 'release' && '-DVOXELSIEVE_BUILD_PYTHON=ON' || '' }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
@@ -110,10 +121,50 @@ jobs:
           path: ~/.cache/vcpkg/archives
           key: ${{ needs.dependencies.outputs.cache-key }}
           fail-on-cache-miss: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install nanobind
+        run: python -m pip install nanobind
+      # With the Python module, so that clang-tidy checks python/core.cpp too.
       - name: Configure
-        run: cmake --preset debug
+        run: cmake --preset debug -DVOXELSIEVE_BUILD_PYTHON=ON
       - name: clang-format and clang-tidy
         run: tools/lint.sh build/debug
+
+  # The Python package as users install it: `pip install .` with the dependencies from vcpkg, then
+  # its tests on the installed package, outside the source tree (ADR 0031).
+  python-package:
+    name: Python package (pip install)
+    needs: dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get install -y --no-install-recommends ninja-build
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Set up vcpkg
+        run: tools/setup-vcpkg.sh
+      - name: Restore binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: ${{ needs.dependencies.outputs.cache-key }}
+          fail-on-cache-miss: true
+      - name: pip install
+        run: python -m pip install -v .
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
+      - name: Test the installed package
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -c "import voxelsieve, pathlib; print(voxelsieve.__version__, pathlib.Path(voxelsieve.__file__).parent)"
+          python -m unittest discover -s "$GITHUB_WORKSPACE/python/tests" -v
 
   # Windows and macOS: the release preset of each platform, built and tested like on Linux. Each
   # keeps its own vcpkg binary cache; the first run builds the dependencies from source.

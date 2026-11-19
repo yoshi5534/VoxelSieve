@@ -332,7 +332,7 @@ class StagedSource {
       return;
     }
     // One slice per task: each slice is decoded exactly once, in parallel, as many at once as the
-    // work memory holds (a slice and its 8-bit copy per task, ADR 0031).
+    // work memory holds (a slice and its 8-bit copy per task, ADR 0034).
     detail::runInFlight(count, tasksInMemory(slice_voxels * 3), copy_slice);
   }
 
@@ -1317,7 +1317,7 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
   const LevelInfo& level0 = info.levels.front();
 
   // A run with a resume key leaves a journal; a later run of the same processing of the same
-  // input resumes it and skips the finished bricks (ADR 0031).
+  // input resumes it and skips the finished bricks (ADR 0034).
   nlohmann::json key;
   if (!options.resume_key.empty()) {
     key = {{"dims", source.dims},

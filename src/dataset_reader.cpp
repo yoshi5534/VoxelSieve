@@ -68,7 +68,7 @@ struct BrickCache::Impl {
   std::atomic<std::uint64_t> next_dataset{1};
 
   /// Moves the least recently used bricks over the budget to `evicted`; the caller holds the lock.
-  /// Pinned bricks, which a caller still holds (ADR 0031), stay: dropping them would free no
+  /// Pinned bricks, which a caller still holds (ADR 0034), stay: dropping them would free no
   /// memory, and a caller asking for them again would load a second copy. The most recently used
   /// brick stays as well.
   void evict(std::list<Entry>& evicted) {
@@ -274,7 +274,7 @@ struct Dataset::Impl {
     BrickPtr grid =
         std::make_shared<const GreyGrid>(readBrick(brickPath(dir, level_index, brick), on_access));
     // A brick loaded on access grows as its leaves are read; it is charged its full size at once
-    // (ADR 0031), so the budget holds without measuring the cached bricks again.
+    // (ADR 0034), so the budget holds without measuring the cached bricks again.
     std::size_t bytes = 0;
     grid->visit([&](const auto& typed) {
       bytes = static_cast<std::size_t>(typed.memUsage());

@@ -13,7 +13,7 @@ namespace voxelsieve {
 /// the process's control group on Linux where that is lower. 0 when it cannot be read.
 [[nodiscard]] std::uint64_t usableMemoryBytes();
 
-/// The memory budget of the process (ADR 0031): what its brick caches and the work buffers of its
+/// The memory budget of the process (ADR 0034): what its brick caches and the work buffers of its
 /// algorithms may use together. Default: three quarters of the usable memory, 4 GiB when that is
 /// unknown.
 [[nodiscard]] std::uint64_t memoryBudgetBytes();

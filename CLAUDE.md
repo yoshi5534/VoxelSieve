@@ -30,6 +30,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     measurement: elements found on the CAD model, fitted to the scan, datum alignment and
     characteristics with tolerances (ADR 0027); `render.hpp` a CPU renderer for shaded report and
     documentation images
+  - `region.hpp` inspection regions from solids and meshes, the P 203 reference volume and pore
+    gaps (ADR 0032)
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
     PNG and VDB output (the pore labels store the inside of large pores as tiles: visit tiles,
     not only leaves); `orientation.hpp` fibre directions and fibre families of composites from
@@ -37,17 +39,18 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     layers, anode overhang, particles, voids; ADR 0029) and `cells.hpp` synthetic cells for it
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
     its correlation, or a learned model (ADR 0025); `writeDerivedDataset` (`dataset.hpp`) writes
-    any per-voxel processing that keeps the part
+    any per-voxel processing that keeps the part; `beam_hardening.hpp` beam hardening
+    correction (cupping and streaks) by reprojection of the coarse level, or by depth (ADR 0033)
   - `materials.hpp` segmentation into material classes, the material volume and scoring against
     labels (ADR 0013); `model.hpp` learned models (.vsm) run on the CPU tile by tile (ADR 0014),
     trained with the PyTorch scripts in `tools/models/` (segmentation, and denoising from the noisy
     scan alone)
-  - `report.hpp` evaluation against acceptance limits (BDG P 202) and the report template engine;
-    the built-in templates are `resources/report_template.html` and
+  - `report.hpp` evaluation against acceptance limits (BDG P 202, P 203) and the report template
+    engine; the built-in templates are `resources/report_template.html` and
     `resources/first_article_template.html` (first article report), compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
     the phases of new long-running code with `TelemetryPhase`; `resources.hpp` the memory budget of the
-    process (ADR 0031: brick caches, work memory, admission of operations), the thread limit and
+    process (ADR 0034: brick caches, work memory, admission of operations), the thread limit and
     the `--memory`/`--cache`/`--threads` options every tool takes; size the work in flight with
     `tasksInMemory` or a `BrickSweep`, never from the physical memory; `progress.hpp` the
     `ProgressToken` of the option structs, which long code checks per brick or tile. Open datasets
@@ -64,8 +67,12 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
-  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
+  `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
   a battery cell order and an example plugin (`examples/plugins/histogram`)
+- `python/` the Python package `voxelsieve` (nanobind module `_core` in `core.cpp`, numpy access,
+  projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
+  (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest
+  `python_package`
 - `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 

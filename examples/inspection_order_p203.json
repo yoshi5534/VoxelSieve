@@ -1,0 +1,131 @@
+{
+  "report": {
+    "number": "TR-2026-0002",
+    "date": "2026-09-27"
+  },
+  "laboratory": {
+    "name": "Example CT Testing Lab",
+    "address": "1 Sample Street, 12345 Exampletown"
+  },
+  "customer": {
+    "name": "Example Foundry Ltd",
+    "address": "5 Works Road, 54321 Castleton"
+  },
+  "order": {
+    "number": "A-4711",
+    "received": "2026-09-20",
+    "test_date": "2026-09-25"
+  },
+  "part": {
+    "name": "Gearbox housing",
+    "drawing": "DWG 123-456 rev. C",
+    "material": "EN AC-AlSi9Cu3(Fe)",
+    "serial": "Batch 2026-38, part 7",
+    "condition": "cast, sealing face and bore to be machined"
+  },
+  "scan": {
+    "device": "Example system 225 kV",
+    "voltage_kv": 200,
+    "current_ua": 300,
+    "filter": "0.5 mm Cu",
+    "detector": "Flat panel detector 2048 × 2048",
+    "projections": 1440,
+    "exposure_ms": 500,
+    "reconstruction": "filtered back projection (FDK)"
+  },
+  "method": {
+    "deviations": ""
+  },
+  "uncertainty": "pore volume ±5 %, pore size ±1 voxel (estimated on reference parts)",
+  "acceptance": {
+    "guideline": "BDG P 203",
+    "zones": [
+      {
+        "name": "Zone A (sealing face, machined)",
+        "region": {
+          "include": [
+            {
+              "box_mm": [
+                [
+                  0.0,
+                  0.0,
+                  4.0
+                ],
+                [
+                  8.0,
+                  7.0,
+                  6.0
+                ]
+              ]
+            }
+          ],
+          "exclude": [
+            {
+              "cylinder": {
+                "from_mm": [
+                  4.0,
+                  3.5,
+                  3.0
+                ],
+                "to_mm": [
+                  4.0,
+                  3.5,
+                  6.0
+                ],
+                "radius_mm": 0.8
+              }
+            }
+          ]
+        },
+        "porosity_key": "BDG P203 - Z3/ Øp0,5/ da0,3/ UØp0,2"
+      },
+      {
+        "name": "Zone B (bolt hole)",
+        "region": [
+          {
+            "cylinder": {
+              "from_mm": [
+                2.0,
+                2.0,
+                0.0
+              ],
+              "to_mm": [
+                2.0,
+                2.0,
+                6.0
+              ],
+              "radius_mm": 1.0
+            }
+          }
+        ],
+        "porosity_key": "BDG P203 - PROI2/ Øaq1/ Gap0,3/ UØaq0,2"
+      },
+      {
+        "name": "Zone C (boss, from the CAD model)",
+        "region": [
+          {
+            "mesh": "regions/boss.stl"
+          }
+        ],
+        "porosity_key": "BDG P203 - PROI1/ Ψ0,3"
+      },
+      {
+        "name": "Zone D (whole part)",
+        "porosity_key": "BDG P203 - PG2/ PV7/ Øp3/ UΨ0,55/ UØp0,3",
+        "reference_volume": {
+          "shape": "cube",
+          "edge_mm": 2.0
+        }
+      }
+    ]
+  },
+  "wall_thickness": {
+    "min_mm": 1.0,
+    "max_area_below_min_mm2": 50.0
+  },
+  "approval": {
+    "inspector": "M. Example",
+    "approver": "E. Sample",
+    "approver_role": "Head of laboratory"
+  }
+}

@@ -543,6 +543,61 @@ TEST_F(GuiTest, ReopensTheProjectUsedLast) {
   EXPECT_FALSE(gone.reopenProject().has_value());
 }
 
+TEST_F(GuiTest, InspectionRegionsFromMeshObjectsFollowTheirPoses) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json porosity = gui.call("run_porosity", {});
+  ASSERT_EQ(porosity.at("status"), "done");
+  // The CAD model of the box, placed on the scan: its centre lies 1 mm of padding plus half the
+  // box from the scan's origin.
+  writeStl(dir_ / "part.stl", boxMesh({6.0, 5.0, 4.0}));
+  const Json added =
+      gui.call("run_add_mesh", {{"path", (dir_ / "part.stl").string()},
+                                {"object_name", "Part model"},
+                                {"pose", {1, 0, 0, 4.0, 0, 1, 0, 3.5, 0, 0, 1, 3.0, 0, 0, 0, 1}}});
+  const std::string mesh = added.at("object").get<std::string>();
+  // Both moved together: the region stays on the part.
+  (void)gui.call("run_move", {{"objects", {"o1", mesh}}, {"translation_mm", {10.0, 0.0, 0.0}}});
+
+  const Json order = {
+      {"acceptance",
+       {{"zones",
+         Json::array({{{"name", "Model"},
+                       {"region", Json::array({{{"mesh_object", mesh}}})},
+                       {"porosity_key", "PROI5/Z9"}},
+                      {{"name", "Corner"},
+                       {"region",
+                        {{"include", Json::array({{{"box_mm", {{0, 0, 0}, {1.5, 1.5, 1.5}}}}})},
+                         {"exclude", Json::array({{{"sphere",
+                                                    {{"center_mm", {1.5, 1.5, 1.5}},
+                                                     {"radius_mm", 0.5}}}}})}}},
+                       {"max_pore_count", 0}}})}}}};
+  const Json shown = gui.call("run_inspection_regions", {{"order", order}});
+  ASSERT_EQ(shown.at("status"), "done");
+  // The model's region, the corner box and the sphere cut out of it.
+  ASSERT_EQ(shown.at("summary").at("meshes").size(), 3U);
+  ASSERT_EQ(shown.at("followed_by").size(), 3U);
+  const Json objects = gui.call("objects", {}).at("objects");
+  ASSERT_EQ(objects.size(), 5U);
+  EXPECT_EQ(objects.at(2).at("name"), "Model");
+  EXPECT_EQ(objects.at(4).at("name"), "Corner (excluded)");
+  EXPECT_EQ(objects.at(2).at("pose"), objects.at(0).at("pose"));  // at the volume's pose
+  EXPECT_EQ(objects.at(2).at("color"), "#2f80ed");
+
+  const Json reported = gui.call("run_report", {{"order", order}});
+  ASSERT_EQ(reported.at("status"), "done");
+  const Json report = gui.call("read_file", {{"step", reported.at("id")}, {"file", "report.json"}});
+  const Json data = Json::parse(report.at("text").get<std::string>());
+  const Json& model = data.at("evaluation").at("zones").at(0);
+  EXPECT_EQ(model.at("region"), "mesh Part model");
+  EXPECT_EQ(model.at("key"), "PROI5/Z9");
+  EXPECT_EQ(model.at("criteria").at(0).at("measured"),
+            std::to_string(porosity.at("summary").at("pores").get<int>()));
+  EXPECT_NEAR(std::stod(model.at("part_volume").get<std::string>()), 120.0, 3.0);
+  EXPECT_EQ(data.at("evaluation").at("guideline"), "BDG P 203");
+}
+
 TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
@@ -672,6 +727,37 @@ TEST_F(GuiTest, DenoisesIntoANewDatasetOfTheSameObject) {
   const Json porosity = gui.call("run_porosity", {});
   EXPECT_EQ(porosity.at("inputs").at("dataset").at("step"), denoised.at("id"));
   EXPECT_THROW((void)gui.call("run_denoise", {{"method", "model"}}), std::invalid_argument);
+}
+
+TEST_F(GuiTest, CorrectsBeamHardeningIntoANewDatasetOfTheSameObject) {
+  SyntheticSpec spec;
+  spec.cupping = 0.2;
+  spec.cupping_depth_mm = 1.0;
+  const SyntheticScan scan(boxMesh({6.0, 5.0, 4.0}), spec);
+  writeRaw(dir_ / "cupped.raw", scan);
+  writeJson(dir_ / "cupped.json", scan.toJson());
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  const Json imported =
+      gui.call("run_import_raw", {{"path", (dir_ / "cupped.raw").string()}, {"brick_size", 32}});
+  const Json corrected = gui.call("run_beam_hardening", {{"method", "depth"}});
+  ASSERT_EQ(corrected.at("status"), "done");
+  EXPECT_EQ(corrected.at("object"), imported.at("object"));
+  const Json& summary = corrected.at("summary");
+  EXPECT_EQ(summary.at("method"), "depth");
+  EXPECT_GT(summary.at("cupping_before").get<double>(), 0.1);
+  EXPECT_LT(std::abs(summary.at("cupping_after").get<double>()), 0.02);
+  EXPECT_EQ(summary.at("profile_before").at("depth_mm").size(),
+            summary.at("profile_before").at("material_level").size());
+  EXPECT_EQ(summary.at("active_voxels"), imported.at("summary").at("active_voxels"));
+  EXPECT_EQ(gui.call("objects", {}).at("objects").size(), 1U);
+  // Later steps of the object take the corrected dataset.
+  const Json again = gui.call("run_beam_hardening", {{"order", 2}});
+  ASSERT_EQ(again.at("status"), "done");
+  EXPECT_EQ(again.at("inputs").at("dataset").at("step"), corrected.at("id"));
+  EXPECT_EQ(again.at("summary").at("method"), "reprojection");
+  EXPECT_EQ(again.at("summary").at("coefficients").size(), 1U);
+  EXPECT_THROW((void)gui.call("run_beam_hardening", {{"method", "other"}}), std::invalid_argument);
 }
 
 TEST_F(GuiTest, IsolatesThePartIntoANewDatasetOfTheSameObject) {

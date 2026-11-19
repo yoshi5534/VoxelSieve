@@ -1098,10 +1098,19 @@ function renderReportStage(panel) {
   const form = buildForm(info.parameters, last ? last.params : {});
   panel.append(el('div', { className: 'card' },
     el('p', {}, 'The inspection order holds laboratory, customer, part, scan parameters and the ' +
-      'acceptance limits per inspection zone (BDG P 202). Entries in the JSON field add to or ' +
-      'override the file. An example is in examples/inspection_order.json.'),
+      'acceptance limits per inspection zone: BDG P 202 limits or the BDG P 203 porosity key ' +
+      'of the drawing, in a region of boxes, spheres, cylinders or meshes of the project. ' +
+      'Entries in the JSON field add to or override the file. Examples are in ' +
+      'examples/inspection_order.json and examples/inspection_order_p203.json.'),
     form.element,
-    el('div', { className: 'row' }, runButton('Create report', 'report', () => form.values()))));
+    el('div', { className: 'row' },
+      runButton('Show inspection regions', 'inspection_regions', () => {
+        // The regions of the same order, as mesh objects in the slice and 3D views.
+        const { order, order_path: orderPath } = form.values();
+        return Object.fromEntries(Object.entries({ order, order_path: orderPath })
+          .filter(([, value]) => value !== undefined && value !== ''));
+      }),
+      runButton('Create report', 'report', () => form.values()))));
   if (last) {
     const url = fileUrl(last.id, 'report', 'report.html');
     panel.append(el('div', { className: 'card' },
@@ -1133,6 +1142,7 @@ const RESULT_TYPES = {
     keys: ['thickness_min_mm', 'thickness_median_mm', 'below_min_percent', 'thin_regions',
       'measured_percent', 'thinner_than_nominal_percent', 'map_max_mm', 'map_thick_regions'] },
   report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
+  inspection_regions: { label: 'Inspection regions', keys: ['zones'] },
   diconde: { label: 'DICONDE export', keys: ['slices', 'indications', 'series', 'path'] },
 };
 

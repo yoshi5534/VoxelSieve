@@ -807,7 +807,7 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
   const ValueMapping mapping{0.0, result.max_thickness_mm / 65535.0};
   derived.value_mapping = mapping;
   // A map that was interrupted resumes with the bricks it finished, whose values go into the
-  // statistics again (ADR 0031).
+  // statistics again (ADR 0034).
   derived.resume_key = nlohmann::json{{"map", "wall thickness"},
                                       {"iso_value", result.iso_value},
                                       {"max_thickness_mm", result.max_thickness_mm},

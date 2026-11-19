@@ -330,7 +330,7 @@ class DatasetSource final : public VolumeSource {
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
     const float air = dataset_.info().air_level;
     if (dataset_.info().value_type != ValueType::kFloat) {
-      // Integer grey values straight into the output, without a float copy (ADR 0031).
+      // Integer grey values straight into the output, without a float copy (ADR 0034).
       dataset_.readRegion(0, box, out,
                           static_cast<std::uint16_t>(std::clamp(std::lround(air), 0L, 65535L)));
       return;
@@ -428,7 +428,7 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
   // The slices are written from slabs of many slices read at once: read one by one, every slice
   // decoded all bricks of its layer again (ADR 0004). The slab takes a third of the work memory
-  // (ADR 0031; the source may need as much again while reading), at most one layer of 256
+  // (ADR 0034; the source may need as much again while reading), at most one layer of 256
   // slices.
   const std::uint64_t slab_bytes =
       std::max<std::uint64_t>(workMemoryBytes() / 3, std::uint64_t{256} << 20U);
@@ -594,7 +594,8 @@ void applyInspectionOrder(const Json& order, DicondeWriteOptions& options,
                formatted(zone.porosity_percent, 3) + " %";
       for (const CriterionResult& criterion : zone.criteria) {
         if (!criterion.passed) {
-          notes += "; " + criterion.name + " " + formatted(criterion.measured, 3) + " > " +
+          notes += "; " + criterion.name + " " + formatted(criterion.measured, 3) +
+                   (criterion.name.starts_with("min_") ? " < " : " > ") +
                    formatted(criterion.limit, 3);
         }
       }

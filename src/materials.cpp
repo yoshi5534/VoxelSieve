@@ -734,7 +734,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   };
   const auto brick_voxels =
       static_cast<std::uint64_t>(std::pow(static_cast<double>(info.brick_size + 2 * halo), 3.0));
-  // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0031). A brick
+  // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0034). A brick
   // in work takes about 24 bytes per voxel with its halo (the buffers above and its label grid),
   // as measured at 2048^3.
   constexpr std::uint64_t kWorkBytesPerVoxel = 24;

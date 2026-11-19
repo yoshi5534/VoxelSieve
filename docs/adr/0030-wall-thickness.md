@@ -116,7 +116,7 @@ other outputs. The operation `wall_thickness` writes it with `volume_map`, `vs-t
 - **Scale.** Bricks are written through `writeDerivedDataset` (ADR 0004); a tile is
   a brick, halved until tile and halo hold at most 2^26 voxels, so memory stays bounded for any
   scan. Within a tile the transforms and the painting run in parallel over lines and planes.
-- **Storage** (amended 2026-11, ADR 0031). The map is a 16-bit dataset whose value mapping
+- **Storage** (amended 2026-11, ADR 0034). The map is a 16-bit dataset whose value mapping
   (ADR 0015) gives millimetres: thickness = scale × stored with scale = max_thickness_mm / 65535,
   a step of a few hundredths of a voxel, at half the size of the floats written before; readers
   apply the mapping, so older float maps (identity mapping) read the same. An interrupted map

@@ -344,7 +344,7 @@ The basis for everything after it. It needs an ADR ("Execution context and memor
   smaller share, when the budget is taken.
 - Set the per-operation estimates from the 0.1 benchmark.
 
-**Status (2026-11-19): done** on branch `phase2-budget` (commit 6e32448, ADR 0031), on top of
+**Status (2026-11-19): done** on branch `phase2-budget` (commit 6e32448, ADR 0034), on top of
 phase 4:
 
 - 2.1: one budget per process (`memoryBudgetBytes`, `--memory`, 3/4 of RAM by default) instead

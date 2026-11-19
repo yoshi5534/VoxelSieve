@@ -84,7 +84,7 @@ class Summarise final : public Operation {
   OperationInfo info_;
 };
 
-/// Declares what it needs (ADR 0031) and records whether it ran admitted.
+/// Declares what it needs (ADR 0034) and records whether it ran admitted.
 class Estimated final : public Operation {
  public:
   Estimated() {

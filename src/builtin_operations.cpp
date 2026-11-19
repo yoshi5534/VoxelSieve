@@ -18,6 +18,7 @@
 #include <stdexcept>
 
 #include "voxelsieve/battery.hpp"
+#include "voxelsieve/beam_hardening.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/denoise.hpp"
@@ -222,7 +223,7 @@ std::optional<VoxelSize> voxelSizeParameter(const Json& p,
   return size;
 }
 
-/// What an operation on the dataset of input `port` needs, from its active voxels (ADR 0031):
+/// What an operation on the dataset of input `port` needs, from its active voxels (ADR 0034):
 /// `memory` and `output` bytes per active voxel. Rough figures from the 2048^3 scale benchmark;
 /// nothing when the input is no dataset.
 OperationEstimate perActiveVoxel(const OperationContext& context, const std::string& port,
@@ -1708,6 +1709,129 @@ Json readOrder(const Json& p) {
   return order;
 }
 
+RigidTransform entryPose(const Json& object);
+
+/// The inspection zones of an order run in a project: regions that name a mesh object of the
+/// project ("mesh_object") get its STL and the pose from its coordinates to those of the scanned
+/// volume of the step, and relative mesh paths are taken from the order file's directory.
+std::vector<InspectionZone> orderZones(const Json& order, const OperationContext& context) {
+  Json resolved = order;
+  const RigidTransform to_volume = context.object.empty()
+                                       ? RigidTransform{}
+                                       : entryPose(objectEntry(context, context.object)).inverse();
+  const auto resolve = [&](Json& solids) {
+    for (Json& solid : solids) {
+      if (!solid.is_object() || !solid.contains("mesh_object")) {
+        continue;
+      }
+      const std::string id = solid.at("mesh_object").get<std::string>();
+      const Json& object = objectEntry(context, id);
+      if (object.at("kind") != kMeshObject) {
+        throw std::invalid_argument("The inspection region names '" + id +
+                                    "', which is no mesh object");
+      }
+      solid = {{"mesh", object.at("outputs").at(artifact::kMesh).get<std::string>()},
+               {"pose", to_volume.after(entryPose(object)).matrix()},
+               {"name", object.at("name")}};
+    }
+  };
+  if (resolved.contains("acceptance") && resolved["acceptance"].contains("zones")) {
+    for (Json& zone : resolved["acceptance"]["zones"]) {
+      if (!zone.is_object() || !zone.contains("region")) {
+        continue;
+      }
+      Json& region = zone["region"];
+      if (region.is_array()) {
+        resolve(region);
+      } else if (region.is_object()) {
+        for (const char* part : {"include", "exclude"}) {
+          if (region.contains(part)) {
+            resolve(region[part]);
+          }
+        }
+      }
+    }
+  }
+  const std::filesystem::path base =
+      context.params.contains("order_path")
+          ? std::filesystem::path(context.params.at("order_path").get<std::string>()).parent_path()
+          : std::filesystem::path();
+  return inspectionZonesFromJson(resolved, base);
+}
+
+class InspectionRegions final : public Operation {
+ public:
+  InspectionRegions() {
+    info_.id = "inspection_regions";
+    info_.title = "Inspection regions";
+    info_.description =
+        "Shows the inspection zones of an inspection order next to the part: writes the region "
+        "of every zone as a closed STL mesh in the coordinates of the scanned volume (boxes, "
+        "spheres and cylinders tessellated, meshes as given) and, with add_objects (the default), "
+        "adds each as an object of the project at the pose of the volume, so the slice view "
+        "shows where the regions cut the part and the 3D view shows them around it. Excluded "
+        "solids become objects of their own. Use it to check the regions before the report.";
+    info_.inputs = {{"dataset", artifact::kDataset,
+                     "Scanned volume whose coordinates the regions are in", true}};
+    info_.outputs = {{"regions", artifact::kInspectionRegions, "One STL per inspection region"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"order",
+           {{"type", "object"},
+            {"description", "Inspection order with the inspection zones (acceptance.zones)"}}},
+          {"order_path",
+           {{"type", "string"}, {"format", "path"}, {"description", "Inspection order file"}}},
+          {"add_objects",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description", "Add each region as a mesh object of the project"}}}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const auto zones = orderZones(readOrder(context.params), context);
+    if (zones.empty()) {
+      throw std::invalid_argument("The inspection order has no inspection zones");
+    }
+    const std::filesystem::path dir = context.output_dir / "regions";
+    std::filesystem::create_directories(dir);
+    // Colours that stand out from the grey part and the red pores.
+    static constexpr std::array<std::string_view, 6> kColors{"#2f80ed", "#27ae60", "#9b51e0",
+                                                             "#f2994a", "#00b8d9", "#eb5aa6"};
+    Json meshes = Json::array();
+    for (std::size_t i = 0; i < zones.size(); ++i) {
+      const InspectionZone& zone = zones[i];
+      for (const bool excluded : {false, true}) {
+        const Mesh mesh = zone.region.mesh(excluded);
+        if (mesh.triangles.empty()) {
+          continue;
+        }
+        const std::string file =
+            "zone_" + std::to_string(i + 1) + (excluded ? "_excluded" : "") + ".stl";
+        writeStl(dir / file, mesh);
+        meshes.push_back({{"zone", zone.name},
+                          {"name", zone.name + (excluded ? " (excluded)" : "")},
+                          {"region", zone.region.description()},
+                          {"color", excluded ? std::string("#828282")
+                                             : std::string(kColors[i % kColors.size()])},
+                          {"file", file},
+                          {"triangles", mesh.triangles.size()}});
+      }
+      if (zone.region.wholePart()) {
+        context.log("Zone '" + zone.name + "' is the whole part");
+      }
+    }
+    OperationResult result;
+    result.outputs["regions"] = "regions";
+    result.summary = {{"zones", zones.size()}, {"meshes", meshes}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class Report final : public Operation {
  public:
   Report() {
@@ -1715,7 +1839,13 @@ class Report final : public Operation {
     info_.title = "Test report";
     info_.description =
         "Evaluates the porosity result against the acceptance limits of the inspection order "
-        "(BDG P 202 scheme) and writes report.html and report.json. With a surface, the report "
+        "and writes report.html and report.json. Each inspection zone has its limits in the "
+        "scheme of BDG P 202 (largest pore, pore count, porosity) or BDG P 203 (porosity_key as "
+        "on the drawing, e.g. \"PROI2/Øaq3/da3/UØaq1\", with a reference_volume for PV) and a "
+        "freely defined region: boxes, spheres, cylinders and closed meshes (an STL file or a "
+        "mesh object of the project, \"mesh_object\"), joined and cut out (see "
+        "examples/inspection_order_p203.json); inspection_regions shows them. With a surface, the "
+        "report "
         "shows 3D views of the part and its pores; with a comparison, the nominal-actual "
         "comparison with its views and histogram. For fibre composites and other parts of "
         "several materials, a material segmentation adds the materials with their shares and "
@@ -1757,8 +1887,13 @@ class Report final : public Operation {
     const PorosityResult porosity = loadPorosityResult(porosity_dir);
     const PorosityOptions options = usedPorosityOptions(porosity_dir);
     std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
-    const auto zones = inspectionZonesFromJson(order);
-    const Evaluation evaluation = evaluate(porosity, zones);
+    const auto zones = orderZones(order, context);
+    // The dataset measures the part volume where a region ends at the part's surface.
+    std::optional<Dataset> analysed;
+    if (const auto it = context.inputs.find("dataset"); it != context.inputs.end()) {
+      analysed = Dataset::open(it->second);
+    }
+    const Evaluation evaluation = evaluate(porosity, zones, analysed ? &*analysed : nullptr);
     std::vector<std::string> warnings;
     Json data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
     if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
@@ -2310,6 +2445,110 @@ class Denoise final : public Operation {
           {noise.correlation(1, 0, 0), noise.correlation(0, 1, 0), noise.correlation(0, 0, 1)}}});
     if (!info.model.empty()) {
       result.summary["model"] = info.model;
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+Json cuppingJson(const CuppingProfile& profile) {
+  return {{"level", profile.level},
+          {"cupping", profile.cupping},
+          {"depth_mm", profile.depth_mm},
+          {"material_level", profile.level_grey}};
+}
+
+class BeamHardeningCorrection final : public Operation {
+ public:
+  BeamHardeningCorrection() {
+    info_.id = "beam_hardening";
+    info_.title = "Correct beam hardening";
+    info_.description =
+        "Corrects beam hardening of a reconstructed dataset and writes a new dataset with the same "
+        "part; the input stays in the project. Beam hardening darkens the material far from the "
+        "surface (cupping) and between dense or thick regions (streaks). The reprojection method "
+        "projects every slice across the rotation axis again, reconstructs the path lengths to "
+        "the powers 2 to order and adds the combination that makes the material most uniform; it "
+        "needs no spectrum and corrects streaks too. The depth method scales the grey values by "
+        "the material level at their depth below the surface and corrects only cupping of one "
+        "material. The correction is estimated on a coarse level and interpolated. The summary "
+        "gives the cupping before and after. Later steps of the object use the corrected "
+        "dataset.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Dataset to correct"}};
+    info_.outputs = {{"dataset", artifact::kDataset, "Corrected dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"method",
+           {{"type", "string"},
+            {"enum", {"reprojection", "depth"}},
+            {"default", "reprojection"},
+            {"description",
+             "reprojection: cupping and streaks, needs the rotation axis; depth: cupping of one "
+             "material only, no geometry needed"}}},
+          {"rotation_axis",
+           {{"type", "string"},
+            {"enum", {"x", "y", "z"}},
+            {"default", "z"},
+            {"description",
+             "Reprojection: rotation axis of the scan; slices across it are "
+             "projected"}}},
+          {"order",
+           {{"type", "integer"},
+            {"minimum", 2},
+            {"maximum", 4},
+            {"default", 3},
+            {"description",
+             "Reprojection: highest power of the path length; 2 suffices for mild hardening, 3 "
+             "also follows hardening that saturates on long paths through dense material"}}},
+          {"resolution",
+           {{"type", "integer"},
+            {"minimum", 8},
+            {"maximum", 2048},
+            {"default", 256},
+            {"description",
+             "Voxels across the largest edge of the level the correction is estimated on"}}},
+          {"value_type", valueTypeParameter()}}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    BeamHardeningOptions options;
+    options.method = parseBeamHardeningMethod(p.at("method").get<std::string>());
+    const std::string axis = p.at("rotation_axis").get<std::string>();
+    options.rotation_axis = axis == "x" ? 0 : (axis == "y" ? 1 : 2);
+    options.order = p.at("order").get<int>();
+    options.resolution = p.at("resolution").get<std::int64_t>();
+    options.output.value_type = valueTypeOption(p);
+    options.output.progress = [&context](std::string_view stage, double fraction) {
+      context.progress(stage == "bricks" ? 0.1 + 0.8 * fraction : 0.9 + 0.1 * fraction);
+    };
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const BeamHardeningInfo info =
+        correctBeamHardening(dataset, context.output_dir / "dataset", options);
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << "Cupping " << 100.0 * info.before.cupping
+         << " % -> " << 100.0 * info.after.cupping << " %, material spread " << std::setprecision(0)
+         << info.material_spread_before << " -> " << info.material_spread_after
+         << " grey values (level " << info.level << ")";
+    context.log(text.str());
+    OperationResult result;
+    result.outputs["dataset"] = "dataset";
+    result.summary = datasetSummary(info.dataset);
+    result.summary.update({{"method", std::string(beamHardeningMethodName(info.method))},
+                           {"level", info.level},
+                           {"cupping_before", info.before.cupping},
+                           {"cupping_after", info.after.cupping},
+                           {"material_spread_before", info.material_spread_before},
+                           {"material_spread_after", info.material_spread_after},
+                           {"fit_voxels", info.fit_voxels},
+                           {"profile_before", cuppingJson(info.before)},
+                           {"profile_after", cuppingJson(info.after)}});
+    if (!info.coefficients.empty()) {
+      result.summary["coefficients"] = info.coefficients;
     }
     return result;
   }
@@ -3064,7 +3303,7 @@ class FirstArticleReport final : public Operation {
     if (const auto porosity = context.inputs.find("porosity");
         p.at("include_porosity").get<bool>() && porosity != context.inputs.end()) {
       const PorosityResult result = loadPorosityResult(porosity->second);
-      const Evaluation evaluation = evaluate(result, inspectionZonesFromJson(order));
+      const Evaluation evaluation = evaluate(result, orderZones(order, context));
       porosity_data = reportData(order, result, usedPorosityOptions(porosity->second), evaluation,
                                  porosity->second);
       if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
@@ -3273,7 +3512,7 @@ class ExportDiconde final : public Operation {
     if (porosity != context.inputs.end() && p.at("indications").get<bool>()) {
       const PorosityResult result = loadPorosityResult(porosity->second);
       options.indications = porosityIndications(result, options.pose);
-      if (const auto zones = inspectionZonesFromJson(order); !zones.empty()) {
+      if (const auto zones = orderZones(order, context); !zones.empty()) {
         evaluation = evaluate(result, zones);
       }
     }
@@ -3347,9 +3586,11 @@ void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<MaterialMeshes>());
   registry.add(std::make_shared<MeasureObjects>());
   registry.add(std::make_shared<Denoise>());
+  registry.add(std::make_shared<BeamHardeningCorrection>());
   registry.add(std::make_shared<IsolatePart>());
   registry.add(std::make_shared<Surface>());
   registry.add(std::make_shared<CompareCad>());
+  registry.add(std::make_shared<InspectionRegions>());
   registry.add(std::make_shared<Report>());
   registry.add(std::make_shared<AddMesh>());
   registry.add(std::make_shared<MoveObjects>());

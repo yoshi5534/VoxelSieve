@@ -27,14 +27,17 @@ constexpr std::string_view kUsage =
        vs-report --print-first-article-template > my_first_article_template.html
 
 Analyses a dataset written by vs-sieve, evaluates it against the acceptance limits of the
-inspection order (BDG P 202 scheme) and writes to <dir>:
+inspection order and writes to <dir>:
   report.html             test report, self-contained; print it to PDF from the browser
   report.json             all report data, including the evaluation
   porosity.json, projection_[xyz].png, porosity.vdb   as written by vs-porosity
 
 Options:
   --order <file>          Inspection order: laboratory, customer, part, scan settings and
-                          acceptance limits (see examples/inspection_order.json)
+                          acceptance limits per inspection zone, as BDG P 202 limits or a
+                          BDG P 203 porosity key, in regions made of boxes, spheres,
+                          cylinders and STL meshes (see examples/inspection_order.json and
+                          examples/inspection_order_p203.json)
   --out <dir>             Output directory (required)
   --surface <file.vss>    Surface written by vs-surface: adds 3D views of the part and its
                           pores
@@ -149,14 +152,15 @@ int main(int argc, char** argv) {
       return 0;
     }
     const nlohmann::json order = nlohmann::json::parse(readFile(options->order));
-    const auto zones = voxelsieve::inspectionZonesFromJson(order);
+    // Relative mesh paths of inspection regions are taken from the order's directory.
+    const auto zones = voxelsieve::inspectionZonesFromJson(order, options->order.parent_path());
     const std::string report_template = options->report_template.empty()
                                             ? std::string(voxelsieve::defaultReportTemplate())
                                             : readFile(options->report_template);
 
     const auto dataset = voxelsieve::Dataset::open(options->dataset);
     const auto result = voxelsieve::analyzePorosity(dataset, options->porosity);
-    const auto evaluation = voxelsieve::evaluate(result, zones);
+    const auto evaluation = voxelsieve::evaluate(result, zones, &dataset);
 
     std::filesystem::create_directories(options->out);
     voxelsieve::writeJson(options->out / "porosity.json", voxelsieve::toJson(result));

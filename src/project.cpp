@@ -564,7 +564,7 @@ const Step& Project::run(
   try {
     OperationResult result;
     {
-      // Checked before the run (ADR 0031): the disk space of its outputs, and its memory beside
+      // Checked before the run (ADR 0034): the disk space of its outputs, and its memory beside
       // the operations running already, which it waits for when they leave too little.
       const OperationEstimate estimate = operation->estimate(context);
       if (estimate.output_bytes > 0) {

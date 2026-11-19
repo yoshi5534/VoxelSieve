@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -24,8 +25,24 @@ struct DetectedPore {
   /// Void-weighted centre in level-0 voxel coordinates.
   std::array<double, 3> center_voxels{};
   Box bounds;
-  /// Diameter of the sphere with the same volume.
+  /// Diameter of the sphere with the same volume (BDG P 203: equivalent diameter).
   double equivalent_diameter_mm = 0.0;
+  /// Diameter of the smallest sphere that encloses the pore (BDG P 203: pore diameter), from the
+  /// centres of its voxels plus one voxel pitch. NaN in results written before ADR 0032.
+  double enclosing_diameter_mm = std::numeric_limits<double>::quiet_NaN();
+  /// Surface area of the voxels below the threshold, from their faces with the 2/3 correction
+  /// that makes the stair steps of a voxelized surface count like the smooth surface on average.
+  double surface_area_mm2 = std::numeric_limits<double>::quiet_NaN();
+  /// Surface of the sphere with the volume of the voxels below the threshold over their surface
+  /// area: 1 for a round gas pore, small for a ragged shrinkage cavity. Depends on the
+  /// resolution, so compare it between scans of similar voxel size only.
+  double sphericity = std::numeric_limits<double>::quiet_NaN();
+  /// Shortest distance from the pore to the outer surface of the part: the material between the
+  /// voxels below the threshold and the outside air. NaN when unknown.
+  double surface_distance_mm = std::numeric_limits<double>::quiet_NaN();
+
+  /// Pore volume over the volume of the enclosing sphere (BDG P 203: compactness).
+  [[nodiscard]] double compactness() const;
 };
 
 /// Region whose grey values are lowered by voids too small to resolve, such as loosened

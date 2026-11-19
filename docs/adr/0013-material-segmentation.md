@@ -104,7 +104,7 @@ changes:
 
 ## Amendment (2026-11): 8-bit labels and label levels
 
-Format version 2 of the material volume (review of November 2026, step 3.4, ADR 0031):
+Format version 2 of the material volume (review of November 2026, step 3.4, ADR 0034):
 
 - Label bricks are `UInt8Grid`s (ids are at most 255), pruned, instead of `Int32Grid`s: a
   quarter of the memory per leaf, and uniform material stays tiles. This is the label type of
