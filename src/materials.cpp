@@ -731,7 +731,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
     UninitializedVector<std::uint8_t> state;
     UninitializedVector<std::uint8_t> next;
   };
-  const std::uint64_t brick_voxels =
+  const auto brick_voxels =
       static_cast<std::uint64_t>(std::pow(static_cast<double>(info.brick_size + 2 * halo), 3.0));
   const auto threads = static_cast<std::uint64_t>(
       std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
