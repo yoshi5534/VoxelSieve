@@ -893,7 +893,7 @@ TEST_F(TiffTest, GuiBrowsesAndImportsTiffStacks) {
 /// the first 256 bytes, where the headers are) or the end cut off (review step 5.4).
 std::vector<std::vector<std::uint8_t>> damagedCopies(const std::vector<std::uint8_t>& bytes,
                                                      int count) {
-  std::mt19937 random(5);
+  std::mt19937 random(5);  // NOLINT(bugprone-random-generator-seed): the same files every run
   std::vector<std::vector<std::uint8_t>> copies;
   for (int i = 0; i < count; ++i) {
     std::vector<std::uint8_t> copy = bytes;
@@ -915,7 +915,8 @@ std::vector<std::vector<std::uint8_t>> damagedCopies(const std::vector<std::uint
 }
 
 TEST_F(TiffTest, DamagedSlicesAndArchivesFailWithAnError) {
-  std::vector<std::vector<std::uint32_t>> pages(1, std::vector<std::uint32_t>(40 * 30));
+  std::vector<std::vector<std::uint32_t>> pages(1,
+                                                std::vector<std::uint32_t>(std::size_t{40} * 30));
   for (std::size_t i = 0; i < pages[0].size(); ++i) {
     pages[0][i] = static_cast<std::uint32_t>(i * 37 % 65536);
   }

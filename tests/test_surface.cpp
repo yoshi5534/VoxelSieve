@@ -442,7 +442,7 @@ TEST_F(SurfaceTest, DamagedSurfaceFilesFailWithAnError) {
   ASSERT_GT(valid.size(), 1024U);
   // Copies with a few bytes changed, half of them in the trailer, header and table at the end,
   // or cut short; the same in every run (review step 5.4).
-  std::mt19937 random(11);
+  std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): the same files every run
   int failed = 0;
   for (int i = 0; i < 80; ++i) {
     std::vector<char> copy = valid;

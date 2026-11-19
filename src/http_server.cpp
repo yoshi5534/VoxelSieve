@@ -171,15 +171,7 @@ struct HttpServer::Impl {
       }
     }
     if (connections.size() >= kMaxConnections) {
-      http::response<http::string_body> busy(http::status::service_unavailable, 11);
-      busy.set(http::field::content_type, "application/json");
-      busy.set(http::field::retry_after, "1");
-      busy.keep_alive(false);
-      busy.body() = R"({"error":"Too many connections"})";
-      busy.prepare_payload();
-      boost::system::error_code ignored;
-      http::write(socket, busy, ignored);
-      [[maybe_unused]] const auto shut = socket.shutdown(tcp::socket::shutdown_both, ignored);
+      refuse(std::move(socket));
       return;
     }
     auto& connection = connections.emplace_back(std::make_unique<Connection>(std::move(socket)));
@@ -188,6 +180,37 @@ struct HttpServer::Impl {
       serve(raw->socket);
       raw->done = true;
     });
+  }
+
+  /// Answers a connection over the limit with 503 on the accept thread, without a thread of its
+  /// own: reads its request first, so that closing it after the answer sends no reset.
+  static void refuse(tcp::socket socket) {
+    struct Refusal {
+      explicit Refusal(tcp::socket s) : socket(std::move(s)) {}
+      tcp::socket socket;
+      beast::flat_buffer buffer;
+      http::request<http::string_body> request;
+      http::response<http::string_body> response;
+    };
+    auto refusal = std::make_shared<Refusal>(std::move(socket));
+    http::async_read(refusal->socket, refusal->buffer, refusal->request,
+                     [refusal](const boost::system::error_code&, std::size_t) {
+                       auto& response = refusal->response;
+                       response.result(http::status::service_unavailable);
+                       response.version(11);
+                       response.set(http::field::content_type, "application/json");
+                       response.set(http::field::retry_after, "1");
+                       response.keep_alive(false);
+                       response.body() = R"({"error":"Too many connections"})";
+                       response.prepare_payload();
+                       http::async_write(refusal->socket, response,
+                                         [refusal](const boost::system::error_code&, std::size_t) {
+                                           boost::system::error_code ignored;
+                                           [[maybe_unused]] const auto shut =
+                                               refusal->socket.shutdown(tcp::socket::shutdown_send,
+                                                                        ignored);
+                                         });
+                     });
   }
 
   void serve(tcp::socket& socket) {

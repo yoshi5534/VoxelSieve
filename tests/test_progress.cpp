@@ -69,15 +69,14 @@ class CancelTest : public ::testing::Test {
     double at = -1.0;
     double last = 0.0;
     ProgressToken token() {
-      return ProgressToken(
-          [this](double f) {
-            last = f;
-            if (f > 0.0 && !cancel) {
-              at = f;
-              cancel = true;
-            }
-          },
-          &cancel);
+      return {[this](double f) {
+                last = f;
+                if (f > 0.0 && !cancel) {
+                  at = f;
+                  cancel = true;
+                }
+              },
+              &cancel};
     }
   };
 

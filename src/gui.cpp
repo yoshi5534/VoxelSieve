@@ -317,10 +317,10 @@ std::shared_ptr<const Value> cached(
     const std::scoped_lock lock(mutex);
     for (auto it = entries.begin(); it != entries.end(); ++it) {
       if (it->first == key) {
-        auto entry = *it;
+        auto entry = std::move(*it);
         entries.erase(it);
-        entries.push_back(entry);
         pending = entry.second;
+        entries.push_back(std::move(entry));
         break;
       }
     }
