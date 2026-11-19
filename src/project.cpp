@@ -6,6 +6,8 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 
 #include "voxelsieve/io.hpp"
@@ -744,9 +746,44 @@ Json Project::toJson() const {
           {"next_object_id", next_object_id_}};
 }
 
+namespace {
+
+/// One lock per project file, for the copies of a project that save it from different threads.
+std::mutex& projectFileMutex(const std::filesystem::path& file) {
+  static std::mutex registry;
+  static std::map<std::string, std::unique_ptr<std::mutex>> locks;
+  const std::scoped_lock lock(registry);
+  auto& entry = locks[std::filesystem::absolute(file).lexically_normal().string()];
+  if (!entry) {
+    entry = std::make_unique<std::mutex>();
+  }
+  return *entry;
+}
+
+}  // namespace
+
 void Project::save() const {
+  const std::filesystem::path file = dir_ / "project.json";
+  const std::scoped_lock lock(projectFileMutex(file));
+  Json json = toJson();
+  if (save_part_ != SavePart::kAll) {
+    // Merged with the other copy's part as it is on disk.
+    std::ifstream in(file);
+    const Json disk = in ? Json::parse(in, nullptr, /*allow_exceptions=*/false) : Json();
+    if (disk.is_object()) {
+      if (save_part_ == SavePart::kViews) {
+        Json merged = disk;
+        merged["view"] = json.at("view");
+        merged["saved_views"] = json.at("saved_views");
+        json = std::move(merged);
+      } else {
+        json["view"] = disk.value("view", Json::object());
+        json["saved_views"] = disk.value("saved_views", Json::array());
+      }
+    }
+  }
   // Through a temporary file: never a half-written project, also on a full disk.
-  writeJson(dir_ / "project.json", toJson());
+  writeJson(file, json);
 }
 
 }  // namespace voxelsieve

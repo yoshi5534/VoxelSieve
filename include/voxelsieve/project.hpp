@@ -173,6 +173,13 @@ class Project {
   /// operation runs on a copy while the UI keeps saving views).
   void adoptViews(const Project& other);
 
+  /// What `project.json` gets from this copy when it saves (review step 5.2). While an operation
+  /// runs on a copy, the copy saves only its steps and objects and the project the UI changes only
+  /// its views; each save merges its part into the file under one lock per file, so neither
+  /// writes back the other's stale part.
+  enum class SavePart : std::uint8_t { kAll, kSteps, kViews };
+  void setSavePart(SavePart part) { save_part_ = part; }
+
   /// Absolute path of a step output.
   [[nodiscard]] std::filesystem::path resolve(const ArtifactRef& ref) const;
   /// Latest active output of the given type, of one object when `object` is not empty.
@@ -211,6 +218,7 @@ class Project {
   int next_view_id_ = 1;
   std::string active_object_;
   int next_object_id_ = 1;
+  SavePart save_part_ = SavePart::kAll;
 };
 
 /// An object as JSON: id, name, kind, source {step, output}, created_by, pose (row-major 4x4) and

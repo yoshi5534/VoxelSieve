@@ -134,6 +134,24 @@ class ObjectsTest : public ::testing::Test {
   OperationRegistry registry_;
 };
 
+TEST_F(ObjectsTest, ACopyRunningAStepAndTheUiSavingViewsMergeTheirParts) {
+  auto ui = Project::create(dir_ / "p", "Merge");
+  Project working = ui;  // as the GUI runs an operation on a copy
+  working.setSavePart(Project::SavePart::kSteps);
+  ui.setSavePart(Project::SavePart::kViews);
+  ui.setView({{"zoom", 2}});
+  (void)working.run(registry_, "fake_import", {{"path", "/scans/a.raw"}});
+  ui.setView({{"zoom", 3}});  // after the step was saved: keeps it
+  const Project reopened = Project::open(dir_ / "p");
+  EXPECT_EQ(reopened.steps().size(), 1U);
+  EXPECT_EQ(reopened.view().at("zoom"), 3);
+  // The copy saving again keeps the views on disk.
+  (void)working.run(registry_, "fake_import", {{"path", "/scans/b.raw"}});
+  const Project again = Project::open(dir_ / "p");
+  EXPECT_EQ(again.steps().size(), 2U);
+  EXPECT_EQ(again.view().at("zoom"), 3);
+}
+
 TEST_F(ObjectsTest, StepsRunAdmittedAndWithTheSpaceTheyDeclare) {
   registry_.add(std::make_shared<Estimated>());
   auto project = Project::create(dir_ / "p", "Estimates");

@@ -179,7 +179,7 @@ class Gui {
   std::optional<std::filesystem::path> reopenProject();
 
   /// Asks a running operation to stop at its next check.
-  void cancel() { cancel_ = true; }
+  void cancel();
 
  private:
   /// Throws std::invalid_argument when allowed roots are set and `path` is outside all of them.
@@ -199,6 +199,7 @@ class Gui {
     std::map<std::string, ArtifactRef> inputs;
     StepTarget target;
     std::optional<Project> working;
+    std::shared_ptr<std::atomic<bool>> cancel;  // of the sequence it belongs to
     // Part of the progress of a sequence this run covers.
     double offset = 0.0;
     double share = 1.0;
@@ -283,7 +284,9 @@ class Gui {
   std::vector<std::filesystem::path> allowed_roots_;  // canonical
   std::optional<Project> project_;
   std::filesystem::path project_memory_;
-  std::atomic<bool> cancel_ = false;
+  // The cancel flag of the running sequence, a new one per run, so that a cancellation never
+  // reaches a later run or is lost by a reset (F8). Guarded by mutex_.
+  std::shared_ptr<std::atomic<bool>> cancel_;
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_
   std::string running_operation_;

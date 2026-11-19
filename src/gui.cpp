@@ -445,8 +445,15 @@ Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
   }
 }
 
+void Gui::cancel() {
+  const std::scoped_lock lock(mutex_);
+  if (cancel_) {
+    *cancel_ = true;
+  }
+}
+
 Gui::~Gui() {
-  cancel_ = true;
+  cancel();
   if (background_.joinable()) {
     background_.join();
   }
@@ -1957,6 +1964,10 @@ Gui::PreparedRun Gui::prepareRun(RunRequest request) {
   }
   run.params = std::move(params);
   run.working = project();
+  run.cancel = cancel_;
+  // While it runs, the copy saves its steps and the project the views the UI saves (F2).
+  run.working->setSavePart(Project::SavePart::kSteps);
+  project().setSavePart(Project::SavePart::kViews);
   return run;
 }
 
@@ -1975,6 +1986,7 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
       throw std::invalid_argument("Operation '" + running_operation_ +
                                   "' is still running; wait for it or cancel it");
     }
+    cancel_ = std::make_shared<std::atomic<bool>>(false);
     first = prepareRun(std::move(requests.front()));
     requests.erase(requests.begin());
     running_ = true;
@@ -1982,7 +1994,6 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
     running_preview_ = nullptr;
     running_preview_png_.clear();
     progress_ = 0.0;
-    cancel_ = false;
     // The previous background thread has finished its operation; it is joined below, unlocked.
     finished = std::move(background_);
   }
@@ -2044,7 +2055,7 @@ Json Gui::executeSequence(PreparedRun first, std::vector<RunRequest> rest,
                    std::make_move_iterator(more.end()));
       if (!queue.empty()) {
         next_operation = queue.front().operation;
-        if (cancel_) {
+        if (run.cancel && run.cancel->load()) {
           next_error = "Cancelled before '" + next_operation + "'";
         } else {
           try {
@@ -2131,6 +2142,7 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   const auto install = [this, &working] {
     const std::scoped_lock lock(mutex_);
     // Views saved while the operation ran went to the project, not to the working copy.
+    working.setSavePart(Project::SavePart::kAll);
     working.adoptViews(*project_);
     project_ = std::move(working);
   };
@@ -2141,7 +2153,7 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   };
   try {
     const Step& step = working.run(registry_, run.operation, run.params, run.inputs, report,
-                                   &cancel_, run.target, preview);
+                                   run.cancel.get(), run.target, preview);
     Json json = working.toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working.stepDir(step));
@@ -2316,8 +2328,8 @@ Json Gui::call(const std::string& method, const Json& arguments,
       return status();
     }
     if (method == "cancel") {
-      if (running_) {
-        cancel_ = true;
+      if (running_ && cancel_) {
+        *cancel_ = true;
       }
       return {{"cancelled", running_ ? Json(running_operation_) : Json()}};
     }
