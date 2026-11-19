@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <random>
 #include <string>
@@ -357,6 +360,27 @@ TEST_F(SurfaceTest, LevelSetAndMeshFollowTheCodes) {
   // The mesh encloses the volume counted from the codes.
   const Mesh mesh = mask.toMesh();
   EXPECT_NEAR(meshVolumeMm3(mesh), mask.info().volume_mm3, 0.01 * mask.info().volume_mm3);
+
+  // The STL streamed chunk by chunk holds the same triangles, once each, across chunk faces.
+  ASSERT_GT(mask.info().surface_chunks, 1);
+  mask.writeStl(dir_ / "surface.stl");
+  const Mesh streamed = readStl(dir_ / "surface.stl");
+  EXPECT_EQ(streamed.triangles.size(), mesh.triangles.size());
+  EXPECT_NEAR(meshVolumeMm3(streamed), meshVolumeMm3(mesh), 1e-6 * meshVolumeMm3(mesh));
+
+  // A coarsened level set samples every 4th voxel with the signs of the codes.
+  const auto coarse = mask.toLevelSet(2);
+  EXPECT_NEAR(coarse->voxelSize()[0], 4.0 * v, 1e-12);
+  auto coarse_accessor = coarse->getConstAccessor();
+  for (std::int64_t z = 0; z < dims[2]; z += 4) {
+    for (std::int64_t y = 0; y < dims[1]; y += 4) {
+      for (std::int64_t x = 0; x < dims[0]; x += 4) {
+        const float value = coarse_accessor.getValue(openvdb::Coord(
+            static_cast<int>(x / 4), static_cast<int>(y / 4), static_cast<int>(z / 4)));
+        ASSERT_EQ(value < 0.0F, mask.distance({x, y, z}) < 0.0F) << x << " " << y << " " << z;
+      }
+    }
+  }
 }
 
 TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
@@ -387,6 +411,72 @@ TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
   const IndexedMesh coarse = surfaceDisplayMesh(mask, budget);
   EXPECT_LE(coarse.triangles.size(), budget);
   EXPECT_GT(coarse.triangles.size(), budget / 20);
+
+  // Both meshes are cached beside the surface and read back unchanged.
+  const std::filesystem::path cache =
+      (dir_ / "surface.vss").string() + ".mesh-" + std::to_string(budget) + "-250.bin";
+  ASSERT_TRUE(std::filesystem::exists(cache));
+  const IndexedMesh cached = surfaceDisplayMesh(mask, budget);
+  EXPECT_EQ(cached.points, coarse.points);
+  EXPECT_EQ(cached.triangles, coarse.triangles);
+  // A damaged cache, or one of an older surface, is made again.
+  std::filesystem::resize_file(cache, 100);
+  EXPECT_EQ(surfaceDisplayMesh(mask, budget).triangles, coarse.triangles);
+  EXPECT_GT(std::filesystem::file_size(cache), 100U);
+  std::filesystem::last_write_time(
+      dir_ / "surface.vss",
+      std::filesystem::last_write_time(dir_ / "surface.vss") + std::chrono::seconds(5));
+  // The cache is written again with the stamp of the newer surface: its bytes change (file times
+  // are too coarse on some file systems to tell).
+  const auto bytes = [&cache] {
+    std::ifstream in(cache, std::ios::binary);
+    return std::vector<char>{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  };
+  const std::vector<char> stale = bytes();
+  EXPECT_EQ(surfaceDisplayMesh(SurfaceMask::open(dir_ / "surface.vss"), budget).triangles,
+            coarse.triangles);
+  EXPECT_NE(bytes(), stale);
+}
+
+TEST_F(SurfaceTest, DamagedSurfaceFilesFailWithAnError) {
+  const auto scan = scanOf("bracket", 0.2, 0.2);
+  const Dataset dataset = sieve(*scan, "scan.vsieve");
+  (void)writeSurface(dataset, dir_ / "surface.vss");
+  std::ifstream in(dir_ / "surface.vss", std::ios::binary);
+  const std::vector<char> valid{std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>()};
+  ASSERT_GT(valid.size(), 1024U);
+  // Copies with a few bytes changed, half of them in the trailer, header and table at the end,
+  // or cut short; the same in every run (review step 5.4).
+  std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): the same files every run
+  int failed = 0;
+  for (int i = 0; i < 80; ++i) {
+    std::vector<char> copy = valid;
+    if (i % 5 == 4) {
+      copy.resize(random() % copy.size());
+    } else {
+      for (std::uint32_t f = 0, flips = 1 + random() % 8; f < flips; ++f) {
+        const std::size_t at =
+            f % 2 == 0 ? copy.size() - 1 - random() % 512 : random() % copy.size();
+        copy[at] = static_cast<char>(random());
+      }
+    }
+    const auto file = dir_ / ("damaged" + std::to_string(i) + ".vss");
+    std::ofstream(file, std::ios::binary)
+        .write(copy.data(), static_cast<std::streamsize>(copy.size()));
+    try {
+      const SurfaceMask mask = SurfaceMask::open(file);
+      const auto& dims = mask.info().dims;
+      ASSERT_LE(dims[0], std::int64_t{1} << 20U);
+      if (dims[0] * dims[1] * dims[2] <= (std::int64_t{1} << 24U)) {
+        std::vector<std::uint8_t> codes(static_cast<std::size_t>(dims[0] * dims[1] * dims[2]));
+        mask.readCodes({{0, 0, 0}, dims}, codes);
+      }
+    } catch (const std::exception&) {
+      ++failed;
+    }
+  }
+  EXPECT_GT(failed, 10);
 }
 
 TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {

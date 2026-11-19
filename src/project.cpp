@@ -6,8 +6,12 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 
+#include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -157,6 +161,10 @@ Project Project::open(const std::filesystem::path& dir) {
     if (step.status == "running") {
       step.status = "failed";
       step.messages.emplace_back("Interrupted: the application ended while the step was running");
+      // Its partial outputs go, as those of a step that failed: an interrupted import can leave a
+      // staging copy of the whole scan there.
+      std::error_code ignored;
+      std::filesystem::remove_all(project.stepDir(step), ignored);
       changed = true;
     }
     project.next_id_ = std::max(project.next_id_, step.id + 1);
@@ -556,6 +564,13 @@ const Step& Project::run(
   try {
     OperationResult result;
     {
+      // Checked before the run (ADR 0034): the disk space of its outputs, and its memory beside
+      // the operations running already, which it waits for when they leave too little.
+      const OperationEstimate estimate = operation->estimate(context);
+      if (estimate.output_bytes > 0) {
+        requireFreeSpace(dir, estimate.output_bytes, info.title);
+      }
+      const Admission admission = admitOperation(estimate.memory_bytes, cancel);
       const TelemetryScope scope(telemetry);
       result = operation->run(context);
     }
@@ -582,7 +597,7 @@ const Step& Project::run(
   }
   const Json record = telemetry.finish();
   stored.telemetry = telemetrySummary(record);
-  std::ofstream(dir / kTelemetryFile) << record.dump() << '\n';
+  writeFile(dir / kTelemetryFile, record.dump() + '\n');
   stored.finished = nowUtc();
   save();
   return stored;
@@ -658,12 +673,8 @@ const SavedView& Project::saveView(const std::string& name, const Json& state,
   view.has_image = !png.empty();
   if (view.has_image) {
     std::filesystem::create_directories(dir_ / "views");
-    const auto file = viewImage(view.id);
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
+    writeFile(viewImage(view.id),
+              std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
   }
   ++next_view_id_;
   saved_views_.push_back(std::move(view));
@@ -735,17 +746,44 @@ Json Project::toJson() const {
           {"next_object_id", next_object_id_}};
 }
 
+namespace {
+
+/// One lock per project file, for the copies of a project that save it from different threads.
+std::mutex& projectFileMutex(const std::filesystem::path& file) {
+  static std::mutex registry;
+  static std::map<std::string, std::unique_ptr<std::mutex>> locks;
+  const std::scoped_lock lock(registry);
+  auto& entry = locks[std::filesystem::absolute(file).lexically_normal().string()];
+  if (!entry) {
+    entry = std::make_unique<std::mutex>();
+  }
+  return *entry;
+}
+
+}  // namespace
+
 void Project::save() const {
-  const auto file = dir_ / "project.json";
-  const auto temporary = dir_ / "project.json.tmp";
-  {
-    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-    out << toJson().dump(2) << "\n";
-    if (!out) {
-      throw std::runtime_error("Cannot write " + temporary.string());
+  const std::filesystem::path file = dir_ / "project.json";
+  const std::scoped_lock lock(projectFileMutex(file));
+  Json json = toJson();
+  if (save_part_ != SavePart::kAll) {
+    // Merged with the other copy's part as it is on disk.
+    std::ifstream in(file);
+    const Json disk = in ? Json::parse(in, nullptr, /*allow_exceptions=*/false) : Json();
+    if (disk.is_object()) {
+      if (save_part_ == SavePart::kViews) {
+        Json merged = disk;
+        merged["view"] = json.at("view");
+        merged["saved_views"] = json.at("saved_views");
+        json = std::move(merged);
+      } else {
+        json["view"] = disk.value("view", Json::object());
+        json["saved_views"] = disk.value("saved_views", Json::array());
+      }
     }
   }
-  std::filesystem::rename(temporary, file);  // atomic on POSIX: never a half-written project
+  // Through a temporary file: never a half-written project, also on a full disk.
+  writeJson(file, json);
 }
 
 }  // namespace voxelsieve

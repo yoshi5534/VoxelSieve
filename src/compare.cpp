@@ -1171,15 +1171,7 @@ void writePly(const std::filesystem::path& file, const CompareResult& result) {
   ply.add_properties_to_element(
       "face", {"vertex_indices"}, tinyply::Type::INT32, result.mesh.triangles.size(),
       reinterpret_cast<std::uint8_t*>(faces.data()), tinyply::Type::UINT8, 3);
-  const std::filesystem::path partial = file.string() + ".partial";
-  {
-    std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    ply.write(out, true);
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
-  }
-  std::filesystem::rename(partial, file);
+  writeFile(file, [&ply](std::ostream& out) { ply.write(out, true); });
 }
 
 /// Orthographic views of the coloured surface along x, y and z, flat shaded, viewed from the
@@ -1299,13 +1291,15 @@ RigidTransform RigidTransform::fromAxisAngle(const std::array<double, 3>& axis, 
 // MeshDistance
 
 struct MeshDistance::Impl {
+  // Kept small, so that large CAD meshes fit (review finding of 3.7): the normal is computed when
+  // it is needed, and node boxes are floats rounded outwards.
   struct Triangle {
     Vec a, b, c;
-    Vec normal;                // unit, outward
     std::uint32_t source = 0;  // index in the mesh
   };
+  using Box3 = std::array<float, 3>;
   struct Node {
-    Vec lo, hi;
+    Box3 lo, hi;
     std::uint32_t first = 0;  // leaf: first triangle; inner node: left child
     std::uint32_t right = 0;  // inner node: right child
     std::uint32_t count = 0;  // leaf: triangle count; 0 for inner nodes
@@ -1313,6 +1307,13 @@ struct MeshDistance::Impl {
   std::vector<Triangle> triangles;
   std::vector<Node> nodes;
   double eps2 = 0.0;
+  double orientation = 1.0;  // -1 when the mesh is oriented inwards
+
+  /// Unit normal of a triangle, outward.
+  [[nodiscard]] Vec normal(const Triangle& t) const {
+    const Vec n = cross(t.b - t.a, t.c - t.a);
+    return (orientation / norm(n)) * n;
+  }
 
   static constexpr std::uint32_t kLeafSize = 4;
 
@@ -1320,16 +1321,21 @@ struct MeshDistance::Impl {
     const auto index = static_cast<std::uint32_t>(nodes.size());
     nodes.emplace_back();
     Node node;
-    node.lo = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
-               std::numeric_limits<double>::max()};
-    node.hi = -1.0 * node.lo;
+    Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+           std::numeric_limits<double>::max()};
+    Vec hi = -1.0 * lo;
     for (std::uint32_t i = first; i < first + count; ++i) {
       for (const Vec& p : {triangles[i].a, triangles[i].b, triangles[i].c}) {
         for (std::size_t k = 0; k < 3; ++k) {
-          node.lo[k] = std::min(node.lo[k], p[k]);
-          node.hi[k] = std::max(node.hi[k], p[k]);
+          lo[k] = std::min(lo[k], p[k]);
+          hi[k] = std::max(hi[k], p[k]);
         }
       }
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+      // One float step outwards, so the box still holds its triangles.
+      node.lo[k] = std::nextafter(static_cast<float>(lo[k]), -std::numeric_limits<float>::max());
+      node.hi[k] = std::nextafter(static_cast<float>(hi[k]), std::numeric_limits<float>::max());
     }
     if (count <= kLeafSize) {
       node.first = first;
@@ -1337,7 +1343,7 @@ struct MeshDistance::Impl {
       nodes[index] = node;
       return index;
     }
-    const Vec size = node.hi - node.lo;
+    const Vec size = hi - lo;
     const std::size_t axis =
         size[0] >= size[1] && size[0] >= size[2] ? 0 : (size[1] >= size[2] ? 1 : 2);
     const auto begin = triangles.begin() + first;
@@ -1354,7 +1360,7 @@ struct MeshDistance::Impl {
   static double boxDistance2(const Node& node, const Vec& p) {
     double d2 = 0.0;
     for (std::size_t k = 0; k < 3; ++k) {
-      const double d = std::max({node.lo[k] - p[k], 0.0, p[k] - node.hi[k]});
+      const double d = std::max({double{node.lo[k]} - p[k], 0.0, p[k] - double{node.hi[k]}});
       d2 += d * d;
     }
     return d2;
@@ -1389,7 +1395,7 @@ struct MeshDistance::Impl {
 };
 
 MeshDistance::MeshDistance(const Mesh& mesh) : impl_(std::make_unique<Impl>()) {
-  const double orientation = meshVolumeMm3(mesh) < 0.0 ? -1.0 : 1.0;
+  impl_->orientation = meshVolumeMm3(mesh) < 0.0 ? -1.0 : 1.0;
   impl_->triangles.reserve(mesh.triangles.size());
   Vec lo{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
          std::numeric_limits<double>::max()};
@@ -1406,7 +1412,6 @@ MeshDistance::MeshDistance(const Mesh& mesh) : impl_(std::make_unique<Impl>()) {
     if (!(length > 0.0) || !std::isfinite(length)) {
       continue;  // degenerate
     }
-    tri.normal = (orientation / length) * n;
     for (const Vec& p : {tri.a, tri.b, tri.c}) {
       for (std::size_t k = 0; k < 3; ++k) {
         lo[k] = std::min(lo[k], p[k]);
@@ -1452,7 +1457,7 @@ MeshDistance::Hit MeshDistance::query(const std::array<double, 3>& p) const {
   hit.triangle = impl.triangles[best].source;
   const Vec offset = p - best_point.point;
   const double distance = std::sqrt(best2);
-  Vec normal = impl.triangles[best].normal;
+  Vec normal = impl.normal(impl.triangles[best]);
   if (best_point.region != Region::kFace) {
     // On an edge or vertex: the side follows the angle-weighted normals of all triangles that
     // share the closest point.
@@ -1472,7 +1477,7 @@ MeshDistance::Hit MeshDistance::query(const std::array<double, 3>& p) const {
         const Vec e2 = v[(q.vertex + 2) % 3] - v[q.vertex];
         weight = std::acos(std::clamp(dot(e1, e2) / (norm(e1) * norm(e2)), -1.0, 1.0));
       }
-      sum = sum + weight * t.normal;
+      sum = sum + weight * impl.normal(t);
     });
     if (norm(sum) > 0.0) {
       normal = (1.0 / norm(sum)) * sum;
@@ -1769,6 +1774,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   result.cad_triangles = cad.triangles.size();
   const VoxelSize& v = result.voxel_size;
   std::optional<TelemetryPhase> phase(std::in_place, "surface mesh");
+  options.progress.check();
   const MeshDistance nominal(cad);
 
   // The scanned surface in mm, without the surfaces of internal voids when asked.

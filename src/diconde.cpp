@@ -16,10 +16,12 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -326,8 +328,15 @@ class DatasetSource final : public VolumeSource {
                                                            : SampleType::kUInt16;
   }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
+    const float air = dataset_.info().air_level;
+    if (dataset_.info().value_type != ValueType::kFloat) {
+      // Integer grey values straight into the output, without a float copy (ADR 0034).
+      dataset_.readRegion(0, box, out,
+                          static_cast<std::uint16_t>(std::clamp(std::lround(air), 0L, 65535L)));
+      return;
+    }
     std::vector<float> values(out.size());
-    dataset_.readRegion(0, box, values, dataset_.info().air_level);
+    dataset_.readRegion(0, box, values, air);
     std::ranges::transform(values, out.begin(), [](float value) {
       return static_cast<std::uint16_t>(std::clamp(std::lround(value), 0L, 65535L));
     });
@@ -382,6 +391,7 @@ std::string formatted(double value, int digits) {
 DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesystem::path& dir,
                                  const DicondeWriteOptions& options) {
   const TelemetryPhase phase("write DICONDE");
+  options.progress.check();
   const auto dims = source.dims();
   constexpr std::int64_t kMaxSide = std::numeric_limits<Uint16>::max();
   if (dims[0] <= 0 || dims[1] <= 0 || dims[2] <= 0 || dims[0] > kMaxSide || dims[1] > kMaxSide) {
@@ -416,10 +426,20 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
   }
   const Vec3 normal{options.pose.rotation[2], options.pose.rotation[5], options.pose.rotation[8]};
   const auto slice_voxels = static_cast<std::size_t>(dims[0] * dims[1]);
+  // The slices are written from slabs of many slices read at once: read one by one, every slice
+  // decoded all bricks of its layer again (ADR 0004). The slab takes a third of the work memory
+  // (ADR 0034; the source may need as much again while reading), at most one layer of 256
+  // slices.
+  const std::uint64_t slab_bytes =
+      std::max<std::uint64_t>(workMemoryBytes() / 3, std::uint64_t{256} << 20U);
+  const std::int64_t slab_depth = std::clamp<std::int64_t>(
+      static_cast<std::int64_t>(slab_bytes / (slice_voxels * sizeof(std::uint16_t))), 1, 256);
+  std::vector<std::uint16_t> slab;
+  std::int64_t slab_start = 0;
   std::mutex common_mutex;
-  tbb::parallel_for(std::int64_t{0}, dims[2], [&](std::int64_t z) {
-    std::vector<std::uint16_t> pixels(slice_voxels);
-    source.readRegion({{0, 0, z}, {dims[0], dims[1], z + 1}}, pixels);
+  const auto write_slice = [&](std::int64_t z) {
+    const std::span<const std::uint16_t> pixels(
+        slab.data() + static_cast<std::size_t>(z - slab_start) * slice_voxels, slice_voxels);
     DcmFileFormat file;
     DcmDataset& data = *file.getDataset();
     {
@@ -449,7 +469,14 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
     check(file.saveFile(path.string().c_str(), EXS_LittleEndianExplicit, EET_ExplicitLength,
                         EGL_recalcGL, EPD_noChange, 0, 0, EWM_fileformat),
           "writing " + path.string());
-  });
+  };
+  for (slab_start = 0; slab_start < dims[2]; slab_start += slab_depth) {
+    options.progress.report(static_cast<double>(slab_start) / static_cast<double>(dims[2]));
+    const std::int64_t slab_end = std::min(slab_start + slab_depth, dims[2]);
+    slab.resize(slice_voxels * static_cast<std::size_t>(slab_end - slab_start));
+    source.readRegion({{0, 0, slab_start}, {dims[0], dims[1], slab_end}}, slab);
+    tbb::parallel_for(slab_start, slab_end, write_slice);
+  }
   return series;
 }
 

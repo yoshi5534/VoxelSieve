@@ -112,9 +112,10 @@ std::function<void(const ImportPreview&)> importPreview(const OperationContext& 
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     summary["seconds"] = seconds;
-    std::ofstream(context.output_dir / "preview.json") << summary.dump(2) << '\n';
-    std::ofstream(context.output_dir / "preview.png", std::ios::binary)
-        .write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    // Replaced as the preview gets sharper, while the GUI may read it.
+    writeJson(context.output_dir / "preview.json", summary);
+    writeFile(context.output_dir / "preview.png",
+              std::string_view(reinterpret_cast<const char*>(png.data()), png.size()));
     std::ostringstream text;
     text << std::fixed << std::setprecision(1) << "Preview after " << seconds
          << " s: " << preview.slices_read << " of " << preview.source_dims[2] << " slices ("
@@ -222,6 +223,23 @@ std::optional<VoxelSize> voxelSizeParameter(const Json& p,
   return size;
 }
 
+/// What an operation on the dataset of input `port` needs, from its active voxels (ADR 0034):
+/// `memory` and `output` bytes per active voxel. Rough figures from the 2048^3 scale benchmark;
+/// nothing when the input is no dataset.
+OperationEstimate perActiveVoxel(const OperationContext& context, const std::string& port,
+                                 double memory, double output) {
+  const auto it = context.inputs.find(port);
+  if (it == context.inputs.end()) {
+    return {};
+  }
+  std::error_code error;
+  if (!std::filesystem::exists(it->second / "index.json", error)) {
+    return {};
+  }
+  const auto voxels = static_cast<double>(readDatasetInfo(it->second).active_voxel_count);
+  return {static_cast<std::uint64_t>(voxels * memory), static_cast<std::uint64_t>(voxels * output)};
+}
+
 class OpenDataset final : public Operation {
  public:
   OpenDataset() {
@@ -253,6 +271,9 @@ class OpenDataset final : public Operation {
  private:
   OperationInfo info_;
 };
+
+void addStagingParameters(Json& properties);
+DatasetOptions sieveOptions(const OperationContext& context);
 
 class ImportRaw final : public Operation {
  public:
@@ -310,6 +331,7 @@ class ImportRaw final : public Operation {
           {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
+    addStagingParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -351,18 +373,8 @@ class ImportRaw final : public Operation {
     if (source.sequentialAccess()) {
       context.log("gzip-compressed: decompressed once, in slice order, into the staging copy");
     }
-    DatasetOptions options;
-    if (p.contains("threshold")) {
-      options.threshold = p.at("threshold").get<float>();
-    }
-    options.margin_voxels = p.at("margin_voxels").get<int>();
-    options.brick_size = p.at("brick_size").get<std::int64_t>();
-    options.min_material_voxels = p.at("min_material_voxels").get<int>();
-    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
-    options.value_type = valueTypeOption(p);
-    options.progress = datasetProgress(context);
-    options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(source, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info =
+        writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -431,6 +443,7 @@ class ImportTiff final : public Operation {
           {"value_type", valueTypeParameter()}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
+    addStagingParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -467,18 +480,8 @@ class ImportTiff final : public Operation {
                   " mapped to grey 0 to 65535" +
                   (tiff.value_range ? "" : " (estimated; set value_range)"));
     }
-    DatasetOptions options;
-    if (p.contains("threshold")) {
-      options.threshold = p.at("threshold").get<float>();
-    }
-    options.margin_voxels = p.at("margin_voxels").get<int>();
-    options.brick_size = p.at("brick_size").get<std::int64_t>();
-    options.min_material_voxels = p.at("min_material_voxels").get<int>();
-    options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
-    options.value_type = valueTypeOption(p);
-    options.progress = datasetProgress(context);
-    options.preview = importPreview(context);
-    const DatasetInfo info = writeDataset(sieved, context.output_dir / "dataset.vsieve", options);
+    const DatasetInfo info =
+        writeDataset(sieved, context.output_dir / "dataset.vsieve", sieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -506,6 +509,25 @@ class ImportTiff final : public Operation {
   OperationInfo info_;
 };
 
+/// Where an import copies a slow input first (`DatasetOptions::stage_slow_sources`), shared by
+/// every import.
+void addStagingParameters(Json& properties) {
+  properties["staging"] = {
+      {"type", "boolean"},
+      {"default", true},
+      {"description",
+       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
+       "raw file first, so that every slice is decoded once; it needs 1 or 2 bytes per voxel (as "
+       "the input) of free "
+       "space. Off: read the slices directly, with no temporary file but more decoding"}};
+  properties["staging_dir"] = {
+      {"type", "string"},
+      {"format", "path"},
+      {"description",
+       "Directory of the temporary copy, best a fast local disk; default: the step's directory "
+       "in the project"}};
+}
+
 /// Parameters of the sieve shared by the imports of DICOM stacks and gzipped XML projects.
 void addSieveParameters(Json& properties) {
   properties["threshold"] = {
@@ -529,6 +551,7 @@ void addSieveParameters(Json& properties) {
        "through the part (a pipe), so its inside is kept"}};
   properties["brick_size"] = {{"type", "integer"}, {"minimum", 8}, {"default", 256}};
   properties["value_type"] = valueTypeParameter();
+  addStagingParameters(properties);
 }
 
 DatasetOptions sieveOptions(const OperationContext& context) {
@@ -542,6 +565,10 @@ DatasetOptions sieveOptions(const OperationContext& context) {
   options.min_material_voxels = p.value("min_material_voxels", 1);
   options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
   options.value_type = valueTypeOption(p);
+  options.stage_slow_sources = p.value("staging", true);
+  if (const std::string dir = p.value("staging_dir", std::string()); !dir.empty()) {
+    options.staging_dir = dir;
+  }
   options.progress = datasetProgress(context);
   options.preview = importPreview(context);
   return options;
@@ -807,10 +834,14 @@ class Porosity final : public Operation {
              "no zone of loosened microstructure"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.5, 0.2);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     PorosityOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.min_pore_voxels = p.at("min_pore_voxels").get<std::int64_t>();
     options.zone_sigma = p.at("zone_sigma").get<double>();
     options.min_zone_void_fraction = p.at("min_zone_void_fraction").get<double>();
@@ -903,10 +934,14 @@ class FibreOrientation final : public Operation {
             {"description", "Blocks less directional than this are left out of the families"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     OrientationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.block_size = p.at("block_size").get<int>();
     options.families = p.at("families").get<int>();
     options.material = p.at("material").get<int>();
@@ -1101,10 +1136,14 @@ class BatteryInspection final : public Operation {
     info_.parameters = {{"type", "object"}, {"properties", properties}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.3, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     BatteryOptions options = batteryOptions(p);
+    options.progress = ProgressToken(context.progress, context.cancel);
     if (const std::string type = p.at("cell_type").get<std::string>(); type != "auto") {
       options.cell_type = type == "cylindrical" ? CellType::kCylindrical : CellType::kStacked;
     }
@@ -1164,6 +1203,7 @@ class BatteryImages final : public Operation {
                                            })));
     }
     BatteryOptions options = batteryOptions(p);
+    options.progress = ProgressToken(context.progress, context.cancel);
     if (p.contains("pixel_size_mm")) {
       options.image_pixel_mm = p.at("pixel_size_mm").get<double>();
     }
@@ -1203,10 +1243,14 @@ class Surface final : public Operation {
           {"vdb", {{"type", "boolean"}, {"default", false}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     SurfaceOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.bits = p.at("bits").get<int>();
     options.band_voxels = p.at("band_voxels").get<double>();
     if (p.contains("iso_value")) {
@@ -1224,7 +1268,7 @@ class Surface final : public Operation {
     writeJson(dir / "surface.json", toJson(info));
     writeSurfaceImages(mask, dir);
     if (p.at("stl").get<bool>()) {
-      writeStl(dir / "surface.stl", mask.toMesh());
+      mask.writeStl(dir / "surface.stl");  // streamed chunk by chunk
     }
     if (p.at("vdb").get<bool>()) {
       openvdb::io::File file((dir / "surface.vdb").string());
@@ -1335,6 +1379,7 @@ class CompareCad final : public Operation {
     const std::filesystem::path cad_path =
         std::filesystem::absolute(p.at("cad_path").get<std::string>());
     CompareOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.alignment = alignmentFromString(p.at("alignment").get<std::string>());
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
     options.outer_surface_only = p.at("outer_surface_only").get<bool>();
@@ -1515,6 +1560,11 @@ class WallThickness final : public Operation {
              "comparison (each face may deviate by it)"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    // The volume map is a float per material voxel, with its coarser levels.
+    const bool map = context.params.value("volume_map", false);
+    return perActiveVoxel(context, "dataset", 0.2, map ? 5.0 : 0.05);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1876,7 +1926,7 @@ class Report final : public Operation {
     phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     data.erase("images");
     writeJson(dir / "report.json", data);
     for (const std::string& warning : warnings) {
@@ -1985,10 +2035,14 @@ class SegmentMaterials final : public Operation {
             {"description", "Colours of the classes as #rrggbb, in order"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     SegmentationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.materials = p.at("materials").get<int>();
     if (p.contains("air_threshold")) {
       options.air_threshold = p.at("air_threshold").get<float>();
@@ -2198,11 +2252,9 @@ class MeasureObjects final : public Operation {
       }
       objects.push_back(std::move(json));
     }
-    std::ofstream(dir / "objects.json") << Json{{"stride", info.stride},
-                                                {"objects_found", info.objects_found},
-                                                {"objects", objects}}
-                                               .dump(2)
-                                        << '\n';
+    writeJson(
+        dir / "objects.json",
+        Json{{"stride", info.stride}, {"objects_found", info.objects_found}, {"objects", objects}});
     OperationResult result;
     result.outputs["measurements"] = "measurements";
     // The summary keeps the largest objects; the files hold all.
@@ -2256,12 +2308,16 @@ class SegmentWithModel final : public Operation {
         {"required", {"model_path"}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 0.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     const Model model =
         Model::load(std::filesystem::absolute(p.at("model_path").get<std::string>()));
     ModelSegmentationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.tile = p.at("tile").get<std::int64_t>();
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const MaterialVolumeInfo info =
@@ -2340,6 +2396,9 @@ class Denoise final : public Operation {
           {"value_type", valueTypeParameter()}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.1, 2.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -2584,6 +2643,9 @@ class IsolatePart final : public Operation {
              "Grey value above which a voxel is material; default: the dataset's"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return perActiveVoxel(context, "dataset", 0.3, 2.5);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -2744,7 +2806,7 @@ OperationResult movedResult(const OperationContext& context, const std::vector<s
   summary["translation_mm"] = motion.translation;
   Json record = summary;
   record["poses"] = poses;
-  std::ofstream(context.output_dir / "pose.json") << record.dump(2) << '\n';
+  writeJson(context.output_dir / "pose.json", record);
   OperationResult result;
   result.outputs["pose"] = "pose.json";
   result.summary = std::move(summary);
@@ -3017,6 +3079,7 @@ class CompareObjects final : public Operation {
     const Json& actual = objectEntry(context, context.object);
     const Json& nominal_object = objectEntry(context, nominal_id);
     CompareOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.alignment = p.at("refine").get<bool>() ? CompareOptions::Alignment::kRefine
                                                    : CompareOptions::Alignment::kNone;
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
@@ -3164,6 +3227,7 @@ class MeasureDimensions final : public Operation {
     const RigidTransform cad_to_scan =
         RigidTransform::fromMatrix(compared.at("cad_to_scan").get<std::vector<double>>());
     DimensionalOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.search_mm = p.at("search_mm").get<double>();
     options.edge_margin_mm = p.at("edge_margin_mm").get<double>();
     context.progress(0.05);
@@ -3272,7 +3336,7 @@ class FirstArticleReport final : public Operation {
     phase.emplace("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     std::filesystem::copy_file(measurement_dir / "characteristics.csv",
                                dir / "characteristics.csv");
     data.erase("images");
@@ -3343,7 +3407,7 @@ class BatteryReport final : public Operation {
     const TelemetryPhase phase("write report");
     const auto dir = context.output_dir / "report";
     std::filesystem::create_directories(dir);
-    std::ofstream(dir / "report.html", std::ios::binary) << renderTemplate(report_template, data);
+    writeFile(dir / "report.html", renderTemplate(report_template, data));
     data.erase("images");
     for (Json& edge : data.at("battery").at("edges")) {
       edge.erase("image");
@@ -3434,6 +3498,7 @@ class ExportDiconde final : public Operation {
       }
     }
     DicondeWriteOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     std::string object_name;
     if (!context.object.empty()) {
       const Json& object = objectEntry(context, context.object);
@@ -3454,8 +3519,7 @@ class ExportDiconde final : public Operation {
     applyInspectionOrder(order, options, evaluation ? &*evaluation : nullptr);
 
     const auto dir = context.output_dir / "diconde";
-    const auto dataset = Dataset::open(context.inputs.at("dataset"), Dataset::kDefaultCacheBytes,
-                                       BrickLoading::kOnAccess);
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const DicondeSeries volume = writeDicondeDataset(dataset, dir / "volume", options);
     Json series = Json::array({{{"directory", "volume"},
                                 {"series_uid", volume.series_uid},

@@ -69,7 +69,16 @@ struct TiffPage {
   double pixel_height_mm = 0.0;
   double slice_spacing_mm = 0.0;
   std::string description;
+  /// For uncompressed images: where each strip or tile starts in the file, so that its pixels can
+  /// be read in place; empty for compressed ones.
+  std::vector<std::uint64_t> chunk_offsets;
+  /// Samples stored big-endian ("MM" files).
+  bool big_endian = false;
 };
+
+/// Whether the pixels of `page` can be read in place from the file: uncompressed, one unsigned
+/// 8- or 16-bit sample per pixel, black at zero.
+[[nodiscard]] bool readableInPlace(const TiffPage& page);
 
 /// Reads the image directories; stops after `max_pages`.
 [[nodiscard]] std::vector<TiffPage> readTiffPages(

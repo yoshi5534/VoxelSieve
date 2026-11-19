@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -179,7 +180,7 @@ class Gui {
   std::optional<std::filesystem::path> reopenProject();
 
   /// Asks a running operation to stop at its next check.
-  void cancel() { cancel_ = true; }
+  void cancel();
 
  private:
   /// Throws std::invalid_argument when allowed roots are set and `path` is outside all of them.
@@ -199,6 +200,7 @@ class Gui {
     std::map<std::string, ArtifactRef> inputs;
     StepTarget target;
     std::optional<Project> working;
+    std::shared_ptr<std::atomic<bool>> cancel;  // of the sequence it belongs to
     // Part of the progress of a sequence this run covers.
     double offset = 0.0;
     double share = 1.0;
@@ -283,9 +285,12 @@ class Gui {
   std::vector<std::filesystem::path> allowed_roots_;  // canonical
   std::optional<Project> project_;
   std::filesystem::path project_memory_;
-  std::atomic<bool> cancel_ = false;
+  // The cancel flag of the running sequence, a new one per run, so that a cancellation never
+  // reaches a later run or is lost by a reset (F8). Guarded by mutex_.
+  std::shared_ptr<std::atomic<bool>> cancel_;
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_
+  int run_id_ = 0;        // of the latest run, so a client can tell its run from a later one
   std::string running_operation_;
   std::condition_variable idle_;  // notified when running_ turns false
   // The operation started with background: true, and the outcome of the latest one: its step, or
@@ -296,14 +301,17 @@ class Gui {
   nlohmann::json running_preview_;
   std::vector<std::uint8_t> running_preview_png_;
   mutable std::mutex mutex_;
-  // Open datasets and porosity results for viewing, most recently used last.
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;
+  // Open datasets, porosity results and material volumes for viewing, most recently used last,
+  // as they are being opened: opened outside view_mutex_, so a large porosity result loading
+  // blocks no tile of another view (F3). Guarded by view_mutex_.
+  template <typename Value>
+  using Opened = std::vector<
+      std::pair<std::filesystem::path, std::shared_future<std::shared_ptr<const Value>>>>;
+  mutable Opened<Dataset> datasets_;
   // One memory budget for the bricks of all open datasets (ADR 0018).
   std::shared_ptr<BrickCache> view_cache_;
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
-      porosity_results_;
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const MaterialVolume>>>
-      material_volumes_;
+  mutable Opened<PorosityResult> porosity_results_;
+  mutable Opened<MaterialVolume> material_volumes_;
   mutable std::mutex view_mutex_;
   // Display meshes by surface file and triangle budget; never locked while a mesh is built.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const IndexedMesh>>>

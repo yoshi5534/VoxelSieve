@@ -122,6 +122,20 @@ TEST_F(DicondeTest, VolumeComesBackExactlyWhereItLies) {
   EXPECT_TRUE(info.indications.empty());
 }
 
+// The slices are written from slabs of at most 256 slices; a taller volume needs two.
+TEST_F(DicondeTest, SlicesOfSeveralSlabsComeBackInOrder) {
+  Volume16 volume({3, 2, 300}, VoxelSize(0.1, 0.1, 0.1));
+  for (std::size_t i = 0; i < volume.data.size(); ++i) {
+    volume.data[i] = static_cast<std::uint16_t>(1000 + 7 * i);
+  }
+  const MemorySource source(volume);
+  const DicondeSeries series = writeDicondeSeries(source, dir_ / "tall");
+  EXPECT_EQ(series.files, 300);
+  const DicomStackSource read(dir_ / "tall");
+  EXPECT_EQ(read.dims(), volume.dims);
+  EXPECT_EQ(readAll(read), volume.data);
+}
+
 TEST_F(DicondeTest, SignedScansGetTheirStoredValuesBack) {
   const SignedSource source;
   (void)writeDicondeSeries(source, dir_ / "signed");
@@ -140,8 +154,7 @@ TEST_F(DicondeTest, ResultsBecomeIndicationsAndLabels) {
   DatasetOptions sieve;
   sieve.brick_size = 32;
   (void)writeDataset(phantom, dir_ / "dataset", sieve);
-  const Dataset dataset =
-      Dataset::open(dir_ / "dataset", Dataset::kDefaultCacheBytes, BrickLoading::kOnAccess);
+  const Dataset dataset = Dataset::open(dir_ / "dataset");
   const PorosityResult porosity = analyzePorosity(dataset);
   ASSERT_GE(porosity.pores.size(), spec.pores.size());
   SegmentationOptions segmentation;

@@ -3,8 +3,10 @@
 #include <openvdb/io/File.h>
 #include <openvdb/tools/Morphology.h>
 #include <openvdb/tree/LeafManager.h>
+#include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_sort.h>
 #include <tbb/task_arena.h>
 
 #include <algorithm>
@@ -19,8 +21,10 @@
 #include <numbers>
 #include <optional>
 #include <queue>
-#include <set>
+#include <span>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "detail/components.hpp"
 #include "detail/png.hpp"
@@ -123,170 +127,284 @@ struct BlockSums {
   MaterialCounts materials{};
 };
 
-/// Everything the first streaming pass collects.
+/// Values per 8^3 block, sorted by block for lookups: for the blocks at the surface or at pores,
+/// whose number grows with the surface rather than the volume. About 12 bytes per block plus the
+/// value, a third of a tree map.
+template <typename T>
+class BlockTable {
+ public:
+  void add(const Coord& block, const T& value) { entries_.emplace_back(block, value); }
+  void append(const BlockTable& other) {
+    entries_.insert(entries_.end(), other.entries_.begin(), other.entries_.end());
+  }
+  void sort() {
+    tbb::parallel_sort(entries_.begin(), entries_.end(),
+                       [](const auto& a, const auto& b) { return a.first < b.first; });
+  }
+  /// The value of `block`, or nullptr; needs `sort` first.
+  [[nodiscard]] const T* find(const Coord& block) const {
+    const auto it =
+        std::lower_bound(entries_.begin(), entries_.end(), block,
+                         [](const auto& entry, const Coord& c) { return entry.first < c; });
+    return it == entries_.end() || it->first != block ? nullptr : &it->second;
+  }
+  [[nodiscard]] auto begin() const { return entries_.begin(); }
+  [[nodiscard]] auto end() const { return entries_.end(); }
+
+ private:
+  std::vector<std::pair<Coord, T>> entries_;
+};
+
+/// Everything the first streaming pass collects. Values per block live in grids at block
+/// resolution (one voxel per 8^3 block, about 4 bytes per block each), not in tree maps.
 struct Scan {
   openvdb::BoolGrid::Ptr candidates = openvdb::BoolGrid::create(false);  // below threshold
   openvdb::BoolGrid::Ptr seeds = openvdb::BoolGrid::create(false);  // candidates next to outside
-  std::map<Coord, BlockStats> blocks;
-  std::set<Coord> solid;         // fully active blocks
-  std::map<Coord, int> partial;  // active voxel count of the other blocks
+  /// Mean and variance of the fully active, mostly material blocks; active for those only.
+  openvdb::FloatGrid::Ptr mean = openvdb::FloatGrid::create(0.0F);
+  openvdb::FloatGrid::Ptr variance = openvdb::FloatGrid::create(0.0F);
+  /// Active voxels of every block that holds any.
+  openvdb::Int32Grid::Ptr active = openvdb::Int32Grid::create(0);
+
+  /// Adds the disjoint results of another part of the dataset.
+  void merge(Scan& other) {
+    candidates->tree().topologyUnion(other.candidates->tree());
+    seeds->tree().topologyUnion(other.seeds->tree());
+    mean->tree().merge(other.mean->tree());
+    variance->tree().merge(other.variance->tree());
+    active->tree().merge(other.active->tree());
+  }
 };
 
-Scan scanBricks(const Dataset& dataset) {
+Scan scanBricks(const Dataset& dataset, const ProgressToken& progress) {
   const DatasetInfo& info = dataset.info();
   const float threshold = info.threshold;
   // One accumulator per thread, merged at the end. No lock is held around OpenVDB calls, which may
   // run nested TBB tasks (a lock there can deadlock when the waiting thread steals another brick).
   tbb::combinable<Scan> partial_scans;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    auto candidates = openvdb::BoolGrid::create(false);
-    auto seeds = openvdb::BoolGrid::create(false);
-    auto candidate_acc = candidates->getAccessor();
-    auto seed_acc = seeds->getAccessor();
-    const auto acc = grid.getConstAccessor();
-    std::map<Coord, BlockStats> blocks;
-    std::set<Coord> solid;
-    std::map<Coord, int> partial;
-    Dataset::Sampler neighbours(dataset, 0);  // voxels of the bricks around this one
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        Scan brick_scan;
+        auto candidate_acc = brick_scan.candidates->getAccessor();
+        auto seed_acc = brick_scan.seeds->getAccessor();
+        auto mean_acc = brick_scan.mean->getAccessor();
+        auto variance_acc = brick_scan.variance->getAccessor();
+        auto active_acc = brick_scan.active->getAccessor();
+        const auto acc = grid.getConstAccessor();
+        Dataset::Sampler neighbours(dataset, 0);  // voxels of the bricks around this one
 
-    const auto is_active = [&](const Coord& c) {
-      const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] &&
-                                c.y() < box.max[1] && c.z() >= box.min[2] && c.z() < box.max[2];
-      return inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
-    };
+        const auto is_active = [&](const Coord& c) {
+          const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] &&
+                                    c.y() >= box.min[1] && c.y() < box.max[1] &&
+                                    c.z() >= box.min[2] && c.z() < box.max[2];
+          return inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
+        };
 
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      double sum = 0.0;
-      double sum_sq = 0.0;
-      int below = 0;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const float value = *it;
-        sum += value;
-        sum_sq += static_cast<double>(value) * value;
-        if (value >= threshold) {
-          continue;
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          double sum = 0.0;
+          double sum_sq = 0.0;
+          int below = 0;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const float value = *it;
+            sum += value;
+            sum_sq += static_cast<double>(value) * value;
+            if (value >= threshold) {
+              continue;
+            }
+            ++below;
+            const Coord c = it.getCoord();
+            candidate_acc.setValueOn(c);
+            if (std::any_of(face_neighbours.begin(), face_neighbours.end(),
+                            [&](const Coord& d) { return !is_active(c + d); })) {
+              seed_acc.setValueOn(c);
+            }
+          }
+          const auto count = static_cast<std::int64_t>(leaf->onVoxelCount());
+          const Coord block = blockOf(leaf->origin());
+          active_acc.setValue(block, static_cast<int>(count));
+          // Material blocks only: blocks at the surface mix in air and would bias the material
+          // level.
+          if (count == kBlockVoxels && below <= kMaxBelowInMaterialBlock) {
+            const double mean = sum / kBlockVoxels;
+            const double variance = std::max(0.0, sum_sq / kBlockVoxels - mean * mean);
+            mean_acc.setValue(block, static_cast<float>(mean));
+            variance_acc.setValue(block, static_cast<float>(variance));
+          }
         }
-        ++below;
-        const Coord c = it.getCoord();
-        candidate_acc.setValueOn(c);
-        if (std::any_of(face_neighbours.begin(), face_neighbours.end(),
-                        [&](const Coord& d) { return !is_active(c + d); })) {
-          seed_acc.setValueOn(c);
-        }
-      }
-      const auto count = static_cast<std::int64_t>(leaf->onVoxelCount());
-      if (count == kBlockVoxels) {
-        solid.insert(blockOf(leaf->origin()));
-      } else {
-        partial[blockOf(leaf->origin())] = static_cast<int>(count);
-      }
-      // Material blocks only: blocks at the surface mix in air and would bias the material level.
-      if (count == kBlockVoxels && below <= kMaxBelowInMaterialBlock) {
-        const double mean = sum / kBlockVoxels;
-        const double variance = std::max(0.0, sum_sq / kBlockVoxels - mean * mean);
-        blocks[blockOf(leaf->origin())] = {static_cast<float>(mean), static_cast<float>(variance)};
-      }
-    }
 
-    // topologyUnion runs TBB tasks. Isolated, the waiting thread cannot pick up another brick,
-    // whose body would change this thread's accumulator while the union is still writing it.
-    tbb::this_task_arena::isolate([&] {
-      Scan& local = partial_scans.local();
-      local.candidates->tree().topologyUnion(candidates->tree());
-      local.seeds->tree().topologyUnion(seeds->tree());
-      local.blocks.merge(blocks);
-      local.solid.merge(solid);
-      local.partial.merge(partial);
-    });
-  });
+        // topologyUnion runs TBB tasks. Isolated, the waiting thread cannot pick up another brick,
+        // whose body would change this thread's accumulator while the union is still writing it.
+        tbb::this_task_arena::isolate([&] { partial_scans.local().merge(brick_scan); });
+      },
+      BrickSweep{.progress = progress});
   Scan scan;
-  partial_scans.combine_each([&](Scan& local) {
-    scan.candidates->tree().topologyUnion(local.candidates->tree());
-    scan.seeds->tree().topologyUnion(local.seeds->tree());
-    scan.blocks.merge(local.blocks);
-    scan.solid.merge(local.solid);
-    scan.partial.merge(local.partial);
-  });
+  partial_scans.combine_each([&](Scan& local) { scan.merge(local); });
+  // Large voids are runs of fully active leaves; as tiles they cost nothing per voxel.
+  scan.candidates->tree().prune();
   return scan;
 }
 
-/// Connected components (26-neighbourhood) of the candidates that are not connected to a seed,
-/// in the order of their first voxel. Counts the outside-air voxels per block in `outside` and
-/// marks them in `outside_air`.
-std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Coord, int>& outside,
-                                                   openvdb::BoolGrid& outside_air) {
-  using Leaf = openvdb::BoolTree::LeafNodeType;
+/// The internal components of the candidates: pores and their labels, and the outside air.
+struct Components {
+  /// Kept pores in id order, with id and voxel count.
+  std::vector<DetectedPore> pores;
+  /// Pore id per pore voxel; uniform leaves are tiles.
+  openvdb::Int32Grid::Ptr labels = openvdb::Int32Grid::create(0);
+  /// Outside-air voxels per block, at block resolution.
+  openvdb::Int32Grid::Ptr outside = openvdb::Int32Grid::create(0);
+};
+
+/// Connected components (26-neighbourhood) of the candidates. Those connected to a seed are
+/// outside air, marked in `outside_air`; the others of at least `min_pore_voxels` voxels are
+/// pores, numbered in the order of their first voxel. Memory grows with the cells of the
+/// candidates, not with their voxels: no coordinate lists, and a cell inside one pore is a tile.
+Components internalComponents(const Scan& scan, std::int64_t min_pore_voxels,
+                              openvdb::BoolGrid& outside_air) {
+  using BoolLeaf = openvdb::BoolTree::LeafNodeType;
+  using LabelLeaf = openvdb::Int32Tree::LeafNodeType;
   const detail::VoxelComponents components(scan.candidates->tree());
 
   // Components that hold a seed are outside air. Seeds are candidates.
   std::vector<std::atomic<bool>> is_outside(components.size());
   openvdb::tree::LeafManager<const openvdb::BoolTree> seed_leaves(scan.seeds->tree());
-  seed_leaves.foreach ([&](const Leaf& leaf, std::size_t) {
-    for (auto it = leaf.cbeginValueOn(); it; ++it) {
-      const std::int64_t component = components.at(it.getCoord());
-      if (component >= 0) {
-        is_outside[static_cast<std::size_t>(component)].store(true, std::memory_order_relaxed);
-      }
-    }
-  });
-
-  // Outside air per leaf, which is one block.
-  const std::size_t leaf_count = components.leafCount();
-  std::vector<std::unique_ptr<Leaf>> outside_leaves(leaf_count);
-  std::vector<int> outside_counts(leaf_count, 0);
-  std::vector<std::uint8_t> has_inside(leaf_count, 0);
-  tbb::parallel_for(std::size_t{0}, leaf_count, [&](std::size_t i) {
-    const auto pieces = components.componentsInLeaf(i);
-    const bool any_outside = std::any_of(pieces.begin(), pieces.end(),
-                                         [&](std::size_t c) { return is_outside[c].load(); });
-    has_inside[i] = std::any_of(pieces.begin(), pieces.end(),
-                                [&](std::size_t c) { return !is_outside[c].load(); });
-    if (!any_outside) {
+  seed_leaves.foreach ([&](const BoolLeaf& leaf, std::size_t) {
+    const std::int64_t cell = components.findCell(leaf.origin());
+    if (cell < 0) {
       return;
     }
-    const Leaf& leaf = components.leaf(i);
-    auto air = std::make_unique<Leaf>(leaf.origin(), false);
-    int count = 0;
     for (auto it = leaf.cbeginValueOn(); it; ++it) {
-      if (is_outside[components.component(i, it.pos())]) {
-        air->setValueOn(it.pos());
-        ++count;
+      if (components.isOn(static_cast<std::size_t>(cell), it.pos())) {
+        is_outside[components.component(static_cast<std::size_t>(cell), it.pos())].store(
+            true, std::memory_order_relaxed);
       }
     }
-    outside_counts[i] = count;
-    outside_leaves[i] = std::move(air);
   });
-  for (std::size_t i = 0; i < leaf_count; ++i) {
-    if (outside_leaves[i]) {
-      outside[blockOf(components.leaf(i).origin())] = outside_counts[i];
-      outside_air.tree().addLeaf(outside_leaves[i].release());
+
+  Components result;
+  std::vector<std::int32_t> pore_of(components.size(), 0);
+  for (std::size_t c = 0; c < components.size(); ++c) {
+    if (!is_outside[c] &&
+        static_cast<std::int64_t>(components.componentSize(c)) >= min_pore_voxels) {
+      if (result.pores.size() >= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::length_error("More pores than 32-bit labels can hold");
+      }
+      DetectedPore pore;
+      pore.id = static_cast<int>(result.pores.size()) + 1;
+      pore.voxel_count = static_cast<std::int64_t>(components.componentSize(c));
+      pore_of[c] = pore.id;
+      result.pores.push_back(pore);
     }
   }
 
-  // The voxels of the other components, numbered in the order of the components.
-  std::vector<std::int64_t> slot(components.size(), -1);
-  std::vector<std::vector<Coord>> result;
-  for (std::size_t c = 0; c < components.size(); ++c) {
-    if (!is_outside[c]) {
-      slot[c] = static_cast<std::int64_t>(result.size());
-      result.emplace_back();
-    }
-  }
-  for (std::size_t i = 0; i < leaf_count; ++i) {
-    if (has_inside[i] == 0) {
-      continue;
-    }
-    const Leaf& leaf = components.leaf(i);
-    for (auto it = leaf.cbeginValueOn(); it; ++it) {
-      const std::int64_t index = slot[components.component(i, it.pos())];
-      if (index >= 0) {
-        result[static_cast<std::size_t>(index)].push_back(it.getCoord());
+  // Outside air and pore labels cell by cell: built in parallel, a chunk at a time so the leaves
+  // in flight stay bounded, and added to the grids in order.
+  struct CellResult {
+    std::unique_ptr<BoolLeaf> air;
+    std::unique_ptr<LabelLeaf> labels;
+    int air_count = 0;
+    int tile_label = 0;  // a full cell of one pore
+  };
+  constexpr std::size_t kChunk = std::size_t{1} << 16U;
+  std::vector<CellResult> cells;
+  auto outside_acc = result.outside->getAccessor();
+  for (std::size_t begin = 0; begin < components.cellCount(); begin += kChunk) {
+    const std::size_t end = std::min(components.cellCount(), begin + kChunk);
+    cells.clear();
+    cells.resize(end - begin);
+    tbb::parallel_for(begin, end, [&](std::size_t i) {
+      const auto pieces = components.componentsInCell(i);
+      const bool any_air =
+          std::any_of(pieces.begin(), pieces.end(), [&](auto c) { return is_outside[c].load(); });
+      const bool any_pore =
+          std::any_of(pieces.begin(), pieces.end(), [&](auto c) { return pore_of[c] > 0; });
+      CellResult& cell = cells[i - begin];
+      const Coord origin = components.cellOrigin(i);
+      if (components.cellFull(i)) {  // one piece
+        cell.air_count = any_air ? kBlockVoxels : 0;
+        cell.tile_label = any_pore ? pore_of[pieces.front()] : 0;
+        return;
+      }
+      if (any_air) {
+        cell.air = std::make_unique<BoolLeaf>(origin, false);
+      }
+      if (any_pore) {
+        cell.labels = std::make_unique<LabelLeaf>(origin, 0, false);
+      }
+      components.forEachOn(i, [&](openvdb::Index pos) {
+        const auto c = components.component(i, pos);
+        if (is_outside[c]) {
+          cell.air->setValueOn(pos);
+          ++cell.air_count;
+        } else if (pore_of[c] > 0) {
+          cell.labels->setValueOn(pos, pore_of[c]);
+        }
+      });
+    });
+    for (std::size_t i = begin; i < end; ++i) {
+      CellResult& cell = cells[i - begin];
+      const Coord origin = components.cellOrigin(i);
+      if (cell.air) {
+        outside_air.tree().addLeaf(cell.air.release());
+      } else if (cell.air_count > 0) {
+        outside_air.tree().addTile(1, origin, true, true);
+      }
+      if (cell.air_count > 0) {
+        outside_acc.setValue(blockOf(origin), cell.air_count);
+      }
+      if (cell.labels) {
+        result.labels->tree().addLeaf(cell.labels.release());
+      } else if (cell.tile_label > 0) {
+        result.labels->tree().addTile(1, origin, cell.tile_label, true);
       }
     }
   }
+  result.labels->tree().prune();
   return result;
 }
+
+/// The voxels of a cell (an 8^3 leaf) of a tree: the leaf's active voxels, or all of a tile.
+/// Calls `f(cell origin, leaf or nullptr)` for each cell with active voxels, leaves first.
+template <typename TreeT, typename F>
+void forEachCell(const TreeT& tree, F&& f) {
+  for (auto leaf = tree.cbeginLeaf(); leaf; ++leaf) {
+    if (!leaf->isEmpty()) {
+      f(leaf->origin(), leaf.getLeaf());
+    }
+  }
+  auto tile = tree.cbeginValueOn();
+  tile.setMaxDepth(TreeT::ValueOnCIter::LEAF_DEPTH - 1);
+  for (; tile; ++tile) {
+    openvdb::CoordBBox box;
+    tile.getBoundingBox(box);
+    for (int x = box.min().x(); x <= box.max().x(); x += kBlock) {
+      for (int y = box.min().y(); y <= box.max().y(); y += kBlock) {
+        for (int z = box.min().z(); z <= box.max().z(); z += kBlock) {
+          f(Coord(x, y, z), static_cast<const typename TreeT::LeafNodeType*>(nullptr));
+        }
+      }
+    }
+  }
+}
+
+/// Mean and variance of the blocks that describe the material, at block resolution.
+struct MaterialBlocks {
+  openvdb::FloatGrid::Ptr mean;
+  openvdb::FloatGrid::Ptr variance;
+
+  /// Calls `f(block, mean)` for every block, in tree order.
+  template <typename F>
+  void forEach(F&& f) const {
+    for (auto it = mean->cbeginValueOn(); it; ++it) {
+      f(it.getCoord(), *it);
+    }
+  }
+  void erase(const Coord& block) const {
+    mean->tree().setValueOff(block);
+    variance->tree().setValueOff(block);
+  }
+};
 
 /// Depth of every block inside the part below the surface, in voxels.
 ///
@@ -295,19 +413,13 @@ std::vector<std::vector<Coord>> internalComponents(const Scan& scan, std::map<Co
 /// and depth grows by one block per step inside.
 class BlockDepth {
  public:
-  BlockDepth(const Scan& scan, const std::map<Coord, int>& outside) {
+  BlockDepth(const Scan& scan, const openvdb::Int32Grid& outside) {
     // Part voxels (neither removed nor outside air) of every block, at block resolution.
-    auto part = openvdb::Int32Grid::create(0);
+    auto part = scan.active->deepCopy();
     {
       auto part_acc = part->getAccessor();
-      for (const Coord& block : scan.solid) {
-        part_acc.setValue(block, kBlockVoxels);
-      }
-      for (const auto& [block, count] : scan.partial) {
-        part_acc.setValue(block, count);
-      }
-      for (const auto& [block, count] : outside) {
-        part_acc.setValue(block, part_acc.getValue(block) - count);
+      for (auto it = outside.cbeginValueOn(); it; ++it) {
+        part_acc.setValue(it.getCoord(), part_acc.getValue(it.getCoord()) - *it);
       }
     }
     const auto part_acc = part->getConstAccessor();
@@ -372,31 +484,38 @@ class BlockDepth {
 /// and cover only a small part of each depth, so the median ignores them.
 class DepthLevels {
  public:
-  DepthLevels(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
+  /// From the blocks of `material` for which `keep(block)` holds.
+  template <typename Keep>
+  DepthLevels(const BlockDepth& depth, const MaterialBlocks& material, Keep&& keep,
               double fallback) {
     // Median per depth bin; bins with too few blocks are skipped and interpolated over.
-    std::map<int, std::vector<float>> per_bin;
-    for (const auto& [block, stats] : material) {
-      if (depth.contains(block)) {
-        per_bin[static_cast<int>(depth.at(block) / kBinVoxels)].push_back(stats.mean);
+    std::vector<std::pair<double, float>> blocks;  // depth and mean of the blocks used
+    material.forEach([&](const Coord& block, float mean) {
+      if (depth.contains(block) && keep(block)) {
+        blocks.emplace_back(depth.at(block), mean);
       }
+    });
+    std::map<int, std::vector<float>> per_bin;
+    for (const auto& [block_depth, mean] : blocks) {
+      per_bin[static_cast<int>(block_depth / kBinVoxels)].push_back(mean);
     }
     for (auto& [bin, means] : per_bin) {
       if (means.size() >= kMinBlocks) {
         levels_[(bin + 0.5) * kBinVoxels] = median(std::move(means));
       }
     }
+    per_bin.clear();
     if (levels_.empty()) {
       levels_[0.0] = fallback;
     }
     // Spread of the block means around the level (median absolute deviation, scaled to a
     // standard deviation): noise, and the variation of the material itself.
     std::vector<float> deviations;
-    for (const auto& [block, stats] : material) {
-      if (depth.contains(block)) {
-        deviations.push_back(static_cast<float>(std::abs(stats.mean - at(depth.at(block)))));
-      }
+    deviations.reserve(blocks.size());
+    for (const auto& [block_depth, mean] : blocks) {
+      deviations.push_back(static_cast<float>(std::abs(mean - at(block_depth))));
     }
+    blocks = {};
     spread_ = kMadToSigma * median(std::move(deviations));
   }
 
@@ -435,35 +554,29 @@ class DepthLevels {
 /// a material segmentation the mix of the levels of the materials in the block.
 class MaterialReference {
  public:
-  MaterialReference(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
-                    double fallback)
+  MaterialReference(const BlockDepth& depth, const MaterialBlocks& material, double fallback)
       : depth_(depth) {
-    levels_.emplace_back(depth, material, fallback);
+    levels_.emplace_back(depth, material, [](const Coord&) { return true; }, fallback);
   }
 
   /// One level by depth per material id, from the blocks of `material` that hold that material
   /// only (`counts`, or `restricted` for the voxels of a block that describe it); `fallbacks`
   /// (grey value per id) where a material has no such blocks at any depth.
-  MaterialReference(const BlockDepth& depth, const std::map<Coord, BlockStats>& material,
-                    const std::map<Coord, MaterialCounts>& counts,
-                    const std::map<Coord, MaterialCounts>& restricted,
+  MaterialReference(const BlockDepth& depth, const MaterialBlocks& material,
+                    const BlockTable<MaterialCounts>& counts,
+                    const BlockTable<MaterialCounts>& restricted,
                     const std::array<double, kMaxMaterials + 1>& fallbacks, double fallback)
       : depth_(depth), counts_(&counts) {
-    levels_.emplace_back(depth, material, fallback);
+    levels_.emplace_back(depth, material, [](const Coord&) { return true; }, fallback);
     for (std::size_t id = 1; id <= kMaxMaterials; ++id) {
-      std::map<Coord, BlockStats> pure;
-      for (const auto& [block, stats] : material) {
-        const auto own = restricted.find(block);
-        if (own != restricted.end()) {
-          if (holdsOnly(own->second, id)) {
-            pure.emplace(block, stats);
-          }
-        } else if (const auto it = counts.find(block);
-                   it != counts.end() && holdsOnly(it->second, id)) {
-          pure.emplace(block, stats);
+      const auto pure = [&](const Coord& block) {
+        if (const MaterialCounts* own = restricted.find(block)) {
+          return holdsOnly(*own, id);
         }
-      }
-      levels_.emplace_back(depth, pure, fallbacks[id]);
+        const MaterialCounts* all = counts.find(block);
+        return all != nullptr && holdsOnly(*all, id);
+      };
+      levels_.emplace_back(depth, material, pure, fallbacks[id]);
     }
   }
 
@@ -507,27 +620,24 @@ class MaterialReference {
 
   /// Materials of `block` with a material segmentation; nullptr without or outside the material.
   [[nodiscard]] const MaterialCounts* countsOf(const Coord& block) const {
-    if (counts_ == nullptr) {
-      return nullptr;
-    }
-    const auto it = counts_->find(block);
-    return it == counts_->end() ? nullptr : &it->second;
+    return counts_ == nullptr ? nullptr : counts_->find(block);
   }
 
  private:
   const BlockDepth& depth_;
-  const std::map<Coord, MaterialCounts>* counts_ = nullptr;
+  const BlockTable<MaterialCounts>* counts_ = nullptr;
   std::vector<DepthLevels> levels_;  // all material, then per material id
 };
 
 /// Material voxels per block and the grey value per material of `materials`, which must have the
 /// dataset's dimensions.
 struct MaterialScan {
-  std::map<Coord, MaterialCounts> counts;
+  BlockTable<MaterialCounts> counts;
   std::array<double, kMaxMaterials + 1> mean{};  // grey value per material id
 };
 
-MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materials) {
+MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materials,
+                           const ProgressToken& progress) {
   const MaterialVolumeInfo& info = materials.info();
   if (info.dims != dataset.info().dims) {
     throw std::invalid_argument("The material volume does not have the dataset's dimensions");
@@ -539,52 +649,57 @@ MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materia
     }
   }
   struct Partial {
-    std::map<Coord, MaterialCounts> counts;
+    BlockTable<MaterialCounts> counts;
     std::array<double, kMaxMaterials + 1> sum{};
     std::array<double, kMaxMaterials + 1> n{};
   };
   tbb::combinable<Partial> partials;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
-    // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
-    tbb::this_task_arena::isolate([&] { materials.readRegion(box, ids); });
-    Partial brick_partial;
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      MaterialCounts counts{};
-      bool any = false;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const Coord c = it.getCoord();
-        const std::size_t id = ids[regionIndex(box, c)];
-        if (id == 0 || id > kMaxMaterials) {
-          continue;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
+        // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+        tbb::this_task_arena::isolate([&] { materials.readRegion(box, ids); });
+        Partial brick_partial;
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          MaterialCounts counts{};
+          bool any = false;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const Coord c = it.getCoord();
+            const std::size_t id = ids[regionIndex(box, c)];
+            if (id == 0 || id > kMaxMaterials) {
+              continue;
+            }
+            ++counts[id];
+            brick_partial.sum[id] += *it;
+            ++brick_partial.n[id];
+            any = true;
+          }
+          if (any) {
+            brick_partial.counts.add(blockOf(leaf->origin()), counts);
+          }
         }
-        ++counts[id];
-        brick_partial.sum[id] += *it;
-        ++brick_partial.n[id];
-        any = true;
-      }
-      if (any) {
-        brick_partial.counts.emplace(blockOf(leaf->origin()), counts);
-      }
-    }
-    Partial& local = partials.local();
-    local.counts.merge(brick_partial.counts);
-    for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
-      local.sum[id] += brick_partial.sum[id];
-      local.n[id] += brick_partial.n[id];
-    }
-  });
+        Partial& local = partials.local();
+        local.counts.append(brick_partial.counts);
+        for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
+          local.sum[id] += brick_partial.sum[id];
+          local.n[id] += brick_partial.n[id];
+        }
+      },
+      BrickSweep{.progress = progress});
   MaterialScan scan;
   std::array<double, kMaxMaterials + 1> sum{};
   std::array<double, kMaxMaterials + 1> n{};
   partials.combine_each([&](Partial& local) {
-    scan.counts.merge(local.counts);
+    scan.counts.append(local.counts);
+    local.counts = {};
     for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
       sum[id] += local.sum[id];
       n[id] += local.n[id];
     }
   });
+  scan.counts.sort();
   for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
     scan.mean[id] = n[id] > 0.0 ? sum[id] / n[id] : 0.0;
   }
@@ -680,18 +795,19 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   const double voxel_volume = info.voxel_size.volumeMm3();
 
   std::optional<TelemetryPhase> phase(std::in_place, "scan bricks");
-  const Scan scan = scanBricks(dataset);
+  const Scan scan = scanBricks(dataset, options.progress.part(0.0, 0.3));
   phase.reset();
   std::optional<MaterialScan> material_scan;
   if (options.materials != nullptr) {
     phase.emplace("materials");
-    material_scan = scanMaterials(dataset, *options.materials);
+    material_scan = scanMaterials(dataset, *options.materials, options.progress.part(0.3, 0.4));
     phase.reset();
   }
   phase.emplace("pores and zones");
-  std::map<Coord, int> outside;
   auto band = openvdb::BoolGrid::create(false);
-  const std::vector<std::vector<Coord>> components = internalComponents(scan, outside, *band);
+  options.progress.check();
+  Components components = internalComponents(scan, options.min_pore_voxels, *band);
+  options.progress.check();
   // Outside air below the threshold, before the band grows from it; with the removed voxels it
   // is the air around the part, whose surface the pores keep their distance to.
   const openvdb::BoolGrid::Ptr outside_air = band->deepCopy();
@@ -707,145 +823,139 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
 
   // Pore candidates and their one-voxel shells. Blocks they touch do not describe the material,
   // so they are left out of the material level; their zone deficit is computed without the shell.
-  result.pore_labels = openvdb::Int32Grid::create(0);
-  auto label_acc = result.pore_labels->getAccessor();
-  std::vector<const std::vector<Coord>*> kept;
-  for (const auto& component : components) {
-    if (static_cast<std::int64_t>(component.size()) >= options.min_pore_voxels) {
-      kept.push_back(&component);
-    }
-  }
-  std::vector<openvdb::BoolGrid::Ptr> shells(kept.size());
-  tbb::parallel_for(std::size_t{0}, kept.size(), [&](std::size_t i) {
-    auto shell = openvdb::BoolGrid::create(false);
-    auto shell_acc = shell->getAccessor();
-    for (const Coord& c : *kept[i]) {
-      shell_acc.setValueOn(c);
-    }
-    openvdb::tools::dilateActiveValues(shell->tree(), 1, openvdb::tools::NN_FACE_EDGE_VERTEX);
-    // Dilation prunes fully active leaves of large pores into tiles; iterate voxels, not tiles.
-    shell->tree().voxelizeActiveTiles();
-    shells[i] = shell;
-  });
+  result.pore_labels = components.labels;
+  result.pores = std::move(components.pores);
+  // The shells of all pores in one grid: the pore voxels dilated by one voxel. The shell of a
+  // pore is the voxels with one of its voxels in their 26-neighbourhood; shells of pores close
+  // together overlap. The inside of large pores stays tiles, which the dilation keeps.
   auto all_shells = openvdb::BoolGrid::create(false);
-  std::map<Coord, BlockStats> material_blocks = scan.blocks;
-  for (std::size_t i = 0; i < kept.size(); ++i) {
-    for (const Coord& c : *kept[i]) {
-      label_acc.setValue(c, static_cast<int>(i) + 1);
-    }
-    for (auto leaf = shells[i]->tree().cbeginLeaf(); leaf; ++leaf) {
-      // A block is one leaf, so a leaf of the shell marks its block.
-      if (!leaf->isEmpty()) {
-        material_blocks.erase(blockOf(leaf->origin()));
-      }
-    }
-    all_shells->tree().topologyUnion(shells[i]->tree());
-    DetectedPore pore;
-    pore.id = static_cast<int>(i) + 1;
-    pore.voxel_count = static_cast<std::int64_t>(kept[i]->size());
-    result.pores.push_back(pore);
+  all_shells->tree().topologyUnion(result.pore_labels->tree());
+  openvdb::tools::dilateActiveValues(all_shells->tree(), 1, openvdb::tools::NN_FACE_EDGE_VERTEX);
+  // A block is one cell of the shells; the blocks they touch do not describe the material.
+  const MaterialBlocks material_blocks{scan.mean->deepCopy(), scan.variance->deepCopy()};
+  {
+    auto mean_acc = material_blocks.mean->getAccessor();
+    auto variance_acc = material_blocks.variance->getAccessor();
+    forEachCell(all_shells->tree(), [&](const Coord& origin, const auto*) {
+      mean_acc.setValueOff(blockOf(origin));
+      variance_acc.setValueOff(blockOf(origin));
+    });
   }
 
   // Blocks at the surface or at a pore: sums over their voxels outside the pore shells, apart
   // for the surface band and the rest, in one more pass over the bricks.
-  std::set<Coord> restricted;
-  for (const auto& [block, unused] : scan.blocks) {
-    if (!material_blocks.contains(block) || touches_band(block)) {
-      restricted.insert(block);
+  auto restricted = openvdb::BoolGrid::create(false);
+  {
+    auto restricted_acc = restricted->getAccessor();
+    const auto material_acc = material_blocks.mean->getConstAccessor();
+    for (auto it = scan.mean->cbeginValueOn(); it; ++it) {
+      if (!material_acc.isValueOn(it.getCoord()) || touches_band(it.getCoord())) {
+        restricted_acc.setValueOn(it.getCoord());
+      }
     }
   }
-  tbb::combinable<std::map<Coord, BlockSums>> partial_sums;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    std::vector<std::uint8_t> ids;
-    if (options.materials != nullptr) {
-      ids.resize(static_cast<std::size_t>(box.voxelCount()));
-      // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
-      tbb::this_task_arena::isolate([&] { options.materials->readRegion(box, ids); });
-    }
-    std::map<Coord, BlockSums> brick_sums;
-    const auto band_in_brick = band->getConstAccessor();
-    const auto shells_in_brick = all_shells->getConstAccessor();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      const Coord block = blockOf(leaf->origin());
-      if (!restricted.contains(block)) {
-        continue;
-      }
-      BlockSums sums;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const Coord c = it.getCoord();
-        if (shells_in_brick.isValueOn(c)) {
-          continue;
+  tbb::combinable<BlockTable<BlockSums>> partial_sums;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        std::vector<std::uint8_t> ids;
+        if (options.materials != nullptr) {
+          ids.resize(static_cast<std::size_t>(box.voxelCount()));
+          // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+          tbb::this_task_arena::isolate([&] { options.materials->readRegion(box, ids); });
         }
-        const double value = *it;
-        if (band_in_brick.isValueOn(c)) {
-          sums.band_above_air += value - air;
-        } else {
-          sums.sum += value;
-          sums.sum_sq += value * value;
-          ++sums.count;
-          if (!ids.empty()) {
-            const std::size_t id = ids[regionIndex(box, c)];
-            if (id >= 1 && id <= kMaxMaterials) {
-              ++sums.materials[id];
+        BlockTable<BlockSums> brick_sums;
+        const auto band_in_brick = band->getConstAccessor();
+        const auto shells_in_brick = all_shells->getConstAccessor();
+        const auto restricted_in_brick = restricted->getConstAccessor();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          const Coord block = blockOf(leaf->origin());
+          if (!restricted_in_brick.isValueOn(block)) {
+            continue;
+          }
+          BlockSums sums;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const Coord c = it.getCoord();
+            if (shells_in_brick.isValueOn(c)) {
+              continue;
+            }
+            const double value = *it;
+            if (band_in_brick.isValueOn(c)) {
+              sums.band_above_air += value - air;
+            } else {
+              sums.sum += value;
+              sums.sum_sq += value * value;
+              ++sums.count;
+              if (!ids.empty()) {
+                const std::size_t id = ids[regionIndex(box, c)];
+                if (id >= 1 && id <= kMaxMaterials) {
+                  ++sums.materials[id];
+                }
+              }
             }
           }
+          brick_sums.add(block, sums);
         }
-      }
-      brick_sums[block] = sums;
-    }
-    partial_sums.local().merge(brick_sums);
-  });
-  std::map<Coord, BlockSums> block_sums;
-  partial_sums.combine_each([&](const std::map<Coord, BlockSums>& local) {
+        partial_sums.local().append(brick_sums);
+      },
+      BrickSweep{.progress = options.progress.part(0.4, 0.7)});
+  BlockTable<BlockSums> block_sums;
+  partial_sums.combine_each([&](BlockTable<BlockSums>& local) {
     // Bricks do not share blocks.
-    block_sums.insert(local.begin(), local.end());
+    block_sums.append(local);
+    local = {};
   });
+  block_sums.sort();
+  restricted = {};
 
   // Material blocks at the surface: statistics of the voxels outside the band only.
-  for (auto it = material_blocks.begin(); it != material_blocks.end();) {
-    const auto sums = block_sums.find(it->first);
-    if (sums == block_sums.end()) {
-      ++it;
-      continue;
+  {
+    auto mean_acc = material_blocks.mean->getAccessor();
+    auto variance_acc = material_blocks.variance->getAccessor();
+    for (const auto& [block, s] : block_sums) {
+      if (!mean_acc.isValueOn(block)) {
+        continue;
+      }
+      if (s.count < kBlockVoxels / 4) {
+        mean_acc.setValueOff(block);
+        variance_acc.setValueOff(block);
+        continue;
+      }
+      const double mean = s.sum / s.count;
+      mean_acc.setValue(block, static_cast<float>(mean));
+      variance_acc.setValue(block,
+                            static_cast<float>(std::max(0.0, s.sum_sq / s.count - mean * mean)));
     }
-    const BlockSums& s = sums->second;
-    if (s.count < kBlockVoxels / 4) {
-      it = material_blocks.erase(it);
-      continue;
-    }
-    const double mean = s.sum / s.count;
-    it->second = {static_cast<float>(mean),
-                  static_cast<float>(std::max(0.0, s.sum_sq / s.count - mean * mean))};
-    ++it;
   }
 
   std::vector<float> means;
   std::vector<float> variances;
-  for (const auto& [block, stats] : material_blocks) {
-    means.push_back(stats.mean);
-    variances.push_back(stats.variance);
+  for (auto it = material_blocks.mean->cbeginValueOn(); it; ++it) {
+    means.push_back(*it);
+  }
+  for (auto it = material_blocks.variance->cbeginValueOn(); it; ++it) {
+    variances.push_back(*it);
   }
   result.material_level = static_cast<float>(means.empty() ? info.threshold : median(means));
   result.noise_sigma = std::sqrt(median(variances));
-  const BlockDepth depth(scan, outside);
+  means = {};
+  variances = {};
+  const BlockDepth depth(scan, *components.outside);
   // The materials of the voxels outside the band and the pore shells, for the blocks restricted
   // to those.
-  std::map<Coord, MaterialCounts> restricted_materials;
+  BlockTable<MaterialCounts> restricted_materials;
   if (material_scan) {
     for (const auto& [block, sums] : block_sums) {
-      restricted_materials.emplace(block, sums.materials);
+      restricted_materials.add(block, sums.materials);
     }
+    restricted_materials.sort();
   }
-  const auto reference_counts = [&](const Coord& block) -> const MaterialCounts* {
-    const auto it = material_scan->counts.find(block);
-    return it == material_scan->counts.end() ? nullptr : &it->second;
-  };
   const auto materials_of = [&](const Coord& block) -> const MaterialCounts* {
-    if (const auto it = restricted_materials.find(block); it != restricted_materials.end()) {
-      return &it->second;
+    if (const MaterialCounts* own = restricted_materials.find(block)) {
+      return own;
     }
-    return material_scan ? reference_counts(block) : nullptr;
+    return material_scan ? material_scan->counts.find(block) : nullptr;
   };
   const MaterialReference reference =
       material_scan
@@ -855,91 +965,151 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   if (material_scan) {
     for (const Material& material : options.materials->info().materials) {
       std::vector<float> pure;
-      for (const auto& [block, stats] : material_blocks) {
+      material_blocks.forEach([&](const Coord& block, float mean) {
         if (const MaterialCounts* counts = materials_of(block);
             counts != nullptr && holdsOnly(*counts, static_cast<std::size_t>(material.id))) {
-          pure.push_back(stats.mean);
+          pure.push_back(mean);
         }
-      }
+      });
       result.material_levels[material.id] = static_cast<float>(
           pure.empty() ? material_scan->mean[static_cast<std::size_t>(material.id)]
                        : median(std::move(pure)));
     }
   }
 
-  // Pore volumes from the grey values of the pore and its shell.
-  std::vector<openvdb::BoolGrid::Ptr> boundaries(result.pores.size());
-  tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
-    DetectedPore& pore = result.pores[i];
-    Dataset::Sampler grey(dataset, 0);
-    const auto labels = result.pore_labels->getConstAccessor();
+  // Pore volumes from the grey values of the pore and its shell: each cell of the shells sums its
+  // voxels per pore, and the sums of the cells are added up in cell order, so the result does
+  // not depend on the threads. Cells go a chunk at a time, so their sums stay bounded.
+  struct PoreSums {
     double void_sum = 0.0;
     double weight_sum = 0.0;
     std::array<double, 3> weighted{};
     std::array<double, 3> lo{1e18, 1e18, 1e18};
     std::array<double, 3> hi{-1e18, -1e18, -1e18};
-    for (auto it = shells[i]->cbeginValueOn(); it; ++it) {
-      const Coord c = it.getCoord();
-      const auto p = toArray(c);
-      const double material = reference.at(c);
-      const auto value = grey({c.x(), c.y(), c.z()});
-      // Voxels outside the kept region are air.
-      const double fraction = value ? (material - *value) / (material - air) : 1.0;
-      void_sum += fraction;
-      const double weight = std::clamp(fraction, 0.0, 1.0);
-      weight_sum += weight;
-      for (std::size_t a = 0; a < 3; ++a) {
-        weighted[a] += weight * p[a];
-        if (labels.getValue(c) == pore.id) {
-          lo[a] = std::min(lo[a], p[a]);
-          hi[a] = std::max(hi[a], p[a]);
-        }
-      }
-    }
-    pore.volume_mm3 = std::max(0.0, void_sum) * voxel_volume;
-    for (std::size_t a = 0; a < 3; ++a) {
-      pore.center_voxels[a] = weight_sum > 0.0 ? weighted[a] / weight_sum : 0.0;
-    }
-    pore.bounds = boundsOf(lo, hi);
-    pore.equivalent_diameter_mm = std::cbrt(6.0 * pore.volume_mm3 / std::numbers::pi);
-
-    // Shape (BDG P 203): the voxels below the threshold with a face to the rest, their enclosing
-    // sphere and their surface.
-    auto boundary = openvdb::BoolGrid::create(false);
-    auto boundary_acc = boundary->getAccessor();
-    std::vector<std::array<double, 3>> points;
-    double faces_mm2 = 0.0;
-    for (const Coord& c : *kept[i]) {
-      bool on_boundary = false;
-      for (std::size_t f = 0; f < face_neighbours.size(); ++f) {
-        if (labels.getValue(c + face_neighbours[f]) != pore.id) {
-          on_boundary = true;
-          const std::size_t axis = f / 2;
-          faces_mm2 += voxel_volume / info.voxel_size[axis];
-        }
-      }
-      if (on_boundary) {
-        boundary_acc.setValueOn(c);
-        points.push_back(info.voxel_size.toMm(toArray(c)));
-      }
-    }
-    const double pitch = (info.voxel_size[0] + info.voxel_size[1] + info.voxel_size[2]) / 3.0;
-    pore.enclosing_diameter_mm = 2.0 * detail::enclosingSphere(points).radius + pitch;
-    // A voxelized surface has |nx| + |ny| + |nz| times the area of the smooth one, 3/2 on average
-    // over all directions.
-    pore.surface_area_mm2 = faces_mm2 * 2.0 / 3.0;
-    const double voxels_volume = static_cast<double>(pore.voxel_count) * voxel_volume;
-    pore.sphericity =
-        std::min(1.0, std::cbrt(std::numbers::pi) * std::pow(6.0 * voxels_volume, 2.0 / 3.0) /
-                          pore.surface_area_mm2);
-    boundaries[i] = boundary;
+  };
+  using ShellLeaf = openvdb::BoolTree::LeafNodeType;
+  std::vector<std::pair<Coord, const ShellLeaf*>> shell_cells;
+  forEachCell(all_shells->tree(), [&](const Coord& origin, const ShellLeaf* leaf) {
+    shell_cells.emplace_back(origin, leaf);
   });
+  std::vector<PoreSums> pore_sums(result.pores.size());
+  std::vector<std::vector<std::pair<int, PoreSums>>> cell_sums;
+  constexpr std::size_t kShellChunk = std::size_t{1} << 14U;
+  for (std::size_t begin = 0; begin < shell_cells.size(); begin += kShellChunk) {
+    const std::size_t end = std::min(shell_cells.size(), begin + kShellChunk);
+    cell_sums.clear();
+    cell_sums.resize(end - begin);
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(begin, end), [&](const auto& range) {
+      Dataset::Sampler grey(dataset, 0);
+      auto labels = result.pore_labels->getConstAccessor();
+      // The pore whose tile holds the whole cell, or 0.
+      const auto tile_label = [&](const Coord& origin) {
+        return labels.probeConstLeaf(origin) == nullptr && labels.isValueOn(origin)
+                   ? labels.getValue(origin)
+                   : 0;
+      };
+      for (std::size_t l = range.begin(); l != range.end(); ++l) {
+        const auto& [origin, leaf] = shell_cells[l];
+        std::vector<std::pair<int, PoreSums>>& sums = cell_sums[l - begin];
+        // Inside a large pore: the cell and its 26 neighbours lie in one tile of labels, so every
+        // voxel is in the shell of that pore only.
+        int inner = leaf == nullptr ? tile_label(origin) : 0;
+        for (int dz = -1; dz <= 1 && inner > 0; ++dz) {
+          for (int dy = -1; dy <= 1 && inner > 0; ++dy) {
+            for (int dx = -1; dx <= 1 && inner > 0; ++dx) {
+              if (tile_label(origin.offsetBy(dx * kBlock, dy * kBlock, dz * kBlock)) != inner) {
+                inner = 0;
+              }
+            }
+          }
+        }
+        const auto add = [&](const Coord& c, std::span<const int> near, int own) {
+          const auto p = toArray(c);
+          const double material = reference.at(c);
+          const auto value = grey({c.x(), c.y(), c.z()});
+          // Voxels outside the kept region are air.
+          const double fraction = value ? (material - *value) / (material - air) : 1.0;
+          const double weight = std::clamp(fraction, 0.0, 1.0);
+          for (const int label : near) {
+            auto entry = std::find_if(sums.begin(), sums.end(),
+                                      [&](const auto& s) { return s.first == label; });
+            if (entry == sums.end()) {
+              entry = sums.insert(sums.end(), {label, PoreSums{}});
+            }
+            PoreSums& s = entry->second;
+            s.void_sum += fraction;
+            s.weight_sum += weight;
+            for (std::size_t a = 0; a < 3; ++a) {
+              s.weighted[a] += weight * p[a];
+              if (own == label) {
+                s.lo[a] = std::min(s.lo[a], p[a]);
+                s.hi[a] = std::max(s.hi[a], p[a]);
+              }
+            }
+          }
+        };
+        for (openvdb::Index pos = 0; pos < ShellLeaf::SIZE; ++pos) {
+          if (leaf != nullptr && !leaf->isValueOn(pos)) {
+            continue;
+          }
+          const Coord c = origin + ShellLeaf::offsetToLocalCoord(pos);
+          if (inner > 0) {
+            add(c, std::span(&inner, 1), inner);
+            continue;
+          }
+          // The pores this voxel is in the shell of.
+          std::array<int, 27> near{};
+          std::size_t n_near = 0;
+          for (int dz = -1; dz <= 1; ++dz) {
+            for (int dy = -1; dy <= 1; ++dy) {
+              for (int dx = -1; dx <= 1; ++dx) {
+                const int label = labels.getValue(c.offsetBy(dx, dy, dz));
+                const std::span<const int> seen = std::span(near).first(n_near);
+                if (label > 0 && std::ranges::find(seen, label) == seen.end()) {
+                  near[n_near++] = label;
+                }
+              }
+            }
+          }
+          add(c, std::span(near).first(n_near), labels.getValue(c));
+        }
+      }
+    });
+    for (const auto& sums : cell_sums) {
+      for (const auto& [label, s] : sums) {
+        PoreSums& total = pore_sums[static_cast<std::size_t>(label - 1)];
+        total.void_sum += s.void_sum;
+        total.weight_sum += s.weight_sum;
+        for (std::size_t a = 0; a < 3; ++a) {
+          total.weighted[a] += s.weighted[a];
+          total.lo[a] = std::min(total.lo[a], s.lo[a]);
+          total.hi[a] = std::max(total.hi[a], s.hi[a]);
+        }
+      }
+    }
+  }
+  cell_sums = {};
+  shell_cells = {};
+  all_shells = {};
+  for (std::size_t i = 0; i < result.pores.size(); ++i) {
+    DetectedPore& pore = result.pores[i];
+    const PoreSums& s = pore_sums[i];
+    pore.volume_mm3 = std::max(0.0, s.void_sum) * voxel_volume;
+    for (std::size_t a = 0; a < 3; ++a) {
+      pore.center_voxels[a] = s.weight_sum > 0.0 ? s.weighted[a] / s.weight_sum : 0.0;
+    }
+    pore.bounds = boundsOf(s.lo, s.hi);
+    pore.equivalent_diameter_mm = std::cbrt(6.0 * pore.volume_mm3 / std::numbers::pi);
+  }
 
   // Zones: blocks whose mean lies clearly below the local material level.
-  std::map<Coord, double> deficits;
+  // Deficit per block at block resolution, active for the blocks it was computed for.
+  auto deficits = openvdb::DoubleGrid::create(0.0);
+  auto deficit_acc = deficits->getAccessor();
   auto flagged = openvdb::BoolGrid::create(false);
   auto flagged_acc = flagged->getAccessor();
-  for (const auto& [block, stats] : scan.blocks) {
+  for (auto block_it = scan.mean->cbeginValueOn(); block_it; ++block_it) {
+    const Coord block = block_it.getCoord();
     const Coord block_origin(block.x() * kBlock, block.y() * kBlock, block.z() * kBlock);
     const MaterialCounts* materials = material_scan ? materials_of(block) : nullptr;
     const double material = reference.at(block_origin, materials);
@@ -947,14 +1117,14 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     if (contrast <= 0.0) {
       continue;
     }
-    double deficit = (material - stats.mean) / contrast;
+    double deficit = (material - *block_it) / contrast;
     int counted = kBlockVoxels;
-    if (const auto sums = block_sums.find(block); sums != block_sums.end()) {
+    if (const BlockSums* sums = block_sums.find(block)) {
       // The pore's own voids are in its volume already: sum the other voxels only. The surface
       // band is darkened by the air outside, so its voids cannot be told from its grey values;
       // they are taken at the void fraction of the rest of the block, over the band's share of
       // the part (its grey values above air, which the voids lower by that same fraction).
-      const BlockSums& s = sums->second;
+      const BlockSums& s = *sums;
       counted = s.count;
       if (counted < kBlockVoxels / 4) {
         continue;
@@ -965,7 +1135,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
       // Void fraction of the whole block.
       deficit = (sum + void_fraction * band_part) / kBlockVoxels;
     }
-    deficits[block] = deficit;
+    deficit_acc.setValue(block, deficit);
     const double n = counted;
     // Noise of the block mean, and with several materials the variation of the materials
     // themselves beyond that noise: the fibre content of a fibre bundle varies from block to
@@ -1012,11 +1182,10 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     // The deficit of a one-block rim counts too: the zone fades out below the detection limit.
     std::map<Coord, double> counted;
     for (const Coord& c : members) {
-      counted[c] = deficits[c];
+      counted[c] = deficit_acc.getValue(c);
       for (const Coord& d : neighbours26()) {
-        if (const auto rim = deficits.find(c + d);
-            rim != deficits.end() && !flagged_acc.isValueOn(c + d)) {
-          counted[c + d] = rim->second;
+        if (deficit_acc.isValueOn(c + d) && !flagged_acc.isValueOn(c + d)) {
+          counted[c + d] = deficit_acc.getValue(c + d);
         }
       }
     }
@@ -1026,9 +1195,8 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     for (const auto& [block, unused] : counted) {
       for (const Coord& d : neighbours26()) {
         const Coord n = block + d;
-        if (const auto found = deficits.find(n);
-            found != deficits.end() && !counted.contains(n) && !flagged_acc.isValueOn(n)) {
-          outer.push_back(static_cast<float>(found->second));
+        if (deficit_acc.isValueOn(n) && !counted.contains(n) && !flagged_acc.isValueOn(n)) {
+          outer.push_back(static_cast<float>(deficit_acc.getValue(n)));
         }
       }
     }
@@ -1054,7 +1222,7 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     std::array<double, 3> lo{1e18, 1e18, 1e18};
     std::array<double, 3> hi{-1e18, -1e18, -1e18};
     for (const Coord& c : members) {
-      zone_acc.setValue(c, static_cast<float>(deficits[c]));
+      zone_acc.setValue(c, static_cast<float>(deficit_acc.getValue(c)));
       for (std::size_t a = 0; a < 3; ++a) {
         lo[a] = std::min(lo[a], toArray(c)[a] * kBlock);
         hi[a] = std::max(hi[a], toArray(c)[a] * kBlock + kBlock - 1);
@@ -1078,57 +1246,63 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   tbb::combinable<openvdb::BoolGrid::Ptr> surface_grids(
       [] { return openvdb::BoolGrid::create(false); });
   const auto at_surface = [&](const Coord& block) {
-    if (!scan.solid.contains(block) || outside.contains(block)) {
-      return true;
-    }
-    return std::any_of(face_neighbours.begin(), face_neighbours.end(), [&](const Coord& d) {
-      return !scan.solid.contains(block + d) || outside.contains(block + d);
-    });
-  };
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    double sum = 0.0;
-    const Box box = dataset.brickBox(0, brick);
-    const auto acc = grid.getConstAccessor();
-    const auto air_acc = outside_air->getConstAccessor();
-    Dataset::Sampler neighbours(dataset, 0);
-    const auto is_air = [&](const Coord& c) {
-      const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] &&
-                                c.y() < box.max[1] && c.z() >= box.min[2] && c.z() < box.max[2];
-      const bool active =
-          inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
-      return !active || air_acc.isValueOn(c);
+    const auto active = scan.active->getConstAccessor();
+    const auto outside = components.outside->getConstAccessor();
+    const auto open = [&](const Coord& b) {
+      return active.getValue(b) < kBlockVoxels || outside.isValueOn(b);
     };
-    auto surface = openvdb::BoolGrid::create(false);
-    auto surface_acc = surface->getAccessor();
-    auto material_acc = material_grids.local()->getAccessor();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      if (at_surface(blockOf(leaf->origin()))) {
-        for (auto it = leaf->cbeginValueOn(); it; ++it) {
-          const Coord c = it.getCoord();
-          if (air_acc.isValueOn(c)) {
-            continue;
-          }
-          for (const Coord& d : face_neighbours) {
-            if (is_air(c + d)) {
-              surface_acc.setValueOn(c + d);
+    return open(block) || std::any_of(face_neighbours.begin(), face_neighbours.end(),
+                                      [&](const Coord& d) { return open(block + d); });
+  };
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        double sum = 0.0;
+        const Box box = dataset.brickBox(0, brick);
+        const auto acc = grid.getConstAccessor();
+        const auto air_acc = outside_air->getConstAccessor();
+        Dataset::Sampler neighbours(dataset, 0);
+        const auto is_air = [&](const Coord& c) {
+          const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] &&
+                                    c.y() >= box.min[1] && c.y() < box.max[1] &&
+                                    c.z() >= box.min[2] && c.z() < box.max[2];
+          const bool active =
+              inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
+          return !active || air_acc.isValueOn(c);
+        };
+        auto surface = openvdb::BoolGrid::create(false);
+        auto surface_acc = surface->getAccessor();
+        auto material_acc = material_grids.local()->getAccessor();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          if (at_surface(blockOf(leaf->origin()))) {
+            for (auto it = leaf->cbeginValueOn(); it; ++it) {
+              const Coord c = it.getCoord();
+              if (air_acc.isValueOn(c)) {
+                continue;
+              }
+              for (const Coord& d : face_neighbours) {
+                if (is_air(c + d)) {
+                  surface_acc.setValueOn(c + d);
+                }
+              }
             }
           }
+          const double contrast = reference.at(leaf->origin()) - air;
+          double leaf_sum = 0.0;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            leaf_sum += *it - air;
+          }
+          sum += leaf_sum / contrast;
+          material_acc.setValue(blockOf(leaf->origin()),
+                                static_cast<float>(leaf_sum / contrast * voxel_volume));
         }
-      }
-      const double contrast = reference.at(leaf->origin()) - air;
-      double leaf_sum = 0.0;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        leaf_sum += *it - air;
-      }
-      sum += leaf_sum / contrast;
-      material_acc.setValue(blockOf(leaf->origin()),
-                            static_cast<float>(leaf_sum / contrast * voxel_volume));
-    }
-    material_fractions.local() += sum;
-    // topologyUnion runs TBB tasks; isolated, this thread cannot pick up another brick meanwhile.
-    tbb::this_task_arena::isolate(
-        [&] { surface_grids.local()->tree().topologyUnion(surface->tree()); });
-  });
+        material_fractions.local() += sum;
+        // topologyUnion runs TBB tasks; isolated, this thread cannot pick up another brick
+        // meanwhile.
+        tbb::this_task_arena::isolate(
+            [&] { surface_grids.local()->tree().topologyUnion(surface->tree()); });
+      },
+      BrickSweep{.halo = 1, .progress = options.progress.part(0.7, 0.9)});
   result.material_blocks = openvdb::FloatGrid::create(0.0F);
   material_grids.combine_each([&](const openvdb::FloatGrid::Ptr& grid) {
     // Bricks do not share blocks, so the per-thread grids are disjoint.
@@ -1137,12 +1311,95 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   auto surface = openvdb::BoolGrid::create(false);
   surface_grids.combine_each(
       [&](const openvdb::BoolGrid::Ptr& grid) { surface->tree().topologyUnion(grid->tree()); });
+  surface_grids.clear();
+  components.outside = {};
   phase.reset();
-  phase.emplace("surface distance");
+
+  // Shape (BDG P 203), one pore at a time from the labels inside its bounds: the voxels below
+  // the threshold with a face to the rest, their surface, their enclosing sphere and their
+  // distance to the outer surface. Only voxels that could be corners of the convex hull (pore
+  // neighbours on both sides along no axis) enter the sphere, which is the same for them, so a
+  // large pore keeps few points instead of its whole surface.
+  phase.emplace("pore shape");
+  const ProgressToken shape_progress = options.progress.part(0.9, 1.0);
+  using LabelLeaf = openvdb::Int32Tree::LeafNodeType;
+  const double pitch = (info.voxel_size[0] + info.voxel_size[1] + info.voxel_size[2]) / 3.0;
   tbb::parallel_for(std::size_t{0}, result.pores.size(), [&](std::size_t i) {
-    const double gap = detail::maskGapMm(boundaries[i]->tree(), surface->tree(), info.voxel_size);
-    result.pores[i].surface_distance_mm =
-        std::isfinite(gap) ? gap : std::numeric_limits<double>::quiet_NaN();
+    shape_progress.check();
+    DetectedPore& pore = result.pores[i];
+    const int id = pore.id;
+    auto labels = result.pore_labels->getConstAccessor();
+    const auto tile_label = [&](const Coord& origin) {
+      return labels.probeConstLeaf(origin) == nullptr && labels.isValueOn(origin)
+                 ? labels.getValue(origin)
+                 : 0;
+    };
+    // A cell with a voxel of the pore that could lie on its boundary.
+    const auto holds_boundary = [&](const Coord& origin) {
+      if (const LabelLeaf* leaf = labels.probeConstLeaf(origin)) {
+        for (auto it = leaf->cbeginValueOn(); it; ++it) {
+          if (*it == id) {
+            return true;
+          }
+        }
+        return false;
+      }
+      return tile_label(origin) == id &&
+             std::any_of(face_neighbours.begin(), face_neighbours.end(), [&](const Coord& d) {
+               return tile_label(origin.offsetBy(d.x() * kBlock, d.y() * kBlock, d.z() * kBlock)) !=
+                      id;
+             });
+    };
+    auto boundary = openvdb::BoolGrid::create(false);
+    auto boundary_acc = boundary->getAccessor();
+    std::vector<std::array<double, 3>> points;
+    std::array<std::int64_t, 3> faces{};
+    const auto first = [](std::int64_t v) { return v - (((v % kBlock) + kBlock) % kBlock); };
+    for (std::int64_t z = first(pore.bounds.min[2]); z < pore.bounds.max[2]; z += kBlock) {
+      for (std::int64_t y = first(pore.bounds.min[1]); y < pore.bounds.max[1]; y += kBlock) {
+        for (std::int64_t x = first(pore.bounds.min[0]); x < pore.bounds.max[0]; x += kBlock) {
+          const Coord origin(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
+          if (!holds_boundary(origin)) {
+            continue;
+          }
+          for (openvdb::Index pos = 0; pos < LabelLeaf::SIZE; ++pos) {
+            const Coord c = origin + LabelLeaf::offsetToLocalCoord(pos);
+            if (labels.getValue(c) != id) {
+              continue;
+            }
+            std::array<bool, 6> in_pore{};
+            for (std::size_t f = 0; f < face_neighbours.size(); ++f) {
+              in_pore.at(f) = labels.getValue(c + face_neighbours.at(f)) == id;
+              if (!in_pore.at(f)) {
+                ++faces.at(f / 2);
+              }
+            }
+            if (std::all_of(in_pore.begin(), in_pore.end(), [](bool b) { return b; })) {
+              continue;
+            }
+            boundary_acc.setValueOn(c);
+            if (!(in_pore[0] && in_pore[1]) && !(in_pore[2] && in_pore[3]) &&
+                !(in_pore[4] && in_pore[5])) {
+              points.push_back(info.voxel_size.toMm(toArray(c)));
+            }
+          }
+        }
+      }
+    }
+    double faces_mm2 = 0.0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      faces_mm2 += static_cast<double>(faces.at(axis)) * voxel_volume / info.voxel_size[axis];
+    }
+    pore.enclosing_diameter_mm = 2.0 * detail::enclosingSphere(points).radius + pitch;
+    // A voxelized surface has |nx| + |ny| + |nz| times the area of the smooth one, 3/2 on average
+    // over all directions.
+    pore.surface_area_mm2 = faces_mm2 * 2.0 / 3.0;
+    const double voxels_volume = static_cast<double>(pore.voxel_count) * voxel_volume;
+    pore.sphericity =
+        std::min(1.0, std::cbrt(std::numbers::pi) * std::pow(6.0 * voxels_volume, 2.0 / 3.0) /
+                          pore.surface_area_mm2);
+    const double gap = detail::maskGapMm(boundary->tree(), surface->tree(), info.voxel_size);
+    pore.surface_distance_mm = std::isfinite(gap) ? gap : std::numeric_limits<double>::quiet_NaN();
   });
   const double material_fraction_sum = material_fractions.combine(std::plus<>());
   result.part_volume_mm3 =
@@ -1168,39 +1425,77 @@ double numberOrNan(const nlohmann::json& item, const char* key) {
                                              : std::numeric_limits<double>::quiet_NaN();
 }
 
+nlohmann::json poreJson(const DetectedPore& pore, const VoxelSize& v) {
+  return {{"id", pore.id},
+          {"voxel_count", pore.voxel_count},
+          {"volume_mm3", pore.volume_mm3},
+          {"equivalent_diameter_mm", pore.equivalent_diameter_mm},
+          {"enclosing_diameter_mm", finiteOrNull(pore.enclosing_diameter_mm)},
+          {"surface_area_mm2", finiteOrNull(pore.surface_area_mm2)},
+          {"sphericity", finiteOrNull(pore.sphericity)},
+          {"compactness", finiteOrNull(pore.compactness())},
+          {"surface_distance_mm", finiteOrNull(pore.surface_distance_mm)},
+          {"center_voxels", pore.center_voxels},
+          {"center_mm", v.toMm(pore.center_voxels)},
+          {"bounds_min", pore.bounds.min},
+          {"bounds_max", pore.bounds.max}};
+}
+
+nlohmann::json zoneJson(const PorosityZone& zone, const VoxelSize& v) {
+  return {{"id", zone.id},
+          {"block_count", zone.block_count},
+          {"volume_mm3", zone.volume_mm3},
+          {"void_volume_mm3", zone.void_volume_mm3},
+          {"porosity", zone.porosity()},
+          {"center_voxels", zone.center_voxels},
+          {"center_mm", v.toMm(zone.center_voxels)},
+          {"bounds_min", zone.bounds.min},
+          {"bounds_max", zone.bounds.max}};
+}
+
+/// Everything of `toJson` but the pores and zones.
+nlohmann::json summaryJson(const PorosityResult& result);
+
 }  // namespace
 
 nlohmann::json toJson(const PorosityResult& result) {
-  const VoxelSize& v = result.voxel_size;
-  const auto mm = [&v](const std::array<double, 3>& voxels) { return v.toMm(voxels); };
-  nlohmann::json pores = nlohmann::json::array();
+  nlohmann::json json = summaryJson(result);
+  nlohmann::json& pores = json["pores"] = nlohmann::json::array();
   for (const DetectedPore& pore : result.pores) {
-    pores.push_back({{"id", pore.id},
-                     {"voxel_count", pore.voxel_count},
-                     {"volume_mm3", pore.volume_mm3},
-                     {"equivalent_diameter_mm", pore.equivalent_diameter_mm},
-                     {"enclosing_diameter_mm", finiteOrNull(pore.enclosing_diameter_mm)},
-                     {"surface_area_mm2", finiteOrNull(pore.surface_area_mm2)},
-                     {"sphericity", finiteOrNull(pore.sphericity)},
-                     {"compactness", finiteOrNull(pore.compactness())},
-                     {"surface_distance_mm", finiteOrNull(pore.surface_distance_mm)},
-                     {"center_voxels", pore.center_voxels},
-                     {"center_mm", mm(pore.center_voxels)},
-                     {"bounds_min", pore.bounds.min},
-                     {"bounds_max", pore.bounds.max}});
+    pores.push_back(poreJson(pore, result.voxel_size));
   }
-  nlohmann::json zones = nlohmann::json::array();
+  nlohmann::json& zones = json["zones"] = nlohmann::json::array();
   for (const PorosityZone& zone : result.zones) {
-    zones.push_back({{"id", zone.id},
-                     {"block_count", zone.block_count},
-                     {"volume_mm3", zone.volume_mm3},
-                     {"void_volume_mm3", zone.void_volume_mm3},
-                     {"porosity", zone.porosity()},
-                     {"center_voxels", zone.center_voxels},
-                     {"center_mm", mm(zone.center_voxels)},
-                     {"bounds_min", zone.bounds.min},
-                     {"bounds_max", zone.bounds.max}});
+    zones.push_back(zoneJson(zone, result.voxel_size));
   }
+  return json;
+}
+
+void writePorosityJson(const PorosityResult& result, const std::filesystem::path& path) {
+  // One pore at a time: a document of 10^7 pores would take some 18 GB as a JSON tree.
+  writeFile(path, [&](std::ostream& out) {
+    out << "{\n";
+    const nlohmann::json summary = summaryJson(result);
+    for (const auto& [key, value] : summary.items()) {
+      out << "  " << nlohmann::json(key).dump() << ": " << value.dump() << ",\n";
+    }
+    const auto list = [&](const char* name, const auto& items, const auto& to_json, bool last) {
+      out << "  \"" << name << "\": [";
+      for (std::size_t i = 0; i < items.size(); ++i) {
+        out << (i == 0 ? "\n    " : ",\n    ") << to_json(items[i], result.voxel_size).dump();
+      }
+      out << (items.empty() ? "]" : "\n  ]") << (last ? "\n" : ",\n");
+    };
+    list("pores", result.pores, poreJson, false);
+    list("zones", result.zones, zoneJson, true);
+    out << "}\n";
+  });
+}
+
+namespace {
+
+nlohmann::json summaryJson(const PorosityResult& result) {
+  const VoxelSize& v = result.voxel_size;
   nlohmann::json material_levels = nlohmann::json::array();
   for (const auto& [id, level] : result.material_levels) {
     material_levels.push_back({{"id", id}, {"level", level}});
@@ -1213,10 +1508,10 @@ nlohmann::json toJson(const PorosityResult& result) {
           {"part_volume_mm3", result.part_volume_mm3},
           {"pore_volume_mm3", result.poreVolumeMm3()},
           {"zone_void_volume_mm3", result.zoneVoidVolumeMm3()},
-          {"porosity", result.porosity()},
-          {"pores", pores},
-          {"zones", zones}};
+          {"porosity", result.porosity()}};
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------------------------
 // Display.
@@ -1312,6 +1607,7 @@ openvdb::math::Transform::Ptr levelZeroTransform(const VoxelSize& voxel_size) {
 
 void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
                          const std::filesystem::path& dir, std::int64_t max_pixels) {
+  const TelemetryPhase phase("images");
   std::filesystem::create_directories(dir);
   const Index3 dims = dataset.info().dims;
   const double air = result.air_level;
@@ -1342,14 +1638,33 @@ void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
     }
   });
 
-  std::array<Projection, 3> pores{Projection(0, dims, max_pixels), Projection(1, dims, max_pixels),
-                                  Projection(2, dims, max_pixels)};
+  auto pores = projections();
   if (result.pore_labels) {
-    for (auto it = result.pore_labels->cbeginValueOn(); it; ++it) {
-      for (auto& p : pores) {
-        p.add(it.getCoord(), 1.0);
+    using LabelLeaf = openvdb::Int32Tree::LeafNodeType;
+    std::vector<std::pair<Coord, const LabelLeaf*>> cells;
+    forEachCell(result.pore_labels->tree(), [&](const Coord& origin, const LabelLeaf* leaf) {
+      cells.emplace_back(origin, leaf);
+    });
+    tbb::combinable<std::array<Projection, 3>> partial_pores(projections);
+    tbb::parallel_for(std::size_t{0}, cells.size(), [&](std::size_t i) {
+      auto& local = partial_pores.local();
+      const auto& [origin, leaf] = cells[i];
+      for (openvdb::Index pos = 0; pos < LabelLeaf::SIZE; ++pos) {
+        if (leaf == nullptr || leaf->isValueOn(pos)) {
+          const Coord c = origin + LabelLeaf::offsetToLocalCoord(pos);
+          for (auto& p : local) {
+            p.add(c, 1.0);
+          }
+        }
       }
-    }
+    });
+    partial_pores.combine_each([&](const std::array<Projection, 3>& local) {
+      for (std::size_t a = 0; a < 3; ++a) {
+        for (std::size_t i = 0; i < pores[a].values.size(); ++i) {
+          pores[a].values[i] += local[a].values[i];
+        }
+      }
+    });
   }
   std::array<Projection, 3> zones{Projection(0, dims, max_pixels), Projection(1, dims, max_pixels),
                                   Projection(2, dims, max_pixels)};
@@ -1379,17 +1694,44 @@ void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
 
 void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
                       const std::filesystem::path& file) {
+  const TelemetryPhase phase("vdb");
   const double air = result.air_level;
   const double contrast = std::max(1.0, static_cast<double>(result.material_level) - air);
   auto pores = openvdb::FloatGrid::create(0.0F);
-  auto pore_acc = pores->getAccessor();
   if (result.pore_labels) {
-    Dataset::Sampler grey(dataset, 0);
-    for (auto it = result.pore_labels->cbeginValueOn(); it; ++it) {
-      const Coord c = it.getCoord();
-      const auto value = grey({c.x(), c.y(), c.z()});
-      const double fraction = value ? (result.material_level - *value) / contrast : 1.0;
-      pore_acc.setValue(c, static_cast<float>(std::clamp(fraction, 0.0, 1.0)));
+    // Leaves of void fractions built in parallel, a chunk at a time, and added in order.
+    using LabelLeaf = openvdb::Int32Tree::LeafNodeType;
+    using FloatLeaf = openvdb::FloatTree::LeafNodeType;
+    std::vector<std::pair<Coord, const LabelLeaf*>> cells;
+    forEachCell(result.pore_labels->tree(), [&](const Coord& origin, const LabelLeaf* leaf) {
+      cells.emplace_back(origin, leaf);
+    });
+    constexpr std::size_t kChunk = std::size_t{1} << 14U;
+    std::vector<std::unique_ptr<FloatLeaf>> leaves;
+    for (std::size_t begin = 0; begin < cells.size(); begin += kChunk) {
+      const std::size_t end = std::min(cells.size(), begin + kChunk);
+      leaves.clear();
+      leaves.resize(end - begin);
+      tbb::parallel_for(tbb::blocked_range<std::size_t>(begin, end), [&](const auto& range) {
+        Dataset::Sampler grey(dataset, 0);
+        for (std::size_t i = range.begin(); i != range.end(); ++i) {
+          const auto& [origin, leaf] = cells[i];
+          auto out = std::make_unique<FloatLeaf>(origin, 0.0F, false);
+          for (openvdb::Index pos = 0; pos < FloatLeaf::SIZE; ++pos) {
+            if (leaf != nullptr && !leaf->isValueOn(pos)) {
+              continue;
+            }
+            const Coord c = origin + FloatLeaf::offsetToLocalCoord(pos);
+            const auto value = grey({c.x(), c.y(), c.z()});
+            const double fraction = value ? (result.material_level - *value) / contrast : 1.0;
+            out->setValueOn(pos, static_cast<float>(std::clamp(fraction, 0.0, 1.0)));
+          }
+          leaves[i - begin] = std::move(out);
+        }
+      });
+      for (auto& leaf : leaves) {
+        pores->tree().addLeaf(leaf.release());
+      }
     }
   }
   auto zones = openvdb::FloatGrid::create(0.0F);
@@ -1411,11 +1753,11 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
 
 void savePorosityResult(const PorosityResult& result, const std::filesystem::path& dir) {
   std::filesystem::create_directories(dir);
-  writeJson(dir / "porosity.json", toJson(result));
+  writePorosityJson(result, dir / "porosity.json");
   openvdb::GridPtrVec grids;
   const auto add = [&grids](const openvdb::GridBase::Ptr& grid, const char* name) {
     if (grid) {
-      auto copy = grid->deepCopyGrid();
+      auto copy = grid->copyGrid();  // shares the tree; only the name differs
       copy->setName(name);
       grids.push_back(copy);
     }
@@ -1433,17 +1775,10 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
   if (!in) {
     throw std::runtime_error("No porosity result in " + dir.string());
   }
-  const nlohmann::json json = nlohmann::json::parse(in);
+  // Pores and zones are taken over as they are parsed and dropped from the document: as a JSON
+  // tree, 10^7 pores would take some 18 GB.
   PorosityResult result;
-  result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
-  result.air_level = json.at("air_level").get<float>();
-  result.material_level = json.at("material_level").get<float>();
-  for (const auto& level : json.value("material_levels", nlohmann::json::array())) {
-    result.material_levels[level.at("id").get<int>()] = level.at("level").get<float>();
-  }
-  result.noise_sigma = json.at("noise_sigma").get<double>();
-  result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
-  for (const nlohmann::json& item : json.at("pores")) {
+  const auto read_pore = [](const nlohmann::json& item) {
     DetectedPore pore;
     pore.id = item.at("id").get<int>();
     pore.voxel_count = item.at("voxel_count").get<std::int64_t>();
@@ -1456,9 +1791,9 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     pore.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
     pore.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
     pore.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
-    result.pores.push_back(pore);
-  }
-  for (const nlohmann::json& item : json.at("zones")) {
+    return pore;
+  };
+  const auto read_zone = [](const nlohmann::json& item) {
     PorosityZone zone;
     zone.id = item.at("id").get<int>();
     zone.block_count = item.at("block_count").get<std::int64_t>();
@@ -1467,8 +1802,33 @@ PorosityResult loadPorosityResult(const std::filesystem::path& dir) {
     zone.center_voxels = item.at("center_voxels").get<std::array<double, 3>>();
     zone.bounds.min = item.at("bounds_min").get<std::array<std::int64_t, 3>>();
     zone.bounds.max = item.at("bounds_max").get<std::array<std::int64_t, 3>>();
-    result.zones.push_back(zone);
+    return zone;
+  };
+  std::string list;  // the top-level array being parsed
+  const nlohmann::json json = nlohmann::json::parse(
+      in, [&](int depth, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+        using Event = nlohmann::json::parse_event_t;
+        if (depth == 1 && event == Event::key) {
+          list = parsed.get<std::string>();
+        } else if (depth == 2 && event == Event::object_end &&
+                   (list == "pores" || list == "zones")) {
+          if (list == "pores") {
+            result.pores.push_back(read_pore(parsed));
+          } else {
+            result.zones.push_back(read_zone(parsed));
+          }
+          return false;  // taken over: not kept in the document
+        }
+        return true;
+      });
+  result.voxel_size = json.at("voxel_size_mm").get<VoxelSize>();
+  result.air_level = json.at("air_level").get<float>();
+  result.material_level = json.at("material_level").get<float>();
+  for (const auto& level : json.value("material_levels", nlohmann::json::array())) {
+    result.material_levels[level.at("id").get<int>()] = level.at("level").get<float>();
   }
+  result.noise_sigma = json.at("noise_sigma").get<double>();
+  result.part_volume_mm3 = json.at("part_volume_mm3").get<double>();
   if (std::filesystem::exists(dir / "analysis.vdb")) {
     initializeVdb();
     openvdb::io::File file((dir / "analysis.vdb").string());

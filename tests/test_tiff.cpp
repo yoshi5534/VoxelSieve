@@ -345,6 +345,9 @@ TEST_F(TiffTest, ReadsAllEncodings) {
     EXPECT_EQ(source.bitsPerSample(), c.spec.bits);
     // A dataset keeps 8-bit slices in 8 bits (ADR 0021).
     EXPECT_EQ(source.sampleType(), c.spec.bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16);
+    // Uncompressed 8- and 16-bit slices are read in place and need no staging copy.
+    EXPECT_EQ(source.slowRandomAccess(),
+              c.spec.compression != COMPRESSION_NONE || c.spec.bits > 16);
     expectGreyValues(source, c.spec.bits);
   }
 }
@@ -397,22 +400,31 @@ TEST(Tiff, DecodesFloatSlices) {
 }
 
 TEST_F(TiffTest, ReadsRegionsAcrossChunks) {
-  TiffSpec spec;
-  spec.tile = 16;
-  spec.compression = 8;
-  const TiffStackSource source(writeStack(spec));
-  const Box box{{13, 5, 2}, {35, 20, 5}};
-  std::vector<std::uint16_t> values(std::size_t{22} * 15 * 3);
-  source.readRegion(box, values);
-  std::size_t i = 0;
-  for (std::int64_t z = 2; z < 5; ++z) {
-    for (std::int64_t y = 5; y < 20; ++y) {
-      for (std::int64_t x = 13; x < 35; ++x, ++i) {
-        ASSERT_EQ(values[i], greyValue(x, y, z, 16)) << x << "," << y << "," << z;
+  // Decoded (deflate) and read in place (uncompressed), in tiles and in strips.
+  for (const int compression : {COMPRESSION_ADOBE_DEFLATE, COMPRESSION_NONE}) {
+    for (const bool tiles : {true, false}) {
+      SCOPED_TRACE(std::to_string(compression) + (tiles ? " tiles" : " strips"));
+      TiffSpec spec;
+      spec.tile = tiles ? 16 : 0;
+      spec.rows_per_strip = tiles ? 0 : 6;
+      spec.compression = compression;
+      spec.big_endian = !tiles;
+      const TiffStackSource source(writeStack(
+          spec, "regions_" + std::to_string(compression) + (tiles ? "_tiles" : "_strips")));
+      const Box box{{13, 5, 2}, {35, 20, 5}};
+      std::vector<std::uint16_t> values(std::size_t{22} * 15 * 3);
+      source.readRegion(box, values);
+      std::size_t i = 0;
+      for (std::int64_t z = 2; z < 5; ++z) {
+        for (std::int64_t y = 5; y < 20; ++y) {
+          for (std::int64_t x = 13; x < 35; ++x, ++i) {
+            ASSERT_EQ(values[i], greyValue(x, y, z, 16)) << x << "," << y << "," << z;
+          }
+        }
       }
+      EXPECT_THROW(source.readRegion(Box{{0, 0, 0}, {41, 1, 1}}, values), std::out_of_range);
     }
   }
-  EXPECT_THROW(source.readRegion(Box{{0, 0, 0}, {41, 1, 1}}, values), std::out_of_range);
 }
 
 TEST_F(TiffTest, SortsSlicesNaturally) {
@@ -444,6 +456,12 @@ TEST_F(TiffTest, ReadsMultiPageFiles) {
   writeFile(dir_ / "volume.tiff", writeTiff(spec, pages));
   const TiffStackSource source(dir_ / "volume.tiff");
   expectGreyValues(source, 16);
+  // Uncompressed, the pages are read in place from the one file.
+  spec.compression = COMPRESSION_NONE;
+  writeFile(dir_ / "plain.tiff", writeTiff(spec, pages));
+  const TiffStackSource plain(dir_ / "plain.tiff");
+  EXPECT_FALSE(plain.slowRandomAccess());
+  expectGreyValues(plain, 16);
 }
 
 TEST_F(TiffTest, ReadsVoxelSize) {
@@ -869,6 +887,78 @@ TEST_F(TiffTest, GuiBrowsesAndImportsTiffStacks) {
   EXPECT_EQ(from_float.at("summary").at("clipped_values"), 0);
   EXPECT_DOUBLE_EQ(from_float.at("summary").at("value_mapping").at("scale").get<double>(),
                    0.5 / 65535.0);
+}
+
+/// Damaged copies of a valid file, the same in every run: a few bytes changed (half of them in
+/// the first 256 bytes, where the headers are) or the end cut off (review step 5.4).
+std::vector<std::vector<std::uint8_t>> damagedCopies(const std::vector<std::uint8_t>& bytes,
+                                                     int count) {
+  std::mt19937 random(5);  // NOLINT(bugprone-random-generator-seed): the same files every run
+  std::vector<std::vector<std::uint8_t>> copies;
+  for (int i = 0; i < count; ++i) {
+    std::vector<std::uint8_t> copy = bytes;
+    if (i % 5 == 4) {
+      copy.resize(random() % copy.size());
+    } else {
+      const auto flips = 1 + random() % 8;
+      for (std::uint32_t f = 0; f < flips; ++f) {
+        std::size_t at = random() % copy.size();
+        if (f % 2 == 0) {
+          at %= std::min<std::size_t>(copy.size(), 256);
+        }
+        copy[at] = static_cast<std::uint8_t>(random());
+      }
+    }
+    copies.push_back(std::move(copy));
+  }
+  return copies;
+}
+
+TEST_F(TiffTest, DamagedSlicesAndArchivesFailWithAnError) {
+  std::vector<std::vector<std::uint32_t>> pages(1,
+                                                std::vector<std::uint32_t>(std::size_t{40} * 30));
+  for (std::size_t i = 0; i < pages[0].size(); ++i) {
+    pages[0][i] = static_cast<std::uint32_t>(i * 37 % 65536);
+  }
+  TiffSpec strips;
+  strips.width = 40;
+  strips.height = 30;
+  strips.rows_per_strip = 7;
+  TiffSpec tiles = strips;
+  tiles.tile = 16;
+  tiles.compression = COMPRESSION_ADOBE_DEFLATE;
+  int failed = 0;
+  int read = 0;
+  for (const TiffSpec& spec : {strips, tiles}) {
+    const std::vector<std::uint8_t> valid = writeTiff(spec, pages);
+    const std::vector<std::uint8_t> zipped = writeZip({{"stack/s0.tif", valid}}, false);
+    for (const bool archive : {false, true}) {
+      int n = 0;
+      for (const auto& damaged : damagedCopies(archive ? zipped : valid, 60)) {
+        const auto file = dir_ / ("damaged" + std::to_string(n++) + (archive ? ".zip" : ".tif"));
+        writeFile(file, damaged);
+        // Any error is fine; reading garbage, crashing or asking for absurd memory is not.
+        try {
+          const TiffStackSource source(file);
+          // A damaged header may claim another plausible size; it stays within the limits.
+          const auto dims = source.dims();
+          ASSERT_LE(dims[0], std::int64_t{1} << 20U);
+          ASSERT_LE(dims[1], std::int64_t{1} << 20U);
+          if (dims[0] * dims[1] * dims[2] > (std::int64_t{1} << 24U)) {
+            ++read;  // too large to read in a test, but refused nowhere
+            continue;
+          }
+          std::vector<std::uint16_t> voxels(static_cast<std::size_t>(dims[0] * dims[1] * dims[2]));
+          source.readRegion({{0, 0, 0}, dims}, voxels);
+          ++read;
+        } catch (const std::exception&) {
+          ++failed;
+        }
+      }
+    }
+  }
+  EXPECT_GT(failed, 0);
+  EXPECT_EQ(failed + read, 240);
 }
 
 }  // namespace

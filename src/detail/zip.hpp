@@ -21,6 +21,7 @@ class ZipArchive {
     std::string name;  // path inside the archive, '/' separated
     std::uint64_t index = 0;
     std::uint64_t size = 0;
+    std::uint64_t compressed_size = 0;
   };
 
   /// Reads the central directory; throws if `file` is not a ZIP archive.

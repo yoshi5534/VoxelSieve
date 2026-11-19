@@ -59,7 +59,7 @@ ZipArchive::ZipArchive(const std::filesystem::path& file, bool check) : path_(fi
         (stat.valid & (ZIP_STAT_NAME | ZIP_STAT_SIZE)) != (ZIP_STAT_NAME | ZIP_STAT_SIZE)) {
       throw std::runtime_error("Broken central directory in " + file.string());
     }
-    entries_.push_back({stat.name, static_cast<std::uint64_t>(i), stat.size});
+    entries_.push_back({stat.name, static_cast<std::uint64_t>(i), stat.size, stat.comp_size});
   }
   idle_.push_back(std::move(archive));
 }
@@ -80,7 +80,14 @@ std::vector<std::uint8_t> ZipArchive::read(const Entry& entry) const {
   if (!archive) {
     archive = open(false);
   }
-  std::vector<std::uint8_t> data(entry.size);
+  // The sizes come from the archive: a damaged or hostile one must not make us allocate more than
+  // its entry can hold. Deflate packs at most about 1032:1; a slice is never above 16 GiB.
+  constexpr std::uint64_t kMaxEntryBytes = std::uint64_t{16} << 30U;
+  if (entry.size > kMaxEntryBytes ||
+      entry.size / 1100 > entry.compressed_size + (std::uint64_t{1} << 20U)) {
+    throw std::runtime_error("Implausible size of " + entry.name + " in " + path_.string());
+  }
+  std::vector<std::uint8_t> data(static_cast<std::size_t>(entry.size));
   {
     zip_file_t* file = zip_fopen_index(archive.get(), entry.index, 0);
     if (file == nullptr) {

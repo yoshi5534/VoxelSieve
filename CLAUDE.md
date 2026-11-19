@@ -14,7 +14,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     stacks (`DicomStackSource`, DCMTK, ADR 0019); `diconde.hpp` DICONDE metadata and
     export of volumes, material labels and pores as indications (ADR 0024)
   - `sieve.hpp` in-memory sieve into one grid; `dataset.hpp` streaming sieve into a bricked dataset
-    and `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
+    (an interrupted import resumes from the journal it leaves in the output directory) and
+    `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
     `preview.hpp` the first look at a volume that every import shows before its passes, from
     slices the staging copy reads first (ADR 0020)
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
@@ -32,7 +33,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   - `region.hpp` inspection regions from solids and meshes, the P 203 reference volume and pore
     gaps (ADR 0032)
   - `porosity.hpp` pores and loosened zones in a dataset, per material when segmented, with JSON,
-    PNG and VDB output; `orientation.hpp` fibre directions and fibre families of composites from
+    PNG and VDB output (the pore labels store the inside of large pores as tiles: visit tiles,
+    not only leaves); `orientation.hpp` fibre directions and fibre families of composites from
     the structure tensor (ADR 0028); `battery.hpp` battery cell inspection (housing, electrode
     layers, anode overhang, particles, voids; ADR 0029) and `cells.hpp` synthetic cells for it
   - `denoise.hpp` denoising into a new dataset: non-local means against the measured noise and
@@ -47,7 +49,12 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     engine; the built-in templates are `resources/report_template.html` and
     `resources/first_article_template.html` (first article report), compiled in
   - `telemetry.hpp` time and resource use per phase of every operation and tool (ADR 0017); mark
-    the phases of new long-running code with `TelemetryPhase`
+    the phases of new long-running code with `TelemetryPhase`; `resources.hpp` the memory budget of the
+    process (ADR 0034: brick caches, work memory, admission of operations), the thread limit and
+    the `--memory`/`--cache`/`--threads` options every tool takes; size the work in flight with
+    `tasksInMemory` or a `BrickSweep`, never from the physical memory; `progress.hpp` the
+    `ProgressToken` of the option structs, which long code checks per brick or tile. Open datasets
+    without a cache of their own, so they share the one budget (`Dataset::sharedCache`)
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
     `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), and their
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
@@ -117,6 +124,8 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Every algorithm gets a test against the synthetic phantom (`voxelsieve/phantom.hpp`), whose
   geometry is known analytically. Defect analyses are scored against `SyntheticScan` ground truth. Prefer asserting against the analytic ground truth over
   snapshot values.
+- Write result files with `writeFile`/`writeJson` (`io.hpp`): they go through a temporary file,
+  so a file is never left half written, and a full disk is an error that says so.
 - Keep dependencies minimal; adding one needs a short ADR and goes into `vcpkg.json`.
 - File formats, compression and crypto always come from an established library (libtiff, libzip,
   libpng, tinyply, Boost.Iostreams, OpenVDB, nlohmann/json, …), never our own parser, codec or

@@ -2,11 +2,14 @@
 
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_pipeline.h>
+#include <tbb/task_arena.h>
 #include <tinyply.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -22,10 +25,12 @@
 #include <unordered_map>
 #include <utility>
 
+#include "detail/sweep.hpp"
 #include "detail/thickness.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
@@ -613,15 +618,7 @@ void writePly(const std::filesystem::path& file, const WallThicknessResult& resu
   ply.add_properties_to_element(
       "face", {"vertex_indices"}, tinyply::Type::INT32, result.mesh.triangles.size(),
       reinterpret_cast<std::uint8_t*>(faces.data()), tinyply::Type::UINT8, 3);
-  const std::filesystem::path partial = file.string() + ".partial";
-  {
-    std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-    ply.write(out, true);
-    if (!out) {
-      throw std::runtime_error("Cannot write " + file.string());
-    }
-  }
-  std::filesystem::rename(partial, file);
+  writeFile(file, [&ply](std::ostream& out) { ply.write(out, true); });
 }
 
 }  // namespace
@@ -753,20 +750,39 @@ WallThicknessResult analyzeWallThickness(const Dataset& dataset, const SurfaceMa
       order.push_back(i);
     }
   }
-  // Vertices of one brick after the other, so that the rays of a task read the same bricks.
+  // Vertices of one brick after the other, and the bricks along a Morton curve, so that bricks
+  // whose rays read the same neighbour bricks follow each other.
   const auto brick_key = [&](std::uint32_t i) {
     const auto brick = dataset.info().brick_size;
-    std::array<std::int64_t, 3> b{};
+    std::array<std::uint64_t, 3> b{};
     for (std::size_t k = 0; k < 3; ++k) {
-      b[k] = static_cast<std::int64_t>(std::floor(mesh.points[i][k] / v[k])) / brick;
+      const auto voxel = static_cast<std::int64_t>(std::floor(mesh.points[i][k] / v[k]));
+      b[k] = static_cast<std::uint64_t>(std::max<std::int64_t>(voxel, 0) / brick);
     }
-    return b;
+    return detail::mortonKey(b);
   };
+  std::vector<std::uint64_t> keys(mesh.points.size(), 0);
+  for (const std::uint32_t i : order) {
+    keys[i] = brick_key(i);
+  }
   std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-    const auto ka = brick_key(a);
-    const auto kb = brick_key(b);
-    return std::tie(ka[2], ka[1], ka[0], a) < std::tie(kb[2], kb[1], kb[0], b);
+    return std::tie(keys[a], a) < std::tie(keys[b], b);
   });
+  // A task is the vertices of one brick, split when there are many. The tasks go through a
+  // pipeline with a few tokens per thread, so the bricks in use are a small window that moves
+  // along the curve instead of ranges from all over the volume at once.
+  constexpr std::size_t kTaskVertices = 2048;
+  std::vector<std::pair<std::size_t, std::size_t>> tasks;
+  for (std::size_t begin = 0; begin < order.size();) {
+    std::size_t end = begin + 1;
+    while (end < order.size() && end - begin < kTaskVertices &&
+           keys[order[end]] == keys[order[begin]]) {
+      ++end;
+    }
+    tasks.emplace_back(begin, end);
+    begin = end;
+  }
+  keys = {};
   std::vector<float> thickness(mesh.points.size(), kNotMeasured);
   std::unique_ptr<PointTree> tree;
   if (options.method == Method::kSphere) {
@@ -781,26 +797,39 @@ WallThicknessResult analyzeWallThickness(const Dataset& dataset, const SurfaceMa
   std::atomic<std::size_t> done{0};
   std::mutex progress_mutex;
   int reported_percent = -1;
-  tbb::parallel_for(
-      tbb::blocked_range<std::size_t>(0, order.size(), 512),
-      [&](const tbb::blocked_range<std::size_t>& range) {
-        GreySampler grey(dataset, v);
-        for (std::size_t r = range.begin(); r != range.end(); ++r) {
-          const std::uint32_t i = order[r];
-          thickness[i] = options.method == Method::kSphere
-                             ? sphereThickness(*tree, i, normals[i], result.max_thickness_mm, eps)
-                             : rayThickness(grey, toVec(mesh.points[i]), normals[i], ray);
-        }
-        const std::size_t now = done += range.size();
-        if (options.progress) {
-          const std::scoped_lock lock(progress_mutex);
-          const auto percent = static_cast<int>(100 * now / std::max<std::size_t>(order.size(), 1));
-          if (percent > reported_percent) {
-            reported_percent = percent;
-            options.progress(percent / 100.0);
-          }
-        }
-      });
+  using Task = std::pair<std::size_t, std::size_t>;
+  std::size_t next_task = 0;
+  const auto tokens = 4 * static_cast<std::size_t>(
+                              std::min(tbb::this_task_arena::max_concurrency(), threadLimit()));
+  tbb::parallel_pipeline(
+      tokens, tbb::make_filter<void, Task>(tbb::filter_mode::serial_in_order,
+                                           [&](tbb::flow_control& control) -> Task {
+                                             if (next_task == tasks.size()) {
+                                               control.stop();
+                                               return {};
+                                             }
+                                             return tasks[next_task++];
+                                           }) &
+                  tbb::make_filter<Task, void>(tbb::filter_mode::parallel, [&](const Task& task) {
+                    GreySampler grey(dataset, v);
+                    for (std::size_t r = task.first; r != task.second; ++r) {
+                      const std::uint32_t i = order[r];
+                      thickness[i] =
+                          options.method == Method::kSphere
+                              ? sphereThickness(*tree, i, normals[i], result.max_thickness_mm, eps)
+                              : rayThickness(grey, toVec(mesh.points[i]), normals[i], ray);
+                    }
+                    const std::size_t now = done += task.second - task.first;
+                    if (options.progress) {
+                      const std::scoped_lock lock(progress_mutex);
+                      const auto percent =
+                          static_cast<int>(100 * now / std::max<std::size_t>(order.size(), 1));
+                      if (percent > reported_percent) {
+                        reported_percent = percent;
+                        options.progress(percent / 100.0);
+                      }
+                    }
+                  }));
 
   phase.reset();
   phase.emplace("regions");

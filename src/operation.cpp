@@ -112,6 +112,8 @@ Json validateParameters(const Json& schema, const Json& params) {
   return out;
 }
 
+OperationEstimate Operation::estimate(const OperationContext& /*context*/) const { return {}; }
+
 void OperationRegistry::add(std::shared_ptr<const Operation> operation) {
   if (!operation) {
     throw std::invalid_argument("Cannot register a null operation");

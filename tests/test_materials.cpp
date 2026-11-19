@@ -1,19 +1,25 @@
 #include <gtest/gtest.h>
+#include <openvdb/io/File.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <nlohmann/json.hpp>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "detail/material_volume.hpp"
 #include "material_scene.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/slice.hpp"
 #include "voxelsieve/source.hpp"
+#include "voxelsieve/vdb.hpp"
 #include "voxelsieve/volume.hpp"
 
 namespace voxelsieve {
@@ -353,8 +359,70 @@ TEST_F(MaterialsTest, ReadsRegionsOfMoreBricksThanTheCacheHolds) {
     }
   }
 
-  // The 3D view's overview reads all bricks at once and shows the materials of every 4th voxel
-  // (level 2), like the slices of that level.
+  // Label levels (format version 2): each voxel the majority of the 2 x 2 x 2 below it, ties to
+  // the smaller id, air only where all eight are air.
+  const auto coarsen = [](const std::vector<std::uint8_t>& fine, std::int64_t n) {
+    const std::int64_t half = n / 2;
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(half * half * half), 0);
+    for (std::int64_t z = 0; z < half; ++z) {
+      for (std::int64_t y = 0; y < half; ++y) {
+        for (std::int64_t x = 0; x < half; ++x) {
+          std::array<int, 256> votes{};
+          for (int d = 0; d < 8; ++d) {
+            const std::uint8_t id = fine[static_cast<std::size_t>(
+                (2 * x + (d & 1)) + n * ((2 * y + ((d >> 1) & 1)) + n * (2 * z + ((d >> 2) & 1))))];
+            votes[id] += id != 0 ? 1 : 0;
+          }
+          const auto best = std::max_element(votes.begin() + 1, votes.end());
+          out[static_cast<std::size_t>(x + half * (y + half * z))] =
+              *best > 0 ? static_cast<std::uint8_t>(best - votes.begin()) : 0;
+        }
+      }
+    }
+    return out;
+  };
+  ASSERT_EQ(volume.info().levels.size(), 3U);  // 48, 24, 12 voxels: one brick of 16 at last
+  const std::vector<std::uint8_t> level1 = coarsen(ids, kSize);
+  const std::vector<std::uint8_t> level2 = coarsen(level1, kSize / 2);
+  std::vector<std::uint8_t> read2(level2.size());
+  volume.readLevel(2, Box{{0, 0, 0}, {24, 24, 24}}, read2);
+  EXPECT_EQ(read2, level2);
+  std::vector<std::uint8_t> read0(ids.size());
+  volume.readLevel(0, whole, read0);
+  EXPECT_EQ(read0, ids);
+  EXPECT_THROW(volume.readLevel(4, Box{{0, 0, 0}, {1, 1, 1}}, read0), std::out_of_range);
+
+  // Volumes of format version 1 (Int32Grid labels, no levels) read the same.
+  {
+    const std::filesystem::path old_dir = dir_ / "materials_v1";
+    std::filesystem::copy(dir_ / "materials", old_dir, std::filesystem::copy_options::recursive);
+    for (const auto& brick : volume.info().bricks) {
+      const std::filesystem::path file = detail::materialBrickFile(old_dir, brick);
+      openvdb::io::File in(file.string());
+      in.open();
+      const auto labels = openvdb::gridPtrCast<UInt8Grid>(in.readGrid("material"));
+      in.close();
+      const auto wide = openvdb::Int32Grid::create(
+          std::make_shared<openvdb::Int32Grid::TreeType>(labels->tree()));
+      wide->setName("material");
+      openvdb::io::File(file.string()).write({wide});
+    }
+    std::ifstream json_in(old_dir / "materials.json");
+    nlohmann::json json = nlohmann::json::parse(json_in);
+    json_in.close();
+    json["version"] = 1;
+    json.erase("levels");
+    json.erase("label_type");
+    std::ofstream(old_dir / "materials.json") << json.dump();
+    const MaterialVolume old = MaterialVolume::open(old_dir);
+    EXPECT_TRUE(old.info().levels.empty());
+    std::vector<std::uint8_t> old_ids(ids.size());
+    old.readRegion(whole, old_ids);
+    EXPECT_EQ(old_ids, ids);
+  }
+
+  // The 3D view's overview reads all bricks at once and shows the materials of level 2, like
+  // the slices of that level.
   const VolumePreview preview = readVolumePreview(dataset, 24, nullptr, &volume);
   ASSERT_EQ(preview.level, 2);
   ASSERT_EQ(preview.dims, (std::array<std::int64_t, 3>{24, 24, 24}));
@@ -367,11 +435,9 @@ TEST_F(MaterialsTest, ReadsRegionsOfMoreBricksThanTheCacheHolds) {
     const SliceImage slice = readSlice(dataset, request, nullptr, &volume);
     for (std::int64_t y = 0; y < 24; ++y) {
       for (std::int64_t x = 0; x < 24; ++x) {
+        const std::uint8_t id = level2[static_cast<std::size_t>(x + 24 * (y + 24 * z))];
         const std::uint8_t expected =
-            at(x * 4, y * 4, z * 4) == 0
-                ? 0
-                : static_cast<std::uint8_t>(static_cast<int>(SliceOverlay::kMaterial) +
-                                            at(x * 4, y * 4, z * 4));
+            id == 0 ? 0 : static_cast<std::uint8_t>(static_cast<int>(SliceOverlay::kMaterial) + id);
         const auto pixel = static_cast<std::size_t>(x + 24 * y);
         ASSERT_EQ(slice.overlay[pixel], expected) << x << ' ' << y << ' ' << z;
         ASSERT_EQ(preview.overlay[pixel + static_cast<std::size_t>(z * 24 * 24)], expected)
@@ -380,7 +446,6 @@ TEST_F(MaterialsTest, ReadsRegionsOfMoreBricksThanTheCacheHolds) {
     }
   }
 }
-
 TEST_F(MaterialsTest, RejectsBadOptions) {
   const Scene scene = makeScene();
   DatasetOptions sieve;

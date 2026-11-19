@@ -4,8 +4,8 @@
 #include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
-#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_pipeline.h>
 #include <tbb/task_arena.h>
 
 #include <algorithm>
@@ -14,7 +14,9 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
@@ -24,11 +26,14 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "detail/material_volume.hpp"
+#include "detail/sweep.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/uninitialized.hpp"
@@ -40,8 +45,8 @@ namespace {
 using Index3 = std::array<std::int64_t, 3>;
 using Json = nlohmann::json;
 
-constexpr int kFormatVersion = 1;
-constexpr std::size_t kCachedBricks = 64;
+/// 2: labels in UInt8Grids and coarser label levels; 1: Int32Grids, level 0 only (still read).
+constexpr int kFormatVersion = 2;
 constexpr int kMaxMaterials = 8;
 
 // Colours of the material classes, from light to dense.
@@ -63,10 +68,6 @@ std::size_t product(const Index3& dims) {
 Index3 unravel(std::size_t index, const Index3& dims) {
   const auto i = static_cast<std::int64_t>(index);
   return {i % dims[0], (i / dims[0]) % dims[1], i / (dims[0] * dims[1])};
-}
-
-std::filesystem::path brickFile(const std::filesystem::path& dir, const Index3& brick) {
-  return detail::materialBrickFile(dir, brick);
 }
 
 /// Box filter of radius `r` along one axis of a dense x-fastest array, in place.
@@ -133,7 +134,9 @@ Json toJson(const MaterialVolumeInfo& info) {
                {"grow_steps", info.grow_steps},
                {"min_neighbours", info.min_neighbours},
                {"materials", materials},
-               {"bricks", info.bricks}});
+               {"label_type", "uint8"},
+               {"bricks", info.bricks},
+               {"levels", info.levels}});
   if (!info.model.empty()) {
     json["model"] = info.model;
   }
@@ -718,112 +721,127 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
       todo.push_back(brick);
     }
   }
-  // Work buffers of one brick, reused by the next brick on the same thread: fresh memory for
-  // every brick cost more time in page faults than the filters themselves.
+  // Work buffers of one brick, reused by the next brick: fresh memory for every brick cost more
+  // time in page faults than the filters themselves. 14 bytes per voxel of a brick with its halo
+  // (about 240 MB for 256^3); the bricks in work are as many as a share of the memory holds, not
+  // one per core.
   struct BrickWork {
     UninitializedVector<float> grey;
-    UninitializedVector<float> above;
     UninitializedVector<float> neighbours;
     UninitializedVector<float> material_sum;
     UninitializedVector<std::uint8_t> state;
     UninitializedVector<std::uint8_t> next;
   };
-  tbb::enumerable_thread_specific<BrickWork> workspaces;
-  tbb::parallel_for(std::size_t{0}, todo.size(), [&](std::size_t i) {
-    // Isolated, so a thread waiting for the filters of its brick does not start another brick
-    // and hold two in memory, or use its work buffers twice.
-    tbb::this_task_arena::isolate([&] {
-      const Index3& brick = todo[i];
-      const Box inner = dataset.brickBox(0, brick);
-      Box outer;
-      for (std::size_t a = 0; a < 3; ++a) {
-        outer.min[a] = std::max<std::int64_t>(inner.min[a] - halo, 0);
-        outer.max[a] = std::min<std::int64_t>(inner.max[a] + halo, info.dims[a]);
-      }
-      const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
-      const auto voxels = static_cast<std::size_t>(outer.voxelCount());
-      BrickWork& work = workspaces.local();
-      auto& [grey, above, neighbours, material_sum, state, next] = work;
-      grey.resize(voxels);
-      dataset.readRegion(0, outer, grey, info.air_level);
-      // Above the threshold, and how many of the 3^3 neighbourhood are.
-      above.resize(voxels);
-      std::transform(grey.begin(), grey.end(), above.begin(),
-                     [&](float value) { return value > info.air_threshold ? 1.0F : 0.0F; });
-      neighbours.assign(above.begin(), above.end());
-      material_sum.resize(voxels);
-      std::transform(grey.begin(), grey.end(), above.begin(), material_sum.begin(),
-                     std::multiplies<>());
-      for (std::size_t a = 0; a < 3; ++a) {
-        boxFilterAxis(neighbours, size, a, 1);
-        boxFilterAxis(material_sum, size, a, 1);
-      }
-      // Box filters give means; the counts are these times the neighbourhood size, which is 27
-      // except at the region border. Using means keeps the criterion the same there.
-      const float min_fraction = static_cast<float>(options.min_neighbours) / 27.0F;
-      // 2: material, 1: may grow into material, 0: air.
-      state.resize(voxels);
-      for (std::size_t v = 0; v < grey.size(); ++v) {
-        state[v] = above[v] > 0.0F && neighbours[v] >= min_fraction - 1e-4F ? 2
-                   : grey[v] > info.grow_threshold                          ? 1
-                                                                            : 0;
-      }
-      const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
-      for (int g = 0; g < options.grow_steps; ++g) {
-        next.assign(state.begin(), state.end());
-        tbb::parallel_for(std::int64_t{0}, size[2], [&](std::int64_t z) {
-          for (std::int64_t y = 0; y < size[1]; ++y) {
-            for (std::int64_t x = 0; x < size[0]; ++x) {
-              const std::int64_t index = x + step[1] * y + step[2] * z;
-              if (state[static_cast<std::size_t>(index)] != 1) {
-                continue;
-              }
-              const Index3 p{x, y, z};
-              for (std::size_t a = 0; a < 3; ++a) {
-                if ((p[a] > 0 && state[static_cast<std::size_t>(index - step[a])] == 2) ||
-                    (p[a] + 1 < size[a] && state[static_cast<std::size_t>(index + step[a])] == 2)) {
-                  next[static_cast<std::size_t>(index)] = 2;
-                  break;
+  const auto brick_voxels =
+      static_cast<std::uint64_t>(std::pow(static_cast<double>(info.brick_size + 2 * halo), 3.0));
+  // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0034). A brick
+  // in work takes about 24 bytes per voxel with its halo (the buffers above and its label grid),
+  // as measured at 2048^3.
+  constexpr std::uint64_t kWorkBytesPerVoxel = 24;
+  detail::mortonSort(todo);
+  detail::WorkPool<BrickWork> pool;
+  detail::runInFlight(
+      todo.size(), tasksInMemory(brick_voxels * kWorkBytesPerVoxel),
+      [&](std::size_t i) {
+        const auto taken = pool.take();
+        [&] {
+          const Index3& brick = todo[i];
+          const Box inner = dataset.brickBox(0, brick);
+          Box outer;
+          for (std::size_t a = 0; a < 3; ++a) {
+            outer.min[a] = std::max<std::int64_t>(inner.min[a] - halo, 0);
+            outer.max[a] = std::min<std::int64_t>(inner.max[a] + halo, info.dims[a]);
+          }
+          const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
+          const auto voxels = static_cast<std::size_t>(outer.voxelCount());
+          auto& [grey, neighbours, material_sum, state, next] = *taken;
+          grey.resize(voxels);
+          dataset.readRegion(0, outer, grey, info.air_level);
+          // Above the threshold, and how many of the 3^3 neighbourhood are.
+          neighbours.resize(voxels);
+          std::transform(grey.begin(), grey.end(), neighbours.begin(),
+                         [&](float value) { return value > info.air_threshold ? 1.0F : 0.0F; });
+          material_sum.resize(voxels);
+          std::transform(grey.begin(), grey.end(), neighbours.begin(), material_sum.begin(),
+                         std::multiplies<>());
+          for (std::size_t a = 0; a < 3; ++a) {
+            boxFilterAxis(neighbours, size, a, 1);
+            boxFilterAxis(material_sum, size, a, 1);
+          }
+          // Box filters give means; the counts are these times the neighbourhood size, which is
+          // 27 except at the region border. Using means keeps the criterion the same there.
+          const float min_fraction = static_cast<float>(options.min_neighbours) / 27.0F;
+          // 2: material, 1: may grow into material, 0: air.
+          state.resize(voxels);
+          for (std::size_t v = 0; v < grey.size(); ++v) {
+            if (grey[v] > info.air_threshold && neighbours[v] >= min_fraction - 1e-4F) {
+              state[v] = 2;
+            } else {
+              state[v] = grey[v] > info.grow_threshold ? 1 : 0;
+            }
+          }
+          const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
+          for (int g = 0; g < options.grow_steps; ++g) {
+            next.assign(state.begin(), state.end());
+            tbb::parallel_for(std::int64_t{0}, size[2], [&](std::int64_t z) {
+              for (std::int64_t y = 0; y < size[1]; ++y) {
+                for (std::int64_t x = 0; x < size[0]; ++x) {
+                  const std::int64_t index = x + step[1] * y + step[2] * z;
+                  if (state[static_cast<std::size_t>(index)] != 1) {
+                    continue;
+                  }
+                  const Index3 p{x, y, z};
+                  for (std::size_t a = 0; a < 3; ++a) {
+                    if ((p[a] > 0 && state[static_cast<std::size_t>(index - step[a])] == 2) ||
+                        (p[a] + 1 < size[a] &&
+                         state[static_cast<std::size_t>(index + step[a])] == 2)) {
+                      next[static_cast<std::size_t>(index)] = 2;
+                      break;
+                    }
+                  }
                 }
               }
-            }
+            });
+            state.swap(next);
           }
-        });
-        state.swap(next);
-      }
 
-      auto grid = openvdb::Int32Grid::create(0);
-      auto accessor = grid->getAccessor();
-      auto& local = counts.local();
-      for (std::int64_t z = inner.min[2]; z < inner.max[2]; ++z) {
-        for (std::int64_t y = inner.min[1]; y < inner.max[1]; ++y) {
-          for (std::int64_t x = inner.min[0]; x < inner.max[0]; ++x) {
-            const auto index = static_cast<std::size_t>(
-                (x - outer.min[0]) + step[1] * (y - outer.min[1]) + step[2] * (z - outer.min[2]));
-            if (state[index] != 2) {
-              continue;
+          auto grid = openvdb::Int32Grid::create(0);
+          auto accessor = grid->getAccessor();
+          auto& local = counts.local();
+          for (std::int64_t z = inner.min[2]; z < inner.max[2]; ++z) {
+            for (std::int64_t y = inner.min[1]; y < inner.max[1]; ++y) {
+              for (std::int64_t x = inner.min[0]; x < inner.max[0]; ++x) {
+                const auto index =
+                    static_cast<std::size_t>((x - outer.min[0]) + step[1] * (y - outer.min[1]) +
+                                             step[2] * (z - outer.min[2]));
+                if (state[index] != 2) {
+                  continue;
+                }
+                // Mean grey value of the material voxels around it; a grown voxel has none
+                // above the threshold nearby only if the growth passed through several, so fall
+                // back to itself.
+                const float value = neighbours[index] > 0.0F
+                                        ? material_sum[index] / neighbours[index]
+                                        : grey[index];
+                const int id = classOf(value, info.materials);
+                ++local[static_cast<std::size_t>(id)];
+                accessor.setValue(
+                    openvdb::Coord(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)),
+                    id);
+              }
             }
-            // Mean grey value of the material voxels around it; a grown voxel has none above the
-            // threshold nearby only if the growth passed through several, so fall back to itself.
-            const float value =
-                neighbours[index] > 0.0F ? material_sum[index] / neighbours[index] : grey[index];
-            const int id = classOf(value, info.materials);
-            ++local[static_cast<std::size_t>(id)];
-            accessor.setValue(
-                openvdb::Coord(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)), id);
           }
-        }
-      }
-      if (grid->activeVoxelCount() == 0) {
-        return;
-      }
-      grid->setName("material");
-      grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
-      writeVdb(brickFile(dir, brick), {grid});
-      const std::scoped_lock lock(mutex);
-      info.bricks.push_back(brick);
-    });
-  });
+          if (grid->activeVoxelCount() == 0) {
+            return;
+          }
+          grid->setName("material");
+          grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
+          detail::writeMaterialBrick(dir, brick, *grid);
+          const std::scoped_lock lock(mutex);
+          info.bricks.push_back(brick);
+        }();
+      },
+      options.progress);
   std::sort(info.bricks.begin(), info.bricks.end());
   counts.combine_each([&](const std::vector<std::int64_t>& local) {
     for (Material& material : info.materials) {
@@ -834,6 +852,7 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   for (Material& material : info.materials) {
     material.volume_mm3 = static_cast<double>(material.voxel_count) * voxel_mm3;
   }
+  detail::writeMaterialLevels(dir, info);
   detail::writeMaterialVolumeInfo(dir, info);
   return info;
 }
@@ -844,7 +863,8 @@ MaterialVolumeInfo readMaterialVolumeInfo(const std::filesystem::path& dir) {
     throw std::runtime_error("No materials.json in " + dir.string());
   }
   const Json json = Json::parse(in);
-  if (json.at("format") != "voxelsieve-materials" || json.at("version") != kFormatVersion) {
+  if (json.at("format") != "voxelsieve-materials" || json.at("version") < 1 ||
+      json.at("version") > kFormatVersion) {
     throw std::runtime_error("Unsupported material volume in " + dir.string());
   }
   MaterialVolumeInfo info;
@@ -867,46 +887,157 @@ MaterialVolumeInfo readMaterialVolumeInfo(const std::filesystem::path& dir) {
     info.materials.push_back(material);
   }
   info.bricks = json.at("bricks").get<std::vector<Index3>>();
+  if (json.contains("levels")) {
+    info.levels = json.at("levels").get<std::vector<std::vector<Index3>>>();
+  }
   info.model = json.value("model", std::string());
   return info;
 }
 
+namespace {
+
+/// A label brick: UInt8Grid, or Int32Grid in volumes of format version 1.
+using LabelGrid = std::variant<UInt8Grid::ConstPtr, openvdb::Int32Grid::ConstPtr>;
+
+LabelGrid readLabelBrick(const std::filesystem::path& path) {
+  openvdb::io::File file(path.string());
+  file.open(false);
+  const openvdb::GridBase::Ptr base = file.readGrid("material");
+  file.close();
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  countRead(CountedRead::kBrickFile, error ? 0 : size);
+  if (auto labels = openvdb::gridPtrCast<UInt8Grid>(base)) {
+    return UInt8Grid::ConstPtr(labels);
+  }
+  if (auto labels = openvdb::gridPtrCast<openvdb::Int32Grid>(base)) {
+    return openvdb::Int32Grid::ConstPtr(labels);
+  }
+  throw std::runtime_error("No material labels in " + path.string());
+}
+
+bool isEmpty(const LabelGrid& grid) {
+  return std::visit([](const auto& g) { return g == nullptr; }, grid);
+}
+
+}  // namespace
+
 struct MaterialVolume::Impl {
+  using Key = std::array<std::int64_t, 4>;  // level, brick
   std::filesystem::path dir;
   MaterialVolumeInfo info;
-  std::vector<std::array<std::int64_t, 3>> sorted_bricks;
+  /// Bricks per level, sorted.
+  std::vector<std::vector<Index3>> sorted_bricks;
+  /// Bytes of label grids kept; the least recently used go first.
+  std::size_t budget = 0;
   mutable std::mutex mutex;
-  mutable std::map<Index3, openvdb::Int32Grid::ConstPtr> cache;
+  struct Cached {
+    LabelGrid grid;
+    std::size_t bytes = 0;
+    std::list<Key>::iterator position;
+  };
+  mutable std::map<Key, Cached> cache;
+  mutable std::list<Key> lru;  // most recent first
+  mutable std::size_t used = 0;
 
-  [[nodiscard]] openvdb::Int32Grid::ConstPtr brick(const Index3& index) const {
+  [[nodiscard]] LabelGrid brick(int level, const Index3& index) const {
+    const Key key{level, index[0], index[1], index[2]};
     {
       const std::scoped_lock lock(mutex);
-      if (const auto it = cache.find(index); it != cache.end()) {
-        return it->second;
+      if (const auto it = cache.find(key); it != cache.end()) {
+        lru.splice(lru.begin(), lru, it->second.position);
+        return it->second.grid;
       }
     }
-    openvdb::Int32Grid::ConstPtr grid;
-    if (std::binary_search(sorted_bricks.begin(), sorted_bricks.end(), index)) {
-      const std::filesystem::path path = brickFile(dir, index);
-      openvdb::io::File file(path.string());
-      file.open(false);
-      grid = openvdb::gridConstPtrCast<openvdb::Int32Grid>(file.readGrid("material"));
-      file.close();
-      std::error_code error;
-      const auto size = std::filesystem::file_size(path, error);
-      countRead(CountedRead::kBrickFile, error ? 0 : size);
+    LabelGrid grid = UInt8Grid::ConstPtr();
+    const auto& bricks = sorted_bricks[static_cast<std::size_t>(level)];
+    if (std::binary_search(bricks.begin(), bricks.end(), index)) {
+      grid = readLabelBrick(detail::materialBrickFile(dir, index, level));
     }
     // Evicted grids are destroyed after the lock is released: a tree frees its nodes in a
     // parallel loop, and a task this thread picks up there may come back here for the lock.
-    std::map<Index3, openvdb::Int32Grid::ConstPtr> evicted;
+    std::vector<LabelGrid> evicted;
+    const std::size_t bytes = std::visit(
+        [](const auto& g) { return g ? static_cast<std::size_t>(g->memUsage()) : std::size_t{64}; },
+        grid);
     {
       const std::scoped_lock lock(mutex);
-      if (cache.size() >= kCachedBricks) {
-        evicted.swap(cache);
+      if (const auto it = cache.find(key); it != cache.end()) {
+        return it->second.grid;  // loaded by another thread meanwhile
       }
-      cache[index] = grid;
+      lru.push_front(key);
+      cache.emplace(key, Cached{grid, bytes, lru.begin()});
+      used += bytes;
+      while (used > budget && lru.size() > 1) {
+        const auto oldest = cache.find(lru.back());
+        used -= oldest->second.bytes;
+        evicted.push_back(std::move(oldest->second.grid));
+        cache.erase(oldest);
+        lru.pop_back();
+      }
     }
     return grid;
+  }
+
+  /// Labels of the voxels of `count` per axis from `start` with `stride` (level coordinates) of
+  /// one level, into `out` (x fastest), brick by brick in parallel.
+  void read(int level, const Index3& start, const Index3& count, std::int64_t stride,
+            std::span<std::uint8_t> out) const {
+    const std::int64_t b = info.brick_size;
+    // The strided voxels of axis a that lie in [lo, hi): first index and end index.
+    const auto range = [&](std::size_t a, std::int64_t lo, std::int64_t hi) {
+      const std::int64_t first = std::max<std::int64_t>(0, ceilDiv(lo - start[a], stride));
+      const std::int64_t last = std::min(count[a], ceilDiv(hi - start[a], stride));
+      return std::pair{first, std::max(first, last)};
+    };
+    std::vector<Index3> bricks;
+    if (count[0] > 0 && count[1] > 0 && count[2] > 0) {
+      Index3 lo{};
+      Index3 hi{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        lo[a] = start[a] / b;
+        hi[a] = (start[a] + (count[a] - 1) * stride) / b;
+      }
+      for (std::int64_t z = lo[2]; z <= hi[2]; ++z) {
+        for (std::int64_t y = lo[1]; y <= hi[1]; ++y) {
+          for (std::int64_t x = lo[0]; x <= hi[0]; ++x) {
+            bricks.push_back({x, y, z});
+          }
+        }
+      }
+    }
+    tbb::parallel_for(std::size_t{0}, bricks.size(), [&](std::size_t n) {
+      const Index3& index = bricks[n];
+      std::array<std::pair<std::int64_t, std::int64_t>, 3> ranges;
+      for (std::size_t a = 0; a < 3; ++a) {
+        ranges[a] = range(a, index[a] * b, (index[a] + 1) * b);
+      }
+      const LabelGrid grid = brick(level, index);  // outlives the accessor below
+      const auto fill = [&](const auto& value_at) {
+        for (std::int64_t k = ranges[2].first; k < ranges[2].second; ++k) {
+          for (std::int64_t j = ranges[1].first; j < ranges[1].second; ++j) {
+            auto offset = static_cast<std::size_t>((k * count[1] + j) * count[0] + ranges[0].first);
+            for (std::int64_t i = ranges[0].first; i < ranges[0].second; ++i) {
+              out[offset++] = value_at(openvdb::Coord(static_cast<int>(start[0] + i * stride),
+                                                      static_cast<int>(start[1] + j * stride),
+                                                      static_cast<int>(start[2] + k * stride)));
+            }
+          }
+        }
+      };
+      if (isEmpty(grid)) {
+        fill([](const openvdb::Coord&) { return std::uint8_t{0}; });
+        return;
+      }
+      std::visit(
+          [&](const auto& labels) {
+            const auto accessor = labels->getConstAccessor();
+            fill([&](const openvdb::Coord& voxel) {
+              return static_cast<std::uint8_t>(accessor.getValue(voxel));
+            });
+          },
+          grid);
+    });
   }
 };
 
@@ -920,8 +1051,17 @@ MaterialVolume MaterialVolume::open(const std::filesystem::path& dir) {
   auto impl = std::make_unique<Impl>();
   impl->dir = dir;
   impl->info = readMaterialVolumeInfo(dir);
-  impl->sorted_bricks = impl->info.bricks;
-  std::sort(impl->sorted_bricks.begin(), impl->sorted_bricks.end());
+  impl->sorted_bricks.push_back(impl->info.bricks);
+  for (const auto& level : impl->info.levels) {
+    impl->sorted_bricks.push_back(level);
+  }
+  for (auto& bricks : impl->sorted_bricks) {
+    std::sort(bricks.begin(), bricks.end());
+  }
+  // A share of the memory budget: the labels of a brick are a quarter of its grey values or less,
+  // and pruned label bricks of uniform material take little more than their boundaries.
+  impl->budget = static_cast<std::size_t>(
+      std::max<std::uint64_t>(std::uint64_t{256} << 20U, memoryBudgetBytes() / 32));
   return MaterialVolume(std::move(impl));
 }
 
@@ -938,58 +1078,142 @@ void MaterialVolume::readRegion(const Box& box, std::span<std::uint8_t> out,
     throw std::invalid_argument("Output buffer size does not match the region");
   }
   // Brick by brick, so that every brick is looked up once; a region that spans more bricks
-  // than the cache holds would otherwise load them again and again. The bricks are read in
-  // parallel; each fills its own voxels of `out`.
-  const std::int64_t b = impl_->info.brick_size;
-  // The strided voxels of axis a that lie in [lo, hi): first index and end index.
-  const auto range = [&](std::size_t a, std::int64_t lo, std::int64_t hi) {
-    const std::int64_t first = std::max<std::int64_t>(0, ceilDiv(lo - box.min[a], stride));
-    const std::int64_t last = std::min(count[a], ceilDiv(hi - box.min[a], stride));
-    return std::pair{first, std::max(first, last)};
-  };
-  std::vector<Index3> bricks;
-  if (count[0] > 0 && count[1] > 0 && count[2] > 0) {
-    Index3 lo{};
-    Index3 hi{};
-    for (std::size_t a = 0; a < 3; ++a) {
-      lo[a] = box.min[a] / b;
-      hi[a] = (box.min[a] + (count[a] - 1) * stride) / b;
-    }
-    for (std::int64_t z = lo[2]; z <= hi[2]; ++z) {
-      for (std::int64_t y = lo[1]; y <= hi[1]; ++y) {
-        for (std::int64_t x = lo[0]; x <= hi[0]; ++x) {
-          bricks.push_back({x, y, z});
-        }
-      }
-    }
-  }
-  tbb::parallel_for(std::size_t{0}, bricks.size(), [&](std::size_t n) {
-    const Index3& brick = bricks[n];
-    std::array<std::pair<std::int64_t, std::int64_t>, 3> ranges;
-    for (std::size_t a = 0; a < 3; ++a) {
-      ranges[a] = range(a, brick[a] * b, (brick[a] + 1) * b);
-    }
-    // The grid must outlive the accessor, which is registered with its tree.
-    const openvdb::Int32Grid::ConstPtr grid = impl_->brick(brick);
-    std::optional<openvdb::Int32Grid::ConstAccessor> accessor;
-    if (grid) {
-      accessor.emplace(grid->getConstAccessor());
-    }
-    for (std::int64_t k = ranges[2].first; k < ranges[2].second; ++k) {
-      for (std::int64_t j = ranges[1].first; j < ranges[1].second; ++j) {
-        auto offset = static_cast<std::size_t>((k * count[1] + j) * count[0] + ranges[0].first);
-        for (std::int64_t i = ranges[0].first; i < ranges[0].second; ++i) {
-          const openvdb::Coord voxel(static_cast<int>(box.min[0] + i * stride),
-                                     static_cast<int>(box.min[1] + j * stride),
-                                     static_cast<int>(box.min[2] + k * stride));
-          out[offset++] =
-              accessor ? static_cast<std::uint8_t>(accessor->getValue(voxel)) : std::uint8_t{0};
-        }
-      }
-    }
-  });
+  // than the cache holds would otherwise load them again and again.
+  impl_->read(0, box.min, count, stride, out);
 }
 
+void MaterialVolume::readLevel(int level, const Box& box, std::span<std::uint8_t> out) const {
+  if (level < 0 || static_cast<std::size_t>(level) > impl_->info.levels.size()) {
+    throw std::out_of_range("The material volume has no label level " + std::to_string(level));
+  }
+  if (static_cast<std::int64_t>(out.size()) != box.voxelCount()) {
+    throw std::invalid_argument("Output buffer size does not match the region");
+  }
+  impl_->read(level, box.min, {box.size(0), box.size(1), box.size(2)}, 1, out);
+}
+
+namespace detail {
+
+void writeMaterialLevels(const std::filesystem::path& dir, MaterialVolumeInfo& info) {
+  const std::int64_t b = info.brick_size;
+  info.levels.clear();
+  std::vector<Index3> below = info.bricks;
+  std::sort(below.begin(), below.end());
+  Index3 dims = info.dims;
+  // Until a level fits into one brick, like the levels of a dataset.
+  for (int level = 1; dims[0] > b || dims[1] > b || dims[2] > b; ++level) {
+    dims = {ceilDiv(dims[0], 2), ceilDiv(dims[1], 2), ceilDiv(dims[2], 2)};
+    std::vector<Index3> parents;
+    parents.reserve(below.size());
+    for (const Index3& child : below) {
+      parents.push_back({child[0] / 2, child[1] / 2, child[2] / 2});
+    }
+    std::sort(parents.begin(), parents.end());
+    parents.erase(std::unique(parents.begin(), parents.end()), parents.end());
+    std::filesystem::create_directories(dir / ("level" + std::to_string(level)));
+    std::vector<Index3> written;
+    std::mutex mutex;
+    // A brick in work holds its eight children and itself, pruned: a few MB.
+    runInFlight(parents.size(), tasksInMemory(std::uint64_t{64} << 20U), [&](std::size_t n) {
+      const Index3& parent = parents[n];
+      std::array<UInt8Grid::ConstPtr, 8> children;
+      std::array<std::optional<UInt8Grid::ConstAccessor>, 8> access;
+      for (std::size_t d = 0; d < 8; ++d) {
+        const Index3 child{2 * parent[0] + static_cast<std::int64_t>(d & 1U),
+                           2 * parent[1] + static_cast<std::int64_t>((d >> 1U) & 1U),
+                           2 * parent[2] + static_cast<std::int64_t>((d >> 2U) & 1U)};
+        if (std::binary_search(below.begin(), below.end(), child)) {
+          const LabelGrid grid = readLabelBrick(materialBrickFile(dir, child, level - 1));
+          children[d] = std::get<UInt8Grid::ConstPtr>(grid);
+          access[d].emplace(children[d]->getConstAccessor());
+        }
+      }
+      const auto child_value = [&](const openvdb::Coord& c, std::uint8_t& value) {
+        const auto d = static_cast<std::size_t>(((c.x() / b) & 1) | (((c.y() / b) & 1) << 1) |
+                                                (((c.z() / b) & 1) << 2));
+        return access[d] && access[d]->probeValue(c, value) && value != 0;
+      };
+      const auto out = UInt8Grid::create(0);
+      // Uniform tiles of the children become tiles of half the size.
+      std::vector<openvdb::Coord> origins;
+      for (const UInt8Grid::ConstPtr& child : children) {
+        if (!child) {
+          continue;
+        }
+        for (auto it = child->tree().cbeginValueOn(); it; ++it) {
+          if (!it.isVoxelValue()) {
+            openvdb::CoordBBox box;
+            it.getBoundingBox(box);
+            out->tree().fill(
+                openvdb::CoordBBox(
+                    openvdb::Coord(box.min().x() >> 1, box.min().y() >> 1, box.min().z() >> 1),
+                    openvdb::Coord(box.max().x() >> 1, box.max().y() >> 1, box.max().z() >> 1)),
+                *it, true);
+          }
+        }
+        for (auto leaf = child->tree().cbeginLeaf(); leaf; ++leaf) {
+          const openvdb::Coord o = leaf->origin();
+          origins.emplace_back((o.x() >> 1) & ~7, (o.y() >> 1) & ~7, (o.z() >> 1) & ~7);
+        }
+      }
+      std::sort(origins.begin(), origins.end());
+      origins.erase(std::unique(origins.begin(), origins.end()), origins.end());
+      // Each voxel under a child leaf: the material most of its eight children have.
+      auto accessor = out->getAccessor();
+      for (const openvdb::Coord& origin : origins) {
+        for (int z = 0; z < 8; ++z) {
+          for (int y = 0; y < 8; ++y) {
+            for (int x = 0; x < 8; ++x) {
+              const openvdb::Coord v = origin.offsetBy(x, y, z);
+              std::array<std::uint8_t, 8> values{};
+              std::size_t found = 0;
+              for (int d = 0; d < 8; ++d) {
+                std::uint8_t value = 0;
+                if (child_value(openvdb::Coord(2 * v.x() + (d & 1), 2 * v.y() + ((d >> 1) & 1),
+                                               2 * v.z() + ((d >> 2) & 1)),
+                                value)) {
+                  values[found++] = value;
+                }
+              }
+              if (found == 0) {
+                if (accessor.isValueOn(v)) {
+                  accessor.setValueOff(v, 0);
+                }
+                continue;
+              }
+              std::uint8_t best = values[0];
+              std::size_t best_count = 0;
+              for (std::size_t i = 0; i < found; ++i) {
+                const auto count = static_cast<std::size_t>(
+                    std::count(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(found),
+                               values[i]));
+                if (count > best_count || (count == best_count && values[i] < best)) {
+                  best = values[i];
+                  best_count = count;
+                }
+              }
+              accessor.setValue(v, best);
+            }
+          }
+        }
+      }
+      out->tree().prune();
+      if (out->activeVoxelCount() == 0) {
+        return;
+      }
+      out->setName("material");
+      out->setTransform(detail::voxelTransform(info.voxel_size, level));
+      writeVdb(materialBrickFile(dir, parent, level), {out});
+      const std::scoped_lock lock(mutex);
+      written.push_back(parent);
+    });
+    std::sort(written.begin(), written.end());
+    info.levels.push_back(written);
+    below = std::move(written);
+  }
+}
+
+}  // namespace detail
 MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSource& labels,
                              const Dataset& dataset, const std::vector<std::int64_t>& part_starts,
                              int part_axis, const std::optional<Box>& region) {
@@ -1013,47 +1237,83 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
       throw std::invalid_argument("The scoring region lies outside the volume");
     }
   }
-  // Slabs of one brick height along z keep memory bounded.
-  const std::int64_t slab = info.brick_size;
-  const auto slabs = ceilDiv(scored.size(2), slab);
-  const auto slab_box = [&](std::int64_t s) {
-    return Box{
-        {scored.min[0], scored.min[1], scored.min[2] + s * slab},
-        {scored.max[0], scored.max[1], std::min(scored.min[2] + (s + 1) * slab, scored.max[2])}};
+  // Tiles of the bricks, scored in parallel: memory is a brick of labels and grey values per
+  // thread, and each brick is read once. Components are found by an array per part, indexed by
+  // the 16-bit label, instead of a hash lookup per voxel.
+  const std::int64_t b = info.brick_size;
+  std::vector<Box> tiles;
+  for (std::int64_t z = scored.min[2]; z < scored.max[2]; z = (z / b + 1) * b) {
+    for (std::int64_t y = scored.min[1]; y < scored.max[1]; y = (y / b + 1) * b) {
+      for (std::int64_t x = scored.min[0]; x < scored.max[0]; x = (x / b + 1) * b) {
+        tiles.push_back(
+            {{x, y, z},
+             {std::min((x / b + 1) * b, scored.max[0]), std::min((y / b + 1) * b, scored.max[1]),
+              std::min((z / b + 1) * b, scored.max[2])}});
+      }
+    }
+  }
+  const std::size_t parts = part_starts.size() + 1;
+  constexpr std::size_t kLabels = std::size_t{1} << 16U;
+  const auto key_of = [&](std::int64_t position, std::uint16_t label) {
+    return static_cast<std::size_t>(part(position)) * kLabels + label;
   };
 
   // Pass 1: grey-value histogram per component (bins of 16 grey values).
   constexpr std::size_t kBins = 4096;
-  using Histograms = std::unordered_map<std::uint64_t, std::vector<std::uint32_t>>;
-  Histograms histograms;
-  for (std::int64_t s = 0; s < slabs; ++s) {
-    const Box box = slab_box(s);
-    std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
-    std::vector<float> grey(label.size());
-    labels.readRegion(box, label);
-    dataset.readRegion(0, box, grey, dataset.info().air_level);
-    std::size_t index = 0;
-    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-        for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
-          if (label[index] == 0) {
-            continue;
+  struct Histograms {
+    std::vector<std::int32_t> slot;  // per key: index into `bins`, or -1
+    std::vector<std::vector<std::uint32_t>> bins;
+    std::vector<std::size_t> keys;
+  };
+  tbb::combinable<Histograms> partial_histograms(
+      [&] { return Histograms{std::vector<std::int32_t>(parts * kLabels, -1), {}, {}}; });
+  tbb::parallel_for(std::size_t{0}, tiles.size(), [&](std::size_t t) {
+    tbb::this_task_arena::isolate([&] {
+      const Box& box = tiles[t];
+      std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
+      std::vector<float> grey(label.size());
+      labels.readRegion(box, label);
+      dataset.readRegion(0, box, grey, dataset.info().air_level);
+      Histograms& local = partial_histograms.local();
+      std::size_t index = 0;
+      for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+          for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
+            if (label[index] == 0) {
+              continue;
+            }
+            const Index3 p{x, y, z};
+            const std::size_t key = key_of(p[axis], label[index]);
+            if (local.slot[key] < 0) {
+              local.slot[key] = static_cast<std::int32_t>(local.bins.size());
+              local.bins.emplace_back(kBins, 0U);
+              local.keys.push_back(key);
+            }
+            ++local.bins[static_cast<std::size_t>(local.slot[key])]
+                        [static_cast<std::size_t>(std::clamp(grey[index], 0.0F, 65535.0F)) / 16];
           }
-          const Index3 p{x, y, z};
-          const std::uint64_t key = (std::uint64_t{part(p[axis])} << 16U) | label[index];
-          auto& histogram = histograms[key];
-          if (histogram.empty()) {
-            histogram.assign(kBins, 0);
-          }
-          ++histogram[static_cast<std::size_t>(std::clamp(grey[index], 0.0F, 65535.0F)) / 16];
+        }
+      }
+    });
+  });
+  std::map<std::size_t, std::vector<std::uint32_t>> histograms;  // in key order
+  partial_histograms.combine_each([&](Histograms& local) {
+    for (std::size_t i = 0; i < local.keys.size(); ++i) {
+      auto& histogram = histograms[local.keys[i]];
+      if (histogram.empty()) {
+        histogram = std::move(local.bins[i]);
+      } else {
+        for (std::size_t bin = 0; bin < kBins; ++bin) {
+          histogram[bin] += local.bins[i][bin];
         }
       }
     }
-  }
+    local = {};
+  });
   MaterialScore score;
   const std::size_t classes = info.materials.size() + 1;
   score.components_per_material.assign(classes, 0);
-  std::unordered_map<std::uint64_t, std::uint8_t> truth;
+  std::vector<std::uint8_t> truth(parts * kLabels, 0);
   for (const auto& [key, histogram] : histograms) {
     const std::uint64_t total =
         std::accumulate(histogram.begin(), histogram.end(), std::uint64_t{0});
@@ -1069,30 +1329,45 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
     ++score.components_per_material[id];
   }
 
+  histograms.clear();
+
   // Pass 2: confusion matrix.
-  score.confusion.assign(classes, std::vector<std::int64_t>(classes, 0));
-  for (std::int64_t s = 0; s < slabs; ++s) {
-    const Box box = slab_box(s);
-    std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
-    std::vector<std::uint8_t> segmented(label.size());
-    labels.readRegion(box, label);
-    segmentation.readRegion(box, segmented);
-    std::size_t index = 0;
-    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
-        for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
-          std::uint8_t t = 0;
-          if (label[index] != 0) {
-            const Index3 p{x, y, z};
-            t = truth.at((std::uint64_t{part(p[axis])} << 16U) | label[index]);
+  using Confusion = std::vector<std::vector<std::int64_t>>;
+  tbb::combinable<Confusion> partial_confusion(
+      [&] { return Confusion(classes, std::vector<std::int64_t>(classes, 0)); });
+  tbb::parallel_for(std::size_t{0}, tiles.size(), [&](std::size_t t) {
+    tbb::this_task_arena::isolate([&] {
+      const Box& box = tiles[t];
+      std::vector<std::uint16_t> label(static_cast<std::size_t>(box.voxelCount()));
+      std::vector<std::uint8_t> segmented(label.size());
+      labels.readRegion(box, label);
+      segmentation.readRegion(box, segmented);
+      Confusion& confusion = partial_confusion.local();
+      std::size_t index = 0;
+      for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+        for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+          for (std::int64_t x = box.min[0]; x < box.max[0]; ++x, ++index) {
+            std::uint8_t truth_id = 0;
+            if (label[index] != 0) {
+              const Index3 p{x, y, z};
+              truth_id = truth[key_of(p[axis], label[index])];
+            }
+            ++confusion[truth_id][std::min<std::size_t>(segmented[index], classes - 1)];
           }
-          ++score.confusion[t][std::min<std::size_t>(segmented[index], classes - 1)];
         }
       }
+    });
+  });
+  score.confusion.assign(classes, std::vector<std::int64_t>(classes, 0));
+  partial_confusion.combine_each([&](const Confusion& local) {
+    for (std::size_t t = 0; t < classes; ++t) {
+      for (std::size_t m = 0; m < classes; ++m) {
+        score.confusion[t][m] += local[t][m];
+      }
     }
-  }
-  const auto dice = [](double overlap, double a, double b) {
-    return a + b > 0.0 ? 2.0 * overlap / (a + b) : 1.0;
+  });
+  const auto dice = [](double overlap, double first, double second) {
+    return first + second > 0.0 ? 2.0 * overlap / (first + second) : 1.0;
   };
   score.dice.assign(classes, 0.0);
   double labelled = 0.0;
@@ -1126,10 +1401,20 @@ std::array<std::uint8_t, 3> materialColor(int id) {
 }
 
 std::filesystem::path materialBrickFile(const std::filesystem::path& dir,
-                                        const std::array<std::int64_t, 3>& brick) {
-  return dir / "level0" /
+                                        const std::array<std::int64_t, 3>& brick, int level) {
+  return dir / ("level" + std::to_string(level)) /
          (std::to_string(brick[0]) + "_" + std::to_string(brick[1]) + "_" +
           std::to_string(brick[2]) + ".vdb");
+}
+
+void writeMaterialBrick(const std::filesystem::path& dir, const std::array<std::int64_t, 3>& brick,
+                        openvdb::Int32Grid& grid) {
+  // In 8 bit (ids are at most 255), pruned.
+  const auto labels = UInt8Grid::create(std::make_shared<UInt8Grid::TreeType>(grid.tree()));
+  labels->tree().prune();
+  labels->setName("material");
+  labels->setTransform(grid.transform().copy());
+  writeVdb(materialBrickFile(dir, brick), {labels});
 }
 
 void writeMaterialVolumeInfo(const std::filesystem::path& dir, const MaterialVolumeInfo& info) {

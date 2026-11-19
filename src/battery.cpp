@@ -2,6 +2,7 @@
 
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
+#include <tbb/enumerable_thread_specific.h>
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
@@ -162,10 +163,10 @@ std::pair<int, int> planeAxes(int axis) {
   return axis == 0 ? std::pair{1, 2} : (axis == 1 ? std::pair{0, 2} : std::pair{0, 1});
 }
 
-Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const Index3& lo,
-                const Index3& hi, float fill) {
+/// Reads a plane into `plane`, reusing its memory.
+void readPlaneInto(Plane& plane, const VolumeView& volume, int axis, std::int64_t index,
+                   const Index3& lo, const Index3& hi, float fill) {
   const auto [u, v] = planeAxes(axis);
-  Plane plane;
   plane.u_axis = u;
   plane.v_axis = v;
   plane.u0 = lo[at(u)];
@@ -181,6 +182,12 @@ Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const In
   box.max[at(axis)] = index + 1;
   plane.values.resize(at(box.voxelCount()));
   volume.readRegion(box, plane.values, fill);
+}
+
+Plane readPlane(const VolumeView& volume, int axis, std::int64_t index, const Index3& lo,
+                const Index3& hi, float fill) {
+  Plane plane;
+  readPlaneInto(plane, volume, axis, index, lo, hi, fill);
   return plane;
 }
 
@@ -1189,6 +1196,7 @@ void separateStructures(BatteryResult& result, const BatteryOptions& options) {
 void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, BatteryResult& result,
                            const BatteryOptions& options) {
   const TelemetryPhase phase("particles and voids");
+  options.progress.check();
   const DatasetInfo& info = dataset.info();
   using Found = std::vector<std::pair<std::uint64_t, float>>;
   tbb::combinable<Found> bright;
@@ -1196,30 +1204,37 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
   const auto particle = static_cast<float>(result.particle_threshold);
   const auto gas = static_cast<float>(result.void_threshold);
   const Index3 dims = info.dims;
+  // The limit holds for all threads together, so that no more than about kMaxFindingVoxels pile
+  // up before the error: counted per thread, each of them could collect that many.
+  std::atomic<std::size_t> found{0};
   std::atomic<bool> too_many{false};
-  dataset.forEachGrid(0, [&](const Index3& /*brick*/, const auto& grid) {
-    Found& b = bright.local();
-    Found& d = dark.local();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const auto value = static_cast<float>(*it);
-        if (value < particle && value > gas) {
-          continue;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& /*brick*/, const auto& grid) {
+        Found& b = bright.local();
+        Found& d = dark.local();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf && !too_many; ++leaf) {
+          const std::size_t before = b.size() + d.size();
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const auto value = static_cast<float>(*it);
+            if (value < particle && value > gas) {
+              continue;
+            }
+            const auto c = it.getCoord();
+            const Index3 v{c.x(), c.y(), c.z()};
+            if (!in_region(v, value >= particle)) {
+              continue;
+            }
+            const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
+            (value >= particle ? b : d).emplace_back(key, value);
+          }
+          if (found.fetch_add(b.size() + d.size() - before) + (b.size() + d.size() - before) >
+              kMaxFindingVoxels) {
+            too_many = true;
+          }
         }
-        const auto c = it.getCoord();
-        const Index3 v{c.x(), c.y(), c.z()};
-        if (!in_region(v, value >= particle)) {
-          continue;
-        }
-        const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
-        (value >= particle ? b : d).emplace_back(key, value);
-      }
-      if (b.size() + d.size() > kMaxFindingVoxels) {
-        too_many = true;
-        return;
-      }
-    }
-  });
+      },
+      BrickSweep{.progress = options.progress});
   if (too_many) {
     throw std::runtime_error(
         "Too many voxels above the particle threshold or below the void threshold in the "
@@ -1405,6 +1420,7 @@ void fitCentreLine(CylinderData& data, const std::vector<BatterySection>& sectio
 void cylinderSections(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result) {
   const TelemetryPhase phase("cross-sections");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
@@ -1723,6 +1739,7 @@ void edgeOverhang(std::vector<SectionImage>& images, const std::vector<double>& 
 void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result, std::vector<SectionImage>& worst) {
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
@@ -1771,31 +1788,39 @@ void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, C
       image.valid_across = std::clamp<std::int64_t>(
           static_cast<std::int64_t>(std::floor((wall - across_from) / data.step)) - 1, 0, across);
     }
-    tbb::parallel_for(
-        tbb::blocked_range<std::int64_t>(0, rows),
-        [&](const tbb::blocked_range<std::int64_t>& range) {
-          for (std::int64_t s = range.begin(); s != range.end(); ++s) {
-            const std::int64_t index = start + (side == 0 ? -s : s);
-            const Plane plane = readPlane(volume, a, index, lo, hi, info.air_level);
-            const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
-            for (int j = 0; j < n_angles; ++j) {
-              const double angle = 2.0 * kPi * j / n_angles;
-              const double c = std::cos(angle);
-              const double sn = std::sin(angle);
-              SectionImage& image = images[at(j)];
-              for (std::int64_t i = 0; i < across; ++i) {
-                const double r = across_from + static_cast<double>(i) * data.step;
-                double sum = 0.0;
-                for (int t = -options.average_voxels; t <= options.average_voxels; ++t) {
-                  const double off = t * data.step;
-                  sum += plane.sample(centre[0] + r * c - off * sn, centre[1] + r * sn + off * c);
+    // One plane buffer per thread for all its rows, instead of a new one per row. The rows go in
+    // chunks of 128, each in parallel: all threads read the bricks of one or two brick layers,
+    // which the cache holds, instead of rows from all over the cell at once (X3).
+    tbb::enumerable_thread_specific<Plane> planes;
+    constexpr std::int64_t kRowChunk = 128;
+    for (std::int64_t chunk = 0; chunk < rows; chunk += kRowChunk) {
+      tbb::parallel_for(
+          tbb::blocked_range<std::int64_t>(chunk, std::min(rows, chunk + kRowChunk)),
+          [&](const tbb::blocked_range<std::int64_t>& range) {
+            Plane& plane = planes.local();
+            for (std::int64_t s = range.begin(); s != range.end(); ++s) {
+              const std::int64_t index = start + (side == 0 ? -s : s);
+              readPlaneInto(plane, volume, a, index, lo, hi, info.air_level);
+              const auto centre = data.centre(static_cast<double>(index) * pitch[at(a)]);
+              for (int j = 0; j < n_angles; ++j) {
+                const double angle = 2.0 * kPi * j / n_angles;
+                const double c = std::cos(angle);
+                const double sn = std::sin(angle);
+                SectionImage& image = images[at(j)];
+                for (std::int64_t i = 0; i < across; ++i) {
+                  const double r = across_from + static_cast<double>(i) * data.step;
+                  double sum = 0.0;
+                  for (int t = -options.average_voxels; t <= options.average_voxels; ++t) {
+                    const double off = t * data.step;
+                    sum += plane.sample(centre[0] + r * c - off * sn, centre[1] + r * sn + off * c);
+                  }
+                  image.values[at(i + across * s)] =
+                      static_cast<float>(sum / (2 * options.average_voxels + 1));
                 }
-                image.values[at(i + across * s)] =
-                    static_cast<float>(sum / (2 * options.average_voxels + 1));
               }
             }
-          }
-        });
+          });
+    }
     std::vector<double> angles(at(n_angles));
     for (int j = 0; j < n_angles; ++j) {
       angles[at(j)] = 360.0 * j / n_angles;
@@ -1968,6 +1993,7 @@ std::vector<double> stackProfile(const VolumeView& volume, const StackData& data
 void stackSections(const VolumeView& volume, const BatteryOptions& options, StackData& data,
                    BatteryResult& result) {
   const TelemetryPhase phase("profiles");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const auto air = static_cast<double>(info.air_level);
@@ -2105,6 +2131,7 @@ void stackOverhang(const VolumeView& volume, const BatteryOptions& options, Stac
     return;
   }
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int per_edge = std::max(3, options.overhang_sections / 4);
@@ -2451,6 +2478,7 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
   Overview box;
   {
     const TelemetryPhase phase("overview");
+    options.progress.check();
     box = overview(dataset, options, result.warnings);
   }
   extras.box = box;
@@ -2773,6 +2801,7 @@ Overview imageOverview(const ImageCell& cell) {
 void imageOverhang(const ImageCell& cell, const BatteryOptions& options, const CylinderData& data,
                    BatteryResult& result, std::vector<SectionImage>& worst) {
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   double core_min = kNaN;
   double inner_max = kNaN;
   for (std::size_t k = 0; k < data.core.size(); ++k) {
@@ -2993,6 +3022,7 @@ void leaveOutVoidsBeyondTheEnds(const ImageCell& cell, const std::vector<double>
 void imageFindings(const ImageCell& cell, const InRegion& in_region, const CylinderData& data,
                    BatteryResult& result, const BatteryOptions& options) {
   const TelemetryPhase phase("particles and voids");
+  options.progress.check();
   const auto particle = static_cast<float>(result.particle_threshold);
   const auto gas = static_cast<float>(result.void_threshold);
   const VoxelSize pitch(cell.pixel);

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/transform.hpp"
 #include "voxelsieve/voxel_size.hpp"
@@ -81,6 +82,8 @@ struct CompareOptions {
     double stiffness = 1.0;
   };
   Deformation deformation;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 [[nodiscard]] const char* toString(CompareOptions::Alignment alignment);

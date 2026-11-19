@@ -2,21 +2,28 @@
 
 #include <openvdb/openvdb.h>
 #include <tbb/blocked_range.h>
-#include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_pipeline.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <map>
+#include <mutex>
 #include <numbers>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "detail/png.hpp"
+#include "detail/sweep.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/vdb.hpp"
@@ -255,21 +262,22 @@ Vec canonical(Vec p) {
   return p;
 }
 
-/// Directions of the blocks of row (by, bz) along x.
-std::vector<OrientationBlock> analyzeRow(const Dataset& dataset, const OrientationOptions& options,
-                                         int material, std::span<const float> kernel,
-                                         std::int64_t by, std::int64_t bz) {
+/// Directions of the blocks [first, last) of a tile, read at once with a halo for smoothing and
+/// gradients.
+std::vector<OrientationBlock> analyzeTile(const Dataset& dataset, const OrientationOptions& options,
+                                          int material, std::span<const float> kernel,
+                                          const Index3& first, const Index3& last) {
   const DatasetInfo& info = dataset.info();
   const std::int64_t b = options.block_size;
   const auto halo = static_cast<std::int64_t>(kernel.size() / 2) + 1;
-  const std::int64_t blocks_x = (info.dims[0] + b - 1) / b;
   const auto min_voxels =
       static_cast<std::int64_t>(std::ceil(options.min_fill * static_cast<double>(b * b * b)));
   std::vector<OrientationBlock> found;
-  // The whole row of blocks along x, with a halo for smoothing and gradients.
   Box box;
-  box.min = {0, by * b - halo, bz * b - halo};
-  box.max = {info.dims[0], (by + 1) * b + halo, (bz + 1) * b + halo};
+  for (std::size_t a = 0; a < 3; ++a) {
+    box.min[a] = first[a] * b - halo;
+    box.max[a] = last[a] * b + halo;
+  }
   Box inner = box;
   for (std::size_t a = 0; a < 3; ++a) {
     inner.min[a] = std::max<std::int64_t>(0, box.min[a]);
@@ -303,53 +311,60 @@ std::vector<OrientationBlock> analyzeRow(const Dataset& dataset, const Orientati
   const auto at = [&](std::int64_t x, std::int64_t y, std::int64_t z) {
     return static_cast<std::size_t>(x + n[0] * (y + n[1] * z));
   };
-  for (std::int64_t bx = 0; bx < blocks_x; ++bx) {
-    Mat j{};
-    std::int64_t count = 0;
-    for (std::int64_t z = bz * b; z < std::min(info.dims[2], (bz + 1) * b); ++z) {
-      for (std::int64_t y = by * b; y < std::min(info.dims[1], (by + 1) * b); ++y) {
-        for (std::int64_t x = bx * b; x < std::min(info.dims[0], (bx + 1) * b); ++x) {
-          const std::int64_t lx = x - inner.min[0];
-          const std::int64_t ly = y - inner.min[1];
-          const std::int64_t lz = z - inner.min[2];
-          if (lx < 1 || ly < 1 || lz < 1 || lx + 1 >= n[0] || ly + 1 >= n[1] || lz + 1 >= n[2]) {
-            continue;
-          }
-          // The voxel and its face neighbours analysed: no gradients across the material's
-          // boundary, which runs along its surface and not along the fibres.
-          if (mask[at(lx, ly, lz)] == 0 || mask[at(lx - 1, ly, lz)] == 0 ||
-              mask[at(lx + 1, ly, lz)] == 0 || mask[at(lx, ly - 1, lz)] == 0 ||
-              mask[at(lx, ly + 1, lz)] == 0 || mask[at(lx, ly, lz - 1)] == 0 ||
-              mask[at(lx, ly, lz + 1)] == 0) {
-            continue;
-          }
-          // Gradient in grey value per mm, so that non-cubic voxels give true directions.
-          const Vec g{
-              (grey[at(lx + 1, ly, lz)] - grey[at(lx - 1, ly, lz)]) / (2.0 * info.voxel_size[0]),
-              (grey[at(lx, ly + 1, lz)] - grey[at(lx, ly - 1, lz)]) / (2.0 * info.voxel_size[1]),
-              (grey[at(lx, ly, lz + 1)] - grey[at(lx, ly, lz - 1)]) / (2.0 * info.voxel_size[2])};
-          for (std::size_t r = 0; r < 3; ++r) {
-            for (std::size_t c = r; c < 3; ++c) {
-              j[3 * r + c] += g[r] * g[c];
+  for (std::int64_t bz = first[2]; bz < last[2]; ++bz) {
+    for (std::int64_t by = first[1]; by < last[1]; ++by) {
+      for (std::int64_t bx = first[0]; bx < last[0]; ++bx) {
+        Mat j{};
+        std::int64_t count = 0;
+        for (std::int64_t z = bz * b; z < std::min(info.dims[2], (bz + 1) * b); ++z) {
+          for (std::int64_t y = by * b; y < std::min(info.dims[1], (by + 1) * b); ++y) {
+            for (std::int64_t x = bx * b; x < std::min(info.dims[0], (bx + 1) * b); ++x) {
+              const std::int64_t lx = x - inner.min[0];
+              const std::int64_t ly = y - inner.min[1];
+              const std::int64_t lz = z - inner.min[2];
+              if (lx < 1 || ly < 1 || lz < 1 || lx + 1 >= n[0] || ly + 1 >= n[1] ||
+                  lz + 1 >= n[2]) {
+                continue;
+              }
+              // The voxel and its face neighbours analysed: no gradients across the material's
+              // boundary, which runs along its surface and not along the fibres.
+              if (mask[at(lx, ly, lz)] == 0 || mask[at(lx - 1, ly, lz)] == 0 ||
+                  mask[at(lx + 1, ly, lz)] == 0 || mask[at(lx, ly - 1, lz)] == 0 ||
+                  mask[at(lx, ly + 1, lz)] == 0 || mask[at(lx, ly, lz - 1)] == 0 ||
+                  mask[at(lx, ly, lz + 1)] == 0) {
+                continue;
+              }
+              // Gradient in grey value per mm, so that non-cubic voxels give true directions.
+              const Vec g{(grey[at(lx + 1, ly, lz)] - grey[at(lx - 1, ly, lz)]) /
+                              (2.0 * info.voxel_size[0]),
+                          (grey[at(lx, ly + 1, lz)] - grey[at(lx, ly - 1, lz)]) /
+                              (2.0 * info.voxel_size[1]),
+                          (grey[at(lx, ly, lz + 1)] - grey[at(lx, ly, lz - 1)]) /
+                              (2.0 * info.voxel_size[2])};
+              for (std::size_t r = 0; r < 3; ++r) {
+                for (std::size_t c = r; c < 3; ++c) {
+                  j[3 * r + c] += g[r] * g[c];
+                }
+              }
+              ++count;
             }
           }
-          ++count;
         }
+        if (count < min_voxels) {
+          continue;
+        }
+        j[3] = j[1];
+        j[6] = j[2];
+        j[7] = j[5];
+        const auto [values, vectors] = symmetricEigen(j);
+        OrientationBlock block;
+        block.block = {bx, by, bz};
+        block.direction = canonical(vectors[2]);
+        block.coherence = values[1] > 0.0 ? std::clamp(1.0 - values[2] / values[1], 0.0, 1.0) : 0.0;
+        block.voxels = count;
+        found.push_back(block);
       }
     }
-    if (count < min_voxels) {
-      continue;
-    }
-    j[3] = j[1];
-    j[6] = j[2];
-    j[7] = j[5];
-    const auto [values, vectors] = symmetricEigen(j);
-    OrientationBlock block;
-    block.block = {bx, by, bz};
-    block.direction = canonical(vectors[2]);
-    block.coherence = values[1] > 0.0 ? std::clamp(1.0 - values[2] / values[1], 0.0, 1.0) : 0.0;
-    block.voxels = count;
-    found.push_back(block);
   }
   return found;
 }
@@ -379,22 +394,80 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
   const std::vector<float> kernel = gaussianKernel(options.smoothing_sigma);
   const Index3 blocks{(info.dims[0] + b - 1) / b, (info.dims[1] + b - 1) / b,
                       (info.dims[2] + b - 1) / b};
-  // Blocks are analysed in slabs of one block row, in parallel.
-  const std::int64_t rows = blocks[1] * blocks[2];
+  // Blocks are analysed in tiles of about a brick, each read once with its halo: rows of blocks
+  // through the whole width decoded every brick once per row. Tiles go in Morton order through a
+  // pipeline with few tokens, so the bricks in use, halos included, stay a small window that the
+  // cache holds.
+  const std::int64_t per_tile =
+      std::max<std::int64_t>(1, std::min<std::int64_t>(info.brick_size, 128) / b);
+  const Index3 tiles{(blocks[0] + per_tile - 1) / per_tile, (blocks[1] + per_tile - 1) / per_tile,
+                     (blocks[2] + per_tile - 1) / per_tile};
+  std::vector<std::pair<std::uint64_t, Index3>> tile_order;
+  for (std::int64_t z = 0; z < tiles[2]; ++z) {
+    for (std::int64_t y = 0; y < tiles[1]; ++y) {
+      for (std::int64_t x = 0; x < tiles[0]; ++x) {
+        tile_order.emplace_back(detail::mortonKey(Index3{x, y, z}), Index3{x, y, z});
+      }
+    }
+  }
+  std::sort(tile_order.begin(), tile_order.end());
 
   std::optional<TelemetryPhase> phase(std::in_place, "structure tensor");
-  tbb::combinable<std::vector<OrientationBlock>> found;
-  tbb::parallel_for(tbb::blocked_range<std::int64_t>(0, rows), [&](const auto& range) {
-    auto& local = found.local();
-    for (std::int64_t row = range.begin(); row != range.end(); ++row) {
-      const std::vector<OrientationBlock> row_blocks =
-          analyzeRow(dataset, options, result.material, kernel, row % blocks[1], row / blocks[1]);
-      local.insert(local.end(), row_blocks.begin(), row_blocks.end());
-    }
-  });
-  found.combine_each([&](std::vector<OrientationBlock>& local) {
-    result.blocks.insert(result.blocks.end(), local.begin(), local.end());
-  });
+  std::size_t next = 0;
+  // A tile in work holds its grey values as floats and a mask byte, halo included.
+  const auto halo = static_cast<std::int64_t>(kernel.size() / 2) + 1;
+  const auto tile_edge = static_cast<std::uint64_t>(per_tile * b + 2 * halo);
+  ProgressSteps steps(options.progress, tile_order.size());
+  // A cancellation only stops new tiles; tiles in work pass the last stage (TBB does not destroy
+  // the results in flight of a cancelled pipeline), and it is thrown at the end.
+  std::mutex failure_mutex;
+  std::exception_ptr failure;
+  const auto failed = [&] {
+    const std::scoped_lock lock(failure_mutex);
+    return failure != nullptr || options.progress.cancelled();
+  };
+  tbb::parallel_pipeline(
+      tasksInMemory(tile_edge * tile_edge * tile_edge * 5),
+      tbb::make_filter<void, Index3>(tbb::filter_mode::serial_in_order,
+                                     [&](tbb::flow_control& control) -> Index3 {
+                                       if (next == tile_order.size() || failed()) {
+                                         control.stop();
+                                         return {};
+                                       }
+                                       return tile_order[next++].second;
+                                     }) &
+          tbb::make_filter<Index3, std::vector<OrientationBlock>>(
+              tbb::filter_mode::parallel,
+              [&](const Index3& tile) {
+                Index3 first{};
+                Index3 last{};
+                for (std::size_t a = 0; a < 3; ++a) {
+                  first[a] = tile[a] * per_tile;
+                  last[a] = std::min(blocks[a], first[a] + per_tile);
+                }
+                // Isolated, in a context of its own: the nested loops of readRegion must not start
+                // another tile here, nor stop halfway when the run is cancelled.
+                std::vector<OrientationBlock> found;
+                detail::runIsolated([&] {
+                  found = analyzeTile(dataset, options, result.material, kernel, first, last);
+                });
+                return found;
+              }) &
+          tbb::make_filter<std::vector<OrientationBlock>, void>(
+              tbb::filter_mode::serial_out_of_order,
+              [&](const std::vector<OrientationBlock>& tile_blocks) {
+                result.blocks.insert(result.blocks.end(), tile_blocks.begin(), tile_blocks.end());
+                try {
+                  steps.step();
+                } catch (...) {
+                  const std::scoped_lock lock(failure_mutex);
+                  failure = std::current_exception();
+                }
+              }));
+  if (failure) {
+    std::rethrow_exception(failure);
+  }
+  options.progress.check();
   std::sort(result.blocks.begin(), result.blocks.end(),
             [](const OrientationBlock& l, const OrientationBlock& r) {
               return std::tie(l.block[2], l.block[1], l.block[0]) <

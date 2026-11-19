@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -13,6 +14,7 @@
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/project.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -82,6 +84,30 @@ class Summarise final : public Operation {
   OperationInfo info_;
 };
 
+/// Declares what it needs (ADR 0034) and records whether it ran admitted.
+class Estimated final : public Operation {
+ public:
+  Estimated() {
+    info_.id = "estimated";
+    info_.title = "Estimated";
+    info_.outputs = {{"result", "result", ""}};
+    info_.parameters = {{"type", "object"},
+                        {"properties", {{"output_bytes", {{"type", "number"}}}}},
+                        {"required", {"output_bytes"}}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
+    return {std::uint64_t{1} << 20U, context.params.at("output_bytes").get<std::uint64_t>()};
+  }
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    std::ofstream(context.output_dir / "r") << "r";
+    return {{{"result", "r"}}, {{"admitted", admittedOperations()}}};
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 void expectNear(const Vec& actual, const Vec& expected) {
   for (std::size_t i = 0; i < 3; ++i) {
     EXPECT_NEAR(actual[i], expected[i], 1e-9) << "axis " << i;
@@ -107,6 +133,43 @@ class ObjectsTest : public ::testing::Test {
   std::filesystem::path dir_;
   OperationRegistry registry_;
 };
+
+TEST_F(ObjectsTest, ACopyRunningAStepAndTheUiSavingViewsMergeTheirParts) {
+  auto ui = Project::create(dir_ / "p", "Merge");
+  Project working = ui;  // as the GUI runs an operation on a copy
+  working.setSavePart(Project::SavePart::kSteps);
+  ui.setSavePart(Project::SavePart::kViews);
+  ui.setView({{"zoom", 2}});
+  (void)working.run(registry_, "fake_import", {{"path", "/scans/a.raw"}});
+  ui.setView({{"zoom", 3}});  // after the step was saved: keeps it
+  const Project reopened = Project::open(dir_ / "p");
+  EXPECT_EQ(reopened.steps().size(), 1U);
+  EXPECT_EQ(reopened.view().at("zoom"), 3);
+  // The copy saving again keeps the views on disk.
+  (void)working.run(registry_, "fake_import", {{"path", "/scans/b.raw"}});
+  const Project again = Project::open(dir_ / "p");
+  EXPECT_EQ(again.steps().size(), 2U);
+  EXPECT_EQ(again.view().at("zoom"), 3);
+}
+
+TEST_F(ObjectsTest, StepsRunAdmittedAndWithTheSpaceTheyDeclare) {
+  registry_.add(std::make_shared<Estimated>());
+  auto project = Project::create(dir_ / "p", "Estimates");
+  const Step done = project.run(registry_, "estimated", {{"output_bytes", 1024}});
+  EXPECT_EQ(done.status, "done");
+  EXPECT_EQ(done.summary.at("admitted"), 1);
+  EXPECT_EQ(admittedOperations(), 0);
+  // More than any disk holds: the step fails before it runs, and says why.
+  try {
+    (void)project.run(registry_, "estimated", {{"output_bytes", 1e18}});
+    FAIL() << "expected the free-space check to fail";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("Estimated needs about"), std::string::npos)
+        << error.what();
+  }
+  EXPECT_EQ(project.steps().back().status, "failed");
+  EXPECT_EQ(admittedOperations(), 0);
+}
 
 TEST_F(ObjectsTest, StepsThatMakeDataOfNoObjectCreateObjects) {
   auto project = Project::create(dir_ / "p", "Objects");

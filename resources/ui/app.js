@@ -444,48 +444,84 @@ function operationInfo(id) {
   return state.operations.find((operation) => operation.id === id);
 }
 
+/// Runs an operation in the background (review step 5.3): the call returns at once with a run id,
+/// and the busy dialog follows the run through `wait` until it ends, so a reload of the page finds
+/// the run again (resumeRun) instead of losing its progress and Cancel.
 async function runStep(operation, params) {
   clearError();
-  state.busy = true;
   const title = operationInfo(operation)?.title ?? operation;
+  showBusy(title);
+  let step = null;
+  try {
+    const started = await api('run_' + operation, { ...params, background: true });
+    step = await followRun(started.run_id);
+  } catch (error) {
+    showError(title + ': ' + error.message);
+  } finally {
+    hideBusy();
+  }
+  await refresh();
+  return step;
+}
+
+function showBusy(title) {
+  state.busy = true;
   $('busy-text').textContent = title + ' running …';
   $('busy-progress').removeAttribute('value');
   $('busy-preview').hidden = true;
   $('busy-cancel').disabled = false;
   $('busy').hidden = false;
   render();
+}
+
+function hideBusy() {
+  state.busy = false;
+  $('busy').hidden = true;
+  $('busy-preview').hidden = true;
+}
+
+/// Waits for the background run `id`, showing its progress and the preview of an import; returns
+/// its step (or the steps of a pipeline), or throws its error.
+async function followRun(id) {
   // Slices read by the preview shown; a staged import sends a sharper one after each round.
   let previewSlices = 0;
-  const poll = setInterval(async () => {
+  for (;;) {
+    const waited = await api('wait', { seconds: 0.5 });
+    if (waited.run_id !== id) throw new Error('Another run started');
+    if (waited.done) {
+      const result = waited.result;
+      if (result && result.status === 'failed' && result.error) throw new Error(result.error);
+      return result;
+    }
+    if (waited.running?.progress > 0) $('busy-progress').value = waited.running.progress;
     try {
       const status = await api('project_status');
-      if (status.running && status.running.progress > 0) {
-        $('busy-progress').value = status.running.progress;
-      }
       const slicesRead = status.running?.preview?.slices_read ?? 0;
       if (slicesRead > previewSlices) {
         previewSlices = slicesRead;
         await showImportPreview();
       }
     } catch {
-      // The next poll or the result will show the problem.
+      // The next round or the result shows the problem.
     }
-  }, 500);
-  let step = null;
+  }
+}
+
+/// After a reload: shows a run that is still going on and follows it to its end.
+async function resumeRun() {
+  const running = state.status?.running;
+  if (!running || !running.background || state.busy) return;
+  const title = operationInfo(running.operation)?.title ?? running.operation;
+  showBusy(title);
   try {
-    step = await api('run_' + operation, params);
+    await followRun(running.run_id);
   } catch (error) {
     showError(title + ': ' + error.message);
   } finally {
-    clearInterval(poll);
-    state.busy = false;
-    $('busy').hidden = true;
-    $('busy-preview').hidden = true;
+    hideBusy();
   }
   await refresh();
-  return step;
 }
-
 /// Shows the preview of a volume while its import runs (ADR 0020): first a few slices spread over
 /// the volume, read first, with their histogram and the estimated threshold; then, while a
 /// staged import copies the rest, sharper ones, until the histogram holds the whole volume.
@@ -2691,6 +2727,7 @@ async function start() {
   try {
     state.operations = (await api('list_operations')).operations;
     await refresh();
+    await resumeRun();
   } catch (error) {
     showError(error);
   }

@@ -30,6 +30,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
@@ -65,6 +66,9 @@ Grey values are stored in the input's width, 8 or 16 bit, unchanged (docs/adr/00
 Several inputs are joined one after another along --join (default z) into one volume, for scans
 reconstructed in parts. Their other dimensions and voxel sizes must match.
 
+An interrupted import into a dataset directory resumes when it is run again with the same input
+and options: the first pass and the bricks already written are skipped.
+
 Output:
   <dir>                   Bricked multi-resolution dataset (streaming, any volume size;
                           see docs/adr/0004). Used for every --out not ending in .vdb.
@@ -94,7 +98,7 @@ Options:
   --min-material <n>      Voxels above threshold for an 8^3 block to count as material
                           (default 1); raise it for noisy scans
   --staging-dir <dir>     TIFF stacks, datasets: where the input is first copied to a temporary
-                          raw file (2 bytes per voxel), so every slice is decoded only once
+                          raw file (1 or 2 bytes per voxel, as the input), so every slice is decoded once
                           (default: the output directory)
   --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
                           much slower when the slices of a brick layer do not fit in memory)
@@ -105,6 +109,8 @@ Options:
                           few slices spread over the volume, its sections and histogram with
                           the estimated threshold. A staged input rewrites it sharper as more
                           slices are copied. The import reads every slice only once
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -147,6 +153,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--dims") {

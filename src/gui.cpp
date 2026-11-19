@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <sstream>
@@ -22,6 +23,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/thickness.hpp"
 
 namespace voxelsieve {
@@ -209,7 +211,6 @@ constexpr std::size_t kMaxBrowsedEntries = 5000;
 constexpr std::size_t kOpenDatasets = 2;
 // Open datasets share one brick cache, so keeping more of them open costs only their index.
 constexpr std::size_t kOpenVolumes = 8;
-constexpr std::size_t kViewCacheBytes = std::size_t{1} << 30U;
 // Triangle budget of a volume's surface for its cut lines in slices.
 constexpr std::size_t kCutTriangles = 500000;
 // Colours of the objects in the order they were created, as OBJECT_COLORS in resources/ui/scene.js.
@@ -300,27 +301,52 @@ int axisIndex(const std::string& axis) {
   return axis == "y" ? 1 : 2;
 }
 
-/// Most recently used entry of a small cache, opened with `open` when missing.
+/// Most recently used entry of a small cache, opened with `open` when missing. `open` runs without
+/// `mutex`: other keys are served meanwhile, and callers of the same key wait for the one opening
+/// it. A failed open is not kept, so the next call tries again.
 template <typename Value, typename Open>
 std::shared_ptr<const Value> cached(
-    std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Value>>>& entries,
+    std::mutex& mutex,
+    std::vector<std::pair<std::filesystem::path, std::shared_future<std::shared_ptr<const Value>>>>&
+        entries,
     const std::filesystem::path& key, std::size_t capacity, const Open& open) {
-  for (auto it = entries.begin(); it != entries.end(); ++it) {
-    if (it->first == key) {
-      auto entry = *it;
-      entries.erase(it);
-      entries.push_back(entry);
-      return entry.second;
+  using Future = std::shared_future<std::shared_ptr<const Value>>;
+  std::promise<std::shared_ptr<const Value>> opening;
+  Future pending;
+  {
+    const std::scoped_lock lock(mutex);
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+      if (it->first == key) {
+        auto entry = std::move(*it);
+        entries.erase(it);
+        pending = entry.second;
+        entries.push_back(std::move(entry));
+        break;
+      }
+    }
+    if (!pending.valid()) {
+      entries.emplace_back(key, opening.get_future().share());
+      if (entries.size() > capacity) {
+        entries.erase(entries.begin());
+      }
     }
   }
-  auto value = open();
-  entries.emplace_back(key, value);
-  if (entries.size() > capacity) {
-    entries.erase(entries.begin());
+  if (pending.valid()) {
+    return pending.get();
   }
-  return value;
+  try {
+    auto value = open();
+    opening.set_value(value);
+    return value;
+  } catch (...) {
+    {
+      const std::scoped_lock lock(mutex);
+      std::erase_if(entries, [&](const auto& entry) { return entry.first == key; });
+    }
+    opening.set_exception(std::current_exception());
+    throw;
+  }
 }
-
 std::string lowerExtension(const std::filesystem::path& path) {
   std::string extension = path.extension().string();
   std::ranges::transform(extension, extension.begin(),
@@ -433,7 +459,10 @@ std::vector<std::filesystem::path> pluginPathFromEnvironment() {
 }
 
 Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
-    : view_cache_(std::make_shared<BrickCache>(kViewCacheBytes)) {
+    // The views' bricks are a share of the memory budget (ADR 0034), at least 512 MB; the cache
+    // counts against the budget, so operations get less work memory.
+    : view_cache_(std::make_shared<BrickCache>(static_cast<std::size_t>(
+          std::max<std::uint64_t>(std::uint64_t{512} << 20U, memoryBudgetBytes() / 16)))) {
   registerBuiltinOperations(registry_);
   for (const auto& dir : plugin_dirs) {
     for (std::string& message : registry_.loadPlugins(dir)) {
@@ -442,8 +471,15 @@ Gui::Gui(const std::vector<std::filesystem::path>& plugin_dirs)
   }
 }
 
+void Gui::cancel() {
+  const std::scoped_lock lock(mutex_);
+  if (cancel_) {
+    *cancel_ = true;
+  }
+}
+
 Gui::~Gui() {
-  cancel_ = true;
+  cancel();
   if (background_.joinable()) {
     background_.join();
   }
@@ -840,8 +876,11 @@ const Project& Gui::project() const {
 }
 
 Json Gui::status() const {
-  Json running =
-      running_ ? Json{{"operation", running_operation_}, {"progress", progress_.load()}} : Json();
+  Json running = running_ ? Json{{"operation", running_operation_},
+                                 {"progress", progress_.load()},
+                                 {"run_id", run_id_},
+                                 {"background", background_.joinable()}}
+                          : Json();
   if (running_ && !running_preview_.is_null()) {
     running["preview"] = running_preview_;
   }
@@ -920,16 +959,14 @@ std::filesystem::path Gui::artifactPath(const Json& params) const {
 }
 
 std::shared_ptr<const Dataset> Gui::openDataset(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(datasets_, dir, kOpenVolumes, [this, &dir] {
+  return cached(view_mutex_, datasets_, dir, kOpenVolumes, [this, &dir] {
     return std::make_shared<const Dataset>(
         Dataset::open(dir, view_cache_, BrickLoading::kOnAccess));
   });
 }
 
 std::shared_ptr<const PorosityResult> Gui::openPorosity(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(porosity_results_, dir, kOpenDatasets,
+  return cached(view_mutex_, porosity_results_, dir, kOpenDatasets,
                 [&dir] { return std::make_shared<const PorosityResult>(loadPorosityResult(dir)); });
 }
 
@@ -946,8 +983,7 @@ std::shared_ptr<const MaterialVolume> Gui::openMaterials(std::optional<int> mate
 }
 
 std::shared_ptr<const MaterialVolume> Gui::openMaterials(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(material_volumes_, dir, kOpenDatasets, [&dir] {
+  return cached(view_mutex_, material_volumes_, dir, kOpenDatasets, [&dir] {
     return std::make_shared<const MaterialVolume>(MaterialVolume::open(dir));
   });
 }
@@ -1127,6 +1163,10 @@ Gui::ThicknessTile Gui::thicknessTile(std::optional<int> thickness_step,
       box.max[va] > box.min[va]) {
     std::vector<float> values(static_cast<std::size_t>(box.voxelCount()));
     map->readRegion(request.level, box, values, std::numeric_limits<float>::quiet_NaN());
+    // Maps are stored in 16 bit with a scale (ADR 0030); NaN stays NaN.
+    for (float& value : values) {
+      value = static_cast<float>(info.value_mapping.toValue(value));
+    }
     for (std::int64_t y = box.min[va]; y < box.max[va]; ++y) {
       for (std::int64_t x = box.min[ua]; x < box.max[ua]; ++x) {
         std::array<std::int64_t, 3> p{};
@@ -1950,6 +1990,10 @@ Gui::PreparedRun Gui::prepareRun(RunRequest request) {
   }
   run.params = std::move(params);
   run.working = project();
+  run.cancel = cancel_;
+  // While it runs, the copy saves its steps and the project the views the UI saves (F2).
+  run.working->setSavePart(Project::SavePart::kSteps);
+  project().setSavePart(Project::SavePart::kViews);
   return run;
 }
 
@@ -1968,6 +2012,8 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
       throw std::invalid_argument("Operation '" + running_operation_ +
                                   "' is still running; wait for it or cancel it");
     }
+    cancel_ = std::make_shared<std::atomic<bool>>(false);
+    ++run_id_;
     first = prepareRun(std::move(requests.front()));
     requests.erase(requests.begin());
     running_ = true;
@@ -1975,7 +2021,6 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
     running_preview_ = nullptr;
     running_preview_png_.clear();
     progress_ = 0.0;
-    cancel_ = false;
     // The previous background thread has finished its operation; it is joined below, unlocked.
     finished = std::move(background_);
   }
@@ -2002,6 +2047,7 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
   });
   return {{"background", true},
           {"operation", operation},
+          {"run_id", run_id_},
           {"message", "Started in the background; call wait for its step, cancel to stop it"}};
 }
 
@@ -2037,7 +2083,7 @@ Json Gui::executeSequence(PreparedRun first, std::vector<RunRequest> rest,
                    std::make_move_iterator(more.end()));
       if (!queue.empty()) {
         next_operation = queue.front().operation;
-        if (cancel_) {
+        if (run.cancel && run.cancel->load()) {
           next_error = "Cancelled before '" + next_operation + "'";
         } else {
           try {
@@ -2126,6 +2172,7 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   const auto install = [this, &working] {
     const std::scoped_lock lock(mutex_);
     // Views saved while the operation ran went to the project, not to the working copy.
+    working.setSavePart(Project::SavePart::kAll);
     working.adoptViews(*project_);
     project_ = std::move(working);
   };
@@ -2136,7 +2183,7 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   };
   try {
     const Step& step = working.run(registry_, run.operation, run.params, run.inputs, report,
-                                   &cancel_, run.target, preview);
+                                   run.cancel.get(), run.target, preview);
     Json json = working.toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working.stepDir(step));
@@ -2178,9 +2225,10 @@ Json Gui::waitForOperation(double seconds) {
     finished.join();
     lock.lock();
   }
-  Json json = {{"done", !running_}, {"result", background_result_}};
+  Json json = {{"done", !running_}, {"result", background_result_}, {"run_id", run_id_}};
   if (running_) {
-    json["running"] = {{"operation", running_operation_}, {"progress", progress_.load()}};
+    json["running"] = {
+        {"operation", running_operation_}, {"progress", progress_.load()}, {"run_id", run_id_}};
   }
   return json;
 }
@@ -2311,8 +2359,8 @@ Json Gui::call(const std::string& method, const Json& arguments,
       return status();
     }
     if (method == "cancel") {
-      if (running_) {
-        cancel_ = true;
+      if (running_ && cancel_) {
+        *cancel_ = true;
       }
       return {{"cancelled", running_ ? Json(running_operation_) : Json()}};
     }

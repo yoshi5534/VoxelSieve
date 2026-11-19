@@ -47,6 +47,7 @@ add_library(voxelsieve SHARED
   battery_images.cpp
   cells.cpp
   porosity.cpp
+  progress.cpp
   region.cpp
   report.cpp
   template.cpp
@@ -61,7 +62,9 @@ add_library(voxelsieve SHARED
   dicom.cpp
   detail/blocks.cpp
   detail/components.cpp
+  detail/sweep.cpp
   detail/convolution.cpp
+  detail/mapped_read.cpp
   detail/voxel_distance.cpp
   detail/network.cpp
   detail/png.cpp
@@ -75,6 +78,7 @@ add_library(voxelsieve SHARED
   thickness_map.cpp
   dimensional.cpp
   render.cpp
+  resources.cpp
   synthetic.cpp
   telemetry.cpp
   tiff.cpp

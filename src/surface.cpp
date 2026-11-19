@@ -2,13 +2,14 @@
 
 #include <openvdb/math/Proximity.h>
 #include <openvdb/tools/Dense.h>
-#include <openvdb/tools/GridTransformer.h>
+#include <openvdb/tools/LevelSetSphere.h>
 #include <openvdb/tools/SignedFloodFill.h>
 #include <openvdb/tools/VolumeToMesh.h>
 #include <tbb/blocked_range.h>
 #include <tbb/combinable.h>
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_pipeline.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <bit>
@@ -18,16 +19,22 @@
 #include <boost/iostreams/filtering_stream.hpp>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <fstream>
+#include <initializer_list>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "detail/png.hpp"
+#include "detail/sweep.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/io.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -41,8 +48,6 @@ constexpr std::string_view kMagic = "VSSURF1\n";
 constexpr std::string_view kEndMagic = "VSSEND1\n";
 constexpr std::size_t kTableEntryBytes = 17;  // kind, offset, size
 constexpr std::size_t kTrailerBytes = 4 * sizeof(std::uint64_t) + kEndMagic.size();
-/// Chunks processed at the same time by the writer; bounds its memory.
-constexpr std::size_t kChunksInFlight = 4;
 
 enum class BlockKind : std::uint8_t { kOutside = 0, kInside = 1, kSurface = 2 };
 
@@ -78,19 +83,52 @@ std::vector<char> compress(const std::vector<char>& data, int level) {
   return out;
 }
 
-std::vector<char> decompress(const char* data, std::size_t size, std::size_t expected) {
+/// A sink that keeps at most `limit` bytes and notes when more come: a damaged or hostile file
+/// must not unpack into more memory than its header claims (review finding F6).
+class LimitedSink {
+ public:
+  using char_type = char;
+  using category = boost::iostreams::sink_tag;
+  LimitedSink(std::vector<char>& out, std::size_t limit, bool& overflow)
+      : out_(&out), limit_(limit), overflow_(&overflow) {}
+  std::streamsize write(const char* s, std::streamsize n) {
+    const auto count = static_cast<std::size_t>(n);
+    if (count > limit_ - out_->size()) {
+      *overflow_ = true;  // dropped; reported once the stream is closed
+    } else {
+      out_->insert(out_->end(), s, s + count);
+    }
+    return n;
+  }
+
+ private:
+  std::vector<char>* out_;
+  std::size_t limit_;
+  bool* overflow_;
+};
+
+/// Unpacks a zstd section of about `expected` bytes; more than `limit` is an error.
+std::vector<char> decompress(const char* data, std::size_t size, std::size_t expected,
+                             std::size_t limit) {
   namespace io = boost::iostreams;
   std::vector<char> out;
-  out.reserve(expected);
+  out.reserve(std::min(expected, limit));
+  bool overflow = false;
   {
     io::filtering_ostream stream;
     stream.push(io::zstd_decompressor());
-    stream.push(io::back_inserter(out));
+    stream.push(LimitedSink(out, limit, overflow));
     stream.write(data, static_cast<std::streamsize>(size));
+  }
+  if (overflow) {
+    throw std::runtime_error("Corrupt surface file: a section unpacks to more than it holds");
   }
   return out;
 }
-
+/// Whether [offset, offset + bytes) lies within `size` bytes, without overflow.
+bool within(std::uint64_t offset, std::uint64_t bytes, std::uint64_t size) {
+  return offset <= size && bytes <= size - offset;
+}
 // ---------------------------------------------------------------------------------------------
 // Chunk layout shared by writer and reader.
 
@@ -451,8 +489,18 @@ SurfaceInfo infoFromJson(const Json& json) {
   info.volume_mm3 = json.at("volume_mm3").get<double>();
   info.raw_bytes = json.at("raw_bytes").get<std::uint64_t>();
   if (info.bits < 2 || info.bits > 8 || info.block_size != kBlock || info.chunk_size <= 0 ||
-      info.chunk_size % kBlock != 0) {
+      info.chunk_size % kBlock != 0 || info.chunk_size > 4096) {
     throw std::runtime_error("Unsupported surface file layout");
+  }
+  // Sizes that drive allocations: a damaged header must not ask for more than any scan has.
+  constexpr std::int64_t kMaxAxis = std::int64_t{1} << 20U;
+  for (const std::int64_t d : info.dims) {
+    if (d < 1 || d > kMaxAxis) {
+      throw std::runtime_error("Corrupt surface file: implausible dimensions");
+    }
+  }
+  if (!(info.band_voxels > 0.0) || !(info.band_voxels <= 64.0)) {
+    throw std::runtime_error("Corrupt surface file: implausible band");
   }
   return info;
 }
@@ -474,7 +522,8 @@ FileSections readSections(const char* data, std::size_t size) {
   sections.table_bytes = readU64(trailer + 8);
   const std::uint64_t header_offset = readU64(trailer + 16);
   const std::uint64_t header_bytes = readU64(trailer + 24);
-  if (header_offset + header_bytes > size || sections.table_offset + sections.table_bytes > size) {
+  if (!within(header_offset, header_bytes, size) ||
+      !within(sections.table_offset, sections.table_bytes, size)) {
     throw std::runtime_error("Corrupt surface file trailer");
   }
   sections.info = infoFromJson(
@@ -569,7 +618,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   const std::filesystem::path temporary = file.string() + ".partial";
   std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
   if (!out) {
-    throw std::runtime_error("Cannot write " + temporary.string());
+    throwWriteError(file);
   }
   out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
   std::uint64_t position = kMagic.size();
@@ -578,38 +627,73 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   double material_voxels = 0.0;
 
   const SurfaceWriter writer(dataset, info, resolved);
-  std::size_t next = 0;
-  tbb::parallel_pipeline(
-      kChunksInFlight,
-      tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
-                                          [&](tbb::flow_control& control) -> std::size_t {
-                                            if (next >= chunk_count) {
-                                              control.stop();
-                                              return 0;
-                                            }
-                                            return next++;
-                                          }) &
-          tbb::make_filter<std::size_t, ChunkOutput>(
-              tbb::filter_mode::parallel,
-              [&](std::size_t index) {
-                const auto i = static_cast<std::int64_t>(index);
-                const Index3 chunk{i % grid[0], (i / grid[0]) % grid[1], i / (grid[0] * grid[1])};
-                return writer.process(index, chunk);
-              }) &
-          tbb::make_filter<ChunkOutput, void>(
-              tbb::filter_mode::serial_in_order, [&](const ChunkOutput& chunk) {
-                table.push_back(static_cast<char>(chunk.kind));
-                appendU64(table, chunk.compressed.empty() ? 0 : position);
-                appendU64(table, chunk.compressed.size());
-                out.write(chunk.compressed.data(),
-                          static_cast<std::streamsize>(chunk.compressed.size()));
-                position += chunk.compressed.size();
-                info.raw_bytes += chunk.raw_bytes;
-                info.surface_chunks += chunk.surface_blocks > 0 ? 1 : 0;
-                info.surface_blocks += chunk.surface_blocks;
-                info.band_voxel_count += chunk.band_voxels;
-                material_voxels += chunk.material_voxels;
-              }));
+  // Chunks in work, as many as the work memory holds (ADR 0034): a chunk with its halo takes its
+  // grey values, their negation, a dense VDB copy, the distances and the codes: about 22 bytes per
+  // voxel, as measured at 2048^3.
+  const auto chunk_edge = static_cast<std::uint64_t>(
+      info.chunk_size + 2 * (static_cast<std::int64_t>(std::ceil(info.band_voxels)) + 3));
+  // A cancelled or failed run leaves no partial file.
+  try {
+    ProgressSteps steps(options.progress, chunk_count);
+    // A cancellation (or a failed report) only stops new chunks: chunks in work still pass the
+    // last stage, as TBB does not destroy the results in flight of a cancelled pipeline. It is
+    // thrown once the pipeline is done.
+    std::mutex failure_mutex;
+    std::exception_ptr failure;
+    const auto failed = [&] {
+      const std::scoped_lock lock(failure_mutex);
+      return failure != nullptr || options.progress.cancelled();
+    };
+    std::size_t next = 0;
+    tbb::parallel_pipeline(
+        tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 22),
+        tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
+                                            [&](tbb::flow_control& control) -> std::size_t {
+                                              if (next >= chunk_count || failed()) {
+                                                control.stop();
+                                                return 0;
+                                              }
+                                              return next++;
+                                            }) &
+            tbb::make_filter<std::size_t, ChunkOutput>(
+                tbb::filter_mode::parallel,
+                [&](std::size_t index) {
+                  const auto i = static_cast<std::int64_t>(index);
+                  const Index3 chunk{i % grid[0], (i / grid[0]) % grid[1], i / (grid[0] * grid[1])};
+                  ChunkOutput output;
+                  detail::runIsolated([&] { output = writer.process(index, chunk); });
+                  return output;
+                }) &
+            tbb::make_filter<ChunkOutput, void>(
+                tbb::filter_mode::serial_in_order, [&](const ChunkOutput& chunk) {
+                  table.push_back(static_cast<char>(chunk.kind));
+                  appendU64(table, chunk.compressed.empty() ? 0 : position);
+                  appendU64(table, chunk.compressed.size());
+                  out.write(chunk.compressed.data(),
+                            static_cast<std::streamsize>(chunk.compressed.size()));
+                  position += chunk.compressed.size();
+                  info.raw_bytes += chunk.raw_bytes;
+                  info.surface_chunks += chunk.surface_blocks > 0 ? 1 : 0;
+                  info.surface_blocks += chunk.surface_blocks;
+                  info.band_voxel_count += chunk.band_voxels;
+                  material_voxels += chunk.material_voxels;
+                  try {
+                    steps.step();
+                  } catch (...) {
+                    const std::scoped_lock lock(failure_mutex);
+                    failure = std::current_exception();
+                  }
+                }));
+    if (failure) {
+      std::rethrow_exception(failure);
+    }
+    options.progress.check();
+  } catch (...) {
+    out.close();
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw;
+  }
   info.volume_mm3 = material_voxels * info.voxel_size.volumeMm3();
 
   const std::vector<char> packed_table = compress(table, resolved.compression_level);
@@ -629,7 +713,9 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   out.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
   out.close();
   if (!out) {
-    throw std::runtime_error("Cannot write " + temporary.string());
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throwWriteError(file);
   }
   std::filesystem::rename(temporary, file);
   info.file_bytes = std::filesystem::file_size(file);
@@ -662,6 +748,7 @@ struct DecodedChunk {
 }  // namespace
 
 struct SurfaceMask::Impl {
+  std::filesystem::path file;
   boost::iostreams::mapped_file_source mapped;
   SurfaceInfo info;
   Index3 grid{};
@@ -699,7 +786,9 @@ struct SurfaceMask::Impl {
     const auto block_count = static_cast<std::size_t>(decoded->geometry.blockCount());
     const std::vector<char> payload =
         decompress(mapped.data() + entry.offset, static_cast<std::size_t>(entry.bytes),
-                   block_count * kBlockVoxels);
+                   block_count * kBlockVoxels,
+                   // the kinds of the blocks and at most a byte per voxel of each
+                   block_count * (kBlockVoxels + 1) + 1024);
     const std::size_t kind_bytes = (block_count + 3) / 4;
     if (payload.size() < kind_bytes) {
       throw std::runtime_error("Corrupt surface chunk");
@@ -802,6 +891,7 @@ SurfaceMask::~SurfaceMask() = default;
 
 SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cache_bytes) {
   auto impl = std::make_unique<Impl>();
+  impl->file = file;
   impl->mapped.open(file.string());
   if (!impl->mapped.is_open()) {
     throw std::runtime_error("Cannot open " + file.string());
@@ -811,9 +901,12 @@ SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cac
   impl->grid = chunkGrid(impl->info);
   impl->cache_bytes = cache_bytes;
   const auto chunk_count = static_cast<std::size_t>(impl->grid[0] * impl->grid[1] * impl->grid[2]);
-  const std::vector<char> table =
-      decompress(impl->mapped.data() + sections.table_offset,
-                 static_cast<std::size_t>(sections.table_bytes), chunk_count * kTableEntryBytes);
+  if (chunk_count > (std::size_t{1} << 24U)) {
+    throw std::runtime_error("Corrupt surface file: implausible number of chunks");
+  }
+  const std::vector<char> table = decompress(
+      impl->mapped.data() + sections.table_offset, static_cast<std::size_t>(sections.table_bytes),
+      chunk_count * kTableEntryBytes, chunk_count * kTableEntryBytes);
   if (table.size() != chunk_count * kTableEntryBytes) {
     throw std::runtime_error("Corrupt surface chunk table");
   }
@@ -828,7 +921,7 @@ SurfaceMask SurfaceMask::open(const std::filesystem::path& file, std::size_t cac
     e.kind = static_cast<BlockKind>(kind);
     e.offset = readU64(entry + 1);
     e.bytes = readU64(entry + 9);
-    if (e.offset + e.bytes > impl->mapped.size()) {
+    if (!within(e.offset, e.bytes, impl->mapped.size())) {
       throw std::runtime_error("Corrupt surface chunk table");
     }
   }
@@ -892,48 +985,302 @@ void SurfaceMask::readCodes(const Box& box, std::span<std::uint8_t> out) const {
   }
 }
 
-openvdb::FloatGrid::Ptr SurfaceMask::toLevelSet() const {
+namespace {
+
+/// Origin of block `b` of a chunk, in level-0 voxels.
+Index3 blockOrigin(const ChunkGeometry& g, std::size_t b) {
+  const auto block = static_cast<std::int64_t>(b);
+  return {g.box.min[0] + (block % g.blocks[0]) * kBlock,
+          g.box.min[1] + ((block / g.blocks[0]) % g.blocks[1]) * kBlock,
+          g.box.min[2] + (block / (g.blocks[0] * g.blocks[1])) * kBlock};
+}
+
+openvdb::Coord coordOf(const Index3& voxel) {
+  return {static_cast<int>(voxel[0]), static_cast<int>(voxel[1]), static_cast<int>(voxel[2])};
+}
+
+/// Whether volumeToMesh orients the polygons of a level set inward; found once on a sphere.
+bool meshesInward() {
+  static const bool inward = [] {
+    const auto sphere = openvdb::tools::createLevelSetSphere<openvdb::FloatGrid>(
+        4.0F, openvdb::Vec3f(0.0F), 1.0F, 3.0F);
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+    openvdb::tools::volumeToMesh(*sphere, points, triangles, quads, 0.0, 0.0);
+    double volume = 0.0;
+    const auto add = [&](const openvdb::Vec3s& a, const openvdb::Vec3s& b,
+                         const openvdb::Vec3s& c) { volume += a.dot(b.cross(c)); };
+    for (const auto& q : quads) {
+      add(points[q[0]], points[q[1]], points[q[2]]);
+      add(points[q[0]], points[q[2]], points[q[3]]);
+    }
+    for (const auto& t : triangles) {
+      add(points[t[0]], points[t[1]], points[t[2]]);
+    }
+    return volume < 0.0;
+  }();
+  return inward;
+}
+
+}  // namespace
+
+openvdb::FloatGrid::Ptr SurfaceMask::toLevelSet(int coarsening) const {
+  if (coarsening < 0 || coarsening > 12) {
+    throw std::invalid_argument("Coarsening must be 0 to 12");
+  }
   const SurfaceInfo& info = impl_->info;
   // Distances in mm for cubic voxels; with voxels of different edge lengths the codes measure in
   // voxel units, scaled by the mean edge. The zero crossing, which is all that meshing uses, is
   // the same either way.
   const double v = info.voxel_size.meanMm();
-  auto grid = openvdb::FloatGrid::create(static_cast<float>(info.band_voxels * v));
+  const std::int64_t step = std::int64_t{1} << static_cast<unsigned>(coarsening);
+  const auto background = static_cast<float>(info.band_voxels * v * static_cast<double>(step));
+  auto grid = openvdb::FloatGrid::create(background);
   grid->setGridClass(openvdb::GRID_LEVEL_SET);
   grid->setName("surface");
-  grid->setTransform(detail::voxelTransform(info.voxel_size));
-  auto accessor = grid->getAccessor();
+  grid->setTransform(detail::voxelTransform(info.voxel_size.scaled(static_cast<double>(step))));
+
+  // Every crossing lies in surface blocks, between two voxels of the band. The samples of the
+  // cells that overlap a surface block (2^k voxels apart) are set from the codes, so every cell
+  // with a crossing has its corners; the rest get their sign from the flood fill.
+  std::vector<std::size_t> surface_chunks;
   for (std::size_t index = 0; index < impl_->table.size(); ++index) {
-    if (impl_->table[index].kind != BlockKind::kSurface) {
-      continue;
+    if (impl_->table[index].kind == BlockKind::kSurface) {
+      surface_chunks.push_back(index);
     }
-    const auto chunk = impl_->chunk(index);
-    const ChunkGeometry& g = chunk->geometry;
+  }
+  tbb::combinable<openvdb::FloatGrid::Ptr> parts(
+      [background] { return openvdb::FloatGrid::create(background); });
+  tbb::parallel_for(std::size_t{0}, surface_chunks.size(), [&](std::size_t i) {
+    const auto chunk = impl_->chunk(surface_chunks[i]);
+    const Box& box = chunk->geometry.box;
+    auto accessor = parts.local()->getAccessor();
+    const auto sample = [&](const Index3& voxel) {
+      for (std::size_t a = 0; a < 3; ++a) {
+        if (voxel[a] < box.min[a] || voxel[a] >= box.max[a]) {
+          return code(voxel);  // another chunk, or air outside the volume
+        }
+      }
+      return impl_->codeIn(*chunk, voxel);
+    };
     for (std::size_t b = 0; b < chunk->slots.size(); ++b) {
       if (chunk->slots[b] < 0) {
         continue;
       }
-      const auto block = static_cast<std::int64_t>(b);
-      const Index3 origin{g.box.min[0] + (block % g.blocks[0]) * kBlock,
-                          g.box.min[1] + ((block / g.blocks[0]) % g.blocks[1]) * kBlock,
-                          g.box.min[2] + (block / (g.blocks[0] * g.blocks[1])) * kBlock};
-      const std::uint8_t* codes =
-          chunk->codes.data() + static_cast<std::size_t>(chunk->slots[b]) * kBlockVoxels;
-      for (std::int64_t i = 0; i < kBlockVoxels; ++i) {
-        const Index3 voxel{origin[0] + i % kBlock, origin[1] + (i / kBlock) % kBlock,
-                           origin[2] + i / (kBlock * kBlock)};
-        if (!impl_->contains(voxel)) {
+      const Index3 origin = blockOrigin(chunk->geometry, b);
+      Index3 lo{};
+      Index3 hi{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        lo[a] = origin[a] / step;
+        hi[a] = (origin[a] + kBlock - 1) / step + 1;
+      }
+      for (std::int64_t z = lo[2]; z <= hi[2]; ++z) {
+        for (std::int64_t y = lo[1]; y <= hi[1]; ++y) {
+          for (std::int64_t x = lo[0]; x <= hi[0]; ++x) {
+            const float d = decodeSurfaceDistance(sample({x * step, y * step, z * step}), info.bits,
+                                                  info.band_voxels);
+            accessor.setValue(coordOf({x, y, z}), static_cast<float>(d * v));
+          }
+        }
+      }
+    }
+  });
+  // Shared samples hold the same value in every part.
+  parts.combine_each(
+      [&](const openvdb::FloatGrid::Ptr& part) { grid->tree().merge(part->tree()); });
+  openvdb::tools::signedFloodFill(grid->tree());
+  return grid;
+}
+
+void SurfaceMask::writeStl(const std::filesystem::path& file) const {
+  const SurfaceInfo& info = impl_->info;
+  const double v = info.voxel_size.meanMm();
+  const auto band = static_cast<float>(info.band_voxels * v);
+  const bool flip = meshesInward();
+  // Chunks with a surface and their neighbours: a triangle belongs to the chunk that holds its
+  // centre, which may be the next one.
+  const Index3& grid = impl_->grid;
+  std::vector<std::uint8_t> wanted(impl_->table.size(), 0);
+  for (std::int64_t cz = 0; cz < grid[2]; ++cz) {
+    for (std::int64_t cy = 0; cy < grid[1]; ++cy) {
+      for (std::int64_t cx = 0; cx < grid[0]; ++cx) {
+        if (impl_->table[impl_->chunkIndex({cx, cy, cz})].kind != BlockKind::kSurface) {
           continue;
         }
-        const float d = decodeSurfaceDistance(codes[i], info.bits, info.band_voxels);
-        accessor.setValue(openvdb::Coord(static_cast<int>(voxel[0]), static_cast<int>(voxel[1]),
-                                         static_cast<int>(voxel[2])),
-                          static_cast<float>(d * v));
+        for (std::int64_t z = std::max<std::int64_t>(0, cz - 1); z <= std::min(grid[2] - 1, cz + 1);
+             ++z) {
+          for (std::int64_t y = std::max<std::int64_t>(0, cy - 1);
+               y <= std::min(grid[1] - 1, cy + 1); ++y) {
+            for (std::int64_t x = std::max<std::int64_t>(0, cx - 1);
+                 x <= std::min(grid[0] - 1, cx + 1); ++x) {
+              wanted[impl_->chunkIndex({x, y, z})] = 1;
+            }
+          }
+        }
       }
     }
   }
-  openvdb::tools::signedFloodFill(grid->tree());
-  return grid;
+  std::vector<std::size_t> chunks;
+  for (std::size_t index = 0; index < wanted.size(); ++index) {
+    if (wanted[index] != 0) {
+      chunks.push_back(index);
+    }
+  }
+
+  // The triangles of one chunk, as STL records. Its grid covers the chunk and a margin of
+  // kMargin voxels with the values toLevelSet() has there, so the polygons of the cells near the
+  // chunk come out exactly as from the whole grid; those of the margin's own border, which lacks
+  // its outer neighbours, have their centre outside the chunk and are dropped.
+  constexpr std::int64_t kMargin = 3;
+  const auto mesh_chunk = [&](std::size_t index) {
+    const auto chunk = impl_->chunk(index);
+    const Box& own = chunk->geometry.box;
+    Box region;
+    for (std::size_t a = 0; a < 3; ++a) {
+      region.min[a] = own.min[a] - kMargin;
+      region.max[a] = own.max[a] + kMargin;
+    }
+    auto level_set = openvdb::FloatGrid::create(band);
+    level_set->setGridClass(openvdb::GRID_LEVEL_SET);
+    level_set->setTransform(detail::voxelTransform(info.voxel_size));
+    auto accessor = level_set->getAccessor();
+    // Blocks of the region: surface blocks voxel by voxel, the others as inside or outside.
+    Index3 first{};
+    Index3 last{};
+    for (std::size_t a = 0; a < 3; ++a) {
+      first[a] = std::max<std::int64_t>(0, region.min[a]) / kBlock;
+      last[a] = (std::min(region.max[a], info.dims[a]) - 1) / kBlock;
+    }
+    for (std::int64_t bz = first[2]; bz <= last[2]; ++bz) {
+      for (std::int64_t by = first[1]; by <= last[1]; ++by) {
+        for (std::int64_t bx = first[0]; bx <= last[0]; ++bx) {
+          const Index3 origin{bx * kBlock, by * kBlock, bz * kBlock};
+          const auto other = impl_->chunk(
+              impl_->chunkIndex({origin[0] / info.chunk_size, origin[1] / info.chunk_size,
+                                 origin[2] / info.chunk_size}));
+          Box part;
+          for (std::size_t a = 0; a < 3; ++a) {
+            part.min[a] = std::max(origin[a], region.min[a]);
+            part.max[a] = std::min({origin[a] + kBlock, region.max[a], info.dims[a]});
+          }
+          const std::uint8_t first_code = impl_->codeIn(*other, part.min);
+          bool uniform = other->kind != BlockKind::kSurface;
+          if (!uniform) {
+            Index3 local{};
+            for (std::size_t a = 0; a < 3; ++a) {
+              local[a] = (origin[a] - other->geometry.box.min[a]) / kBlock;
+            }
+            const auto b = static_cast<std::size_t>(
+                local[0] +
+                other->geometry.blocks[0] * (local[1] + other->geometry.blocks[1] * local[2]));
+            uniform = other->slots[b] < 0;
+          }
+          if (uniform) {
+            const float d = decodeSurfaceDistance(first_code, info.bits, info.band_voxels);
+            level_set->tree().fill(
+                openvdb::CoordBBox(coordOf(part.min),
+                                   coordOf({part.max[0] - 1, part.max[1] - 1, part.max[2] - 1})),
+                static_cast<float>(d * v), /*active=*/false);
+            continue;
+          }
+          for (std::int64_t z = part.min[2]; z < part.max[2]; ++z) {
+            for (std::int64_t y = part.min[1]; y < part.max[1]; ++y) {
+              for (std::int64_t x = part.min[0]; x < part.max[0]; ++x) {
+                const float d = decodeSurfaceDistance(impl_->codeIn(*other, {x, y, z}), info.bits,
+                                                      info.band_voxels);
+                accessor.setValue(coordOf({x, y, z}), static_cast<float>(d * v));
+              }
+            }
+          }
+        }
+      }
+    }
+    std::vector<openvdb::Vec3s> points;
+    std::vector<openvdb::Vec3I> triangles;
+    std::vector<openvdb::Vec4I> quads;
+    openvdb::tools::volumeToMesh(*level_set, points, triangles, quads, 0.0, 0.0);
+    std::string records;
+    std::uint32_t count = 0;
+    const auto owned = [&](std::initializer_list<std::uint32_t> corners) {
+      std::array<double, 3> centre{};
+      for (const std::uint32_t c : corners) {
+        for (std::size_t a = 0; a < 3; ++a) {
+          centre[a] += points[c][static_cast<int>(a)] / info.voxel_size[a];
+        }
+      }
+      for (std::size_t a = 0; a < 3; ++a) {
+        const auto cell =
+            static_cast<std::int64_t>(std::floor(centre[a] / static_cast<double>(corners.size())));
+        if (cell < own.min[a] || cell >= own.max[a]) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const auto add = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+      if (flip) {
+        std::swap(b, c);
+      }
+      std::array<float, 12> record{};  // normal, then the corners
+      for (std::size_t k = 0; k < 3; ++k) {
+        const openvdb::Vec3s& p = points[k == 0 ? a : (k == 1 ? b : c)];
+        record[3 + 3 * k] = p.x();
+        record[4 + 3 * k] = p.y();
+        record[5 + 3 * k] = p.z();
+      }
+      records.append(reinterpret_cast<const char*>(record.data()), sizeof(record));
+      records.append(2, '\0');  // attribute byte count
+      ++count;
+    };
+    for (const openvdb::Vec3I& t : triangles) {
+      if (owned({t[0], t[1], t[2]})) {
+        add(t[0], t[1], t[2]);
+      }
+    }
+    for (const openvdb::Vec4I& q : quads) {
+      if (owned({q[0], q[1], q[2], q[3]})) {
+        add(q[0], q[1], q[2]);
+        add(q[0], q[2], q[3]);
+      }
+    }
+    return std::pair{std::move(records), count};
+  };
+
+  writeFile(file, [&](std::ostream& out) {
+    const std::string header(80, ' ');
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    std::uint32_t total = 0;
+    out.write(reinterpret_cast<const char*>(&total), sizeof(total));
+    // Chunks are meshed in parallel and written in order; the tokens bound the chunks in flight.
+    std::size_t next = 0;
+    const auto tokens = static_cast<std::size_t>(
+        2 * std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
+    tbb::parallel_pipeline(
+        tokens, tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
+                                                    [&](tbb::flow_control& control) -> std::size_t {
+                                                      if (next == chunks.size()) {
+                                                        control.stop();
+                                                        return 0;
+                                                      }
+                                                      return chunks[next++];
+                                                    }) &
+                    tbb::make_filter<std::size_t, std::pair<std::string, std::uint32_t>>(
+                        tbb::filter_mode::parallel, mesh_chunk) &
+                    tbb::make_filter<std::pair<std::string, std::uint32_t>, void>(
+                        tbb::filter_mode::serial_in_order,
+                        [&](const std::pair<std::string, std::uint32_t>& part) {
+                          if (std::uint64_t{total} + part.second > 0xFFFFFFFFULL) {
+                            throw std::runtime_error("More than 2^32 triangles for one STL file");
+                          }
+                          out.write(part.first.data(),
+                                    static_cast<std::streamsize>(part.first.size()));
+                          total += part.second;
+                        }));
+    out.seekp(80);
+    out.write(reinterpret_cast<const char*>(&total), sizeof(total));
+    out.seekp(0, std::ios::end);
+  });
 }
 
 Mesh SurfaceMask::toMesh(double adaptivity) const {
@@ -962,13 +1309,129 @@ Mesh SurfaceMask::toMesh(double adaptivity) const {
   return mesh;
 }
 
+namespace {
+
+constexpr std::string_view kMeshCacheMagic = "VSMESH1\n";
+
+/// The file a display mesh of `surface` with these settings is cached in, beside it.
+std::filesystem::path meshCacheFile(const std::filesystem::path& surface, std::size_t max_triangles,
+                                    double adaptivity) {
+  return surface.string() + ".mesh-" + std::to_string(max_triangles) + "-" +
+         std::to_string(std::llround(adaptivity * 1000.0)) + ".bin";
+}
+
+/// What a cached mesh must have been made from: the surface file's size and time.
+std::array<std::uint64_t, 2> meshCacheStamp(const std::filesystem::path& surface) {
+  return {static_cast<std::uint64_t>(std::filesystem::file_size(surface)),
+          static_cast<std::uint64_t>(
+              std::filesystem::last_write_time(surface).time_since_epoch().count())};
+}
+
+/// The cached mesh, or none when there is no cache of this surface or it is damaged.
+std::optional<IndexedMesh> readMeshCache(const std::filesystem::path& file,
+                                         const std::array<std::uint64_t, 2>& stamp) {
+  std::ifstream in(file, std::ios::binary);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::array<char, kMeshCacheMagic.size()> magic{};
+  std::array<std::uint64_t, 4> head{};  // stamp, then point and triangle counts
+  in.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+  in.read(reinterpret_cast<char*>(head.data()), sizeof(head));
+  if (!in || std::string_view(magic.data(), magic.size()) != kMeshCacheMagic ||
+      head[0] != stamp[0] || head[1] != stamp[1]) {
+    return std::nullopt;
+  }
+  const std::uint64_t expected = kMeshCacheMagic.size() + sizeof(head) +
+                                 head[2] * sizeof(std::array<float, 3>) +
+                                 head[3] * sizeof(std::array<std::uint32_t, 3>);
+  std::error_code error;
+  if (std::filesystem::file_size(file, error) != expected || error) {
+    return std::nullopt;
+  }
+  IndexedMesh mesh;
+  mesh.points.resize(static_cast<std::size_t>(head[2]));
+  mesh.triangles.resize(static_cast<std::size_t>(head[3]));
+  in.read(reinterpret_cast<char*>(mesh.points.data()),
+          static_cast<std::streamsize>(mesh.points.size() * sizeof(mesh.points[0])));
+  in.read(reinterpret_cast<char*>(mesh.triangles.data()),
+          static_cast<std::streamsize>(mesh.triangles.size() * sizeof(mesh.triangles[0])));
+  for (const auto& t : mesh.triangles) {
+    if (t[0] >= mesh.points.size() || t[1] >= mesh.points.size() || t[2] >= mesh.points.size()) {
+      return std::nullopt;
+    }
+  }
+  return in ? std::optional<IndexedMesh>(std::move(mesh)) : std::nullopt;
+}
+
+/// Caches `mesh` beside the surface; false when the directory cannot be written, which then
+/// keeps no cache.
+bool writeMeshCache(const std::filesystem::path& file, const std::array<std::uint64_t, 2>& stamp,
+                    const IndexedMesh& mesh) {
+  try {
+    writeFile(file, [&](std::ostream& out) {
+      const std::array<std::uint64_t, 4> head{stamp[0], stamp[1], mesh.points.size(),
+                                              mesh.triangles.size()};
+      out.write(kMeshCacheMagic.data(), static_cast<std::streamsize>(kMeshCacheMagic.size()));
+      out.write(reinterpret_cast<const char*>(head.data()), sizeof(head));
+      out.write(reinterpret_cast<const char*>(mesh.points.data()),
+                static_cast<std::streamsize>(mesh.points.size() * sizeof(mesh.points[0])));
+      out.write(reinterpret_cast<const char*>(mesh.triangles.data()),
+                static_cast<std::streamsize>(mesh.triangles.size() * sizeof(mesh.triangles[0])));
+    });
+  } catch (const std::exception&) {
+    return false;  // only a cache: the mesh is made again next time
+  }
+  return true;
+}
+
+IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, double adaptivity);
+
+}  // namespace
+
+const std::filesystem::path& SurfaceMask::file() const { return impl_->file; }
+
 IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles,
                                double adaptivity) {
+  // Cached beside the surface (ADR 0009): the GUI, the report, the comparison and the thickness
+  // all ask for the same mesh, which takes seconds to make from a large surface.
+  std::array<std::uint64_t, 2> stamp{};
+  std::filesystem::path cache;
+  try {
+    stamp = meshCacheStamp(mask.file());
+    cache = meshCacheFile(mask.file(), max_triangles, adaptivity);
+    if (std::optional<IndexedMesh> cached = readMeshCache(cache, stamp)) {
+      return std::move(*cached);
+    }
+  } catch (const std::filesystem::filesystem_error&) {
+    cache.clear();
+  }
+  IndexedMesh mesh = makeDisplayMesh(mask, max_triangles, adaptivity);
+  if (!cache.empty()) {
+    (void)writeMeshCache(cache, stamp, mesh);
+  }
+  return mesh;
+}
+
+namespace {
+
+IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, double adaptivity) {
   constexpr int kMaxCoarsening = 5;
-  const VoxelSize& v = mask.info().voxel_size;
-  openvdb::FloatGrid::Ptr grid = mask.toLevelSet();
+  const SurfaceInfo& info = mask.info();
+  const VoxelSize& v = info.voxel_size;
+  // About two triangles per voxel face of the surface, which the band holds 2 * band_voxels
+  // deep; each coarsening quarters them. Start where the estimate is within twice the budget, so
+  // a large surface is never meshed at full resolution.
+  const double full_triangles =
+      static_cast<double>(info.band_voxel_count) / std::max(info.band_voxels, 0.5);
+  int start = 0;
+  while (start < kMaxCoarsening &&
+         full_triangles / std::pow(4.0, start) > 2.0 * static_cast<double>(max_triangles)) {
+    ++start;
+  }
   IndexedMesh mesh;
-  for (int coarsening = 0;; ++coarsening) {
+  for (int coarsening = start;; ++coarsening) {
+    const openvdb::FloatGrid::Ptr grid = mask.toLevelSet(coarsening);
     std::vector<openvdb::Vec3s> points;
     std::vector<openvdb::Vec3I> triangles;
     std::vector<openvdb::Vec4I> quads;
@@ -990,15 +1453,10 @@ IndexedMesh surfaceDisplayMesh(const SurfaceMask& mask, std::size_t max_triangle
       }
       return mesh;
     }
-    // Twice the voxel size: about a quarter of the triangles.
-    auto coarse = openvdb::FloatGrid::create(grid->background() * 2.0F);
-    coarse->setGridClass(openvdb::GRID_LEVEL_SET);
-    coarse->setTransform(
-        detail::voxelTransform(detail::voxelSizeOf(grid->transform()).scaled(2.0)));
-    openvdb::tools::resampleToMatch<openvdb::tools::BoxSampler>(*grid, *coarse);
-    grid = coarse;
   }
 }
+
+}  // namespace
 
 void writeSurfaceImages(const SurfaceMask& mask, const std::filesystem::path& dir,
                         std::int64_t max_pixels) {

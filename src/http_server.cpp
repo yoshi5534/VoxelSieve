@@ -3,6 +3,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #else
+#include <poll.h>
 #include <sys/socket.h>
 #endif
 
@@ -14,6 +15,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <thread>
 
@@ -27,6 +29,52 @@ using tcp = asio::ip::tcp;
 using Json = nlohmann::json;
 using Request = http::request<http::string_body>;
 constexpr std::uint64_t kMaxBodyBytes = std::uint64_t{64} << 20U;
+/// Connections served at once, each on a thread of its own (F4); more are answered with 503 at
+/// once. A browser opens six per host, so this leaves room for several views and clients.
+constexpr std::size_t kMaxConnections = 64;
+
+/// Whether the client closed the connection, as a browser does when it gives up a request (a tile
+/// scrolled out of view): its request need not be answered. Does not wait.
+bool peerClosed(tcp::socket& socket) {
+  const auto handle = socket.native_handle();
+#if defined(_WIN32)
+  WSAPOLLFD fd{};
+  fd.fd = handle;
+  fd.events = POLLRDNORM;
+  if (WSAPoll(&fd, 1, 0) <= 0) {
+    return false;
+  }
+#else
+  pollfd fd{};
+  fd.fd = handle;
+  fd.events = POLLIN;
+  if (poll(&fd, 1, 0) <= 0) {
+    return false;
+  }
+#endif
+  if ((fd.revents & (POLLHUP | POLLERR)) != 0) {
+    return true;
+  }
+  char byte = 0;
+  return recv(handle, &byte, 1, MSG_PEEK) == 0;  // readable, but nothing to read: closed
+}
+
+/// 128 random bits as hex, the access token of a server start.
+std::string randomToken() {
+  std::random_device device;
+  std::string token;
+  for (int i = 0; i < 4; ++i) {
+    const std::uint32_t bits = device();
+    constexpr std::string_view kHex = "0123456789abcdef";
+    for (int k = 0; k < 8; ++k) {
+      token.push_back(kHex[(bits >> (4U * static_cast<unsigned>(k))) & 15U]);
+    }
+  }
+  return token;
+}
+
+/// The connection the request of this thread came on.
+thread_local tcp::socket* t_connection = nullptr;
 
 std::string percentDecode(std::string_view text) {
   std::string decoded;
@@ -84,7 +132,7 @@ struct HttpServer::Impl {
   };
 
   Impl(Gui& s, const std::string& host, unsigned short requested_port)
-      : gui(s), acceptor(io), bound_host(host) {
+      : gui(s), acceptor(io), bound_host(host), token(randomToken()) {
     const tcp::endpoint endpoint(asio::ip::make_address(host), requested_port);
     acceptor.open(endpoint.protocol());
     acceptor.set_option(asio::socket_base::reuse_address(true));
@@ -122,6 +170,10 @@ struct HttpServer::Impl {
         ++it;
       }
     }
+    if (connections.size() >= kMaxConnections) {
+      refuse(std::move(socket));
+      return;
+    }
     auto& connection = connections.emplace_back(std::make_unique<Connection>(std::move(socket)));
     Connection* raw = connection.get();
     raw->thread = std::thread([this, raw] {
@@ -130,7 +182,39 @@ struct HttpServer::Impl {
     });
   }
 
+  /// Answers a connection over the limit with 503 on the accept thread, without a thread of its
+  /// own: reads its request first, so that closing it after the answer sends no reset.
+  static void refuse(tcp::socket socket) {
+    struct Refusal {
+      explicit Refusal(tcp::socket s) : socket(std::move(s)) {}
+      tcp::socket socket;
+      beast::flat_buffer buffer;
+      http::request<http::string_body> request;
+      http::response<http::string_body> response;
+    };
+    auto refusal = std::make_shared<Refusal>(std::move(socket));
+    http::async_read(refusal->socket, refusal->buffer, refusal->request,
+                     [refusal](const boost::system::error_code&, std::size_t) {
+                       auto& response = refusal->response;
+                       response.result(http::status::service_unavailable);
+                       response.version(11);
+                       response.set(http::field::content_type, "application/json");
+                       response.set(http::field::retry_after, "1");
+                       response.keep_alive(false);
+                       response.body() = R"({"error":"Too many connections"})";
+                       response.prepare_payload();
+                       http::async_write(refusal->socket, response,
+                                         [refusal](const boost::system::error_code&, std::size_t) {
+                                           boost::system::error_code ignored;
+                                           [[maybe_unused]] const auto shut =
+                                               refusal->socket.shutdown(tcp::socket::shutdown_send,
+                                                                        ignored);
+                                         });
+                     });
+  }
+
   void serve(tcp::socket& socket) {
+    t_connection = &socket;
     beast::flat_buffer buffer;
     boost::system::error_code error;
     while (true) {
@@ -180,7 +264,28 @@ struct HttpServer::Impl {
     }
     const std::string_view target = request.target();
     const std::string_view path = target.substr(0, target.find('?'));
+    // The access token of this server start (5.4, F5): from the address vs-gui printed, then
+    // from the cookie the first page set; other local processes and the network do not have it.
+    const bool in_query = queryToken(target) == token;
+    if (!in_query && cookieToken(request) != token &&
+        request["X-VoxelSieve-Token"] != std::string_view(token)) {
+      return error(request, http::status::forbidden,
+                   "Access token missing: open the address vs-gui printed");
+    }
     try {
+      if (request.method() == http::verb::get && in_query &&
+          (path == "/" || path == "/index.html")) {
+        // The page sets the cookie, so the UI's later requests carry the token.
+        http::response<http::string_body> page(http::status::ok, request.version());
+        page.set(http::field::content_type, "text/html; charset=utf-8");
+        page.set(http::field::cache_control, "no-store");
+        page.set(http::field::set_cookie,
+                 "vs_token=" + token + "; Path=/; HttpOnly; SameSite=Strict");
+        page.keep_alive(request.keep_alive());
+        page.body() = std::string(uiResource("index.html"));
+        page.prepare_payload();
+        return page;
+      }
       if (request.method() == http::verb::get) {
         return get(request, path);
       }
@@ -200,6 +305,42 @@ struct HttpServer::Impl {
     } catch (const std::exception& failure) {
       return error(request, http::status::internal_server_error, failure.what());
     }
+  }
+
+  /// The value of `token=` in the query of `target`, or empty.
+  static std::string queryToken(std::string_view target) {
+    const auto question = target.find('?');
+    if (question == std::string_view::npos) {
+      return {};
+    }
+    std::string_view query = target.substr(question + 1);
+    while (!query.empty()) {
+      const auto amp = query.find('&');
+      const std::string_view pair = query.substr(0, amp);
+      if (pair.starts_with("token=")) {
+        return std::string(pair.substr(6));
+      }
+      query = amp == std::string_view::npos ? std::string_view() : query.substr(amp + 1);
+    }
+    return {};
+  }
+
+  /// The value of the vs_token cookie, or empty.
+  static std::string cookieToken(const Request& request) {
+    std::string_view cookies = request[http::field::cookie];
+    while (!cookies.empty()) {
+      const auto semicolon = cookies.find(';');
+      std::string_view cookie = cookies.substr(0, semicolon);
+      while (cookie.starts_with(' ')) {
+        cookie.remove_prefix(1);
+      }
+      if (cookie.starts_with("vs_token=")) {
+        return std::string(cookie.substr(9));
+      }
+      cookies =
+          semicolon == std::string_view::npos ? std::string_view() : cookies.substr(semicolon + 1);
+    }
+    return {};
   }
 
   static std::string_view target(const Request& request) {
@@ -246,6 +387,9 @@ struct HttpServer::Impl {
   /// (NaN where there is no material), with the headers X-Thickness, X-Min-Wall, X-Max-Wall and
   /// X-Range.
   http::message_generator tile(const Request& request, std::string_view query) {
+    if (t_connection != nullptr && peerClosed(*t_connection)) {
+      return error(request, http::status::service_unavailable, "The request was given up");
+    }
     const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
       const auto it = values.find(name);
@@ -624,6 +768,7 @@ struct HttpServer::Impl {
   asio::io_context io;
   tcp::acceptor acceptor;
   std::string bound_host;
+  std::string token;  // the access token of this start
   unsigned short port = 0;
   std::mutex mutex;
   std::list<std::unique_ptr<Connection>> connections;
@@ -642,6 +787,8 @@ HttpServer::~HttpServer() {
 }
 
 unsigned short HttpServer::port() const { return impl_->port; }
+
+const std::string& HttpServer::token() const { return impl_->token; }
 
 void HttpServer::run() {
   impl_->accept();

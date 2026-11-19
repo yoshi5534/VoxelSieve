@@ -1,27 +1,52 @@
 #include <gtest/gtest.h>
+#include <tbb/parallel_for.h>
 #include <zlib.h>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <csignal>
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define VOXELSIEVE_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define VOXELSIEVE_TEST_SANITIZED 1
+#endif
+#endif
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <latch>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include "detail/mapped_read.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/vdb.hpp"
@@ -492,10 +517,13 @@ TEST_F(DatasetTest, SmallVolumeIsItsOwnOverview) {
 /// A phantom that claims slow random access, like a TIFF stack, and counts the voxels read.
 class SlowPhantomSource final : public VolumeSource {
  public:
-  explicit SlowPhantomSource(const PhantomSpec& spec) : phantom_(spec) {}
+  explicit SlowPhantomSource(const PhantomSpec& spec, bool slow = true,
+                             SampleType type = SampleType::kUInt16)
+      : phantom_(spec), slow_(slow), type_(type) {}
+  [[nodiscard]] SampleType sampleType() const override { return type_; }
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return phantom_.dims(); }
   [[nodiscard]] VoxelSize voxelSize() const override { return phantom_.voxelSize(); }
-  [[nodiscard]] bool slowRandomAccess() const override { return true; }
+  [[nodiscard]] bool slowRandomAccess() const override { return slow_; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
     voxels_read_ += box.voxelCount();
     phantom_.readRegion(box, out);
@@ -504,6 +532,8 @@ class SlowPhantomSource final : public VolumeSource {
 
  private:
   PhantomSource phantom_;
+  bool slow_ = true;
+  SampleType type_ = SampleType::kUInt16;
   mutable std::atomic<std::int64_t> voxels_read_ = 0;
 };
 
@@ -557,11 +587,23 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
     EXPECT_NE(entry.path().extension(), ".raw") << entry.path();
   }
 
-  // Staged elsewhere: that directory is left empty.
+  // Staged elsewhere: that directory is left empty, but for copies of processes still running.
+  // A copy that a process left when it ended is removed; process 999999999 never runs.
   options.staging_dir = dir_ / "scratch";
+  std::filesystem::create_directories(options.staging_dir);
+  const auto left = options.staging_dir / ".voxelsieve-staging-999999999-1.raw";
+  const auto in_use =
+      options.staging_dir / (".voxelsieve-staging-" + std::to_string(processId()) + "-1.raw");
+  std::ofstream(left) << "left";
+  std::ofstream(in_use) << "in use";
   (void)writeDataset(SlowPhantomSource(phantom), dir_ / "elsewhere", options);
   expectSameDataset(dir_ / "direct", dir_ / "elsewhere");
+  EXPECT_FALSE(std::filesystem::exists(left));
+  EXPECT_TRUE(std::filesystem::exists(in_use));
+  std::filesystem::remove(in_use);
   EXPECT_TRUE(std::filesystem::is_empty(dir_ / "scratch"));
+  EXPECT_FALSE(processRunning(999999999));
+  EXPECT_TRUE(processRunning(processId()));
 
   // Read directly when staging is off.
   options.stage_slow_sources = false;
@@ -580,6 +622,32 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
   EXPECT_FALSE(PhantomSource(half).slowRandomAccess());
 }
 
+TEST_F(DatasetTest, StagesEightBitInputInEightBit) {
+  // Grey values of at most 255: an 8-bit scan, staged in 8 bit and stored as UInt8 grids.
+  PhantomSpec phantom = spec();
+  phantom.air_value = 20;
+  phantom.material_value = 200;
+  phantom.noise_sigma = 0.0;
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.stage_slow_sources = false;
+  (void)writeDataset(SlowPhantomSource(phantom, true, SampleType::kUInt8), dir_ / "direct",
+                     options);
+  options.stage_slow_sources = true;
+  std::vector<std::string> stages;
+  options.progress = [&stages](std::string_view stage, double) {
+    if (stages.empty() || stages.back() != stage) {
+      stages.emplace_back(stage);
+    }
+  };
+  const SlowPhantomSource source(phantom, true, SampleType::kUInt8);
+  const DatasetInfo info = writeDataset(source, dir_ / "staged", options);
+  EXPECT_EQ(stages.front(), "staging");
+  EXPECT_EQ(info.value_type, ValueType::kUInt8);
+  EXPECT_EQ(source.voxelsRead(), phantom.dims[0] * phantom.dims[1] * phantom.dims[2]);
+  expectSameDataset(dir_ / "direct", dir_ / "staged");
+}
+
 TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   PhantomSpec phantom = spec();
   phantom.dims = {16, 16, 16};
@@ -595,6 +663,53 @@ TEST_F(DatasetTest, RejectsBadOptionsAndNonEmptyDirectory) {
   options.min_material_voxels = 1;
   (void)writeDataset(source, dir_, options);
   EXPECT_THROW(writeDataset(source, dir_, options), std::invalid_argument);
+}
+
+TEST_F(DatasetTest, InterruptedImportResumesWithTheFinishedBricks) {
+  const PhantomSpec phantom = spec();
+  DatasetOptions options;
+  options.brick_size = 16;
+  const SlowPhantomSource fresh(phantom, /*slow=*/false);
+  (void)writeDataset(fresh, dir_ / "whole", options);
+
+  // Interrupted half way through the bricks: the journal stays, the dataset is not there yet.
+  DatasetOptions interrupted = options;
+  interrupted.progress = [](std::string_view stage, double fraction) {
+    if (stage == "bricks" && fraction >= 0.5) {
+      throw std::runtime_error("interrupted");
+    }
+  };
+  const auto out = dir_ / "resumed";
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, interrupted), std::runtime_error);
+  EXPECT_TRUE(std::filesystem::exists(out / "import.json"));
+  EXPECT_FALSE(std::filesystem::exists(out / "index.json"));
+  // A partial file that the interrupted process left is no content.
+  std::ofstream(out / "level0" / "0_0_0.vdb.partial-999999999-0") << "cut off";
+
+  // With other options the directory is not taken for this import.
+  DatasetOptions other = options;
+  other.margin_voxels = 5;
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, other), std::invalid_argument);
+  DatasetOptions no_resume = options;
+  no_resume.resume = false;
+  EXPECT_THROW((void)writeDataset(PhantomSource(phantom), out, no_resume), std::invalid_argument);
+
+  // The same options resume: no pass 1, and only the bricks not done yet are read.
+  std::vector<std::string> stages;
+  options.progress = [&stages](std::string_view stage, double) {
+    if (stages.empty() || stages.back() != stage) {
+      stages.emplace_back(stage);
+    }
+  };
+  const SlowPhantomSource resumed(phantom, /*slow=*/false);
+  (void)writeDataset(resumed, out, options);
+  EXPECT_EQ(stages, (std::vector<std::string>{"bricks", "levels"}));
+  EXPECT_LT(resumed.voxelsRead(), fresh.voxelsRead() * 3 / 4);
+  expectSameDataset(dir_ / "whole", out);
+  for (const char* name : {"import.json", "pass1.bin", "bricks.log"}) {
+    EXPECT_FALSE(std::filesystem::exists(out / name)) << name;
+  }
+  EXPECT_FALSE(std::filesystem::exists(out / "level0" / "0_0_0.vdb.partial-999999999-0"));
 }
 
 // Value types (ADR 0021).
@@ -931,6 +1046,165 @@ TEST_F(DatasetReaderTest, DatasetsShareOneCacheBudget) {
   EXPECT_EQ(first.cacheStats().hits, 1U);
 }
 
+TEST_F(DatasetReaderTest, DatasetsWithoutACacheShareOne) {
+  (void)writeReference();
+  {
+    const Dataset first = Dataset::open(dir_);
+    const Dataset second = Dataset::open(dir_, BrickLoading::kOnAccess);
+    const Dataset own = Dataset::open(dir_, std::size_t{1} << 20U);
+    EXPECT_EQ(first.cache(), second.cache());
+    EXPECT_EQ(first.cache(), Dataset::sharedCache());
+    EXPECT_NE(own.cache(), first.cache());
+    EXPECT_EQ(first.cache()->budget(), Dataset::defaultCacheBytes());
+
+    // A smaller budget evicts at once.
+    for (const Index3& brick : first.level(0).bricks) {
+      (void)first.brick(0, brick);
+    }
+    ASSERT_GT(first.cache()->stats().bricks, 1U);
+    Dataset::setSharedCacheBytes(1);
+    EXPECT_EQ(first.cache()->budget(), 1U);
+    EXPECT_EQ(first.cache()->stats().bricks, 1U);
+  }
+  // The budget set holds for the next shared cache too, until the default is restored.
+  EXPECT_EQ(Dataset::sharedCache()->budget(), 1U);
+  Dataset::setSharedCacheBytes(0);
+  EXPECT_EQ(Dataset::sharedCache()->budget(), Dataset::defaultCacheBytes());
+}
+
+TEST_F(DatasetReaderTest, ConcurrentRequestsLoadABrickOnce) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, std::size_t{1} << 30U);
+  for (const Index3& brick : dataset.level(0).bricks) {
+    constexpr int kThreads = 8;
+    std::latch start(kThreads);
+    std::vector<const GreyGrid*> seen(kThreads, nullptr);
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+      threads.emplace_back([&, i] {
+        start.arrive_and_wait();
+        seen[static_cast<std::size_t>(i)] = dataset.brick(0, brick).get();
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    EXPECT_NE(seen.front(), nullptr);
+    EXPECT_EQ(std::count(seen.begin(), seen.end(), seen.front()), kThreads);
+  }
+  EXPECT_EQ(dataset.cacheStats().misses, dataset.level(0).bricks.size());
+}
+
+#ifndef _WIN32
+// OpenVDB copies files it loads on access to a temp file unless told not to (readBrick).
+TEST_F(DatasetReaderTest, LoadingOnAccessWritesNoTempCopies) {
+  (void)writeReference();
+  const std::filesystem::path temp = dir_.string() + "_openvdb_temp";
+  std::filesystem::create_directories(temp);
+  setenv("OPENVDB_TEMP_DIR", temp.c_str(), 1);  // NOLINT(concurrency-mt-unsafe): no threads yet
+  {
+    const Dataset dataset = Dataset::open(dir_, BrickLoading::kOnAccess);
+    std::vector<Dataset::BrickPtr> held;
+    for (const Index3& brick : dataset.level(0).bricks) {
+      held.push_back(dataset.brick(0, brick));
+      const Box box = dataset.brickBox(0, brick);
+      (void)dataset.sample(0, box.min);
+    }
+    ASSERT_FALSE(held.empty());
+    EXPECT_TRUE(std::filesystem::is_empty(temp));
+  }
+  unsetenv("OPENVDB_TEMP_DIR");  // NOLINT(concurrency-mt-unsafe)
+  std::filesystem::remove_all(temp);
+}
+#endif
+
+TEST(CacheBudget, DefaultFollowsTheMemory) {
+  constexpr std::size_t kGiB = std::size_t{1} << 30U;
+  const std::uint64_t memory = usableMemoryBytes();
+  ASSERT_GT(memory, 0U);
+  EXPECT_EQ(memoryBudgetBytes(), memory / 4 * 3);
+  const std::size_t budget = Dataset::defaultCacheBytes();
+  EXPECT_GE(budget, memory / 4);
+  EXPECT_LE(budget, std::max<std::uint64_t>(memory / 4, memory / 2));
+  EXPECT_GE(budget, std::min<std::uint64_t>(2 * kGiB, memory / 2));
+
+  // The shared cache and the work memory follow a budget that is set.
+  const auto cache = Dataset::sharedCache();
+  setMemoryBudget(std::uint64_t{6} * kGiB);
+  EXPECT_EQ(memoryBudgetBytes(), 6 * kGiB);
+  EXPECT_EQ(cache->budget(), 2 * kGiB);
+  EXPECT_EQ(workMemoryBytes(), 4 * kGiB);
+  EXPECT_EQ(tasksInMemory(kGiB), std::min<std::size_t>(4, static_cast<std::size_t>(threadLimit())));
+  EXPECT_EQ(tasksInMemory(64 * kGiB), 1U);
+  {
+    // Every cache counts against the budget.
+    const BrickCache own(kGiB);
+    EXPECT_EQ(workMemoryBytes(), 3 * kGiB);
+  }
+  setMemoryBudget(0);
+  EXPECT_EQ(cache->budget(), Dataset::defaultCacheBytes());
+}
+
+TEST(CacheBudget, AdmissionWaitsUntilTheOperationsFit) {
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  setMemoryBudget(6 * kGiB);  // 4 GiB of work memory beside the shared cache
+  {
+    Admission first = admitOperation(3 * kGiB);
+    EXPECT_EQ(admittedOperations(), 1);
+    EXPECT_EQ(workMemoryBytes(), 4 * kGiB);
+    // Fits beside the first: admitted at once, and both get half of the work memory.
+    {
+      const Admission small = admitOperation(kGiB);
+      EXPECT_EQ(workMemoryBytes(), 2 * kGiB);
+    }
+    // Does not fit: waits until the first is done.
+    std::atomic<bool> admitted{false};
+    std::thread second([&] {
+      const Admission waiting = admitOperation(2 * kGiB);
+      admitted = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(admitted.load());
+    first = Admission();
+    second.join();
+    EXPECT_TRUE(admitted.load());
+    EXPECT_EQ(admittedOperations(), 0);
+
+    // A waiting operation stops when it is cancelled.
+    const Admission big = admitOperation(4 * kGiB);
+    const std::atomic<bool> cancel{true};
+    EXPECT_THROW((void)admitOperation(kGiB, &cancel), std::runtime_error);
+    EXPECT_EQ(admittedOperations(), 1);
+  }
+  // More than the work memory still runs when it is alone.
+  {
+    const Admission alone = admitOperation(64 * kGiB);
+    EXPECT_EQ(admittedOperations(), 1);
+  }
+  setMemoryBudget(0);
+}
+
+TEST(ThreadLimit, LimitsAndRestoresParallelism) {
+  const int all = threadLimit();
+  setThreadLimit(2);
+  EXPECT_EQ(threadLimit(), 2);
+  std::atomic<int> busy{0};
+  std::atomic<int> most{0};
+  tbb::parallel_for(0, 64, [&](int) {
+    const int now = ++busy;
+    int seen = most.load();
+    while (now > seen && !most.compare_exchange_weak(seen, now)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    --busy;
+  });
+  EXPECT_LE(most.load(), 2);
+  setThreadLimit(0);
+  EXPECT_EQ(threadLimit(), all);
+  EXPECT_THROW(setThreadLimit(-1), std::invalid_argument);
+}
+
 TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
   (void)writeReference();
   // A tiny budget forces eviction while several threads load bricks.
@@ -952,6 +1226,205 @@ TEST_F(DatasetReaderTest, ParallelBrickIterationSeesEveryVoxel) {
     } else {
       EXPECT_GT(active, 0);
     }
+  }
+}
+
+TEST_F(DatasetReaderTest, InterruptedDerivedDatasetResumes) {
+  (void)writeReference();
+  const Dataset input = Dataset::open(dir_);
+  const auto doubled = [&](const Index3& /*brick*/, const Box& box, std::vector<float>& values) {
+    input.readRegion(0, box, values);
+    for (float& value : values) {
+      value = value > 30000.0F ? std::numeric_limits<float>::quiet_NaN() : value / 2.0F;
+    }
+  };
+  const std::filesystem::path fresh_dir = dir_.string() + "_fresh";
+  const std::filesystem::path resumed_dir = dir_.string() + "_resumed";
+  std::filesystem::remove_all(fresh_dir);
+  std::filesystem::remove_all(resumed_dir);
+  const DatasetInfo fresh = writeDerivedDataset(input, fresh_dir, doubled);
+
+  DerivedDatasetOptions options;
+  options.resume_key = "halved";
+  std::size_t calls = 0;
+  const std::size_t stop = input.level(0).bricks.size() / 2;
+  EXPECT_THROW((void)writeDerivedDataset(
+                   input, resumed_dir,
+                   [&](const Index3& brick, const Box& box, std::vector<float>& values) {
+                     if (++calls == stop) {
+                       throw std::runtime_error("interrupted");
+                     }
+                     doubled(brick, box, values);
+                   },
+                   options),
+               std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(resumed_dir / "index.json"));
+
+  // Other processing into the same directory is refused; the same resumes.
+  DerivedDatasetOptions other = options;
+  other.resume_key = "other";
+  EXPECT_THROW((void)writeDerivedDataset(input, resumed_dir, doubled, other),
+               std::invalid_argument);
+  EXPECT_THROW((void)writeDerivedDataset(input, resumed_dir, doubled), std::invalid_argument);
+  std::size_t again = 0;
+  std::size_t kept = 0;
+  options.finished = [&](const Index3&, const Box&) { ++kept; };
+  const DatasetInfo resumed = writeDerivedDataset(
+      input, resumed_dir,
+      [&](const Index3& brick, const Box& box, std::vector<float>& values) {
+        ++again;
+        doubled(brick, box, values);
+      },
+      options);
+  EXPECT_GT(kept, 0U);
+  EXPECT_EQ(kept + again, input.level(0).bricks.size());
+  EXPECT_EQ(resumed.active_voxel_count, fresh.active_voxel_count);
+  EXPECT_EQ(resumed.levels.front().bricks, fresh.levels.front().bricks);
+  EXPECT_FALSE(std::filesystem::exists(resumed_dir / "derived.json"));
+  const Dataset a = Dataset::open(fresh_dir);
+  const Dataset b = Dataset::open(resumed_dir);
+  const Box all{{0, 0, 0}, a.info().dims};
+  std::vector<float> va(static_cast<std::size_t>(all.voxelCount()));
+  std::vector<float> vb(va.size());
+  a.readRegion(0, all, va, -1.0F);
+  b.readRegion(0, all, vb, -1.0F);
+  EXPECT_EQ(va, vb);
+  std::filesystem::remove_all(fresh_dir);
+  std::filesystem::remove_all(resumed_dir);
+}
+
+TEST_F(DatasetReaderTest, TypedRegionsMatchTheFloatRegion) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  ASSERT_EQ(dataset.info().value_type, ValueType::kUInt16);
+  const Box box{{3, 17, 30}, {101, 70, 99}};
+  const auto voxels = static_cast<std::size_t>(box.voxelCount());
+  std::vector<float> grey(voxels);
+  std::vector<std::uint16_t> narrow(voxels);
+  dataset.readRegion(0, box, grey, 7.0F);
+  dataset.readRegion(0, box, narrow, std::uint16_t{7});
+  for (std::size_t i = 0; i < voxels; ++i) {
+    ASSERT_EQ(static_cast<float>(narrow[i]), grey[i]) << i;
+  }
+  std::vector<std::uint8_t> bytes(voxels);
+  EXPECT_THROW(dataset.readRegion(0, box, std::span<std::uint8_t>(bytes)), std::invalid_argument);
+}
+
+TEST_F(DatasetReaderTest, RegionsReadTilesAndLeavesAlike) {
+  // A brick with a constant tile and a partly active leaf, read through the dataset.
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_);
+  const Index3 index = dataset.level(0).bricks.front();
+  const Box box = dataset.brickBox(0, index);
+  auto grid = UInt16Grid::create(0);
+  const openvdb::Coord tile(static_cast<int>(box.min[0]), static_cast<int>(box.min[1]),
+                            static_cast<int>(box.min[2]));
+  grid->tree().addTile(1, tile, 1234, true);
+  grid->tree().setValueOn(tile + openvdb::Coord(9, 1, 2), 77);
+  grid->setName("density");
+  openvdb::io::File(brickPath(dir_, 0, index).string()).write({grid});
+  const Dataset fresh = Dataset::open(dir_, std::size_t{1} << 30U);
+  std::vector<std::uint16_t> values(static_cast<std::size_t>(box.voxelCount()));
+  fresh.readRegion(0, box, values, std::uint16_t{1});
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto x = static_cast<std::int64_t>(i) % box.size(0);
+    const auto y = static_cast<std::int64_t>(i) / box.size(0) % box.size(1);
+    const auto z = static_cast<std::int64_t>(i) / box.size(0) / box.size(1);
+    const auto value = fresh.sample(0, {box.min[0] + x, box.min[1] + y, box.min[2] + z});
+    ASSERT_EQ(values[i], value ? static_cast<std::uint16_t>(*value) : 1) << i;
+  }
+  EXPECT_EQ(values[0], 1234);
+  EXPECT_EQ(values[static_cast<std::size_t>(9 + box.size(0) * (1 + box.size(1) * 2))], 77);
+}
+
+TEST_F(DatasetReaderTest, HeldBricksArePinnedAndOnAccessBricksChargedFully) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, 1);
+  const auto& bricks = dataset.level(0).bricks;
+  ASSERT_GT(bricks.size(), 3U);
+  {
+    const Dataset::BrickPtr held = dataset.brick(0, bricks.front());
+    for (const Index3& brick : bricks) {
+      (void)dataset.brick(0, brick);
+    }
+    // The held brick stayed in the cache: asking again is a hit, not a second copy.
+    const std::uint64_t misses = dataset.cacheStats().misses;
+    EXPECT_EQ(dataset.brick(0, bricks.front()), held);
+    EXPECT_EQ(dataset.cacheStats().misses, misses);
+    const CacheStats stats = dataset.cacheStats();
+    EXPECT_EQ(stats.pinned, 1U);
+    EXPECT_GT(stats.pinned_bytes, 0U);
+    EXPECT_EQ(stats.bricks, 2U);  // the held brick and the most recent one
+  }
+  EXPECT_EQ(dataset.cacheStats().pinned, 0U);
+
+  // A brick loaded on access counts with all its leaves before any is read.
+  const Dataset on_access = Dataset::open(dir_, std::size_t{1} << 30U, BrickLoading::kOnAccess);
+  const Dataset::BrickPtr brick = on_access.brick(0, bricks.front());
+  const auto leaves = brick->visit([](const auto& grid) { return grid.tree().leafCount(); });
+  EXPECT_GE(on_access.cacheStats().bytes, leaves * 512 * sizeof(std::uint16_t));
+}
+
+TEST_F(DatasetReaderTest, BrickSweepKeepsItsTasksInMemoryAndPinsTheHalo) {
+  (void)writeReference();
+  const Dataset dataset = Dataset::open(dir_, std::size_t{1} << 30U);
+  std::atomic<int> busy{0};
+  std::atomic<int> most{0};
+  std::atomic<std::size_t> visited{0};
+  BrickSweep sweep;
+  sweep.task_bytes = std::uint64_t{1} << 62U;  // one task at a time
+  sweep.halo = 1;
+  dataset.forEachBrick(
+      0,
+      [&](const Index3& brick, const GreyGrid&) {
+        const int now = ++busy;
+        int seen = most.load();
+        while (now > seen && !most.compare_exchange_weak(seen, now)) {
+        }
+        // The brick and its stored neighbours are pinned.
+        std::size_t stored = 0;
+        for (std::int64_t dz = -1; dz <= 1; ++dz) {
+          for (std::int64_t dy = -1; dy <= 1; ++dy) {
+            for (std::int64_t dx = -1; dx <= 1; ++dx) {
+              stored += dataset.hasBrick(0, {brick[0] + dx, brick[1] + dy, brick[2] + dz}) ? 1 : 0;
+            }
+          }
+        }
+        EXPECT_EQ(dataset.cacheStats().pinned, stored);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        --busy;
+        ++visited;
+      },
+      sweep);
+  EXPECT_EQ(most.load(), 1);
+  EXPECT_EQ(visited.load(), dataset.level(0).bricks.size());
+}
+
+/// What a failed read of a file mapping raises: an I/O error of the device.
+void failMappedRead() {
+#if defined(_WIN32)
+  RaiseException(EXCEPTION_IN_PAGE_ERROR, 0, 0, nullptr);
+#else
+  (void)std::raise(SIGBUS);
+#endif
+}
+
+TEST(MappedRead, ReadErrorsOfAMappingBecomeExceptions) {
+#if !defined(_WIN32) && defined(VOXELSIEVE_TEST_SANITIZED)
+  GTEST_SKIP() << "the sanitizers handle SIGBUS themselves";
+#endif
+  int value = 0;
+  detail::readMapped("scan.raw", [&] { value = 1; });
+  EXPECT_EQ(value, 1);
+  EXPECT_THROW(detail::readMapped("scan.raw", [] { failMappedRead(); }), std::runtime_error);
+  // Other exceptions pass unchanged, and the next read is guarded again.
+  EXPECT_THROW(detail::readMapped("scan.raw", [] { throw std::invalid_argument("other"); }),
+               std::invalid_argument);
+  try {
+    detail::readMapped("scan.raw", [] { failMappedRead(); });
+    FAIL() << "expected an exception";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("scan.raw"), std::string::npos);
   }
 }
 

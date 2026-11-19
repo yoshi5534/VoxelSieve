@@ -11,6 +11,7 @@
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -27,6 +28,7 @@ Options:
   --noise <sigma>       Gaussian noise in grey values (default 500, 0 disables)
   --seed <n>            Noise seed (default 42)
   --solid               Solid box instead of a hollow one
+  --threads <N>         Threads of all parallel work (default all cores)
   --telemetry <file>    Write time and resource use per phase as JSON
   -h, --help            Show this help
 )";
@@ -52,6 +54,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--dims") {

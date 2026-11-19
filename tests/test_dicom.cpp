@@ -102,6 +102,7 @@ class DicomTest : public ::testing::Test {
 TEST_F(DicomTest, ReadsSignedSlicesInPositionOrder) {
   const DicomStackSource source(writeTiltedStack());
   EXPECT_EQ(source.dims(), kDims);
+  EXPECT_FALSE(source.slowRandomAccess());  // uncompressed files: read in place
   EXPECT_TRUE(source.isSigned());
   EXPECT_EQ(source.bitsStored(), 16);
   EXPECT_EQ(source.sampleType(), SampleType::kUInt16);
@@ -179,6 +180,9 @@ TEST_F(DicomTest, ReadsStacksInsideZipArchives) {
   EXPECT_NEAR(packed.voxelSize()[2], 0.8, 1e-9);
   EXPECT_NEAR(packed.voxelSize().slice_thickness_mm, 0.6, 1e-9);
   EXPECT_EQ(packed.filePose().matrix(), unpacked.filePose().matrix());
+  // Decoded by DCMTK from the archive, read in place from the files: the same voxels.
+  EXPECT_TRUE(packed.slowRandomAccess());
+  EXPECT_FALSE(unpacked.slowRandomAccess());
   EXPECT_EQ(readAll(packed), readAll(unpacked));
   EXPECT_EQ(packed.fileContent(0).size(), std::filesystem::file_size(unpacked.files().front()));
   EXPECT_FALSE(isDicomArchive(dir_ / "missing.zip"));
@@ -219,6 +223,7 @@ TEST_F(DicomTest, ReadsDataSetsWithoutMetaHeaderAndRleByInstanceNumber) {
                     sliceValues(z, twelveBitValue));
   }
   const DicomStackSource source(dir_ / "plain");
+  EXPECT_TRUE(source.slowRandomAccess());  // some slices are compressed
   EXPECT_FALSE(source.isSigned());
   EXPECT_EQ(source.sampleType(), SampleType::kUInt16);  // 12 bits do not fit into 8
   EXPECT_TRUE(source.valueMapping().isIdentity());
@@ -249,6 +254,7 @@ TEST_F(DicomTest, EightBitSlicesAreAnEightBitVolume) {
                     sliceValues(z, value));
   }
   const DicomStackSource source(dir_ / "eight");
+  EXPECT_FALSE(source.slowRandomAccess());
   EXPECT_EQ(source.bitsStored(), 8);
   EXPECT_EQ(source.sampleType(), SampleType::kUInt8);
   const auto grey = readAll(source);

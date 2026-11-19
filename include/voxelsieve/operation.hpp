@@ -89,6 +89,14 @@ struct OperationResult {
   nlohmann::json summary = nlohmann::json::object();
 };
 
+/// What a run of an operation is expected to need (ADR 0034); 0 where it is not known.
+struct OperationEstimate {
+  /// Work memory besides the brick caches.
+  std::uint64_t memory_bytes = 0;
+  /// Disk space of its outputs.
+  std::uint64_t output_bytes = 0;
+};
+
 class Operation {
  public:
   Operation() = default;
@@ -101,6 +109,10 @@ class Operation {
   [[nodiscard]] virtual const OperationInfo& info() const = 0;
   /// Runs the operation. Throws on failure; the step is then marked failed with the message.
   [[nodiscard]] virtual OperationResult run(const OperationContext& context) const = 0;
+  /// Estimates what a run needs from its inputs and parameters, before it starts. The project
+  /// checks the free disk space of the output directory against it, and admits the run only when
+  /// its memory fits beside the runs of other operations (`admitOperation`). Default: unknown.
+  [[nodiscard]] virtual OperationEstimate estimate(const OperationContext& context) const;
 };
 
 class OperationRegistry {
@@ -138,7 +150,7 @@ inline constexpr const char* kPluginExtension = ".so";
 #endif
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 4;
+inline constexpr int kPluginApiVersion = 5;
 
 }  // namespace voxelsieve
 

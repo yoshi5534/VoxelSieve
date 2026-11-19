@@ -64,3 +64,15 @@ entry fails the import instead of yielding a wrong slice. Slices thinner than th
 recorded as before (ADR 0012) and now also reported as a warning of the import;
 `interpolate_slices` (`InterpolatedSource`) fills the gaps with slices interpolated linearly
 between the measured ones, an estimate that the warning names as such.
+
+## Amendment (2026-11): uncompressed slices read in place
+
+Like uncompressed TIFF slices (ADR 0011, amended), a stack whose slices are all uncompressed,
+little-endian, single-frame files on a local disk is no longer staged (review of November 2026,
+step 4.1). When the stack is opened, the pixel data of each file is located from its end: Pixel
+Data is the last element, so its value ends the file, and the 12 (explicit VR) or 8 (implicit
+VR) bytes before it must be its tag and its length. `readRegion` then reads rows straight from
+a pool of mapped files, masked to the stored bits and shifted for signed values as DCMTK's
+decoding does, and `slowRandomAccess()` is false. A stack with any compressed (RLE, deflated)
+slice, a slice whose layout does not match (trailing padding, several frames) or a ZIP archive
+is decoded and staged as before. I/O errors of a mapping are exceptions (`detail/mapped_read`).

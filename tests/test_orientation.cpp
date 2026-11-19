@@ -12,6 +12,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/orientation.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/volume.hpp"
 
@@ -101,6 +102,27 @@ TEST_F(OrientationTest, FindsTheFibreDirectionsOfTwoPlies) {
                            "orientation_y.png", "orientation_z.png"}) {
     EXPECT_TRUE(std::filesystem::exists(dir_ / "out" / file)) << file;
   }
+}
+
+// Tiles of a brick with their halo give the same blocks when the cache holds fewer bricks than a
+// tile and its halo touch, so bricks are evicted while other tiles still need them.
+TEST_F(OrientationTest, SmallCacheGivesTheSameBlocks) {
+  writePlies(dir_ / "scan.vsieve");
+  const Dataset full = Dataset::open(dir_ / "scan.vsieve");
+  const OrientationResult expected = analyzeOrientation(full);
+  const std::size_t bricks = full.info().levels.front().bricks.size();
+  ASSERT_GT(bricks, 8U);
+  const std::size_t brick_bytes =
+      full.cacheStats().bytes / std::max<std::size_t>(1, full.cacheStats().bricks);
+  const Dataset small = Dataset::open(dir_ / "scan.vsieve", 12 * brick_bytes);
+  setThreadLimit(2);
+  const OrientationResult result = analyzeOrientation(small);
+  setThreadLimit(0);
+  ASSERT_EQ(result.blocks.size(), expected.blocks.size());
+  for (std::size_t i = 0; i < result.blocks.size(); ++i) {
+    EXPECT_EQ(result.blocks[i].direction, expected.blocks[i].direction);
+  }
+  EXPECT_GT(small.cacheStats().misses, bricks);
 }
 
 // The report shows the materials and the fibre families and evaluates the required ones.

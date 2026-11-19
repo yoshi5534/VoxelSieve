@@ -23,6 +23,7 @@
 
 #include "detail/blocks.hpp"
 #include "detail/transform.hpp"
+#include "voxelsieve/io.hpp"
 #include "voxelsieve/vdb.hpp"
 
 namespace voxelsieve {
@@ -191,23 +192,28 @@ void writeVdb(const std::filesystem::path& path, const openvdb::GridPtrVec& grid
   MemoryArchive archive;
   archive.setCompression(openvdb::io::Archive::hasBloscCompression() ? openvdb::io::COMPRESS_BLOSC
                                                                      : openvdb::io::COMPRESS_ZIP);
+  std::uint64_t bytes_in_memory = 0;
+  for (const auto& grid : grids) {
+    bytes_in_memory += grid->memUsage();
+  }
+  constexpr std::uint64_t kLargeGrids = std::uint64_t{256} << 20U;
+  if (bytes_in_memory > kLargeGrids) {
+    // Large grids (results such as the pores of a whole scan) go straight to the file through a
+    // large buffer: in memory, the archive and its copy would take twice the file size.
+    // The buffer outlives the stream, which writeFile closes before it returns.
+    std::vector<char> buffer(std::size_t{8} << 20U);
+    writeFile(path, [&](std::ostream& out) {
+      out.rdbuf()->pubsetbuf(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+      archive.writeTo(out, grids);
+    });
+    return;
+  }
   std::ostringstream buffer(std::ios::binary);
   archive.writeTo(buffer, grids);
   const std::string bytes = std::move(buffer).str();
-  std::ofstream out(path, std::ios::binary);
-  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  out.close();
-  // A full disk is the usual cause of a failed write; say so rather than leave a file that only
-  // shows later as "not a VDB file".
-  std::error_code error;
-  const auto space =
-      std::filesystem::space(path.parent_path().empty() ? "." : path.parent_path(), error);
-  if (!error && space.available < (std::uintmax_t{1} << 20)) {
-    throw std::runtime_error("No space left on the device while writing " + path.string());
-  }
-  if (!out) {
-    throw std::runtime_error("Cannot write " + path.string());
-  }
+  // Through a temporary file: a brick file exists only once it is whole, which an interrupted
+  // import relies on to resume, and a full disk is an error that says so.
+  writeFile(path, bytes);
 }
 
 AirAxes parseAirAxes(std::string_view text) {

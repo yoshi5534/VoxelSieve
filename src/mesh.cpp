@@ -1,6 +1,7 @@
 #include "voxelsieve/mesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -8,6 +9,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#include "voxelsieve/io.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -18,16 +22,23 @@ using Triangle = std::array<Vertex, 3>;
 constexpr std::size_t kBinaryHeaderBytes = 80;
 constexpr std::size_t kBinaryTriangleBytes = 50;  // normal, 3 vertices, attribute count
 
-Mesh readBinaryStl(const std::string& bytes) {
-  std::uint32_t count = 0;
-  std::memcpy(&count, bytes.data() + kBinaryHeaderBytes, sizeof(count));
+/// Reads the triangles of a binary STL file from `in`, positioned after the count, a block of
+/// records at a time: the mesh is the only copy in memory.
+Mesh readBinaryStl(std::istream& in, std::uint32_t count, const std::filesystem::path& path) {
   Mesh mesh;
   mesh.triangles.resize(count);
-  const char* data = bytes.data() + kBinaryHeaderBytes + sizeof(count);
-  for (std::uint32_t i = 0; i < count; ++i) {
-    // Skip the stored normal; the winding defines the orientation.
-    std::memcpy(mesh.triangles[i].data(), data + std::size_t{i} * kBinaryTriangleBytes + 12,
-                sizeof(Triangle));
+  constexpr std::size_t kRecords = 65536;
+  std::vector<char> block(kRecords * kBinaryTriangleBytes);
+  for (std::size_t first = 0; first < count; first += kRecords) {
+    const std::size_t n = std::min<std::size_t>(kRecords, count - first);
+    if (!in.read(block.data(), static_cast<std::streamsize>(n * kBinaryTriangleBytes))) {
+      throw std::runtime_error("Read failed: " + path.string());
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      // Skip the stored normal; the winding defines the orientation.
+      std::memcpy(mesh.triangles[first + i].data(), block.data() + i * kBinaryTriangleBytes + 12,
+                  sizeof(Triangle));
+    }
   }
   return mesh;
 }
@@ -64,16 +75,20 @@ Mesh readStl(const std::filesystem::path& path) {
   if (!in) {
     throw std::runtime_error("Cannot open " + path.string());
   }
-  std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-
   // Binary STL is identified by its size; ASCII files may also start with "solid".
-  if (bytes.size() >= kBinaryHeaderBytes + 4) {
+  const std::uintmax_t size = std::filesystem::file_size(path);
+  if (size >= kBinaryHeaderBytes + 4) {
+    std::array<char, kBinaryHeaderBytes + 4> head{};
+    in.read(head.data(), head.size());
     std::uint32_t count = 0;
-    std::memcpy(&count, bytes.data() + kBinaryHeaderBytes, sizeof(count));
-    if (bytes.size() == kBinaryHeaderBytes + 4 + std::size_t{count} * kBinaryTriangleBytes) {
-      return readBinaryStl(bytes);
+    std::memcpy(&count, head.data() + kBinaryHeaderBytes, sizeof(count));
+    if (in && size == kBinaryHeaderBytes + 4 + std::uintmax_t{count} * kBinaryTriangleBytes) {
+      return readBinaryStl(in, count, path);
     }
+    in.clear();
+    in.seekg(0);
   }
+  const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   if (bytes.starts_with("solid")) {
     Mesh mesh = readAsciiStl(bytes, path);
     if (!mesh.triangles.empty()) {
@@ -84,21 +99,19 @@ Mesh readStl(const std::filesystem::path& path) {
 }
 
 void writeStl(const std::filesystem::path& path, const Mesh& mesh) {
-  std::ofstream out(path, std::ios::binary);
-  const std::string header(kBinaryHeaderBytes, ' ');
-  out.write(header.data(), static_cast<std::streamsize>(header.size()));
-  const auto count = static_cast<std::uint32_t>(mesh.triangles.size());
-  out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-  const std::array<float, 3> normal{0.0F, 0.0F, 0.0F};
-  const std::uint16_t attributes = 0;
-  for (const Triangle& triangle : mesh.triangles) {
-    out.write(reinterpret_cast<const char*>(normal.data()), sizeof(normal));
-    out.write(reinterpret_cast<const char*>(triangle.data()), sizeof(Triangle));
-    out.write(reinterpret_cast<const char*>(&attributes), sizeof(attributes));
-  }
-  if (!out) {
-    throw std::runtime_error("Write failed: " + path.string());
-  }
+  writeFile(path, [&mesh](std::ostream& out) {
+    const std::string header(kBinaryHeaderBytes, ' ');
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto count = static_cast<std::uint32_t>(mesh.triangles.size());
+    out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    const std::array<float, 3> normal{0.0F, 0.0F, 0.0F};
+    const std::uint16_t attributes = 0;
+    for (const Triangle& triangle : mesh.triangles) {
+      out.write(reinterpret_cast<const char*>(normal.data()), sizeof(normal));
+      out.write(reinterpret_cast<const char*>(triangle.data()), sizeof(Triangle));
+      out.write(reinterpret_cast<const char*>(&attributes), sizeof(attributes));
+    }
+  });
 }
 
 Bounds meshBounds(const Mesh& mesh) {

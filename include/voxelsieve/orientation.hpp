@@ -14,6 +14,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -36,6 +37,8 @@ struct OrientationOptions {
   /// Number of fibre families, 1 to 6 (2 for a woven fabric, one per ply direction for a
   /// laminate).
   int families = 2;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 /// Direction of the fibres of one block.

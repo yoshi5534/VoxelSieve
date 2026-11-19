@@ -102,7 +102,13 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     footprint0.min[normal] = request.index;
     footprint0.max[normal] = request.index + 1;
     std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
-    materials->readRegion(footprint0, ids, stride);
+    if (shift > 0 && shift <= materials->info().levels.size()) {
+      // The label level of this zoom: the majority of each block, from its own small bricks
+      // instead of every 2^level-th voxel of the full-resolution bricks.
+      materials->readLevel(static_cast<int>(shift), box, ids);
+    } else {
+      materials->readRegion(footprint0, ids, stride);
+    }
     for (std::int64_t y = 0; y < box.size(va); ++y) {
       const std::int64_t row = box.min[va] - request.origin[1] + y;
       const std::int64_t column = box.min[ua] - request.origin[0];
@@ -132,14 +138,59 @@ SliceImage readSlice(const Dataset& dataset, const SliceRequest& request,
     }
   };
   if (porosity->pore_labels) {
-    for (auto leaf = porosity->pore_labels->tree().cbeginLeaf(); leaf; ++leaf) {
-      if (!footprint.intersects(leaf->getNodeBoundingBox())) {
+    // Only the nodes of the labels that reach into the footprint, so a tile costs time by its
+    // own size and not by the number of pores. Large pores are tiles of labels: mark their
+    // pixels at once.
+    const auto mark_box = [&](const openvdb::CoordBBox& tile) {
+      if (!footprint.intersects(tile)) {
+        return;
+      }
+      const std::int64_t u0 = std::max<std::int64_t>(tile.min()[ua], footprint.min[ua]);
+      const std::int64_t u1 = std::min<std::int64_t>(tile.max()[ua], footprint.max[ua] - 1);
+      const std::int64_t v0 = std::max<std::int64_t>(tile.min()[va], footprint.min[va]);
+      const std::int64_t v1 = std::min<std::int64_t>(tile.max()[va], footprint.max[va] - 1);
+      openvdb::Coord xyz;
+      xyz[normal] = static_cast<int>(footprint.min[normal]);
+      for (std::int64_t pv = v0 >> shift; pv <= v1 >> shift; ++pv) {
+        for (std::int64_t pu = u0 >> shift; pu <= u1 >> shift; ++pu) {
+          xyz[ua] = static_cast<int>(pu << shift);
+          xyz[va] = static_cast<int>(pv << shift);
+          mark(xyz, SliceOverlay::kPore);
+        }
+      }
+    };
+    using Root = openvdb::Int32Tree::RootNodeType;
+    using Upper = Root::ChildNodeType;
+    using Lower = Upper::ChildNodeType;
+    using Leaf = Lower::ChildNodeType;
+    const Root& root = porosity->pore_labels->tree().root();
+    for (auto tile = root.cbeginValueOn(); tile; ++tile) {
+      mark_box(openvdb::CoordBBox::createCube(tile.getCoord(), Upper::DIM));
+    }
+    for (auto upper = root.cbeginChildOn(); upper; ++upper) {
+      if (!footprint.intersects(upper->getNodeBoundingBox())) {
         continue;
       }
-      for (auto voxel = leaf->cbeginValueOn(); voxel; ++voxel) {
-        const openvdb::Coord xyz = voxel.getCoord();
-        if (footprint.intersects(openvdb::CoordBBox(xyz, xyz))) {
-          mark(xyz, SliceOverlay::kPore);
+      for (auto tile = upper->cbeginValueOn(); tile; ++tile) {
+        mark_box(openvdb::CoordBBox::createCube(tile.getCoord(), Lower::DIM));
+      }
+      for (auto lower = upper->cbeginChildOn(); lower; ++lower) {
+        if (!footprint.intersects(lower->getNodeBoundingBox())) {
+          continue;
+        }
+        for (auto tile = lower->cbeginValueOn(); tile; ++tile) {
+          mark_box(openvdb::CoordBBox::createCube(tile.getCoord(), Leaf::DIM));
+        }
+        for (auto leaf = lower->cbeginChildOn(); leaf; ++leaf) {
+          if (!footprint.intersects(leaf->getNodeBoundingBox())) {
+            continue;
+          }
+          for (auto voxel = leaf->cbeginValueOn(); voxel; ++voxel) {
+            const openvdb::Coord xyz = voxel.getCoord();
+            if (footprint.intersects(openvdb::CoordBBox(xyz, xyz))) {
+              mark(xyz, SliceOverlay::kPore);
+            }
+          }
         }
       }
     }
@@ -361,7 +412,11 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
       footprint0.max[a] = std::min(box.max[a] << shift, info.dims[a]);
     }
     std::vector<std::uint8_t> ids(preview.overlay.size());
-    materials->readRegion(footprint0, ids, std::int64_t{1} << shift);
+    if (shift > 0 && shift <= materials->info().levels.size()) {
+      materials->readLevel(static_cast<int>(shift), box, ids);
+    } else {
+      materials->readRegion(footprint0, ids, std::int64_t{1} << shift);
+    }
     for (std::size_t i = 0; i < ids.size(); ++i) {
       if (ids[i] != 0 && preview.overlay[i] == 0) {
         preview.overlay[i] =

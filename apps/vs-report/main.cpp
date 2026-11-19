@@ -15,6 +15,7 @@
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -51,7 +52,9 @@ Options:
   --min-pore <voxels>     Smallest pore reported (default 3)
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
-  --cache <MB>            Brick cache size (default 1024)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -67,7 +70,6 @@ struct Options {
   bool print_template = false;
   bool print_first_article_template = false;
   voxelsieve::PorosityOptions porosity;
-  std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
 };
 
@@ -107,8 +109,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.porosity.zone_sigma = std::stod(next());
     } else if (arg == "--zone-min") {
       options.porosity.min_zone_void_fraction = std::stod(next());
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (!arg.starts_with("-") && options.dataset.empty()) {
       options.dataset = arg;
     } else {
@@ -156,7 +158,7 @@ int main(int argc, char** argv) {
                                             ? std::string(voxelsieve::defaultReportTemplate())
                                             : readFile(options->report_template);
 
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+    const auto dataset = voxelsieve::Dataset::open(options->dataset);
     const auto result = voxelsieve::analyzePorosity(dataset, options->porosity);
     const auto evaluation = voxelsieve::evaluate(result, zones, &dataset);
 

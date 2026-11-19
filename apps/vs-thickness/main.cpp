@@ -13,6 +13,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/thickness.hpp"
@@ -66,7 +67,9 @@ Options:
                           smallest extent of the part, at most 64 voxels); time and memory grow
                           with it
   --max-triangles <n>     Triangle budget of the measured surface (default 2000000)
-  --cache <MB>            Brick cache size (default 1024)
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -80,7 +83,6 @@ struct Options {
   double nominal_tolerance_mm = 0.0;
   bool volume_map = false;
   voxelsieve::ThicknessMapOptions map;
-  std::size_t cache_mb = 1024;
   std::filesystem::path telemetry;
 };
 
@@ -122,8 +124,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.map.max_thickness_mm = std::stod(next());
     } else if (arg == "--max-triangles") {
       options.thickness.max_triangles = std::stoull(next());
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (!arg.starts_with("-") && options.dataset.empty()) {
@@ -168,7 +170,7 @@ int main(int argc, char** argv) {
     }
     voxelsieve::Telemetry telemetry("vs-thickness");
     const voxelsieve::TelemetryScope scope(telemetry);
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
+    const auto dataset = voxelsieve::Dataset::open(options->dataset);
     std::filesystem::create_directories(options->out);
     std::filesystem::path surface = options->surface;
     if (surface.empty()) {

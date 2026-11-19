@@ -101,3 +101,19 @@ changes:
 - When the mixture's classes are suggested, the threshold between two classes with exactly one
   clear valley between them is that valley; only classes without one (a shoulder) are split
   where their components are equally likely.
+
+## Amendment (2026-11): 8-bit labels and label levels
+
+Format version 2 of the material volume (review of November 2026, step 3.4, ADR 0034):
+
+- Label bricks are `UInt8Grid`s (ids are at most 255), pruned, instead of `Int32Grid`s: a
+  quarter of the memory per leaf, and uniform material stays tiles. This is the label type of
+  ADR 0021's integer grids; grey values are not affected.
+- Coarser label levels `level<L>/` like the levels of a dataset, until a level fits into one
+  brick. A level-L voxel holds the material most of the 2 × 2 × 2 level-(L − 1) voxels below it
+  have (ties to the smaller id; air only where all eight are air). `materials.json` lists their
+  bricks in `levels`.
+- The slice overlay and the 3D view read the level of their zoom (`MaterialVolume::readLevel`)
+  instead of every 2^L-th voxel of the full-resolution bricks, so zoomed-out views of large scans
+  read small bricks; they show the majority of each block rather than one sample of it.
+- Version 1 volumes (`Int32Grid`, no levels) are still read; their overlays sample level 0.

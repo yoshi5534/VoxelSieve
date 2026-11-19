@@ -28,14 +28,17 @@
 #include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
 #include "voxelsieve/mcp.hpp"
+#include "voxelsieve/resources.hpp"
 
 namespace {
 
 constexpr std::string_view kUsage = R"(Usage: vs-gui [options] [<dir>...]
        vs-gui --mcp [options] [<dir>...]
 
-Starts the VoxelSieve GUI: open http://localhost:8410 in a browser for the wizard (choose a
-dataset, run operations, create the report) with the step protocol and undo/redo.
+Starts the VoxelSieve GUI: open the address it prints, http://localhost:8410/?token=...,
+in a browser for the wizard (choose a dataset, run operations, create the report) with the
+step protocol and undo/redo. The token changes with every start; other processes and the
+network cannot use the server without it.
 
 With --mcp it serves the GUI over the Model Context Protocol (JSON-RPC on stdin/stdout)
 instead. Register it with an MCP client as a stdio server, for example:
@@ -66,6 +69,10 @@ Options:
   --plugins <dir>       Load operation plugins (*.so, *.dll on Windows) from <dir>;
                         repeatable. Directories in VOXELSIEVE_PLUGIN_PATH (separated like
                         PATH) are loaded too
+  --memory <MB>         Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>          Brick cache of the datasets operations read (default a third of
+                        the budget); the slice views keep a sixteenth of the budget
+  --threads <N>         Threads of all parallel work (default all cores)
   -h, --help            Show this help
 )";
 
@@ -136,6 +143,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.reopen = false;
     } else if (arg == "--plugins") {
       options.plugins.push_back(expandHome(next()));
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg.starts_with("-")) {
       throw std::invalid_argument("Unknown argument " + std::string(arg));
     } else {
@@ -242,7 +251,7 @@ int main(int argc, char** argv) {
     }
     voxelsieve::HttpServer server(gui, options->host, options->port);
     std::cerr << "vs-gui: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
-              << ":" << server.port() << "/  (Ctrl+C to stop)\n";
+              << ":" << server.port() << "/?token=" << server.token() << "  (Ctrl+C to stop)\n";
     serveUntilStopped(server);
     return 0;
   } catch (const std::exception& error) {

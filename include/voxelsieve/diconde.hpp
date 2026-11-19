@@ -12,6 +12,7 @@
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/transform.hpp"
@@ -107,6 +108,8 @@ struct DicondeWriteOptions {
   std::string image_comments;
   /// Findings, each written with the slice through its centre.
   std::vector<DicondeIndication> indications;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 /// UIDs of a written series.

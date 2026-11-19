@@ -240,6 +240,21 @@ class MapBuilder {
     }
   }
 
+  /// Adds the thickness values of a brick written before (a resumed map) to the statistics.
+  void restore(const GreyGrid& written, const ValueMapping& mapping, const Box& box) {
+    std::vector<float> values(static_cast<std::size_t>(box.voxelCount()), kNaN);
+    written.visit([&](const auto& grid) {
+      for (auto it = grid.cbeginValueOn(); it; ++it) {
+        const openvdb::Coord c = it.getCoord();
+        values[static_cast<std::size_t>(
+            (c.x() - box.min[0]) +
+            box.size(0) * ((c.y() - box.min[1]) + box.size(1) * (c.z() - box.min[2])))] =
+            static_cast<float>(mapping.toValue(static_cast<double>(*it)));
+      }
+    });
+    collect(box, values);
+  }
+
   [[nodiscard]] const Accumulator& total() const { return total_; }
   [[nodiscard]] const std::vector<BlockStats>& blocks() const { return blocks_; }
   [[nodiscard]] std::int64_t blockSize() const { return block_; }
@@ -691,6 +706,11 @@ void writeMapSlices(const Dataset& dataset, const Dataset& map, const ThicknessM
     std::vector<float> thickness(grey.size());
     dataset.readRegion(level, slice, grey, info.air_level);
     map.readRegion(level, slice, thickness, kNaN);
+    // Stored in 16 bit with a scale (ADR 0030); NaN stays NaN.
+    const ValueMapping mapping = map.info().value_mapping;
+    for (float& t : thickness) {
+      t = static_cast<float>(mapping.toValue(t));
+    }
     const float lo = info.air_level;
     float hi = lo + 1.0F;
     for (const float g : grey) {
@@ -746,7 +766,8 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
     throw std::invalid_argument("The surface does not belong to the dataset");
   }
   const std::filesystem::path map_dir = dir / "thickness_map";
-  if (std::filesystem::exists(map_dir) && !std::filesystem::is_empty(map_dir)) {
+  // An interrupted map (no index.json yet) resumes below.
+  if (std::filesystem::exists(map_dir / "index.json")) {
     throw std::invalid_argument("A thickness map exists already in " + dir.string());
   }
   const VoxelSize& pitch = info.voxel_size;
@@ -780,7 +801,22 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
   MapBuilder builder(dataset, result.iso_value, result.max_thickness_mm, options.min_wall_mm,
                      options.max_wall_mm);
   DerivedDatasetOptions derived;
-  derived.value_type = ValueType::kFloat;
+  // In 16 bit, a step of 1/65535 of the largest thickness (a few hundredths of a voxel), at half
+  // the size of floats; value = scale * stored.
+  derived.value_type = ValueType::kUInt16;
+  const ValueMapping mapping{0.0, result.max_thickness_mm / 65535.0};
+  derived.value_mapping = mapping;
+  // A map that was interrupted resumes with the bricks it finished, whose values go into the
+  // statistics again (ADR 0034).
+  derived.resume_key = nlohmann::json{{"map", "wall thickness"},
+                                      {"iso_value", result.iso_value},
+                                      {"max_thickness_mm", result.max_thickness_mm},
+                                      {"min_wall_mm", options.min_wall_mm},
+                                      {"max_wall_mm", options.max_wall_mm}}
+                           .dump();
+  derived.finished = [&](const Index3& brick, const Box& box) {
+    builder.restore(readBrick(brickPath(map_dir, 0, brick), false), mapping, box);
+  };
   if (options.progress) {
     derived.progress = [&options](std::string_view stage, double fraction) {
       options.progress(stage == "bricks" ? 0.9 * fraction : 0.9 + 0.1 * fraction);
@@ -791,8 +827,11 @@ ThicknessMapResult writeThicknessMap(const Dataset& dataset, const SurfaceMask& 
     std::filesystem::create_directories(dir);
     (void)writeDerivedDataset(
         dataset, map_dir,
-        [&builder](const Index3& /*brick*/, const Box& box, std::vector<float>& values) {
+        [&builder, &mapping](const Index3& /*brick*/, const Box& box, std::vector<float>& values) {
           builder.brick(box, values);
+          for (float& value : values) {
+            value = static_cast<float>(mapping.toGrey(value));  // NaN stays NaN
+          }
         },
         derived);
   }

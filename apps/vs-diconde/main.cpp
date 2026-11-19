@@ -18,6 +18,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
 
 namespace {
@@ -40,6 +41,9 @@ Options:
   --description <text>    Series description of the volume
   --info <path>           Show a series instead of writing one
   --json <file>           With --info: also write what was found as JSON
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -87,6 +91,8 @@ std::optional<Options> parse(int argc, char** argv) {
       options.info = next();
     } else if (arg == "--json") {
       options.json = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else {
@@ -163,9 +169,7 @@ void write(const Options& options) {
     }
   }
   voxelsieve::applyInspectionOrder(order, diconde, evaluation ? &*evaluation : nullptr);
-  const auto dataset =
-      voxelsieve::Dataset::open(options.dataset, voxelsieve::Dataset::kDefaultCacheBytes,
-                                voxelsieve::BrickLoading::kOnAccess);
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
   const auto volume = voxelsieve::writeDicondeDataset(dataset, options.out / "volume", diconde);
   std::cout << "volume             " << volume.files << " slices, " << diconde.indications.size()
             << " indications, series " << volume.series_uid << "\n";

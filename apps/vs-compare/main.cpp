@@ -14,6 +14,7 @@
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -47,6 +48,8 @@ Options:
   --non-rigid-stiffness <s>
                           Resistance against stretching (default 1): high values let only thin
                           sections bend, low values follow almost any smooth deviation
+  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
   -h, --help              Show this help
 )";
@@ -84,6 +87,8 @@ std::optional<Options> parse(int argc, char** argv) {
       return std::nullopt;
     } else if (arg == "--out") {
       options.out = next();
+    } else if (voxelsieve::applyResourceOption(arg, next)) {
+      // applied at once
     } else if (arg == "--telemetry") {
       options.telemetry = next();
     } else if (arg == "--align") {

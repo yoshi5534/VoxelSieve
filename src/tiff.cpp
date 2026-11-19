@@ -3,18 +3,25 @@
 #include <tbb/parallel_for.h>
 
 #include <algorithm>
+#include <boost/iostreams/device/mapped_file.hpp>
 #include <cctype>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <limits>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <stdexcept>
 #include <utility>
 
+#include "detail/mapped_read.hpp"
+#include "detail/network.hpp"
 #include "detail/tiff.hpp"
 #include "detail/zip.hpp"
+#include "voxelsieve/telemetry.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -136,6 +143,103 @@ struct TiffStackSource::Impl {
   mutable std::size_t cached_bytes = 0;
   mutable std::set<Key> clip_counted;  // chunks whose clipped values are counted
   mutable std::uint64_t clipped = 0;
+  /// Uncompressed slices in local files, read in place through mapped files (ADR 0011).
+  bool in_place = false;
+  using Mapped = std::shared_ptr<const boost::iostreams::mapped_file_source>;
+  /// Mapped files by file (the slice, or 0 for a multi-page file), the most recent first in the
+  /// list; a brick of 256 slices needs them all at once, so the pool holds a few such bricks.
+  mutable std::map<std::size_t, std::pair<Mapped, std::list<std::size_t>::iterator>> mapped;
+  mutable std::list<std::size_t> mapped_lru;
+  static constexpr std::size_t kMappedFiles = 1024;
+
+  /// The file of slice `z` mapped, from a pool of the files used last.
+  Mapped mappedFile(std::size_t z) const {
+    const std::size_t key = multi_page ? 0 : z;
+    {
+      const std::lock_guard lock(mutex);
+      if (const auto it = mapped.find(key); it != mapped.end()) {
+        mapped_lru.splice(mapped_lru.begin(), mapped_lru, it->second.second);
+        return it->second.first;
+      }
+    }
+    auto opened =
+        std::make_shared<const boost::iostreams::mapped_file_source>(slices[z].file.string());
+    Mapped evicted;  // unmapped outside the lock
+    const std::lock_guard lock(mutex);
+    if (const auto it = mapped.find(key); it != mapped.end()) {
+      return it->second.first;  // mapped by another thread meanwhile
+    }
+    mapped_lru.push_front(key);
+    mapped.emplace(key, std::pair{opened, mapped_lru.begin()});
+    if (mapped.size() > kMappedFiles) {
+      const auto oldest = mapped.find(mapped_lru.back());
+      evicted = std::move(oldest->second.first);
+      mapped.erase(oldest);
+      mapped_lru.pop_back();
+    }
+    return opened;
+  }
+
+  /// Copies rows [y0, y1) and columns [x0, x1) of slice `z` from the file into `out` (rows of
+  /// `stride` values), converting 8 bit and big-endian samples.
+  void readInPlace(std::size_t z, const detail::TiffPage& page, std::int64_t x0, std::int64_t x1,
+                   std::int64_t y0, std::int64_t y1, std::uint16_t* out,
+                   std::int64_t stride) const {
+    const Mapped file = mappedFile(z);
+    const auto* data = reinterpret_cast<const std::uint8_t*>(file->data());
+    const std::uint64_t size = file->size();
+    const auto bytes = static_cast<std::int64_t>(page.bits / 8);
+    const std::int64_t cw = page.chunk_width;
+    const std::int64_t ch = page.chunk_height;
+    std::uint64_t copied = 0;
+    // Read ahead: the rows of the region in each chunk lie in one span of the file.
+    for (std::int64_t cy = y0 / ch; cy <= (y1 - 1) / ch; ++cy) {
+      const std::int64_t first_row = std::max(y0, cy * ch) - cy * ch;
+      const std::int64_t last_row = std::min(y1, (cy + 1) * ch) - 1 - cy * ch;
+      for (std::int64_t column = x0 / cw; column <= (x1 - 1) / cw; ++column) {
+        const auto chunk = static_cast<std::size_t>(cy * page.chunks_across + column);
+        const std::uint64_t start =
+            page.chunk_offsets[chunk] + static_cast<std::uint64_t>(first_row * cw * bytes);
+        const auto span = static_cast<std::uint64_t>((last_row - first_row + 1) * cw * bytes);
+        if (start <= size && span <= size - start) {
+          detail::prefetchMappedPages(data + start, span);
+        }
+      }
+    }
+    // An I/O error while reading the mapping becomes an exception instead of ending the process.
+    detail::readMapped(slices[z].file.string(), [&] {
+      for (std::int64_t y = y0; y < y1; ++y) {
+        std::uint16_t* row = out + (y - y0) * stride;
+        for (std::int64_t x = x0; x < x1;) {
+          const std::int64_t column = x / cw;
+          const std::int64_t x_end = std::min(x1, (column + 1) * cw);
+          const auto chunk = static_cast<std::size_t>((y / ch) * page.chunks_across + column);
+          const std::uint64_t start =
+              page.chunk_offsets[chunk] +
+              static_cast<std::uint64_t>(((y % ch) * cw + (x - column * cw)) * bytes);
+          const auto count = static_cast<std::size_t>(x_end - x);
+          if (start > size || count * static_cast<std::uint64_t>(bytes) > size - start) {
+            throw std::runtime_error("TIFF strip outside its file: " + slices[z].file.string());
+          }
+          const std::uint8_t* p = data + start;
+          std::uint16_t* target = row + (x - x0);
+          if (bytes == 1) {
+            std::copy_n(p, count, target);
+          } else if (page.big_endian) {
+            for (std::size_t i = 0; i < count; ++i) {
+              target[i] = static_cast<std::uint16_t>((p[2 * i] << 8U) | p[2 * i + 1]);
+            }
+          } else {
+            std::memcpy(target, p, count * sizeof(std::uint16_t));
+          }
+          copied += count * static_cast<std::uint64_t>(bytes);
+          x = x_end;
+        }
+      }
+    });
+    // Reads of a mapping are page faults, which no process counter reports as bytes read.
+    countRead(CountedRead::kMappedFile, copied);
+  }
 
   void check(const detail::TiffPage& page, std::size_t z) const {
     detail::checkSupported(page);
@@ -467,7 +571,13 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
   } else if (options.value_range) {
     throw std::invalid_argument("A value range applies only to float slices");
   }
+  // Uncompressed slices in local files need no decoding: they are read in place, like a raw
+  // file, and need no staging copy. A slice that is stored otherwise is still decoded.
+  impl.in_place = !is_zip && detail::readableInPlace(impl.first) &&
+                  !impl.first.chunk_offsets.empty() && !detail::onNetworkShare(path);
 }
+
+bool TiffStackSource::slowRandomAccess() const { return !impl_->in_place; }
 
 TiffStackSource::~TiffStackSource() = default;
 
@@ -510,6 +620,9 @@ void TiffStackSource::releaseMemory() const {
     impl_->lru.clear();
     impl_->cached.clear();
     impl_->cached_bytes = 0;
+    // Unmapped, the files' pages go back to the file cache.
+    impl_->mapped.clear();
+    impl_->mapped_lru.clear();
   }
   if (impl_->zip) {
     impl_->zip->releasePages();
@@ -536,6 +649,11 @@ void TiffStackSource::readRegion(const Box& box, std::span<std::uint16_t> out) c
   for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
     const auto slice = static_cast<std::size_t>(z);
     const detail::TiffPage page = impl_->pageOf(slice);
+    if (impl_->in_place && detail::readableInPlace(page) && !page.chunk_offsets.empty()) {
+      impl_->readInPlace(slice, page, box.min[0], box.max[0], box.min[1], box.max[1],
+                         out.data() + (z - box.min[2]) * ny * nx, nx);
+      continue;
+    }
     const std::int64_t cw = page.chunk_width;
     const std::int64_t ch = page.chunk_height;
     for (std::int64_t y = box.min[1]; y < box.max[1];) {
