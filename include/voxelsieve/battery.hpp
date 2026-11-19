@@ -16,6 +16,7 @@
 
 #include "voxelsieve/cells.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -59,6 +60,8 @@ struct BatteryOptions {
   /// Edge of a pixel of section images (analyzeBatteryImages); unset: from the positions of the
   /// cross-sections over the height of the longitudinal sections.
   std::optional<double> image_pixel_mm;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 /// Grey value levels found in the cell.

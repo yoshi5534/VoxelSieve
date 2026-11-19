@@ -15,6 +15,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
@@ -39,6 +40,8 @@ struct SurfaceOptions {
   std::optional<float> iso_value;
   /// zstd level 1 to 22; 0 picks 19, which is about 20 % smaller than the fast levels.
   int compression_level = 0;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 struct SurfaceInfo {

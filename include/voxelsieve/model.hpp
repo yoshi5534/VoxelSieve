@@ -17,6 +17,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/uninitialized.hpp"
 
 namespace voxelsieve {
@@ -124,6 +125,8 @@ void writeModel(const std::filesystem::path& path, const ModelSpec& spec);
 struct ModelSegmentationOptions {
   /// Edge of the tile cores the model runs on, in voxels (each gets the model's halo).
   std::int64_t tile = 128;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 /// Segments `dataset` with `model`, a segmentation model, and writes the material volume to `dir`

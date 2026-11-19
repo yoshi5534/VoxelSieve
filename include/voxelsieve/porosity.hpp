@@ -9,6 +9,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
@@ -60,6 +61,8 @@ struct PorosityOptions {
   /// fibre bundles of a composite, a light alloy next to steel) is no zone. Without it, the part
   /// is one material.
   const MaterialVolume* materials = nullptr;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 struct PorosityResult {

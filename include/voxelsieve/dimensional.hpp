@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/render.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/transform.hpp"
@@ -161,6 +162,8 @@ struct DimensionalOptions {
   double max_normal_angle_deg = 30.0;
   /// Points per element at most; denser regions are thinned evenly.
   std::size_t max_points = 200000;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 /// The measurement of an inspection plan: elements, alignment and characteristics as JSON (see

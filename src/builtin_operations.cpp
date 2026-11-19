@@ -840,6 +840,7 @@ class Porosity final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     PorosityOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.min_pore_voxels = p.at("min_pore_voxels").get<std::int64_t>();
     options.zone_sigma = p.at("zone_sigma").get<double>();
     options.min_zone_void_fraction = p.at("min_zone_void_fraction").get<double>();
@@ -939,6 +940,7 @@ class FibreOrientation final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     OrientationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.block_size = p.at("block_size").get<int>();
     options.families = p.at("families").get<int>();
     options.material = p.at("material").get<int>();
@@ -1140,6 +1142,7 @@ class BatteryInspection final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     BatteryOptions options = batteryOptions(p);
+    options.progress = ProgressToken(context.progress, context.cancel);
     if (const std::string type = p.at("cell_type").get<std::string>(); type != "auto") {
       options.cell_type = type == "cylindrical" ? CellType::kCylindrical : CellType::kStacked;
     }
@@ -1199,6 +1202,7 @@ class BatteryImages final : public Operation {
                                            })));
     }
     BatteryOptions options = batteryOptions(p);
+    options.progress = ProgressToken(context.progress, context.cancel);
     if (p.contains("pixel_size_mm")) {
       options.image_pixel_mm = p.at("pixel_size_mm").get<double>();
     }
@@ -1245,6 +1249,7 @@ class Surface final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     SurfaceOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.bits = p.at("bits").get<int>();
     options.band_voxels = p.at("band_voxels").get<double>();
     if (p.contains("iso_value")) {
@@ -1373,6 +1378,7 @@ class CompareCad final : public Operation {
     const std::filesystem::path cad_path =
         std::filesystem::absolute(p.at("cad_path").get<std::string>());
     CompareOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.alignment = alignmentFromString(p.at("alignment").get<std::string>());
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
     options.outer_surface_only = p.at("outer_surface_only").get<bool>();
@@ -1901,6 +1907,7 @@ class SegmentMaterials final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     SegmentationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.materials = p.at("materials").get<int>();
     if (p.contains("air_threshold")) {
       options.air_threshold = p.at("air_threshold").get<float>();
@@ -2175,6 +2182,7 @@ class SegmentWithModel final : public Operation {
     const Model model =
         Model::load(std::filesystem::absolute(p.at("model_path").get<std::string>()));
     ModelSegmentationOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.tile = p.at("tile").get<std::int64_t>();
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const MaterialVolumeInfo info =
@@ -2832,6 +2840,7 @@ class CompareObjects final : public Operation {
     const Json& actual = objectEntry(context, context.object);
     const Json& nominal_object = objectEntry(context, nominal_id);
     CompareOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.alignment = p.at("refine").get<bool>() ? CompareOptions::Alignment::kRefine
                                                    : CompareOptions::Alignment::kNone;
     options.tolerance_mm = p.at("tolerance_mm").get<double>();
@@ -2979,6 +2988,7 @@ class MeasureDimensions final : public Operation {
     const RigidTransform cad_to_scan =
         RigidTransform::fromMatrix(compared.at("cad_to_scan").get<std::vector<double>>());
     DimensionalOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     options.search_mm = p.at("search_mm").get<double>();
     options.edge_margin_mm = p.at("edge_margin_mm").get<double>();
     context.progress(0.05);
@@ -3249,6 +3259,7 @@ class ExportDiconde final : public Operation {
       }
     }
     DicondeWriteOptions options;
+    options.progress = ProgressToken(context.progress, context.cancel);
     std::string object_name;
     if (!context.object.empty()) {
       const Json& object = objectEntry(context, context.object);

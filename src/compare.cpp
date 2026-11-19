@@ -1774,6 +1774,7 @@ CompareResult compareToCad(const SurfaceMask& mask, const Mesh& cad,
   result.cad_triangles = cad.triangles.size();
   const VoxelSize& v = result.voxel_size;
   std::optional<TelemetryPhase> phase(std::in_place, "surface mesh");
+  options.progress.check();
   const MeshDistance nominal(cad);
 
   // The scanned surface in mm, without the surfaces of internal voids when asked.

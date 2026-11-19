@@ -175,64 +175,69 @@ struct Scan {
   }
 };
 
-Scan scanBricks(const Dataset& dataset) {
+Scan scanBricks(const Dataset& dataset, const ProgressToken& progress) {
   const DatasetInfo& info = dataset.info();
   const float threshold = info.threshold;
   // One accumulator per thread, merged at the end. No lock is held around OpenVDB calls, which may
   // run nested TBB tasks (a lock there can deadlock when the waiting thread steals another brick).
   tbb::combinable<Scan> partial_scans;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    Scan brick_scan;
-    auto candidate_acc = brick_scan.candidates->getAccessor();
-    auto seed_acc = brick_scan.seeds->getAccessor();
-    auto mean_acc = brick_scan.mean->getAccessor();
-    auto variance_acc = brick_scan.variance->getAccessor();
-    auto active_acc = brick_scan.active->getAccessor();
-    const auto acc = grid.getConstAccessor();
-    Dataset::Sampler neighbours(dataset, 0);  // voxels of the bricks around this one
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        Scan brick_scan;
+        auto candidate_acc = brick_scan.candidates->getAccessor();
+        auto seed_acc = brick_scan.seeds->getAccessor();
+        auto mean_acc = brick_scan.mean->getAccessor();
+        auto variance_acc = brick_scan.variance->getAccessor();
+        auto active_acc = brick_scan.active->getAccessor();
+        const auto acc = grid.getConstAccessor();
+        Dataset::Sampler neighbours(dataset, 0);  // voxels of the bricks around this one
 
-    const auto is_active = [&](const Coord& c) {
-      const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] && c.y() >= box.min[1] &&
-                                c.y() < box.max[1] && c.z() >= box.min[2] && c.z() < box.max[2];
-      return inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
-    };
+        const auto is_active = [&](const Coord& c) {
+          const bool inside_brick = c.x() >= box.min[0] && c.x() < box.max[0] &&
+                                    c.y() >= box.min[1] && c.y() < box.max[1] &&
+                                    c.z() >= box.min[2] && c.z() < box.max[2];
+          return inside_brick ? acc.isValueOn(c) : neighbours({c.x(), c.y(), c.z()}).has_value();
+        };
 
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      double sum = 0.0;
-      double sum_sq = 0.0;
-      int below = 0;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const float value = *it;
-        sum += value;
-        sum_sq += static_cast<double>(value) * value;
-        if (value >= threshold) {
-          continue;
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          double sum = 0.0;
+          double sum_sq = 0.0;
+          int below = 0;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const float value = *it;
+            sum += value;
+            sum_sq += static_cast<double>(value) * value;
+            if (value >= threshold) {
+              continue;
+            }
+            ++below;
+            const Coord c = it.getCoord();
+            candidate_acc.setValueOn(c);
+            if (std::any_of(face_neighbours.begin(), face_neighbours.end(),
+                            [&](const Coord& d) { return !is_active(c + d); })) {
+              seed_acc.setValueOn(c);
+            }
+          }
+          const auto count = static_cast<std::int64_t>(leaf->onVoxelCount());
+          const Coord block = blockOf(leaf->origin());
+          active_acc.setValue(block, static_cast<int>(count));
+          // Material blocks only: blocks at the surface mix in air and would bias the material
+          // level.
+          if (count == kBlockVoxels && below <= kMaxBelowInMaterialBlock) {
+            const double mean = sum / kBlockVoxels;
+            const double variance = std::max(0.0, sum_sq / kBlockVoxels - mean * mean);
+            mean_acc.setValue(block, static_cast<float>(mean));
+            variance_acc.setValue(block, static_cast<float>(variance));
+          }
         }
-        ++below;
-        const Coord c = it.getCoord();
-        candidate_acc.setValueOn(c);
-        if (std::any_of(face_neighbours.begin(), face_neighbours.end(),
-                        [&](const Coord& d) { return !is_active(c + d); })) {
-          seed_acc.setValueOn(c);
-        }
-      }
-      const auto count = static_cast<std::int64_t>(leaf->onVoxelCount());
-      const Coord block = blockOf(leaf->origin());
-      active_acc.setValue(block, static_cast<int>(count));
-      // Material blocks only: blocks at the surface mix in air and would bias the material level.
-      if (count == kBlockVoxels && below <= kMaxBelowInMaterialBlock) {
-        const double mean = sum / kBlockVoxels;
-        const double variance = std::max(0.0, sum_sq / kBlockVoxels - mean * mean);
-        mean_acc.setValue(block, static_cast<float>(mean));
-        variance_acc.setValue(block, static_cast<float>(variance));
-      }
-    }
 
-    // topologyUnion runs TBB tasks. Isolated, the waiting thread cannot pick up another brick,
-    // whose body would change this thread's accumulator while the union is still writing it.
-    tbb::this_task_arena::isolate([&] { partial_scans.local().merge(brick_scan); });
-  });
+        // topologyUnion runs TBB tasks. Isolated, the waiting thread cannot pick up another brick,
+        // whose body would change this thread's accumulator while the union is still writing it.
+        tbb::this_task_arena::isolate([&] { partial_scans.local().merge(brick_scan); });
+      },
+      BrickSweep{.progress = progress});
   Scan scan;
   partial_scans.combine_each([&](Scan& local) { scan.merge(local); });
   // Large voids are runs of fully active leaves; as tiles they cost nothing per voxel.
@@ -630,7 +635,8 @@ struct MaterialScan {
   std::array<double, kMaxMaterials + 1> mean{};  // grey value per material id
 };
 
-MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materials) {
+MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materials,
+                           const ProgressToken& progress) {
   const MaterialVolumeInfo& info = materials.info();
   if (info.dims != dataset.info().dims) {
     throw std::invalid_argument("The material volume does not have the dataset's dimensions");
@@ -647,37 +653,40 @@ MaterialScan scanMaterials(const Dataset& dataset, const MaterialVolume& materia
     std::array<double, kMaxMaterials + 1> n{};
   };
   tbb::combinable<Partial> partials;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
-    // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
-    tbb::this_task_arena::isolate([&] { materials.readRegion(box, ids); });
-    Partial brick_partial;
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      MaterialCounts counts{};
-      bool any = false;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const Coord c = it.getCoord();
-        const std::size_t id = ids[regionIndex(box, c)];
-        if (id == 0 || id > kMaxMaterials) {
-          continue;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        std::vector<std::uint8_t> ids(static_cast<std::size_t>(box.voxelCount()));
+        // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+        tbb::this_task_arena::isolate([&] { materials.readRegion(box, ids); });
+        Partial brick_partial;
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          MaterialCounts counts{};
+          bool any = false;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const Coord c = it.getCoord();
+            const std::size_t id = ids[regionIndex(box, c)];
+            if (id == 0 || id > kMaxMaterials) {
+              continue;
+            }
+            ++counts[id];
+            brick_partial.sum[id] += *it;
+            ++brick_partial.n[id];
+            any = true;
+          }
+          if (any) {
+            brick_partial.counts.add(blockOf(leaf->origin()), counts);
+          }
         }
-        ++counts[id];
-        brick_partial.sum[id] += *it;
-        ++brick_partial.n[id];
-        any = true;
-      }
-      if (any) {
-        brick_partial.counts.add(blockOf(leaf->origin()), counts);
-      }
-    }
-    Partial& local = partials.local();
-    local.counts.append(brick_partial.counts);
-    for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
-      local.sum[id] += brick_partial.sum[id];
-      local.n[id] += brick_partial.n[id];
-    }
-  });
+        Partial& local = partials.local();
+        local.counts.append(brick_partial.counts);
+        for (std::size_t id = 0; id <= kMaxMaterials; ++id) {
+          local.sum[id] += brick_partial.sum[id];
+          local.n[id] += brick_partial.n[id];
+        }
+      },
+      BrickSweep{.progress = progress});
   MaterialScan scan;
   std::array<double, kMaxMaterials + 1> sum{};
   std::array<double, kMaxMaterials + 1> n{};
@@ -780,17 +789,19 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   const double voxel_volume = info.voxel_size.volumeMm3();
 
   std::optional<TelemetryPhase> phase(std::in_place, "scan bricks");
-  const Scan scan = scanBricks(dataset);
+  const Scan scan = scanBricks(dataset, options.progress.part(0.0, 0.3));
   phase.reset();
   std::optional<MaterialScan> material_scan;
   if (options.materials != nullptr) {
     phase.emplace("materials");
-    material_scan = scanMaterials(dataset, *options.materials);
+    material_scan = scanMaterials(dataset, *options.materials, options.progress.part(0.3, 0.4));
     phase.reset();
   }
   phase.emplace("pores and zones");
   auto band = openvdb::BoolGrid::create(false);
+  options.progress.check();
   Components components = internalComponents(scan, options.min_pore_voxels, *band);
+  options.progress.check();
   openvdb::tools::dilateActiveValues(band->tree(), kSurfaceBandVoxels,
                                      openvdb::tools::NN_FACE_EDGE_VERTEX);
   band->tree().voxelizeActiveTiles();
@@ -835,48 +846,51 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
     }
   }
   tbb::combinable<BlockTable<BlockSums>> partial_sums;
-  dataset.forEachGrid(0, [&](const Index3& brick, const auto& grid) {
-    const Box box = dataset.brickBox(0, brick);
-    std::vector<std::uint8_t> ids;
-    if (options.materials != nullptr) {
-      ids.resize(static_cast<std::size_t>(box.voxelCount()));
-      // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
-      tbb::this_task_arena::isolate([&] { options.materials->readRegion(box, ids); });
-    }
-    BlockTable<BlockSums> brick_sums;
-    const auto band_in_brick = band->getConstAccessor();
-    const auto shells_in_brick = all_shells->getConstAccessor();
-    const auto restricted_in_brick = restricted->getConstAccessor();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      const Coord block = blockOf(leaf->origin());
-      if (!restricted_in_brick.isValueOn(block)) {
-        continue;
-      }
-      BlockSums sums;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const Coord c = it.getCoord();
-        if (shells_in_brick.isValueOn(c)) {
-          continue;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& brick, const auto& grid) {
+        const Box box = dataset.brickBox(0, brick);
+        std::vector<std::uint8_t> ids;
+        if (options.materials != nullptr) {
+          ids.resize(static_cast<std::size_t>(box.voxelCount()));
+          // readRegion runs TBB tasks; isolated, the waiting thread cannot start another brick.
+          tbb::this_task_arena::isolate([&] { options.materials->readRegion(box, ids); });
         }
-        const double value = *it;
-        if (band_in_brick.isValueOn(c)) {
-          sums.band_above_air += value - air;
-        } else {
-          sums.sum += value;
-          sums.sum_sq += value * value;
-          ++sums.count;
-          if (!ids.empty()) {
-            const std::size_t id = ids[regionIndex(box, c)];
-            if (id >= 1 && id <= kMaxMaterials) {
-              ++sums.materials[id];
+        BlockTable<BlockSums> brick_sums;
+        const auto band_in_brick = band->getConstAccessor();
+        const auto shells_in_brick = all_shells->getConstAccessor();
+        const auto restricted_in_brick = restricted->getConstAccessor();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          const Coord block = blockOf(leaf->origin());
+          if (!restricted_in_brick.isValueOn(block)) {
+            continue;
+          }
+          BlockSums sums;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const Coord c = it.getCoord();
+            if (shells_in_brick.isValueOn(c)) {
+              continue;
+            }
+            const double value = *it;
+            if (band_in_brick.isValueOn(c)) {
+              sums.band_above_air += value - air;
+            } else {
+              sums.sum += value;
+              sums.sum_sq += value * value;
+              ++sums.count;
+              if (!ids.empty()) {
+                const std::size_t id = ids[regionIndex(box, c)];
+                if (id >= 1 && id <= kMaxMaterials) {
+                  ++sums.materials[id];
+                }
+              }
             }
           }
+          brick_sums.add(block, sums);
         }
-      }
-      brick_sums.add(block, sums);
-    }
-    partial_sums.local().append(brick_sums);
-  });
+        partial_sums.local().append(brick_sums);
+      },
+      BrickSweep{.progress = options.progress.part(0.4, 0.7)});
   BlockTable<BlockSums> block_sums;
   partial_sums.combine_each([&](BlockTable<BlockSums>& local) {
     // Bricks do not share blocks.
@@ -1219,21 +1233,24 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
   tbb::combinable<double> material_fractions(0.0);
   tbb::combinable<openvdb::FloatGrid::Ptr> material_grids(
       [] { return openvdb::FloatGrid::create(0.0F); });
-  dataset.forEachGrid(0, [&](const Index3&, const auto& grid) {
-    double sum = 0.0;
-    auto material_acc = material_grids.local()->getAccessor();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
-      const double contrast = reference.at(leaf->origin()) - air;
-      double leaf_sum = 0.0;
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        leaf_sum += *it - air;
-      }
-      sum += leaf_sum / contrast;
-      material_acc.setValue(blockOf(leaf->origin()),
-                            static_cast<float>(leaf_sum / contrast * voxel_volume));
-    }
-    material_fractions.local() += sum;
-  });
+  dataset.forEachGrid(
+      0,
+      [&](const Index3&, const auto& grid) {
+        double sum = 0.0;
+        auto material_acc = material_grids.local()->getAccessor();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf; ++leaf) {
+          const double contrast = reference.at(leaf->origin()) - air;
+          double leaf_sum = 0.0;
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            leaf_sum += *it - air;
+          }
+          sum += leaf_sum / contrast;
+          material_acc.setValue(blockOf(leaf->origin()),
+                                static_cast<float>(leaf_sum / contrast * voxel_volume));
+        }
+        material_fractions.local() += sum;
+      },
+      BrickSweep{.progress = options.progress.part(0.7, 0.95)});
   result.material_blocks = openvdb::FloatGrid::create(0.0F);
   material_grids.combine_each([&](const openvdb::FloatGrid::Ptr& grid) {
     // Bricks do not share blocks, so the per-thread grids are disjoint.

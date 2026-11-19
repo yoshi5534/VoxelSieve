@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "detail/png.hpp"
+#include "detail/sweep.hpp"
 #include "detail/transform.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/resources.hpp"
@@ -586,38 +587,51 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   // voxel, as measured at 2048^3.
   const auto chunk_edge = static_cast<std::uint64_t>(
       info.chunk_size + 2 * (static_cast<std::int64_t>(std::ceil(info.band_voxels)) + 3));
-  std::size_t next = 0;
-  tbb::parallel_pipeline(
-      tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 22),
-      tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
-                                          [&](tbb::flow_control& control) -> std::size_t {
-                                            if (next >= chunk_count) {
-                                              control.stop();
-                                              return 0;
-                                            }
-                                            return next++;
-                                          }) &
-          tbb::make_filter<std::size_t, ChunkOutput>(
-              tbb::filter_mode::parallel,
-              [&](std::size_t index) {
-                const auto i = static_cast<std::int64_t>(index);
-                const Index3 chunk{i % grid[0], (i / grid[0]) % grid[1], i / (grid[0] * grid[1])};
-                return writer.process(index, chunk);
-              }) &
-          tbb::make_filter<ChunkOutput, void>(
-              tbb::filter_mode::serial_in_order, [&](const ChunkOutput& chunk) {
-                table.push_back(static_cast<char>(chunk.kind));
-                appendU64(table, chunk.compressed.empty() ? 0 : position);
-                appendU64(table, chunk.compressed.size());
-                out.write(chunk.compressed.data(),
-                          static_cast<std::streamsize>(chunk.compressed.size()));
-                position += chunk.compressed.size();
-                info.raw_bytes += chunk.raw_bytes;
-                info.surface_chunks += chunk.surface_blocks > 0 ? 1 : 0;
-                info.surface_blocks += chunk.surface_blocks;
-                info.band_voxel_count += chunk.band_voxels;
-                material_voxels += chunk.material_voxels;
-              }));
+  // A cancelled or failed run leaves no partial file.
+  try {
+    ProgressSteps steps(options.progress, chunk_count);
+    std::size_t next = 0;
+    tbb::parallel_pipeline(
+        tasksInMemory(chunk_edge * chunk_edge * chunk_edge * 22),
+        tbb::make_filter<void, std::size_t>(tbb::filter_mode::serial_in_order,
+                                            [&](tbb::flow_control& control) -> std::size_t {
+                                              if (next >= chunk_count) {
+                                                control.stop();
+                                                return 0;
+                                              }
+                                              steps.step(0);  // cancelled: no further chunk
+                                              return next++;
+                                            }) &
+            tbb::make_filter<std::size_t, ChunkOutput>(
+                tbb::filter_mode::parallel,
+                [&](std::size_t index) {
+                  const auto i = static_cast<std::int64_t>(index);
+                  const Index3 chunk{i % grid[0], (i / grid[0]) % grid[1], i / (grid[0] * grid[1])};
+                  ChunkOutput output;
+                  detail::runIsolated([&] { output = writer.process(index, chunk); });
+                  return output;
+                }) &
+            tbb::make_filter<ChunkOutput, void>(
+                tbb::filter_mode::serial_in_order, [&](const ChunkOutput& chunk) {
+                  table.push_back(static_cast<char>(chunk.kind));
+                  appendU64(table, chunk.compressed.empty() ? 0 : position);
+                  appendU64(table, chunk.compressed.size());
+                  out.write(chunk.compressed.data(),
+                            static_cast<std::streamsize>(chunk.compressed.size()));
+                  position += chunk.compressed.size();
+                  info.raw_bytes += chunk.raw_bytes;
+                  info.surface_chunks += chunk.surface_blocks > 0 ? 1 : 0;
+                  info.surface_blocks += chunk.surface_blocks;
+                  info.band_voxel_count += chunk.band_voxels;
+                  material_voxels += chunk.material_voxels;
+                  steps.step();
+                }));
+  } catch (...) {
+    out.close();
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    throw;
+  }
   info.volume_mm3 = material_voxels * info.voxel_size.volumeMm3();
 
   const std::vector<char> packed_table = compress(table, resolved.compression_level);

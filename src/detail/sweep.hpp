@@ -8,6 +8,8 @@
 #include <mutex>
 #include <vector>
 
+#include "voxelsieve/progress.hpp"
+
 namespace voxelsieve::detail {
 
 /// Position of a brick (or tile) on a Morton (Z-order) curve: bricks close on the curve are close
@@ -21,9 +23,17 @@ void mortonSort(std::vector<std::array<std::int64_t, 3>>& bricks);
 /// Runs `task(i)` for i = 0 … count − 1, started in that order, with at most `in_flight` running
 /// at once (ADR 0031). Each task runs isolated: a thread that waits inside it for nested parallel
 /// work does not start another task, so the memory in use stays that of `in_flight` tasks.
-/// Exceptions end the run and are rethrown.
+/// Each task also runs in a TBB context of its own: when one fails or the run is cancelled, no
+/// further task starts, but the tasks running finish their nested parallel work instead of
+/// leaving it half done. The first exception is rethrown. With progress, cancellation is checked
+/// before each task and each finished task counts as a step.
 void runInFlight(std::size_t count, std::size_t in_flight,
-                 const std::function<void(std::size_t)>& task);
+                 const std::function<void(std::size_t)>& task, const ProgressToken& progress = {});
+
+/// Runs `task` isolated and in a TBB context of its own, as `runInFlight` runs its tasks: for the
+/// parallel stage of a pipeline that may be cancelled, so a cancellation never stops the nested
+/// parallel work of a task halfway (OpenVDB's algorithms then leave half-built trees).
+void runIsolated(const std::function<void()>& task);
 
 /// Work buffers that tasks take and give back, so a buffer is allocated once per task in flight
 /// instead of once per task: fresh memory costs page faults that can take longer than the work.

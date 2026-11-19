@@ -689,64 +689,68 @@ MaterialVolumeInfo segmentMaterialsWithModel(const Dataset& dataset, const Model
   std::mutex mutex;
   // Along a Morton curve, so that bricks whose halos overlap follow each other (ADR 0031).
   detail::mortonSort(todo);
-  detail::runInFlight(todo.size(), tasksInMemory(tile_bytes), [&](std::size_t n) {
-    [&] {
-      const Index3& brick = todo[n];
-      std::vector<std::int64_t> brick_counts(info.materials.size() + 1, 0);
-      const Box brick_box = dataset.brickBox(0, brick);
-      auto grid = openvdb::Int32Grid::create(0);
-      auto accessor = grid->getAccessor();
-      for (std::int64_t tz = brick_box.min[2]; tz < brick_box.max[2]; tz += options.tile) {
-        for (std::int64_t ty = brick_box.min[1]; ty < brick_box.max[1]; ty += options.tile) {
-          for (std::int64_t tx = brick_box.min[0]; tx < brick_box.max[0]; tx += options.tile) {
-            const Box core{{tx, ty, tz},
-                           {std::min(tx + options.tile, brick_box.max[0]),
-                            std::min(ty + options.tile, brick_box.max[1]),
-                            std::min(tz + options.tile, brick_box.max[2])}};
-            Box outer;
-            for (std::size_t a = 0; a < 3; ++a) {
-              outer.min[a] = std::max<std::int64_t>(core.min[a] - halo, 0);
-              outer.max[a] = std::min<std::int64_t>(core.max[a] + halo, info.dims[a]);
-            }
-            std::vector<float> grey(static_cast<std::size_t>(outer.voxelCount()));
-            dataset.readRegion(0, outer, grey, info.air_level);
-            if (*std::max_element(grey.begin(), grey.end()) < info.air_threshold) {
-              continue;
-            }
-            const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
-            const std::vector<std::uint8_t> classes = model.classify(grey, size, info.air_level);
-            for (std::int64_t z = core.min[2]; z < core.max[2]; ++z) {
-              for (std::int64_t y = core.min[1]; y < core.max[1]; ++y) {
-                for (std::int64_t x = core.min[0]; x < core.max[0]; ++x) {
-                  const std::uint8_t id = classes[static_cast<std::size_t>(
-                      (x - outer.min[0]) +
-                      size[0] * ((y - outer.min[1]) + size[1] * (z - outer.min[2])))];
-                  if (id == 0) {
-                    continue;
+  detail::runInFlight(
+      todo.size(), tasksInMemory(tile_bytes),
+      [&](std::size_t n) {
+        [&] {
+          const Index3& brick = todo[n];
+          std::vector<std::int64_t> brick_counts(info.materials.size() + 1, 0);
+          const Box brick_box = dataset.brickBox(0, brick);
+          auto grid = openvdb::Int32Grid::create(0);
+          auto accessor = grid->getAccessor();
+          for (std::int64_t tz = brick_box.min[2]; tz < brick_box.max[2]; tz += options.tile) {
+            for (std::int64_t ty = brick_box.min[1]; ty < brick_box.max[1]; ty += options.tile) {
+              for (std::int64_t tx = brick_box.min[0]; tx < brick_box.max[0]; tx += options.tile) {
+                const Box core{{tx, ty, tz},
+                               {std::min(tx + options.tile, brick_box.max[0]),
+                                std::min(ty + options.tile, brick_box.max[1]),
+                                std::min(tz + options.tile, brick_box.max[2])}};
+                Box outer;
+                for (std::size_t a = 0; a < 3; ++a) {
+                  outer.min[a] = std::max<std::int64_t>(core.min[a] - halo, 0);
+                  outer.max[a] = std::min<std::int64_t>(core.max[a] + halo, info.dims[a]);
+                }
+                std::vector<float> grey(static_cast<std::size_t>(outer.voxelCount()));
+                dataset.readRegion(0, outer, grey, info.air_level);
+                if (*std::max_element(grey.begin(), grey.end()) < info.air_threshold) {
+                  continue;
+                }
+                const Index3 size{outer.size(0), outer.size(1), outer.size(2)};
+                const std::vector<std::uint8_t> classes =
+                    model.classify(grey, size, info.air_level);
+                for (std::int64_t z = core.min[2]; z < core.max[2]; ++z) {
+                  for (std::int64_t y = core.min[1]; y < core.max[1]; ++y) {
+                    for (std::int64_t x = core.min[0]; x < core.max[0]; ++x) {
+                      const std::uint8_t id = classes[static_cast<std::size_t>(
+                          (x - outer.min[0]) +
+                          size[0] * ((y - outer.min[1]) + size[1] * (z - outer.min[2])))];
+                      if (id == 0) {
+                        continue;
+                      }
+                      ++brick_counts[id];
+                      accessor.setValue(openvdb::Coord(static_cast<int>(x), static_cast<int>(y),
+                                                       static_cast<int>(z)),
+                                        id);
+                    }
                   }
-                  ++brick_counts[id];
-                  accessor.setValue(
-                      openvdb::Coord(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z)),
-                      id);
                 }
               }
             }
           }
-        }
-      }
-      if (grid->activeVoxelCount() == 0) {
-        return;
-      }
-      grid->setName("material");
-      grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
-      detail::writeMaterialBrick(dir, brick, *grid);
-      const std::scoped_lock lock(mutex);
-      info.bricks.push_back(brick);
-      for (std::size_t id = 0; id < counts.size(); ++id) {
-        counts[id] += brick_counts[id];
-      }
-    }();
-  });
+          if (grid->activeVoxelCount() == 0) {
+            return;
+          }
+          grid->setName("material");
+          grid->setTransform(detail::voxelTransform(info.voxel_size, 0));
+          detail::writeMaterialBrick(dir, brick, *grid);
+          const std::scoped_lock lock(mutex);
+          info.bricks.push_back(brick);
+          for (std::size_t id = 0; id < counts.size(); ++id) {
+            counts[id] += brick_counts[id];
+          }
+        }();
+      },
+      options.progress);
   std::sort(info.bricks.begin(), info.bricks.end());
   const double voxel_mm3 = info.voxel_size.volumeMm3();
   for (Material& material : info.materials) {

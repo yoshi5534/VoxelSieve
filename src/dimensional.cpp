@@ -2139,6 +2139,7 @@ Measurement measure(const SurfaceMask& mask, const Mesh& cad, const RigidTransfo
     throw std::invalid_argument("The inspection plan must be a JSON object");
   }
   std::optional<TelemetryPhase> phase(std::in_place, "nominal elements");
+  options.progress.check();
   const FeatureFinder finder(cad);
   const MeshDistance cad_distance(cad);
   std::vector<ElementPlan> elements;
@@ -2250,6 +2251,7 @@ Measurement measure(const SurfaceMask& mask, const Mesh& cad, const RigidTransfo
   phase.emplace("elements");
   const RigidTransform scan_to_frame = correction.after(best_fit);
   for (std::size_t i = 0; i < elements.size(); ++i) {
+    options.progress.report(static_cast<double>(i) / static_cast<double>(elements.size()));
     results[i] = extractAndFit(x, elements[i], scan_to_frame);
   }
 

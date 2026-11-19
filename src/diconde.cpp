@@ -391,6 +391,7 @@ std::string formatted(double value, int digits) {
 DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesystem::path& dir,
                                  const DicondeWriteOptions& options) {
   const TelemetryPhase phase("write DICONDE");
+  options.progress.check();
   const auto dims = source.dims();
   constexpr std::int64_t kMaxSide = std::numeric_limits<Uint16>::max();
   if (dims[0] <= 0 || dims[1] <= 0 || dims[2] <= 0 || dims[0] > kMaxSide || dims[1] > kMaxSide) {
@@ -470,6 +471,7 @@ DicondeSeries writeDicondeSeries(const VolumeSource& source, const std::filesyst
           "writing " + path.string());
   };
   for (slab_start = 0; slab_start < dims[2]; slab_start += slab_depth) {
+    options.progress.report(static_cast<double>(slab_start) / static_cast<double>(dims[2]));
     const std::int64_t slab_end = std::min(slab_start + slab_depth, dims[2]);
     slab.resize(slice_voxels * static_cast<std::size_t>(slab_end - slab_start));
     source.readRegion({{0, 0, slab_start}, {dims[0], dims[1], slab_end}}, slab);

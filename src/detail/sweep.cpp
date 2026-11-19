@@ -2,6 +2,7 @@
 
 #include <tbb/parallel_pipeline.h>
 #include <tbb/task_arena.h>
+#include <tbb/task_group.h>
 
 #include <algorithm>
 #include <tuple>
@@ -37,10 +38,11 @@ void mortonSort(std::vector<std::array<std::int64_t, 3>>& bricks) {
 }
 
 void runInFlight(std::size_t count, std::size_t in_flight,
-                 const std::function<void(std::size_t)>& task) {
+                 const std::function<void(std::size_t)>& task, const ProgressToken& progress) {
   if (count == 0) {
     return;
   }
+  ProgressSteps steps(progress, count);
   std::size_t next = 0;
   tbb::parallel_pipeline(
       std::max<std::size_t>(in_flight, 1),
@@ -53,8 +55,18 @@ void runInFlight(std::size_t count, std::size_t in_flight,
                                             return next++;
                                           }) &
           tbb::make_filter<std::size_t, void>(tbb::filter_mode::parallel, [&](std::size_t i) {
-            tbb::this_task_arena::isolate([&] { task(i); });
+            steps.step(0);  // cancelled: no further task starts
+            tbb::task_group_context context(tbb::task_group_context::isolated);
+            tbb::task_group group(context);
+            tbb::this_task_arena::isolate([&] { group.run_and_wait([&] { task(i); }); });
+            steps.step();
           }));
+}
+
+void runIsolated(const std::function<void()>& task) {
+  tbb::task_group_context context(tbb::task_group_context::isolated);
+  tbb::task_group group(context);
+  tbb::this_task_arena::isolate([&] { group.run_and_wait([&] { task(); }); });
 }
 
 }  // namespace voxelsieve::detail

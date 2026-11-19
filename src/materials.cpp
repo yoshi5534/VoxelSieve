@@ -745,7 +745,8 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
   detail::mortonSort(todo);
   detail::WorkPool<BrickWork> pool;
   detail::runInFlight(
-      todo.size(), tasksInMemory(brick_voxels * kWorkBytesPerVoxel), [&](std::size_t i) {
+      todo.size(), tasksInMemory(brick_voxels * kWorkBytesPerVoxel),
+      [&](std::size_t i) {
         const auto taken = pool.take();
         [&] {
           const Index3& brick = todo[i];
@@ -841,7 +842,8 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
           const std::scoped_lock lock(mutex);
           info.bricks.push_back(brick);
         }();
-      });
+      },
+      options.progress);
   std::sort(info.bricks.begin(), info.bricks.end());
   counts.combine_each([&](const std::vector<std::int64_t>& local) {
     for (Material& material : info.materials) {

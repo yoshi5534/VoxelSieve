@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "voxelsieve/preview.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/vdb.hpp"
@@ -216,6 +217,8 @@ struct BrickSweep {
   /// Memory one call needs besides the bricks. It sets how many calls run at once
   /// (`tasksInMemory`); 0: one per thread.
   std::uint64_t task_bytes = 0;
+  /// Checked before each brick, which counts as a step when it is done (review step 5.1).
+  ProgressToken progress;
 };
 
 /// Read access to a dataset written by `writeDataset`, for volumes much larger than memory.

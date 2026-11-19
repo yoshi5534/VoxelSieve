@@ -415,6 +415,7 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
   // A tile in work holds its grey values as floats and a mask byte, halo included.
   const auto halo = static_cast<std::int64_t>(kernel.size() / 2) + 1;
   const auto tile_edge = static_cast<std::uint64_t>(per_tile * b + 2 * halo);
+  ProgressSteps steps(options.progress, tile_order.size());
   tbb::parallel_pipeline(
       tasksInMemory(tile_edge * tile_edge * tile_edge * 5),
       tbb::make_filter<void, Index3>(tbb::filter_mode::serial_in_order,
@@ -423,6 +424,7 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
                                          control.stop();
                                          return {};
                                        }
+                                       steps.step(0);  // cancelled: no further tile
                                        return tile_order[next++].second;
                                      }) &
           tbb::make_filter<Index3, std::vector<OrientationBlock>>(
@@ -434,15 +436,19 @@ OrientationResult analyzeOrientation(const Dataset& dataset, const OrientationOp
                   first[a] = tile[a] * per_tile;
                   last[a] = std::min(blocks[a], first[a] + per_tile);
                 }
-                // Isolated: the nested loops of readRegion must not start another tile here.
-                return tbb::this_task_arena::isolate([&] {
-                  return analyzeTile(dataset, options, result.material, kernel, first, last);
+                // Isolated, in a context of its own: the nested loops of readRegion must not start
+                // another tile here, nor stop halfway when the run is cancelled.
+                std::vector<OrientationBlock> found;
+                detail::runIsolated([&] {
+                  found = analyzeTile(dataset, options, result.material, kernel, first, last);
                 });
+                return found;
               }) &
           tbb::make_filter<std::vector<OrientationBlock>, void>(
               tbb::filter_mode::serial_out_of_order,
               [&](const std::vector<OrientationBlock>& tile_blocks) {
                 result.blocks.insert(result.blocks.end(), tile_blocks.begin(), tile_blocks.end());
+                steps.step();
               }));
   std::sort(result.blocks.begin(), result.blocks.end(),
             [](const OrientationBlock& l, const OrientationBlock& r) {

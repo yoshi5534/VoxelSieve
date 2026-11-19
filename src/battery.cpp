@@ -1196,6 +1196,7 @@ void separateStructures(BatteryResult& result, const BatteryOptions& options) {
 void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, BatteryResult& result,
                            const BatteryOptions& options) {
   const TelemetryPhase phase("particles and voids");
+  options.progress.check();
   const DatasetInfo& info = dataset.info();
   using Found = std::vector<std::pair<std::uint64_t, float>>;
   tbb::combinable<Found> bright;
@@ -1207,30 +1208,33 @@ void findParticlesAndVoids(const Dataset& dataset, const InRegion& in_region, Ba
   // up before the error: counted per thread, each of them could collect that many.
   std::atomic<std::size_t> found{0};
   std::atomic<bool> too_many{false};
-  dataset.forEachGrid(0, [&](const Index3& /*brick*/, const auto& grid) {
-    Found& b = bright.local();
-    Found& d = dark.local();
-    for (auto leaf = grid.tree().cbeginLeaf(); leaf && !too_many; ++leaf) {
-      const std::size_t before = b.size() + d.size();
-      for (auto it = leaf->cbeginValueOn(); it; ++it) {
-        const auto value = static_cast<float>(*it);
-        if (value < particle && value > gas) {
-          continue;
+  dataset.forEachGrid(
+      0,
+      [&](const Index3& /*brick*/, const auto& grid) {
+        Found& b = bright.local();
+        Found& d = dark.local();
+        for (auto leaf = grid.tree().cbeginLeaf(); leaf && !too_many; ++leaf) {
+          const std::size_t before = b.size() + d.size();
+          for (auto it = leaf->cbeginValueOn(); it; ++it) {
+            const auto value = static_cast<float>(*it);
+            if (value < particle && value > gas) {
+              continue;
+            }
+            const auto c = it.getCoord();
+            const Index3 v{c.x(), c.y(), c.z()};
+            if (!in_region(v, value >= particle)) {
+              continue;
+            }
+            const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
+            (value >= particle ? b : d).emplace_back(key, value);
+          }
+          if (found.fetch_add(b.size() + d.size() - before) + (b.size() + d.size() - before) >
+              kMaxFindingVoxels) {
+            too_many = true;
+          }
         }
-        const auto c = it.getCoord();
-        const Index3 v{c.x(), c.y(), c.z()};
-        if (!in_region(v, value >= particle)) {
-          continue;
-        }
-        const auto key = static_cast<std::uint64_t>(v[0] + dims[0] * (v[1] + dims[1] * v[2]));
-        (value >= particle ? b : d).emplace_back(key, value);
-      }
-      if (found.fetch_add(b.size() + d.size() - before) + (b.size() + d.size() - before) >
-          kMaxFindingVoxels) {
-        too_many = true;
-      }
-    }
-  });
+      },
+      BrickSweep{.progress = options.progress});
   if (too_many) {
     throw std::runtime_error(
         "Too many voxels above the particle threshold or below the void threshold in the "
@@ -1416,6 +1420,7 @@ void fitCentreLine(CylinderData& data, const std::vector<BatterySection>& sectio
 void cylinderSections(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result) {
   const TelemetryPhase phase("cross-sections");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
@@ -1734,6 +1739,7 @@ void edgeOverhang(std::vector<SectionImage>& images, const std::vector<double>& 
 void cylinderOverhang(const VolumeView& volume, const BatteryOptions& options, CylinderData& data,
                       BatteryResult& result, std::vector<SectionImage>& worst) {
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int a = data.axis;
@@ -1987,6 +1993,7 @@ std::vector<double> stackProfile(const VolumeView& volume, const StackData& data
 void stackSections(const VolumeView& volume, const BatteryOptions& options, StackData& data,
                    BatteryResult& result) {
   const TelemetryPhase phase("profiles");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const auto air = static_cast<double>(info.air_level);
@@ -2124,6 +2131,7 @@ void stackOverhang(const VolumeView& volume, const BatteryOptions& options, Stac
     return;
   }
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   const VolumeInfo& info = volume.info();
   const VoxelSize& pitch = info.voxel_size;
   const int per_edge = std::max(3, options.overhang_sections / 4);
@@ -2470,6 +2478,7 @@ BatteryResult analyze(const Dataset& dataset, const BatteryOptions& options) {
   Overview box;
   {
     const TelemetryPhase phase("overview");
+    options.progress.check();
     box = overview(dataset, options, result.warnings);
   }
   extras.box = box;
@@ -2792,6 +2801,7 @@ Overview imageOverview(const ImageCell& cell) {
 void imageOverhang(const ImageCell& cell, const BatteryOptions& options, const CylinderData& data,
                    BatteryResult& result, std::vector<SectionImage>& worst) {
   const TelemetryPhase phase("overhang");
+  options.progress.check();
   double core_min = kNaN;
   double inner_max = kNaN;
   for (std::size_t k = 0; k < data.core.size(); ++k) {
@@ -3012,6 +3022,7 @@ void leaveOutVoidsBeyondTheEnds(const ImageCell& cell, const std::vector<double>
 void imageFindings(const ImageCell& cell, const InRegion& in_region, const CylinderData& data,
                    BatteryResult& result, const BatteryOptions& options) {
   const TelemetryPhase phase("particles and voids");
+  options.progress.check();
   const auto particle = static_cast<float>(result.particle_threshold);
   const auto gas = static_cast<float>(result.void_threshold);
   const VoxelSize pitch(cell.pixel);

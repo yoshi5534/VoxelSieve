@@ -586,25 +586,28 @@ void Dataset::forEachBrick(int level, const BrickFunction& function,
   const std::size_t in_flight = sweep.task_bytes > 0 ? tasksInMemory(sweep.task_bytes) : threads;
   const std::int64_t size = impl_->info.brick_size;
   const std::int64_t reach = sweep.halo > 0 ? (sweep.halo + size - 1) / size : 0;
-  detail::runInFlight(bricks.size(), in_flight, [&](std::size_t i) {
-    const Index3& index = bricks[i];
-    const BrickPtr grid = impl_->brick(level, index);
-    // The neighbours the halo reaches, pinned for this call.
-    std::vector<BrickPtr> neighbours;
-    for (std::int64_t dz = -reach; dz <= reach; ++dz) {
-      for (std::int64_t dy = -reach; dy <= reach; ++dy) {
-        for (std::int64_t dx = -reach; dx <= reach; ++dx) {
-          if (dx != 0 || dy != 0 || dz != 0) {
-            if (BrickPtr neighbour =
-                    impl_->brick(level, {index[0] + dx, index[1] + dy, index[2] + dz})) {
-              neighbours.push_back(std::move(neighbour));
+  detail::runInFlight(
+      bricks.size(), in_flight,
+      [&](std::size_t i) {
+        const Index3& index = bricks[i];
+        const BrickPtr grid = impl_->brick(level, index);
+        // The neighbours the halo reaches, pinned for this call.
+        std::vector<BrickPtr> neighbours;
+        for (std::int64_t dz = -reach; dz <= reach; ++dz) {
+          for (std::int64_t dy = -reach; dy <= reach; ++dy) {
+            for (std::int64_t dx = -reach; dx <= reach; ++dx) {
+              if (dx != 0 || dy != 0 || dz != 0) {
+                if (BrickPtr neighbour =
+                        impl_->brick(level, {index[0] + dx, index[1] + dy, index[2] + dz})) {
+                  neighbours.push_back(std::move(neighbour));
+                }
+              }
             }
           }
         }
-      }
-    }
-    function(index, *grid);
-  });
+        function(index, *grid);
+      },
+      sweep.progress);
 }
 CacheStats Dataset::cacheStats() const {
   CacheStats stats = impl_->shared_cache->stats();

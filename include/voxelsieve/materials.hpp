@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/progress.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
 #include "voxelsieve/voxel_size.hpp"
@@ -56,6 +57,8 @@ struct SegmentationOptions {
   /// of the GUI; a class without one is "Material <id>" in the default colour.
   std::vector<std::string> names;
   std::vector<std::array<std::uint8_t, 3>> colors;
+  /// Progress and cancellation of the run (review step 5.1); checked per brick or tile.
+  ProgressToken progress;
 };
 
 struct MaterialVolumeInfo {
