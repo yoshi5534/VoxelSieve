@@ -258,7 +258,8 @@ TiffPage currentPage(TIFF* tiff) {
       const std::uint64_t rows_left =
           last_strip ? page.height - std::uint64_t{c} * page.chunk_height : page.chunk_height;
       const std::uint64_t needed =
-          last_strip ? rows_left * page.chunk_width * (page.bits / 8) : chunk_bytes;
+          last_strip ? rows_left * page.chunk_width * static_cast<std::uint64_t>(page.bits / 8)
+                     : chunk_bytes;
       if (error != 0 || stored < needed) {
         page.chunk_offsets.clear();
         break;
