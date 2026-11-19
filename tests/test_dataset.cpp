@@ -984,6 +984,7 @@ TEST_F(DatasetReaderTest, ConcurrentRequestsLoadABrickOnce) {
     std::latch start(kThreads);
     std::vector<const GreyGrid*> seen(kThreads, nullptr);
     std::vector<std::thread> threads;
+    threads.reserve(kThreads);
     for (int i = 0; i < kThreads; ++i) {
       threads.emplace_back([&, i] {
         start.arrive_and_wait();

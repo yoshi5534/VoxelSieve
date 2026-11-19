@@ -8,7 +8,7 @@
 #endif
 #include <windows.h>
 #else
-#include <signal.h>
+#include <csignal>
 #include <unistd.h>
 
 #include <cerrno>
