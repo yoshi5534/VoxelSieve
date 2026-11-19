@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <sstream>
@@ -300,27 +301,52 @@ int axisIndex(const std::string& axis) {
   return axis == "y" ? 1 : 2;
 }
 
-/// Most recently used entry of a small cache, opened with `open` when missing.
+/// Most recently used entry of a small cache, opened with `open` when missing. `open` runs without
+/// `mutex`: other keys are served meanwhile, and callers of the same key wait for the one opening
+/// it. A failed open is not kept, so the next call tries again.
 template <typename Value, typename Open>
 std::shared_ptr<const Value> cached(
-    std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Value>>>& entries,
+    std::mutex& mutex,
+    std::vector<std::pair<std::filesystem::path, std::shared_future<std::shared_ptr<const Value>>>>&
+        entries,
     const std::filesystem::path& key, std::size_t capacity, const Open& open) {
-  for (auto it = entries.begin(); it != entries.end(); ++it) {
-    if (it->first == key) {
-      auto entry = *it;
-      entries.erase(it);
-      entries.push_back(entry);
-      return entry.second;
+  using Future = std::shared_future<std::shared_ptr<const Value>>;
+  std::promise<std::shared_ptr<const Value>> opening;
+  Future pending;
+  {
+    const std::scoped_lock lock(mutex);
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+      if (it->first == key) {
+        auto entry = *it;
+        entries.erase(it);
+        entries.push_back(entry);
+        pending = entry.second;
+        break;
+      }
+    }
+    if (!pending.valid()) {
+      entries.emplace_back(key, opening.get_future().share());
+      if (entries.size() > capacity) {
+        entries.erase(entries.begin());
+      }
     }
   }
-  auto value = open();
-  entries.emplace_back(key, value);
-  if (entries.size() > capacity) {
-    entries.erase(entries.begin());
+  if (pending.valid()) {
+    return pending.get();
   }
-  return value;
+  try {
+    auto value = open();
+    opening.set_value(value);
+    return value;
+  } catch (...) {
+    {
+      const std::scoped_lock lock(mutex);
+      std::erase_if(entries, [&](const auto& entry) { return entry.first == key; });
+    }
+    opening.set_exception(std::current_exception());
+    throw;
+  }
 }
-
 std::string lowerExtension(const std::filesystem::path& path) {
   std::string extension = path.extension().string();
   std::ranges::transform(extension, extension.begin(),
@@ -930,16 +956,14 @@ std::filesystem::path Gui::artifactPath(const Json& params) const {
 }
 
 std::shared_ptr<const Dataset> Gui::openDataset(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(datasets_, dir, kOpenVolumes, [this, &dir] {
+  return cached(view_mutex_, datasets_, dir, kOpenVolumes, [this, &dir] {
     return std::make_shared<const Dataset>(
         Dataset::open(dir, view_cache_, BrickLoading::kOnAccess));
   });
 }
 
 std::shared_ptr<const PorosityResult> Gui::openPorosity(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(porosity_results_, dir, kOpenDatasets,
+  return cached(view_mutex_, porosity_results_, dir, kOpenDatasets,
                 [&dir] { return std::make_shared<const PorosityResult>(loadPorosityResult(dir)); });
 }
 
@@ -956,8 +980,7 @@ std::shared_ptr<const MaterialVolume> Gui::openMaterials(std::optional<int> mate
 }
 
 std::shared_ptr<const MaterialVolume> Gui::openMaterials(const std::filesystem::path& dir) const {
-  const std::scoped_lock lock(view_mutex_);
-  return cached(material_volumes_, dir, kOpenDatasets, [&dir] {
+  return cached(view_mutex_, material_volumes_, dir, kOpenDatasets, [&dir] {
     return std::make_shared<const MaterialVolume>(MaterialVolume::open(dir));
   });
 }

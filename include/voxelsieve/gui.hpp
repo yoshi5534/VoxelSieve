@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -299,14 +300,17 @@ class Gui {
   nlohmann::json running_preview_;
   std::vector<std::uint8_t> running_preview_png_;
   mutable std::mutex mutex_;
-  // Open datasets and porosity results for viewing, most recently used last.
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const Dataset>>> datasets_;
+  // Open datasets, porosity results and material volumes for viewing, most recently used last,
+  // as they are being opened: opened outside view_mutex_, so a large porosity result loading
+  // blocks no tile of another view (F3). Guarded by view_mutex_.
+  template <typename Value>
+  using Opened = std::vector<
+      std::pair<std::filesystem::path, std::shared_future<std::shared_ptr<const Value>>>>;
+  mutable Opened<Dataset> datasets_;
   // One memory budget for the bricks of all open datasets (ADR 0018).
   std::shared_ptr<BrickCache> view_cache_;
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const PorosityResult>>>
-      porosity_results_;
-  mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const MaterialVolume>>>
-      material_volumes_;
+  mutable Opened<PorosityResult> porosity_results_;
+  mutable Opened<MaterialVolume> material_volumes_;
   mutable std::mutex view_mutex_;
   // Display meshes by surface file and triangle budget; never locked while a mesh is built.
   mutable std::vector<std::pair<std::filesystem::path, std::shared_ptr<const IndexedMesh>>>

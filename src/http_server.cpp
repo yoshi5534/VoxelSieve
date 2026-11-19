@@ -3,6 +3,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #else
+#include <poll.h>
 #include <sys/socket.h>
 #endif
 
@@ -27,6 +28,38 @@ using tcp = asio::ip::tcp;
 using Json = nlohmann::json;
 using Request = http::request<http::string_body>;
 constexpr std::uint64_t kMaxBodyBytes = std::uint64_t{64} << 20U;
+/// Connections served at once, each on a thread of its own (F4); more are answered with 503 at
+/// once. A browser opens six per host, so this leaves room for several views and clients.
+constexpr std::size_t kMaxConnections = 64;
+
+/// Whether the client closed the connection, as a browser does when it gives up a request (a tile
+/// scrolled out of view): its request need not be answered. Does not wait.
+bool peerClosed(tcp::socket& socket) {
+  const auto handle = socket.native_handle();
+#if defined(_WIN32)
+  WSAPOLLFD fd{};
+  fd.fd = handle;
+  fd.events = POLLRDNORM;
+  if (WSAPoll(&fd, 1, 0) <= 0) {
+    return false;
+  }
+#else
+  pollfd fd{};
+  fd.fd = handle;
+  fd.events = POLLIN;
+  if (poll(&fd, 1, 0) <= 0) {
+    return false;
+  }
+#endif
+  if ((fd.revents & (POLLHUP | POLLERR)) != 0) {
+    return true;
+  }
+  char byte = 0;
+  return recv(handle, &byte, 1, MSG_PEEK) == 0;  // readable, but nothing to read: closed
+}
+
+/// The connection the request of this thread came on.
+thread_local tcp::socket* t_connection = nullptr;
 
 std::string percentDecode(std::string_view text) {
   std::string decoded;
@@ -122,6 +155,18 @@ struct HttpServer::Impl {
         ++it;
       }
     }
+    if (connections.size() >= kMaxConnections) {
+      http::response<http::string_body> busy(http::status::service_unavailable, 11);
+      busy.set(http::field::content_type, "application/json");
+      busy.set(http::field::retry_after, "1");
+      busy.keep_alive(false);
+      busy.body() = R"({"error":"Too many connections"})";
+      busy.prepare_payload();
+      boost::system::error_code ignored;
+      http::write(socket, busy, ignored);
+      [[maybe_unused]] const auto shut = socket.shutdown(tcp::socket::shutdown_both, ignored);
+      return;
+    }
     auto& connection = connections.emplace_back(std::make_unique<Connection>(std::move(socket)));
     Connection* raw = connection.get();
     raw->thread = std::thread([this, raw] {
@@ -131,6 +176,7 @@ struct HttpServer::Impl {
   }
 
   void serve(tcp::socket& socket) {
+    t_connection = &socket;
     beast::flat_buffer buffer;
     boost::system::error_code error;
     while (true) {
@@ -246,6 +292,9 @@ struct HttpServer::Impl {
   /// (NaN where there is no material), with the headers X-Thickness, X-Min-Wall, X-Max-Wall and
   /// X-Range.
   http::message_generator tile(const Request& request, std::string_view query) {
+    if (t_connection != nullptr && peerClosed(*t_connection)) {
+      return error(request, http::status::service_unavailable, "The request was given up");
+    }
     const auto values = queryValues(query);
     const auto value = [&values](const std::string& name, std::int64_t fallback) {
       const auto it = values.find(name);

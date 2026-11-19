@@ -2,10 +2,13 @@
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <chrono>
 #include <filesystem>
 #include <future>
+#include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
@@ -345,6 +348,35 @@ TEST_F(HttpTest, SavesViewsWithLargePicturesAndKeepsThemAcrossOperations) {
   EXPECT_EQ(request(server_->port(), http::verb::get, "/views/99.png").status, 400U);
   EXPECT_EQ(call("view_delete", {{"id", id}}).status, 200U);
   EXPECT_TRUE(call("view_list").json().at("views").empty());
+}
+
+TEST_F(HttpTest, RefusesConnectionsBeyondItsLimitAndServesAgainWhenTheyClose) {
+  asio::io_context io;
+  std::vector<std::unique_ptr<asio::ip::tcp::socket>> idle;
+  for (int i = 0; i < 64; ++i) {
+    idle.push_back(std::make_unique<asio::ip::tcp::socket>(io));
+    idle.back()->connect({asio::ip::make_address("127.0.0.1"), server_->port()});
+  }
+  // The server takes the connections one by one: wait until all 64 hold a thread.
+  Reply busy;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    busy = request(server_->port(), http::verb::get, "/api/status");
+    if (busy.status == 503) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(busy.status, 503U);
+  idle.clear();  // closed: their threads end
+  Reply served;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    served = call("project_status");
+    if (served.status == 200) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(served.status, 200U);
 }
 
 TEST_F(HttpTest, StopClosesOpenConnections) {
