@@ -1027,10 +1027,16 @@ TEST_F(GuiTest, OperationsRunInTheBackgroundUntilDoneOrCancelled) {
       std::invalid_argument);
 
   // A running operation is reported by wait and blocks further operations until cancelled.
-  gui.call("run_spin", {{"background", true}});
+  const Json spinning = gui.call("run_spin", {{"background", true}});
   waited = gui.call("wait", {{"seconds", 0.05}});
   EXPECT_FALSE(waited.at("done"));
   EXPECT_EQ(waited.at("running").at("operation"), "spin");
+  // The run id tells a client, also one that reloaded, which run it follows (5.3).
+  EXPECT_EQ(waited.at("run_id"), spinning.at("run_id"));
+  EXPECT_GT(spinning.at("run_id").get<int>(), started.at("run_id").get<int>());
+  const Json running = gui.call("project_status", {}).at("running");
+  EXPECT_EQ(running.at("run_id"), spinning.at("run_id"));
+  EXPECT_TRUE(running.at("background"));
   EXPECT_TRUE(waited.at("result").is_null());
   EXPECT_THROW(gui.call("run_spin", {}), std::invalid_argument);
   EXPECT_THROW(gui.call("undo", {}), std::invalid_argument);

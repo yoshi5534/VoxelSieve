@@ -290,6 +290,7 @@ class Gui {
   std::shared_ptr<std::atomic<bool>> cancel_;
   std::atomic<double> progress_ = 0.0;
   bool running_ = false;  // guarded by mutex_, like project_
+  int run_id_ = 0;        // of the latest run, so a client can tell its run from a later one
   std::string running_operation_;
   std::condition_variable idle_;  // notified when running_ turns false
   // The operation started with background: true, and the outcome of the latest one: its step, or

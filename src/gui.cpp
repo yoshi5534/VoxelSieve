@@ -876,8 +876,11 @@ const Project& Gui::project() const {
 }
 
 Json Gui::status() const {
-  Json running =
-      running_ ? Json{{"operation", running_operation_}, {"progress", progress_.load()}} : Json();
+  Json running = running_ ? Json{{"operation", running_operation_},
+                                 {"progress", progress_.load()},
+                                 {"run_id", run_id_},
+                                 {"background", background_.joinable()}}
+                          : Json();
   if (running_ && !running_preview_.is_null()) {
     running["preview"] = running_preview_;
   }
@@ -2010,6 +2013,7 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
                                   "' is still running; wait for it or cancel it");
     }
     cancel_ = std::make_shared<std::atomic<bool>>(false);
+    ++run_id_;
     first = prepareRun(std::move(requests.front()));
     requests.erase(requests.begin());
     running_ = true;
@@ -2043,6 +2047,7 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
   });
   return {{"background", true},
           {"operation", operation},
+          {"run_id", run_id_},
           {"message", "Started in the background; call wait for its step, cancel to stop it"}};
 }
 
@@ -2218,9 +2223,10 @@ Json Gui::waitForOperation(double seconds) {
     finished.join();
     lock.lock();
   }
-  Json json = {{"done", !running_}, {"result", background_result_}};
+  Json json = {{"done", !running_}, {"result", background_result_}, {"run_id", run_id_}};
   if (running_) {
-    json["running"] = {{"operation", running_operation_}, {"progress", progress_.load()}};
+    json["running"] = {
+        {"operation", running_operation_}, {"progress", progress_.load()}, {"run_id", run_id_}};
   }
   return json;
 }
