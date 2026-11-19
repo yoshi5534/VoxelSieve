@@ -8,10 +8,10 @@
 #endif
 #include <windows.h>
 #else
-#include <signal.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #else

@@ -70,10 +70,6 @@ Index3 unravel(std::size_t index, const Index3& dims) {
   return {i % dims[0], (i / dims[0]) % dims[1], i / (dims[0] * dims[1])};
 }
 
-std::filesystem::path brickFile(const std::filesystem::path& dir, const Index3& brick) {
-  return detail::materialBrickFile(dir, brick);
-}
-
 /// Box filter of radius `r` along one axis of a dense x-fastest array, in place.
 void boxFilterAxis(std::span<float> data, const Index3& dims, std::size_t axis, int r) {
   const std::int64_t n = dims[axis];
@@ -777,9 +773,11 @@ MaterialVolumeInfo segmentMaterials(const Dataset& dataset, const std::filesyste
           // 2: material, 1: may grow into material, 0: air.
           state.resize(voxels);
           for (std::size_t v = 0; v < grey.size(); ++v) {
-            state[v] = grey[v] > info.air_threshold && neighbours[v] >= min_fraction - 1e-4F ? 2
-                       : grey[v] > info.grow_threshold                                       ? 1
-                                                                                             : 0;
+            if (grey[v] > info.air_threshold && neighbours[v] >= min_fraction - 1e-4F) {
+              state[v] = 2;
+            } else {
+              state[v] = grey[v] > info.grow_threshold ? 1 : 0;
+            }
           }
           const std::array<std::int64_t, 3> step{1, size[0], size[0] * size[1]};
           for (int g = 0; g < options.grow_steps; ++g) {
@@ -1366,8 +1364,8 @@ MaterialScore scoreMaterials(const MaterialVolume& segmentation, const VolumeSou
       }
     }
   });
-  const auto dice = [](double overlap, double a, double b) {
-    return a + b > 0.0 ? 2.0 * overlap / (a + b) : 1.0;
+  const auto dice = [](double overlap, double first, double second) {
+    return first + second > 0.0 ? 2.0 * overlap / (first + second) : 1.0;
   };
   score.dice.assign(classes, 0.0);
   double labelled = 0.0;

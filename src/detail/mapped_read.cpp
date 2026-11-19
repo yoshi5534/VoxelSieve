@@ -6,11 +6,11 @@
 #endif
 #include <windows.h>
 #else
-#include <setjmp.h>
-#include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <csetjmp>
+#include <csignal>
 #include <cstdint>
 #include <mutex>
 #endif
@@ -53,7 +53,7 @@ namespace {
 
 /// Where a failed read of this thread jumps to; null outside tryMappedRead.
 thread_local sigjmp_buf* t_jump = nullptr;
-struct sigaction g_previous{};
+struct sigaction g_previous {};
 
 void onBusError(int number, siginfo_t* info, void* ucontext) {
   if (t_jump != nullptr) {
@@ -76,7 +76,7 @@ void onBusError(int number, siginfo_t* info, void* ucontext) {
 void installHandler() {
   static std::once_flag once;
   std::call_once(once, [] {
-    struct sigaction action{};
+    struct sigaction action {};
     action.sa_sigaction = onBusError;
     action.sa_flags = SA_SIGINFO | SA_NODEFER;
     sigemptyset(&action.sa_mask);
@@ -86,6 +86,11 @@ void installHandler() {
 
 }  // namespace
 
+// GCC warns that the arguments might be clobbered by the jump; they are not used after it.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
 bool tryMappedRead(void (*read)(void*), void* context) {
   installHandler();
   sigjmp_buf jump;
@@ -104,6 +109,9 @@ bool tryMappedRead(void (*read)(void*), void* context) {
   t_jump = outer;
   return true;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void prefetchMappedPages(const void* data, std::size_t size) {
   if (data == nullptr || size == 0) {

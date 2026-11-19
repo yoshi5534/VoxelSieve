@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <random>
 #include <string>
@@ -424,10 +426,16 @@ TEST_F(SurfaceTest, DisplayMeshFitsTheBudgetAndLiesOnTheSurface) {
   std::filesystem::last_write_time(
       dir_ / "surface.vss",
       std::filesystem::last_write_time(dir_ / "surface.vss") + std::chrono::seconds(5));
-  const auto stale = std::filesystem::last_write_time(cache);
+  // The cache is written again with the stamp of the newer surface: its bytes change (file times
+  // are too coarse on some file systems to tell).
+  const auto bytes = [&cache] {
+    std::ifstream in(cache, std::ios::binary);
+    return std::vector<char>{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  };
+  const std::vector<char> stale = bytes();
   EXPECT_EQ(surfaceDisplayMesh(SurfaceMask::open(dir_ / "surface.vss"), budget).triangles,
             coarse.triangles);
-  EXPECT_NE(std::filesystem::last_write_time(cache), stale);
+  EXPECT_NE(bytes(), stale);
 }
 
 TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {
