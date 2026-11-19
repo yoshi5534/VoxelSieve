@@ -1003,6 +1003,10 @@ VolumePreview Gui::volumePreview(std::optional<int> dataset_step, std::optional<
   return readVolumePreview(*dataset, request, porosity.get(), materials.get());
 }
 
+VolumeBricks Gui::volumeBricks(std::optional<int> dataset_step, std::int64_t brick_size) const {
+  return voxelsieve::volumeBricks(*openView(dataset_step, std::nullopt).first, brick_size);
+}
+
 std::shared_ptr<const IndexedMesh> Gui::surfaceMesh(std::optional<int> surface_step,
                                                     std::size_t max_triangles) const {
   std::filesystem::path file;

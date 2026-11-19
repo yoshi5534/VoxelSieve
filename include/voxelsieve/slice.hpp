@@ -119,6 +119,9 @@ struct VolumeRequest {
   /// Grey values mapped to 0 and 255; the 0.5 and 99.5 percentiles when unset. A region takes
   /// the window of the whole volume so both show the same values alike.
   std::optional<std::array<float, 2>> window;
+  /// Reads this level instead of the finest that fits; the region must still fit `max_size`
+  /// there. The 3D view loads its bricks this way.
+  std::optional<int> level;
 };
 
 /// Reads the finest level at which the region (by default the volume) is at most
@@ -129,5 +132,23 @@ struct VolumeRequest {
 [[nodiscard]] VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
                                               const PorosityResult* porosity = nullptr,
                                               const MaterialVolume* materials = nullptr);
+
+/// Which bricks of `brick_size` voxels per axis hold any voxel of the dataset, per level: the
+/// 3D view skips the others and never asks for them.
+struct VolumeBricks {
+  struct Level {
+    int level = 0;
+    std::array<std::int64_t, 3> dims{};
+    /// Bricks per axis.
+    std::array<std::int64_t, 3> grid{};
+    /// Bit i set (x fastest, least significant bit first) when brick i holds voxels.
+    std::vector<std::uint8_t> present;
+  };
+  std::int64_t brick_size = 0;
+  std::vector<Level> levels;
+};
+
+/// From the bricks the dataset wrote, without reading them.
+[[nodiscard]] VolumeBricks volumeBricks(const Dataset& dataset, std::int64_t brick_size);
 
 }  // namespace voxelsieve

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **3D view down to level 0**: the 3D view of the GUI streams bricks of the finer levels into
+  an atlas within a VRAM budget set in the view (512 MB by default), where the picture needs
+  them, instead of one detail box of at most 256³. Empty space is skipped, the view keeps its
+  WebGL context across re-renders and survives a lost one, and draws at half resolution while
+  the camera moves (ADR 0035).
+
 - **Beam hardening correction**: the operation `beam_hardening` and the tool `vs-beam-hardening`
   remove cupping and the dark streaks between dense or thick regions from a reconstructed scan
   and write a new dataset, without projections or a spectrum. Every slice across the rotation

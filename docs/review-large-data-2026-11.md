@@ -647,6 +647,29 @@ Merge the duplicated camera, input and upload code of `volume.js` and `scene.js`
 - *Done when* a 2048³ scan can be explored down to level 0 in any region with a 1 GB VRAM
   budget at 30 fps on the integrated GPU.
 
+**Status (2026-11-19): done** on branch `phase6-volume` (ADR 0035):
+
+- 6.1: `GET /api/volume_brick` (32³ bricks of a level with two voxels around them, 8-bit in the
+  window of the coarse level, with the overlay) and `GET /api/volume_bricks` (which bricks hold
+  voxels, from the brick list of the dataset). `VolumeRequest::level`. `readVolumePreview` maps
+  slice by slice to bytes; the window comes from a sample first (G6). Not done: min/max per
+  brick written by the sieve; the browser computes the largest value of each brick it loads.
+- 6.2: atlas of R8/RG8 3D textures sized by a VRAM budget (512 MB default, set in the view, kept
+  in the browser; halved when the GPU refuses), an RGBA8UI page table over all levels, level of
+  detail per sample by distance (one voxel per CSS pixel), and a feedback pass at 1/8 resolution
+  that reports per pixel the first brick wanted finer, a random one further along the ray and
+  one used; LRU over feedback passes; uploads limited to 4 ms per frame (G1, G4). The detail box
+  is gone.
+- 6.3: absent bricks, bricks below the threshold or the first opaque value of the transfer
+  function, and bricks below the maximum so far (MIP) are crossed in one step; MIP stops at the
+  top value; half resolution while the camera moves (G5).
+- 6.4: one canvas and context per view for the viewer's life, context loss restored; camera,
+  input and shader compilation shared with the scene view (`orbit.js`) (G3).
+- Measured in headless Chrome on an Intel Arc 140T (integrated): a 640³ phantom, coarse level 2,
+  streams to level 0 near the camera within 2 s (about 700 bricks/s from the local server); a
+  frame of 1000 × 500 pixels takes 2.7 ms in the surface view. Not measured: 2048³ and the
+  30 fps at 1 GB; the materials view with bricks.
+
 ### Phase 7: Maintenance (ongoing, low priority)
 
 - **Shared CLI helper:** parsing, `--threads`, `--cache`, `--memory`, `--telemetry`. Generate

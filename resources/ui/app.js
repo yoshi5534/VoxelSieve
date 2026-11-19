@@ -292,6 +292,9 @@ function projectOpened() {
   state.viewer = null;
   state.volume = null;
   state.scene = null;
+  // Their canvases go with them: a canvas keeps the context and input of its viewer.
+  state.volumeCanvas = null;
+  state.sceneCanvas = null;
   state.align = null;
   state.transfer = null;
   state.suggestions = null;
@@ -1753,7 +1756,8 @@ function renderVolumeView(panel, dataset) {
   // the grey values.
   const meshStep = { 3: surfaceStep, 4: comparisonStep, 5: thicknessStep };
   if (volume.mode in meshStep && meshStep[volume.mode] === null) volume.mode = 0;
-  const canvas = el('canvas');
+  // One canvas for the view's life, so re-rendering keeps its WebGL context and textures.
+  const canvas = state.volumeCanvas ?? (state.volumeCanvas = el('canvas'));
   const histogram = el('canvas', { className: 'transfer', tabindex: 0,
     title: 'Click sets a point, drag moves it, double click or Delete removes it' });
   const editor = new TransferEditor(histogram);
@@ -2244,21 +2248,30 @@ function renderVolumeView(panel, dataset) {
       return formatVoxelSize(pitch.every((s) => s === pitch[0]) ? pitch[0] : pitch);
     };
     let text = 'Level ' + v.level + ' · ' + v.dims.join(' × ') + ' voxels of ' + size(v.level) + ' mm';
-    const detail = volume.detail;
-    if (detail) {
-      text += ' · near the camera level ' + detail.level + ' (' + detail.dims.join(' × ') +
-        ' voxels of ' + size(detail.level) + ' mm)';
+    const stream = volume.streamStatus();
+    if (stream && stream.bricks > 0) {
+      text += ' · near the camera level ' + stream.finest + ' (voxels of ' + size(stream.finest) +
+        ' mm), ' + stream.bricks + ' of ' + stream.slots + ' bricks in ' + stream.budgetMB +
+        ' MB of VRAM' + (stream.full ? ', budget full' : '') +
+        (stream.loading ? ', loading …' : '');
     }
     status.textContent = text + ' · drag rotates, right or Shift drag pans, ' +
       'mouse wheel zooms';
   };
   volume.onDetail = showVolumeStatus;
+  // WebGL cannot tell how much video memory is free; the user sets what the bricks may take.
+  const vram = el('input', { type: 'number', min: 64, max: 16384, step: 64, value: volume.vramMB,
+    title: 'Video memory for the bricks of finer levels, in MB' });
+  vram.addEventListener('change', () => {
+    if (Number(vram.value) >= 64) volume.setVramBudget(Number(vram.value));
+  });
   panel.append(el('div', { className: 'viewer-tools' }, mode,
     el('label', { className: 'group' }, shading, 'Lighting'),
     el('label', { className: 'group' }, 'Cut x', cut),
     el('label', { className: 'group' }, pores, 'Pores', poreColor, zoneColor),
     el('label', { className: 'group' }, showMaterials, 'Materials'),
-    el('div', { className: 'group' }, backgroundStyle, backgroundColors)),
+    el('div', { className: 'group' }, backgroundStyle, backgroundColors),
+    el('label', { className: 'group' }, 'VRAM', vram, 'MB')),
   canvas, legend, ...(materialPanel ? [materialPanel] : []), status, suggestionRow,
   el('div', { className: 'transfer-editor' },
     el('div', { className: 'viewer-tools' }, el('b', {}, 'Histogram'), editMaterials, curveTools,
@@ -2433,7 +2446,7 @@ function renderSceneView(panel) {
   const scene = state.scene ?? (state.scene = new SceneViewer());
   const objects = state.status.objects ?? [];
   const align = alignState();
-  const canvas = el('canvas', { tabindex: 0 });
+  const canvas = state.sceneCanvas ?? (state.sceneCanvas = el('canvas', { tabindex: 0 }));
   const status = el('div', { className: 'viewer-status' });
   if (state.restore?.scene) {
     scene.setState(state.restore.scene);

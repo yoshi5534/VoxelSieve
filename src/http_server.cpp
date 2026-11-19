@@ -32,6 +32,10 @@ constexpr std::uint64_t kMaxBodyBytes = std::uint64_t{64} << 20U;
 /// Connections served at once, each on a thread of its own (F4); more are answered with 503 at
 /// once. A browser opens six per host, so this leaves room for several views and clients.
 constexpr std::size_t kMaxConnections = 64;
+/// Voxels per axis of a brick of the 3D view and voxels sent around it (resources/ui/bricks.js,
+/// ADR 0035).
+constexpr std::int64_t kViewBrick = 32;
+constexpr std::int64_t kViewApron = 2;
 
 /// Whether the client closed the connection, as a browser does when it gives up a request (a tile
 /// scrolled out of view): its request need not be answered. Does not wait.
@@ -483,6 +487,80 @@ struct HttpServer::Impl {
          {"X-Window", std::to_string(preview.low) + "," + std::to_string(preview.high)}});
   }
 
+  /// GET /api/volume_bricks[?step=1]
+  /// JSON: per level its dims, the bricks of kViewBrick voxels per axis and which of them hold
+  /// voxels, as hex digits of a bit set (volumeBricks), for the brick streaming of the 3D view.
+  http::message_generator volumeBricksIndex(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const std::optional<int> step = values.contains("step")
+                                        ? std::optional<int>(static_cast<int>(values.at("step")))
+                                        : std::nullopt;
+    const VolumeBricks bricks = gui.volumeBricks(step, kViewBrick);
+    Json levels = Json::array();
+    constexpr std::string_view kHex = "0123456789abcdef";
+    for (const VolumeBricks::Level& level : bricks.levels) {
+      std::string present;
+      present.reserve(level.present.size() * 2);
+      for (const std::uint8_t byte : level.present) {
+        present.push_back(kHex[byte >> 4U]);
+        present.push_back(kHex[byte & 15U]);
+      }
+      levels.push_back({{"level", level.level},
+                        {"dims", level.dims},
+                        {"grid", level.grid},
+                        {"present", std::move(present)}});
+    }
+    return json(request, http::status::ok, {{"brick", bricks.brick_size}, {"levels", levels}});
+  }
+
+  /// GET /api/volume_brick?level=&i=&j=&k=&low=&high=[&step=][&porosity=][&materials=]
+  /// Body: brick (i, j, k) of kViewBrick voxels per axis at `level` with kViewApron around it,
+  /// clipped to the level, as grey bytes in the window low..high, then overlay bytes, x fastest
+  /// (readVolumePreview). X-Origin and X-Dims give the voxels sent, in level voxels.
+  http::message_generator volumeBrick(const Request& request, std::string_view query) {
+    const auto values = queryValues(query);
+    const auto optional = [&values](const std::string& name) -> std::optional<int> {
+      const auto it = values.find(name);
+      return it == values.end() ? std::nullopt : std::optional<int>(static_cast<int>(it->second));
+    };
+    for (const char* name : {"level", "i", "j", "k", "low", "high"}) {
+      if (!values.contains(name)) {
+        throw std::invalid_argument(std::string("A brick needs ") + name);
+      }
+    }
+    const std::int64_t level = values.at("level");
+    if (level < 0 || level > 30) {
+      throw std::invalid_argument("level must be between 0 and 30");
+    }
+    VolumeRequest volume_request;
+    volume_request.level = static_cast<int>(level);
+    volume_request.max_size = kViewBrick + 2 * kViewApron;
+    const auto shift = static_cast<unsigned>(level);
+    Box region;
+    for (std::size_t a = 0; a < 3; ++a) {
+      const std::int64_t index = values.at(std::string(1, static_cast<char>('i' + a)));
+      if (index < 0 || index > (std::int64_t{1} << 24U)) {
+        throw std::invalid_argument("The brick lies outside the volume");
+      }
+      // In level-0 voxels: the level voxels of the brick and those around it.
+      region.min[a] = std::max<std::int64_t>(0, index * kViewBrick - kViewApron) << shift;
+      region.max[a] = ((index + 1) * kViewBrick + kViewApron) << shift;
+    }
+    volume_request.region = region;
+    volume_request.window = std::array<float, 2>{static_cast<float>(values.at("low")),
+                                                 static_cast<float>(values.at("high"))};
+    const VolumePreview preview = gui.volumePreview(optional("step"), optional("porosity"),
+                                                    volume_request, optional("materials"));
+    std::string body(preview.grey.begin(), preview.grey.end());
+    body.append(preview.overlay.begin(), preview.overlay.end());
+    return binary(
+        request, std::move(body),
+        {{"X-Dims", std::to_string(preview.dims[0]) + "," + std::to_string(preview.dims[1]) + "," +
+                        std::to_string(preview.dims[2])},
+         {"X-Origin", std::to_string(preview.origin[0]) + "," + std::to_string(preview.origin[1]) +
+                          "," + std::to_string(preview.origin[2])}});
+  }
+
   /// GET /api/surface?max_triangles=1500000[&step=3]
   /// Body: the display mesh of a surface step (Gui::surfaceMesh), the points as three float32
   /// per vertex in level-0 voxel coordinates, then three uint32 indices per triangle.
@@ -674,6 +752,12 @@ struct HttpServer::Impl {
     }
     if (path == "/api/volume") {
       return volume(request, target(request));
+    }
+    if (path == "/api/volume_bricks") {
+      return volumeBricksIndex(request, target(request));
+    }
+    if (path == "/api/volume_brick") {
+      return volumeBrick(request, target(request));
     }
     if (path == "/api/surface") {
       return surface(request, target(request));

@@ -371,11 +371,22 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
   };
   VolumePreview preview;
   preview.level = static_cast<int>(info.levels.size()) - 1;
-  for (const LevelInfo& level : info.levels) {
-    const Box box = at_level(level.level);
-    if (std::max({box.size(0), box.size(1), box.size(2)}) <= request.max_size) {
-      preview.level = level.level;
-      break;
+  if (request.level) {
+    if (*request.level < 0 || *request.level >= static_cast<int>(info.levels.size())) {
+      throw std::invalid_argument("The dataset has no level " + std::to_string(*request.level));
+    }
+    preview.level = *request.level;
+    const Box box = at_level(preview.level);
+    if (std::max({box.size(0), box.size(1), box.size(2)}) > request.max_size) {
+      throw std::invalid_argument("The region is larger than max_size at that level");
+    }
+  } else {
+    for (const LevelInfo& level : info.levels) {
+      const Box box = at_level(level.level);
+      if (std::max({box.size(0), box.size(1), box.size(2)}) <= request.max_size) {
+        preview.level = level.level;
+        break;
+      }
     }
   }
   const LevelInfo& level = dataset.level(preview.level);
@@ -385,9 +396,7 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
   preview.voxel_size = level.voxel_size;
   const auto plane = static_cast<std::size_t>(box.size(0) * box.size(1));
   const auto depth = static_cast<std::size_t>(box.size(2));
-  std::vector<float> grey(plane * depth);
-  preview.overlay.resize(plane * depth);
-  tbb::parallel_for(std::size_t{0}, depth, [&](std::size_t z) {
+  const auto read = [&](std::size_t z) {
     SliceRequest slice_request;
     slice_request.axis = 2;
     slice_request.level = preview.level;
@@ -397,11 +406,46 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
     slice_request.size = {box.size(0), box.size(1)};
     // Materials below, for the whole box at once: per slice, every slice would look up all
     // bricks of its plane again.
-    const SliceImage slice = readSlice(dataset, slice_request, porosity, nullptr);
-    std::copy(slice.grey.begin(), slice.grey.end(),
-              grey.begin() + static_cast<std::ptrdiff_t>(z * plane));
-    std::copy(slice.overlay.begin(), slice.overlay.end(),
-              preview.overlay.begin() + static_cast<std::ptrdiff_t>(z * plane));
+    return readSlice(dataset, slice_request, porosity, nullptr);
+  };
+  // The window first, unless given: from every 7th voxel of every 4th slice, so the grey values
+  // are mapped to bytes slice by slice and never held as floats for the whole preview (review
+  // finding G6).
+  if (request.window) {
+    preview.low = (*request.window)[0];
+    preview.high = std::max((*request.window)[1], preview.low + 1.0F);
+  } else {
+    const std::size_t stride = depth >= 16 ? 4 : 1;
+    std::vector<std::vector<float>> samples((depth + stride - 1) / stride);
+    tbb::parallel_for(std::size_t{0}, samples.size(), [&](std::size_t i) {
+      const SliceImage slice = read(i * stride);
+      for (std::size_t k = i % 7; k < slice.grey.size(); k += 7) {
+        samples[i].push_back(slice.grey[k]);
+      }
+    });
+    std::vector<float> sample;
+    for (const auto& part : samples) {
+      sample.insert(sample.end(), part.begin(), part.end());
+    }
+    std::sort(sample.begin(), sample.end());
+    const auto at = [&sample](double fraction) {
+      return sample[static_cast<std::size_t>(fraction * static_cast<double>(sample.size() - 1))];
+    };
+    preview.low = at(0.005);
+    preview.high = std::max(at(0.995), preview.low + 1.0F);
+  }
+  preview.grey.resize(plane * depth);
+  preview.overlay.resize(plane * depth);
+  const float scale = 255.0F / (preview.high - preview.low);
+  tbb::parallel_for(std::size_t{0}, depth, [&](std::size_t z) {
+    const SliceImage slice = read(z);
+    const auto offset = static_cast<std::ptrdiff_t>(z * plane);
+    std::transform(slice.grey.begin(), slice.grey.end(), preview.grey.begin() + offset,
+                   [&](float value) {
+                     return static_cast<std::uint8_t>(
+                         std::lround(std::clamp((value - preview.low) * scale, 0.0F, 255.0F)));
+                   });
+    std::copy(slice.overlay.begin(), slice.overlay.end(), preview.overlay.begin() + offset);
   });
   if (materials != nullptr) {
     // Every 2^level-th level-0 voxel, like readSlice; pores and zones win over materials.
@@ -425,28 +469,46 @@ VolumePreview readVolumePreview(const Dataset& dataset, const VolumeRequest& req
     }
   }
 
-  if (request.window) {
-    preview.low = (*request.window)[0];
-    preview.high = std::max((*request.window)[1], preview.low + 1.0F);
-  } else {
-    std::vector<float> sample;
-    for (std::size_t i = 0; i < grey.size(); i += 7) {
-      sample.push_back(grey[i]);
-    }
-    std::sort(sample.begin(), sample.end());
-    const auto at = [&sample](double fraction) {
-      return sample[static_cast<std::size_t>(fraction * static_cast<double>(sample.size() - 1))];
-    };
-    preview.low = at(0.005);
-    preview.high = std::max(at(0.995), preview.low + 1.0F);
-  }
-  preview.grey.resize(grey.size());
-  const float scale = 255.0F / (preview.high - preview.low);
-  for (std::size_t i = 0; i < grey.size(); ++i) {
-    preview.grey[i] = static_cast<std::uint8_t>(
-        std::lround(std::clamp((grey[i] - preview.low) * scale, 0.0F, 255.0F)));
-  }
   return preview;
+}
+
+VolumeBricks volumeBricks(const Dataset& dataset, std::int64_t brick_size) {
+  if (brick_size <= 0) {
+    throw std::invalid_argument("The brick size must be positive");
+  }
+  const DatasetInfo& info = dataset.info();
+  VolumeBricks result;
+  result.brick_size = brick_size;
+  for (const LevelInfo& level : info.levels) {
+    VolumeBricks::Level out;
+    out.level = level.level;
+    out.dims = level.dims;
+    for (std::size_t a = 0; a < 3; ++a) {
+      out.grid[a] = (level.dims[a] + brick_size - 1) / brick_size;
+    }
+    out.present.assign(static_cast<std::size_t>((out.grid[0] * out.grid[1] * out.grid[2] + 7) / 8),
+                       0);
+    // Every brick of the view that a written brick of the dataset overlaps.
+    for (const auto& written : level.bricks) {
+      const Box box = dataset.brickBox(level.level, written);
+      std::array<std::int64_t, 3> first{};
+      std::array<std::int64_t, 3> last{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        first[a] = box.min[a] / brick_size;
+        last[a] = (box.max[a] - 1) / brick_size;
+      }
+      for (std::int64_t z = first[2]; z <= last[2]; ++z) {
+        for (std::int64_t y = first[1]; y <= last[1]; ++y) {
+          for (std::int64_t x = first[0]; x <= last[0]; ++x) {
+            const auto i = static_cast<std::size_t>((z * out.grid[1] + y) * out.grid[0] + x);
+            out.present[i / 8] = static_cast<std::uint8_t>(out.present[i / 8] | (1U << (i % 8)));
+          }
+        }
+      }
+    }
+    result.levels.push_back(std::move(out));
+  }
+  return result;
 }
 
 VolumePreview readVolumePreview(const Dataset& dataset, std::int64_t max_size,
