@@ -21,7 +21,7 @@ struct TelemetryOptions {
 
 /// Reads the library counts itself, because the process counters miss them (memory-mapped files)
 /// or mix them with all other reads (the brick files of datasets).
-enum class CountedRead {
+enum class CountedRead : std::uint8_t {
   kMappedFile,  // voxels copied out of a memory-mapped raw file or staging copy
   kBrickFile,   // brick files of a dataset loaded, at their size on disk
 };
