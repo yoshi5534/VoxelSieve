@@ -260,3 +260,18 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/viewer_test.cjs)
   add_test(NAME ui_volume COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/volume_test.cjs)
 endif()
+
+# Scale tests (VOXELSIEVE_SCALE_TESTS, nightly): every tool on a 512^3 phantom, failing when its own
+# peak memory or its brick re-reads exceed the values recorded in scale_limits.json for this
+# platform and thread count by more than 20 %. Needs about 1 GB of disk. Record new values after
+# an intended change with
+#   cmake -DBIN=<bin> -DWORK=<dir> -DSIZES=512 -DRECORD=tests/scale_limits.json -P tools/bench/scale.cmake
+if(VOXELSIEVE_SCALE_TESTS)
+  add_test(NAME scale_512
+           COMMAND ${CMAKE_COMMAND} -DBIN=$<TARGET_FILE_DIR:vs-sieve>
+                   -DWORK=${CMAKE_CURRENT_BINARY_DIR}/scale -DSIZES=512
+                   -DLIMITS=${CMAKE_CURRENT_SOURCE_DIR}/scale_limits.json
+                   -DCSV=${CMAKE_CURRENT_BINARY_DIR}/scale_512.csv
+                   -P ${PROJECT_SOURCE_DIR}/tools/bench/scale.cmake)
+  set_tests_properties(scale_512 PROPERTIES LABELS scale TIMEOUT 3600 RUN_SERIAL TRUE)
+endif()

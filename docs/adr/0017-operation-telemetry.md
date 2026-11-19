@@ -34,6 +34,24 @@ faster and leaner we need the same numbers from every operation, per phase, kept
   Reads of memory-mapped files appear in no per-process counter there, so without them every
   import read zero bytes from disk and the hints blamed too few parallel parts where the work
   waited for the disk. They include other processes.
+- Amendment (2026-11-17, numbers for scans larger than memory):
+  - **Peaks per phase on every system.** A sampler reads only the memory counters every 50 ms
+    (`TelemetryOptions::peak_interval_s`). Where there is no high-water mark per phase
+    (Windows, macOS), phases no longer take the process's lifetime peak, which carried the
+    peak of an earlier phase into every later one.
+  - **Own and mapped memory on Windows.** The private working set counts as the process's own
+    pages, the rest of the working set as mapped files (`PROCESS_MEMORY_COUNTERS_EX2`). The
+    working set of a sieve of a 16 GB raw file was 18.7 GB, of which only 2.5 GB was its own.
+    `system.memory_split` says whether the split was available.
+  - **Reads the library counts itself** (`countRead`), the same on every system:
+    - `mapped_read_mb`: bytes copied out of memory-mapped raw files and staging copies, which
+      no per-process counter sees.
+    - `brick_read_mb`: brick files of datasets loaded (grey values and material labels). Set
+      against the dataset's size on disk, it shows how often bricks are read again: 34× for
+      the wall thickness of a 2048³ scan with the default cache.
+  - The table and the UI show own memory and mapped pages apart.
+  - `tools/bench/scale.cmake` runs every tool on phantoms of growing size and collects these
+    numbers. The nightly scale test checks them against `tests/scale_limits.json`.
 - Library code marks its phases with `TelemetryPhase`, which goes to the calling thread's current
   recorder (`TelemetryScope`) and does nothing without one. So `writeDataset`,
   `analyzePorosity`, `segmentMaterials` and `compareToCad` report the same phases in the GUI
@@ -54,5 +72,6 @@ faster and leaner we need the same numbers from every operation, per phase, kept
 
 - The counters belong to the whole process. The GUI runs one operation at a time, so a step
   gets its own numbers; its HTTP threads add a little CPU time.
-- Reading `/proc` at each phase boundary and once a second costs well below a millisecond.
+- Reading the counters at each phase boundary, once a second, and the memory every 50 ms costs
+  well below a millisecond each time.
 - Only Linux has these counters; elsewhere the record keeps wall time and CPU time.

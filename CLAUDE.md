@@ -82,7 +82,14 @@ some ports).
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan   # ASan + UBSan
 tools/lint.sh                                                                  # clang-format + parallel clang-tidy
+cmake -DBIN=build/release/bin -DWORK=/tmp/vs-scale -DSIZES="256;512" -P tools/bench/scale.cmake  # scale benchmark
 ```
+
+The scale benchmark runs every tool on phantoms of growing size and writes peak own memory,
+mapped pages and brick re-reads per tool to a CSV (from their telemetry). With
+`-DVOXELSIEVE_SCALE_TESTS=ON` the test `scale_512` (label `scale`, nightly) checks them against
+`tests/scale_limits.json`; record new values with `-DRECORD=tests/scale_limits.json`. The preset
+`tsan` builds the dependencies for ThreadSanitizer too and runs nightly.
 
 Windows and macOS build with the presets `windows` (MSVC, from a Developer PowerShell) and
 `macos` (Apple silicon); CI builds and tests both. Platform code stays behind `#ifdef _WIN32` /

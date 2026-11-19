@@ -710,6 +710,10 @@ GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
     vdb.open(/*delayLoad=*/true);
     grid = GreyGrid::fromBase(vdb.readGrid("density"));
     vdb.close();
+    // OpenVDB reads the leaves later, as they are touched; the file counts as opened once.
+    std::error_code error;
+    const auto size = std::filesystem::file_size(file, error);
+    countRead(CountedRead::kBrickFile, error ? 0 : size);
   } else {
     // Read in one piece and parsed from memory: from the file, OpenVDB seeks and reads again for
     // every leaf, two system calls per 512 voxels.
@@ -723,6 +727,7 @@ GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
     if (!in) {
       throw std::runtime_error("Cannot read " + file.string());
     }
+    countRead(CountedRead::kBrickFile, bytes.size());
     boost::iostreams::stream<boost::iostreams::array_source> stream(bytes.data(), bytes.size());
     openvdb::io::Stream vdb(stream, /*delayLoad=*/false);
     for (const openvdb::GridBase::Ptr& base : *vdb.getGrids()) {

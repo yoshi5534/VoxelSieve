@@ -804,7 +804,7 @@ function telemetryLine(telemetry) {
   if (!total) return '';
   const threads = telemetry.system?.threads;
   return ' · ' + formatSeconds(total.wall_s) + ', ' + formatNumber(total.cores_used) +
-    (threads ? ' of ' + threads : '') + ' cores, ' + formatMb(total.peak_rss_mb) + ' peak';
+    (threads ? ' of ' + threads : '') + ' cores, ' + formatMb(total.peak_anon_mb ?? total.peak_rss_mb) + ' peak';
 }
 
 function telemetryChart(timeline, system) {
@@ -813,7 +813,8 @@ function telemetryChart(timeline, system) {
   const width = 320;
   const height = 90;
   const end = points[points.length - 1];
-  const memory = points.map((_, i) => timeline.rss_anon_mb[i] + timeline.rss_file_mb[i]);
+  // The process's own memory; mapped file pages can be dropped by the system at any time.
+  const memory = points.map((_, i) => timeline.rss_anon_mb[i]);
   const series = [
     { name: 'Cores', values: timeline.cores_used, max: system?.threads || Math.max(...timeline.cores_used), color: 'var(--accent)' },
     { name: 'Memory', values: memory, max: Math.max(...memory, 1), color: 'var(--good)' },
@@ -842,13 +843,15 @@ function telemetryDetails(step) {
       el('td', { style: 'padding-left:' + (Math.max(phase.depth, 0) * 12) + 'px' }, phase.name),
       el('td', {}, formatSeconds(phase.wall_s)),
       el('td', {}, formatNumber(phase.cores_used)),
-      el('td', {}, formatMb(phase.peak_rss_mb))));
+      el('td', {}, formatMb(phase.peak_anon_mb ?? phase.peak_rss_mb)),
+      el('td', {}, formatMb(phase.peak_file_mb ?? 0))));
   const table = el('table', { className: 'summary telemetry' },
-    el('tr', {}, ['Phase', 'Time', 'Cores', 'Memory'].map((h) => el('th', {}, h))),
+    el('tr', {}, ['Phase', 'Time', 'Cores', 'Memory', 'Mapped'].map((h) => el('th', {}, h))),
     rows);
   const total = telemetry.total;
   const disk = el('div', { className: 'meta' }, 'Disk: ' + formatMb(total.disk_read_mb) + ' read, ' +
-    formatMb(total.disk_write_mb) + ' written, ' + formatNumber(total.major_faults) + ' page faults');
+    formatMb(total.disk_write_mb) + ' written, ' + formatNumber(total.major_faults) + ' page faults' +
+    (total.brick_read_mb ? ' · bricks loaded: ' + formatMb(total.brick_read_mb) : ''));
   const chart = el('div', {});
   const key = step.id + '/' + step.started;
   const load = async () => {

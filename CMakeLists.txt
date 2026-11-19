@@ -40,6 +40,8 @@ option(VOXELSIEVE_BUILD_TESTS "Build unit tests" ON)
 option(VOXELSIEVE_BUILD_APPS "Build the command-line tools" ON)
 option(VOXELSIEVE_BUILD_PYTHON "Build the Python package (needs Python and nanobind, ADR 0031)" OFF)
 option(VOXELSIEVE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(VOXELSIEVE_SCALE_TESTS
+       "Add the scale tests (label scale): every tool on a 512^3 phantom against recorded peaks" OFF)
 option(VOXELSIEVE_INSTALL_RUNTIME_DEPS
        "Install the shared libraries the programs need next to them, for self-contained packages" OFF)
 

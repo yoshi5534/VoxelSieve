@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -74,7 +75,18 @@ struct Counters {
   double rss_anon_mb = 0.0;
   double rss_file_mb = 0.0;
   double hwm_mb = 0.0;
+  // Counted by the library itself (countRead).
+  double mapped_read_mb = 0.0;
+  double brick_read_mb = 0.0;
 };
+
+/// The counters of countRead, for the whole process.
+std::array<std::atomic<std::uint64_t>, 2> g_counted_reads{};
+
+void readCountedReads(Counters& c) {
+  c.mapped_read_mb = static_cast<double>(g_counted_reads[0].load(std::memory_order_relaxed)) / kMb;
+  c.brick_read_mb = static_cast<double>(g_counted_reads[1].load(std::memory_order_relaxed)) / kMb;
+}
 
 #if defined(_WIN32)
 
@@ -149,9 +161,56 @@ void readDiskCounters(Counters& c) {
   counters.read(c);
 }
 
-/// Windows has no split of resident memory into own and file pages without walking the working
-/// set, so all of it counts as the process's own. Its page fault count holds soft faults too, so
-/// it counts as minor; the major ones come from the system-wide counters (DiskCounters).
+/// PROCESS_MEMORY_COUNTERS_EX2 of psapi.h, which the SDK declares only for new target versions
+/// (NTDDI_WIN10_CU). Recent Windows versions fill it; older ones refuse its size.
+struct MemoryCountersEx2 {
+  DWORD cb;
+  DWORD page_fault_count;
+  SIZE_T peak_working_set_size;
+  SIZE_T working_set_size;
+  SIZE_T quota_peak_paged_pool_usage;
+  SIZE_T quota_paged_pool_usage;
+  SIZE_T quota_peak_non_paged_pool_usage;
+  SIZE_T quota_non_paged_pool_usage;
+  SIZE_T pagefile_usage;
+  SIZE_T peak_pagefile_usage;
+  SIZE_T private_usage;
+  SIZE_T private_working_set_size;
+  ULONG64 shared_commit_usage;
+};
+
+/// Resident memory: the private working set counts as the process's own pages, the rest of the
+/// working set (shareable pages, above all those of memory-mapped files) as mapped files. Where
+/// Windows has no private working set, all of it counts as own. Returns whether it was split.
+bool readMemory(Counters& c) {
+  const HANDLE process = GetCurrentProcess();
+  MemoryCountersEx2 memory{};
+  memory.cb = sizeof(memory);
+  // Some Windows versions (the CI's Windows Server) take the size but leave the private working
+  // set at 0; they count as having none.
+  if (GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
+                           sizeof(memory)) != 0 &&
+      (memory.private_working_set_size > 0 || memory.working_set_size == 0)) {
+    c.minor_faults = memory.page_fault_count;
+    c.rss_anon_mb = static_cast<double>(memory.private_working_set_size) / kMb;
+    c.rss_file_mb =
+        static_cast<double>(memory.working_set_size -
+                            std::min(memory.working_set_size, memory.private_working_set_size)) /
+        kMb;
+    c.hwm_mb = static_cast<double>(memory.peak_working_set_size) / kMb;
+    return true;
+  }
+  PROCESS_MEMORY_COUNTERS basic{};
+  if (GetProcessMemoryInfo(process, &basic, sizeof(basic)) != 0) {
+    c.minor_faults = basic.PageFaultCount;
+    c.rss_anon_mb = static_cast<double>(basic.WorkingSetSize) / kMb;
+    c.hwm_mb = static_cast<double>(basic.PeakWorkingSetSize) / kMb;
+  }
+  return false;
+}
+
+/// The page fault count of Windows holds soft faults too, so it counts as minor; the major ones
+/// come from the system-wide counters (DiskCounters).
 void readProcessCounters(Counters& c) {
   const HANDLE process = GetCurrentProcess();
   FILETIME created{};
@@ -162,12 +221,7 @@ void readProcessCounters(Counters& c) {
     c.cpu_user_s = fileTimeSeconds(user);
     c.cpu_system_s = fileTimeSeconds(kernel);
   }
-  PROCESS_MEMORY_COUNTERS memory{};
-  if (GetProcessMemoryInfo(process, &memory, sizeof(memory)) != 0) {
-    c.minor_faults = memory.PageFaultCount;
-    c.rss_anon_mb = static_cast<double>(memory.WorkingSetSize) / kMb;
-    c.hwm_mb = static_cast<double>(memory.PeakWorkingSetSize) / kMb;
-  }
+  readMemory(c);
   IO_COUNTERS io{};
   if (GetProcessIoCounters(process, &io) != 0) {
     c.read_mb = static_cast<double>(io.ReadTransferCount) / kMb;
@@ -211,18 +265,25 @@ void readUsage(Counters& c) {
 #if defined(__APPLE__)
 
 /// macOS: the memory footprint counts as the process's own pages, the rest of the resident set
-/// as mapped files; bytes read and written come from the storage device counters.
-void readProcessCounters(Counters& c) {
-  readUsage(c);
+/// as mapped files.
+bool readMemory(Counters& c) {
   task_vm_info_data_t info{};
   mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) ==
+  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) !=
       KERN_SUCCESS) {
-    const auto own = static_cast<double>(info.phys_footprint);
-    const auto resident = static_cast<double>(info.resident_size);
-    c.rss_anon_mb = own / kMb;
-    c.rss_file_mb = std::max(0.0, resident - own) / kMb;
+    return false;
   }
+  const auto own = static_cast<double>(info.phys_footprint);
+  const auto resident = static_cast<double>(info.resident_size);
+  c.rss_anon_mb = own / kMb;
+  c.rss_file_mb = std::max(0.0, resident - own) / kMb;
+  return true;
+}
+
+/// Bytes read and written come from the storage device counters.
+void readProcessCounters(Counters& c) {
+  readUsage(c);
+  readMemory(c);
   rusage_info_v4 io{};
   if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, reinterpret_cast<rusage_info_t*>(&io)) == 0) {
     c.disk_read_mb = static_cast<double>(io.ri_diskio_bytesread) / kMb;
@@ -270,6 +331,21 @@ void readKeyValues(const char* file, const std::function<void(std::string_view, 
   }
 }
 
+bool readMemory(Counters& c) {
+  bool found = false;
+  readKeyValues("/proc/self/status", [&c, &found](std::string_view key, double value) {
+    if (key == "RssAnon") {
+      c.rss_anon_mb = value / kKb;
+      found = true;
+    } else if (key == "RssFile" || key == "RssShmem") {
+      c.rss_file_mb += value / kKb;
+    } else if (key == "VmHWM") {
+      c.hwm_mb = value / kKb;
+    }
+  });
+  return found;
+}
+
 void readProcessCounters(Counters& c) {
   readUsage(c);
   readKeyValues("/proc/self/io", [&c](std::string_view key, double value) {
@@ -283,15 +359,7 @@ void readProcessCounters(Counters& c) {
       c.disk_write_mb = value / kMb;
     }
   });
-  readKeyValues("/proc/self/status", [&c](std::string_view key, double value) {
-    if (key == "RssAnon") {
-      c.rss_anon_mb = value / kKb;
-    } else if (key == "RssFile" || key == "RssShmem") {
-      c.rss_file_mb += value / kKb;
-    } else if (key == "VmHWM") {
-      c.hwm_mb = value / kKb;
-    }
-  });
+  readMemory(c);
 }
 
 std::pair<double, double> systemMemoryMb() {
@@ -309,11 +377,30 @@ std::pair<double, double> systemMemoryMb() {
 
 #endif
 
+double secondsSince(Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
 Counters readCounters(Clock::time_point start) {
   Counters c;
-  c.t_s = std::chrono::duration<double>(Clock::now() - start).count();
+  c.t_s = secondsSince(start);
   readProcessCounters(c);
+  readCountedReads(c);
   return c;
+}
+
+/// Only the memory counters, for the peaks between two timeline points.
+Counters readMemoryCounters(Clock::time_point start) {
+  Counters c;
+  c.t_s = secondsSince(start);
+  readMemory(c);
+  return c;
+}
+
+/// Whether resident memory is split into the process's own pages and mapped file pages here.
+bool memorySplit() {
+  Counters c;
+  return readMemory(c);
 }
 
 /// Resets the high-water mark of resident memory to the current value (Linux 4.0 and later), so
@@ -357,8 +444,10 @@ struct PhaseRecord {
   double peak_anon_mb = 0.0;
   double peak_file_mb = 0.0;
 
-  void fold(const Counters& c) {
-    peak_rss_mb = std::max({peak_rss_mb, c.hwm_mb, c.rss_anon_mb + c.rss_file_mb});
+  /// `hwm` says whether the high-water mark in `c` is that of this phase: otherwise it counts from
+  /// process start and would carry the peak of an earlier phase into this one.
+  void fold(const Counters& c, bool hwm) {
+    peak_rss_mb = std::max({peak_rss_mb, hwm ? c.hwm_mb : 0.0, c.rss_anon_mb + c.rss_file_mb});
     peak_anon_mb = std::max(peak_anon_mb, c.rss_anon_mb);
     peak_file_mb = std::max(peak_file_mb, c.rss_file_mb);
   }
@@ -380,6 +469,8 @@ struct PhaseRecord {
                  {"peak_anon_mb", rounded(peak_anon_mb, 1)},
                  {"peak_file_mb", rounded(peak_file_mb, 1)},
                  {"read_mb", rounded(end.read_mb - begin.read_mb, 1)},
+                 {"mapped_read_mb", rounded(end.mapped_read_mb - begin.mapped_read_mb, 1)},
+                 {"brick_read_mb", rounded(end.brick_read_mb - begin.brick_read_mb, 1)},
                  {"write_mb", rounded(end.write_mb - begin.write_mb, 1)},
                  {"disk_read_mb", rounded(end.disk_read_mb - begin.disk_read_mb, 1)},
                  {"disk_write_mb", rounded(end.disk_write_mb - begin.disk_write_mb, 1)},
@@ -505,13 +596,18 @@ struct Telemetry::Impl {
     sampler.join();
   }
 
-  /// Folds the counters into every open phase; at a phase boundary also restarts the peak, so
-  /// the next interval gets its own. Needs the lock.
-  void boundary(const Counters& c) {
-    total.fold(c);
+  /// Folds the counters into the total and every open phase. Needs the lock.
+  void fold(const Counters& c) {
+    total.fold(c, peak_per_phase);
     for (const std::size_t i : open) {
-      phases[i].fold(c);
+      phases[i].fold(c, peak_per_phase);
     }
+  }
+
+  /// Folds the counters; at a phase boundary also restarts the peak, so the next interval gets
+  /// its own. Needs the lock.
+  void boundary(const Counters& c) {
+    fold(c);
     if (peak_per_phase) {
       resetPeakMemory();
     }
@@ -530,19 +626,31 @@ struct Telemetry::Impl {
     }
   }
 
+  /// The sampling thread: a timeline point every interval_s, and in between the memory counters
+  /// every peak_interval_s, so a short peak inside a phase is not missed.
   void sample() {
+    const bool timeline = interval_s > 0.0;
+    const double peak_interval = options.peak_interval_s;
     std::unique_lock lock(mutex);
+    double next_point = interval_s;
     while (true) {
-      wake.wait_for(lock, std::chrono::duration<double>(interval_s), [this] { return stopping; });
+      double wait = timeline ? next_point - secondsSince(start) : peak_interval;
+      if (peak_interval > 0.0) {
+        wait = std::min(wait, peak_interval);
+      }
+      wake.wait_for(lock, std::chrono::duration<double>(std::max(wait, 0.0)),
+                    [this] { return stopping; });
       if (stopping) {
         break;
       }
-      const Counters c = readCounters(start);
-      total.fold(c);
-      for (const std::size_t i : open) {
-        phases[i].fold(c);
+      if (timeline && secondsSince(start) >= next_point) {
+        const Counters c = readCounters(start);
+        fold(c);
+        addSample(c);
+        next_point = c.t_s + interval_s;
+      } else {
+        fold(readMemoryCounters(start));
       }
-      addSample(c);
     }
   }
 
@@ -586,6 +694,7 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
   d.name = std::move(name);
   d.options = options;
   d.options.max_samples = std::max<std::size_t>(d.options.max_samples, 2);
+  d.options.peak_interval_s = std::max(d.options.peak_interval_s, 0.0);
   d.interval_s = d.options.sample_interval_s;
   const auto [memory_total, memory_available] = systemMemoryMb();
   d.peak_per_phase = resetPeakMemory();
@@ -594,13 +703,17 @@ Telemetry::Telemetry(std::string name, TelemetryOptions options) : impl_(std::ma
               {"allocator", allocatorName()},
               {"memory_total_mb", rounded(memory_total, 0)},
               {"memory_available_mb", rounded(memory_available, 0)},
-              {"peak_per_phase", d.peak_per_phase}};
+              {"peak_per_phase", d.peak_per_phase},
+              {"peak_interval_s", d.options.peak_interval_s},
+              {"memory_split", memorySplit()}};
   d.total.name = "total";
   d.total.depth = -1;
   d.total.begin = readCounters(d.start);
-  d.total.fold(d.total.begin);
+  d.total.fold(d.total.begin, d.peak_per_phase);
   if (d.interval_s > 0.0) {
     d.samples.push_back({d.total.begin, ""});
+  }
+  if (d.interval_s > 0.0 || d.options.peak_interval_s > 0.0) {
     d.sampler = std::thread([&d] { d.sample(); });
   }
 }
@@ -623,7 +736,7 @@ void Telemetry::beginPhase(const std::string& name) {
   phase.name = name;
   phase.depth = static_cast<int>(d.open.size());
   phase.begin = c;
-  phase.fold(c);
+  phase.fold(c, d.peak_per_phase);
   d.phases.push_back(std::move(phase));
   d.open.push_back(d.phases.size() - 1);
 }
@@ -686,6 +799,10 @@ nlohmann::json Telemetry::finish() {
 
 Telemetry* Telemetry::current() { return g_current; }
 
+void countRead(CountedRead kind, std::uint64_t bytes) {
+  g_counted_reads.at(static_cast<std::size_t>(kind)).fetch_add(bytes, std::memory_order_relaxed);
+}
+
 TelemetryScope::TelemetryScope(Telemetry& telemetry) : previous_(g_current) {
   g_current = &telemetry;
 }
@@ -716,9 +833,11 @@ std::string formatTelemetry(const nlohmann::json& record) {
   std::ostringstream out;
   const Json& system = record.at("system");
   const int threads = system.value("threads", 1);
+  // Own memory and mapped file pages apart: the OS can drop mapped pages at any time.
   out << std::left << std::setw(kLabelWidth) << "telemetry" << std::right << std::setw(9)
-      << "wall s" << std::setw(8) << "cores" << std::setw(11) << "peak" << std::setw(11)
-      << "disk read" << std::setw(11) << "disk write" << std::setw(11) << "maj.faults" << "\n";
+      << "wall s" << std::setw(8) << "cores" << std::setw(11) << "own peak" << std::setw(11)
+      << "mapped" << std::setw(11) << "bricks rd" << std::setw(11) << "disk read" << std::setw(11)
+      << "disk write" << std::setw(11) << "maj.faults" << "\n";
   const auto row = [&](const std::string& label, const Json& p) {
     std::string name = label;
     if (name.size() >= kLabelChars) {
@@ -727,7 +846,9 @@ std::string formatTelemetry(const nlohmann::json& record) {
     out << std::left << std::setw(kLabelWidth) << name << std::right << std::setw(9)
         << formatNumber(p.value("wall_s", 0.0), 1) << std::setw(8)
         << formatNumber(p.value("cores_used", 0.0), 1) << std::setw(11)
-        << formatMb(p.value("peak_rss_mb", 0.0)) << std::setw(11)
+        << formatMb(p.value("peak_anon_mb", 0.0)) << std::setw(11)
+        << formatMb(p.value("peak_file_mb", 0.0)) << std::setw(11)
+        << formatMb(p.value("brick_read_mb", 0.0)) << std::setw(11)
         << formatMb(p.value("disk_read_mb", 0.0)) << std::setw(11)
         << formatMb(p.value("disk_write_mb", 0.0)) << std::setw(11)
         << p.value("major_faults", std::int64_t{0}) << "\n";
@@ -738,9 +859,13 @@ std::string formatTelemetry(const nlohmann::json& record) {
         phase);
   }
   row("total", record.at("total"));
+  const double peak_interval = system.value("peak_interval_s", 0.0);
   out << std::string(kLabelChars, ' ') << "(" << threads << " threads, "
       << formatMb(system.value("memory_total_mb", 0.0)) << " memory"
-      << (system.value("peak_per_phase", false) ? "" : "; peaks since process start") << ")\n";
+      << (peak_interval > 0.0
+              ? "; peaks sampled every " + formatNumber(peak_interval * 1000.0, 0) + " ms"
+              : "")
+      << (system.value("memory_split", true) ? "" : "; mapped pages count as own") << ")\n";
   for (const Json& hint : record.value("hints", Json::array())) {
     out << std::left << std::setw(kLabelWidth) << "hint" << hint.get<std::string>() << "\n";
   }

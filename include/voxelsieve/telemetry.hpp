@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -12,15 +13,31 @@ struct TelemetryOptions {
   double sample_interval_s = 1.0;
   /// Longer runs keep every other point and double the interval, so a record stays small.
   std::size_t max_samples = 600;
+  /// Seconds between two reads of the memory counters for the peaks of the phases, where the
+  /// system cannot restart a high-water mark per phase (Windows, macOS); 0 takes the peaks only
+  /// at phase boundaries and timeline points.
+  double peak_interval_s = 0.05;
 };
+
+/// Reads the library counts itself, because the process counters miss them (memory-mapped files)
+/// or mix them with all other reads (the brick files of datasets).
+enum class CountedRead : std::uint8_t {
+  kMappedFile,  // voxels copied out of a memory-mapped raw file or staging copy
+  kBrickFile,   // brick files of a dataset loaded, at their size on disk
+};
+
+/// Adds `bytes` to a counter of the whole process; cheap and safe from any thread. Every recorder
+/// reports the bytes counted during each of its phases (`mapped_read_mb`, `brick_read_mb`).
+void countRead(CountedRead kind, std::uint64_t bytes);
 
 /// Records how long a run (an operation or a command-line tool) takes and what it uses, per
 /// phase: wall time, CPU time and the cores it kept busy, peak memory split into the process's
 /// own memory and mapped file pages, bytes read and written, and page faults (ADR 0017). A
 /// background thread samples the same counters into a timeline. Everything stays local.
 ///
-/// The counters are those of the whole process, read from getrusage and /proc (Linux). Only one
-/// recorder should be active at a time; the GUI runs one operation at a time.
+/// The counters are those of the whole process, read from getrusage and /proc (Linux), task_info
+/// (macOS) and GetProcessMemoryInfo (Windows). Only one recorder should be active at a time; the
+/// GUI runs one operation at a time.
 class Telemetry {
  public:
   explicit Telemetry(std::string name, TelemetryOptions options = {});

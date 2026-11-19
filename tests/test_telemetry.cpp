@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #endif
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -22,6 +23,7 @@
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/project.hpp"
+#include "voxelsieve/source.hpp"
 #include "voxelsieve/synthetic.hpp"
 #include "voxelsieve/telemetry.hpp"
 
@@ -90,12 +92,15 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
       void* block = VirtualAlloc(nullptr, kMemoryBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
       ASSERT_NE(block, nullptr);
       std::memset(block, 1, kMemoryBytes);  // touched, so resident
+      // Held for a few peak samples: not every system has a high-water mark per phase.
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
       VirtualFree(block, 0, MEM_RELEASE);
 #else
       void* block =
           mmap(nullptr, kMemoryBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       ASSERT_NE(block, MAP_FAILED);
       std::memset(block, 1, kMemoryBytes);  // touched, so resident
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
       munmap(block, kMemoryBytes);
 #endif
     }
@@ -128,6 +133,13 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   // Windows may trim a few pages of the 96 MiB block from the working set while it is written.
   EXPECT_GE(memory_peak, phase(record, "compute").at("peak_rss_mb").get<double>() + 80.0);
   EXPECT_GE(record.at("total").at("peak_rss_mb").get<double>(), memory_peak);
+  // The block is the process's own memory, not a mapped file.
+  EXPECT_GE(phase(record, "memory").at("peak_anon_mb").get<double>(),
+            phase(record, "compute").at("peak_anon_mb").get<double>() + 80.0);
+  // Peaks are those of each phase on every system, so the later write phase does not see the
+  // block (through a high-water mark per phase, or sampled).
+  EXPECT_LT(phase(record, "write").at("peak_anon_mb").get<double>(),
+            phase(record, "memory").at("peak_anon_mb").get<double>() - 50.0);
 #ifdef _WIN32
   // The library replaces the C runtime's heap with TBB's scalable allocator (src/CMakeLists.txt).
   EXPECT_EQ(record.at("system").at("allocator"), "tbbmalloc");
@@ -146,6 +158,69 @@ TEST(TelemetryTest, PhasesRecordTimeCpuMemoryAndIo) {
   const std::string table = formatTelemetry(record);
   for (const char* name : {"compute", "inner", "memory", "write", "total"}) {
     EXPECT_NE(table.find(name), std::string::npos) << name;
+  }
+}
+
+TEST(TelemetryTest, CountedReadsArePerPhase) {
+  Telemetry telemetry("test", {.sample_interval_s = 0.0, .peak_interval_s = 0.0});
+  {
+    const TelemetryScope scope(telemetry);
+    {
+      const TelemetryPhase bricks("bricks");
+      countRead(CountedRead::kBrickFile, std::uint64_t{3} << 20U);
+    }
+    {
+      const TelemetryPhase mapped("mapped");
+      countRead(CountedRead::kMappedFile, std::uint64_t{1} << 20U);
+    }
+  }
+  const Json record = telemetry.finish();
+  EXPECT_DOUBLE_EQ(phase(record, "bricks").at("brick_read_mb").get<double>(), 3.0);
+  EXPECT_DOUBLE_EQ(phase(record, "bricks").at("mapped_read_mb").get<double>(), 0.0);
+  EXPECT_DOUBLE_EQ(phase(record, "mapped").at("mapped_read_mb").get<double>(), 1.0);
+  EXPECT_DOUBLE_EQ(phase(record, "mapped").at("brick_read_mb").get<double>(), 0.0);
+  EXPECT_DOUBLE_EQ(record.at("total").at("brick_read_mb").get<double>(), 3.0);
+}
+
+TEST(TelemetryTest, MappedFilePagesAreNotOwnMemory) {
+  const auto file = std::filesystem::temp_directory_path() / "voxelsieve_telemetry_mapped.raw";
+  constexpr std::int64_t kSide = 2048;
+  constexpr std::int64_t kSlices = 8;  // 64 MiB
+  std::vector<std::uint16_t> slice(static_cast<std::size_t>(kSide * kSide), 1000);
+  {
+    std::ofstream out(file, std::ios::binary);
+    for (std::int64_t z = 0; z < kSlices; ++z) {
+      out.write(reinterpret_cast<const char*>(slice.data()),
+                static_cast<std::streamsize>(slice.size() * sizeof(std::uint16_t)));
+    }
+  }
+  Telemetry telemetry("test", {.sample_interval_s = 0.0});
+  {
+    const TelemetryScope scope(telemetry);
+    {
+      const TelemetryPhase before("before");
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    {
+      const TelemetryPhase read("read");
+      const MappedRawSource source(file, {kSide, kSide, kSlices}, VoxelSize(1.0, 1.0, 1.0));
+      for (std::int64_t z = 0; z < kSlices; ++z) {
+        source.readRegion({{0, 0, z}, {kSide, kSide, z + 1}}, slice);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+  }
+  const Json record = telemetry.finish();
+  std::filesystem::remove(file);
+
+  const Json read = phase(record, "read");
+  EXPECT_NEAR(read.at("mapped_read_mb").get<double>(), 64.0, 0.1);
+  EXPECT_DOUBLE_EQ(read.at("brick_read_mb").get<double>(), 0.0);
+  if (record.at("system").at("memory_split").get<bool>()) {
+    // The mapped pages are file pages; the process's own memory hardly grows.
+    EXPECT_GE(read.at("peak_file_mb").get<double>(), 40.0);
+    EXPECT_LT(read.at("peak_anon_mb").get<double>(),
+              phase(record, "before").at("peak_anon_mb").get<double>() + 30.0);
   }
 }
 
