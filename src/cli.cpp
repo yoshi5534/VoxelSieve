@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <system_error>
 
@@ -55,16 +56,12 @@ std::string Arguments::value() {
 double Arguments::number() {
   const std::string name(arg());
   const std::string text = value();
-  try {
-    std::size_t used = 0;
-    const double result = std::stod(text, &used);
-    if (used == text.size()) {
-      return result;
-    }
-  } catch (const std::logic_error&) {
-    // reported below
+  char* end = nullptr;
+  const double result = std::strtod(text.c_str(), &end);
+  if (text.empty() || end != text.c_str() + text.size()) {
+    throw UsageError(name + " needs a number, not '" + text + "'");
   }
-  throw UsageError(name + " needs a number, not '" + text + "'");
+  return result;
 }
 
 std::int64_t Arguments::integer() {

@@ -150,6 +150,7 @@ std::string usage() {
     const nlohmann::json& schema = parameters.at(std::string(flag.parameter));
     std::string description = schema.value("description", std::string());
     std::string note;
+    // The description with what it may be and its default in brackets.
     if (const auto values = schema.find("enum"); values != schema.end()) {
       for (std::size_t i = 0; i < values->size(); ++i) {
         note += (i == 0                    ? ""
@@ -162,8 +163,10 @@ std::string usage() {
       note += (note.empty() ? "default " : "; default ") +
               (value->is_string() ? value->get<std::string>() : value->dump());
     }
-    text += usageEntry(std::string(flag.flag) + " " + std::string(flag.value),
-                       note.empty() ? description : description + " (" + note + ")");
+    if (!note.empty()) {
+      description.append(" (").append(note).append(")");
+    }
+    text += usageEntry(std::string(flag.flag).append(" ").append(flag.value), description);
   }
   text += usageEntry("--no-staging",
                      "Read slow inputs directly instead of copying them to a temporary raw file "
