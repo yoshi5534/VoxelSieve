@@ -69,8 +69,8 @@ void leavesByGap(const Tree& tree, const CoordBBox& query, const VoxelSize& voxe
 double squaredGap(const Coord& p, const Coord& lo, const Coord& hi, const VoxelSize& voxel_size) {
   double sum = 0.0;
   for (std::size_t axis = 0; axis < 3; ++axis) {
-    const int c = p[static_cast<int>(axis)];
-    const int apart = std::max({0, lo[static_cast<int>(axis)] - c, c - hi[static_cast<int>(axis)]});
+    const int c = p[axis];
+    const int apart = std::max({0, lo[axis] - c, c - hi[axis]});
     const double gap = static_cast<double>(std::max(0, apart - 1)) * voxel_size[axis];
     sum += gap * gap;
   }
