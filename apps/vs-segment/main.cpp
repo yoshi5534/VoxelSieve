@@ -175,6 +175,7 @@ int run(const Options& options) {
     std::vector<std::unique_ptr<voxelsieve::VolumeSource>> parts;
     voxelsieve::TiffStackOptions tiff;
     tiff.folder = options.folder;
+    parts.reserve(options.truth.size());
     for (const auto& path : options.truth) {
       parts.push_back(std::make_unique<voxelsieve::TiffStackSource>(path, tiff));
     }

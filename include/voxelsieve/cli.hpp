@@ -24,7 +24,14 @@ class UsageError : public std::invalid_argument {
 };
 
 /// The options every tool takes, at the end of each usage text.
-extern const std::string_view kCommonOptions;
+inline constexpr std::string_view kCommonOptions =
+    R"(  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
+  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
+  --threads <N>           Threads of all parallel work (default all cores)
+  --telemetry <file>      Write time and resource use per phase as JSON
+  -h, --help              Show this help
+)";
+;
 
 /// The arguments of a tool, walked one at a time:
 ///
@@ -86,7 +93,7 @@ template <typename Parse, typename Work>
 int runTool(std::string_view name, std::string_view usage, int argc, char** argv, Parse&& parse,
             Work&& work) {
   try {
-    Arguments args(argc, argv);
+    Arguments args(argc, argv);  // NOLINT(misc-const-correctness): parse walks it
     if (args.help()) {
       printUsage(std::cout, usage);
       return 0;
