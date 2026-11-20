@@ -267,6 +267,17 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_volume COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/volume_test.cjs)
 endif()
 
+# The streamed patches of the training scripts in tools/models (NumPy only, no PyTorch).
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy" RESULT_VARIABLE numpy_missing
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(numpy_missing EQUAL 0)
+    add_test(NAME models_volumes COMMAND ${Python3_EXECUTABLE} -B -m unittest test_volumes
+             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/models)
+  endif()
+endif()
+
 # Scale tests (VOXELSIEVE_SCALE_TESTS, nightly): every tool on a 512^3 phantom, failing when its own
 # peak memory or its brick re-reads exceed the values recorded in scale_limits.json for this
 # platform and thread count by more than 20 %. Needs about 1 GB of disk. Record new values after

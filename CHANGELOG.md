@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Training on large scans and on the GPU**: `tools/models/train_unet.py` and
+  `train_denoiser.py` read their patches as they train, from raw volumes or directly from a
+  dataset (`.vsieve`) and material volume, without a pass over the scan first; batches are made
+  in a background thread, and training runs on CUDA or Apple's MPS when there is one
+  (`--device`).
+
 - **Command-line tools share their parsing**: every tool takes `--memory`, `--cache`, `--threads`
   and `--telemetry` and lists them the same way; a mistake on the command line prints the usage,
   other errors only their message. The options of the sieve in `vs-sieve` are made from the

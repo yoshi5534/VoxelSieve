@@ -668,7 +668,9 @@ Merge the duplicated camera, input and upload code of `volume.js` and `scene.js`
 - Measured in headless Chrome on an Intel Arc 140T (integrated): a 640³ phantom, coarse level 2,
   streams to level 0 near the camera within 2 s (about 700 bricks/s from the local server); a
   frame of 1000 × 500 pixels takes 2.7 ms in the surface view. Not measured: 2048³ and the
-  30 fps at 1 GB; the materials view with bricks.
+  30 fps at 1 GB. The materials view with bricks was checked later (2026-11-20): hiding a
+  material loads the bricks again with their visibility. The surface distance of large pores
+  (P 203, phase 3) went from 376 s to 0.4 s on the hollow phantom (`maskGapMm` leaf by leaf).
 
 ### Phase 7: Maintenance (ongoing, low priority)
 
@@ -680,6 +682,21 @@ Merge the duplicated camera, input and upload code of `volume.js` and `scene.js`
   tests).
 - **Training scripts:** sample from bricks in a streamed way and use the GPU when available
   (`tools/models/train_*.py`).
+
+**Status (2026-11-20): done** on branch `phase7-maintenance`:
+- `dimensional.cpp` split into `dimensional_{fit,features,plan,extraction,datums}.cpp` and
+  `battery.cpp` into `battery_{views,layers,particles,cylinder,stack,image_cells,render}.cpp`,
+  with what they share in `src/detail/dimensional.hpp` and `src/detail/battery.hpp`.
+- `voxelsieve/cli.hpp`: `cli::Arguments` and `cli::runTool` hold the parsing, the common options,
+  usage, errors and telemetry of all 14 tools. `sieveParameters()` and `sieveOptions()` define the
+  sieve parameters once; the four imports and `vs-sieve` (options, checks, usage) use them.
+- Node tests of the slice viewer's level choice, request queue, slice-by-slice loading and tile
+  cache (`tests/ui/tiles_test.cjs`). The detail region is gone since phase 6; its successor, the
+  brick pager, has `bricks_test.cjs`.
+- The training scripts read patches as they train (`tools/models/volumes.py`): from raw volumes
+  or directly from datasets and material volumes, centred on the classes seen so far instead of
+  a pass over the scan, made ahead in a background thread, on CUDA or MPS when there is one.
+  Not run with PyTorch here (none installed); the sampling has NumPy tests.
 
 ## 4. Order and dependencies
 

@@ -13,9 +13,11 @@ clearly below 0.2 at a distance of 2 voxels, else 2. The network cannot see what
 structures no wider than the cube, such as pores of three voxels, are smoothed away (ADR 0025);
 for those, non-local means keeps more.
 
-The input is a headerless uint16 volume, x fastest, such as vs-synth writes or a staged scan.
-Writes a VoxelSieve model (.vsm) with the task "denoising" for vs-denoise --model and the GUI
-operation "denoise". Needs PyTorch and NumPy; runs on the CPU.
+The input is a headerless uint16 volume, x fastest (with --dims), such as vs-synth writes or a
+staged scan, or a VoxelSieve dataset (.vsieve), read through the Python package. Patches are
+read as training goes, never the whole scan (volumes.py). Writes a VoxelSieve model (.vsm) with
+the task "denoising" for vs-denoise --model and the GUI operation "denoise". Needs PyTorch and
+NumPy; trains on the GPU when there is one.
 
 Example (the benchmark scan of vs-denoise, see docs/adr/0025-denoising.md):
   vs-denoise --benchmark bench
@@ -34,12 +36,15 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from unet import UNet, export_vsm  # noqa: E402
+import volumes  # noqa: E402
 
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--grey", required=True, help="Noisy volume, headerless uint16, x fastest")
-    p.add_argument("--dims", type=int, nargs=3, required=True, metavar=("X", "Y", "Z"))
+    p.add_argument("--grey", required=True,
+                   help="Noisy volume: headerless uint16, x fastest, or a dataset directory")
+    p.add_argument("--dims", type=int, nargs=3, metavar=("X", "Y", "Z"),
+                   help="Dimensions of a raw volume")
     p.add_argument("--mask-radius", type=int, default=1,
                    help="Half edge of the hidden cube around each blind spot (default 1)")
     p.add_argument("--mask-fraction", type=float, default=0.005,
@@ -51,6 +56,7 @@ def parse():
     p.add_argument("--minutes", type=float, default=30.0)
     p.add_argument("--channels", type=int, nargs=3, default=[16, 32, 64])
     p.add_argument("--threads", type=int, default=0, help="PyTorch threads (default: all)")
+    p.add_argument("--device", default="auto", help="auto (GPU when there is one), cpu, cuda, mps")
     p.add_argument("--name", default="Noise2Void U-Net")
     p.add_argument("--out", required=True)
     return p.parse_args()
@@ -74,14 +80,11 @@ def main():
         torch.set_num_threads(a.threads)
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
-    X, Y, Z = a.dims
-    grey = np.memmap(a.grey, np.uint16, "r", shape=(Z, Y, X))
+    grey = volumes.open_grey(a.grey, a.dims)
     P = a.patch
-    if min(X, Y, Z) < P:
-        sys.exit("The volume is smaller than a patch")
 
-    # Normalisation from a sample: air level to 0, material level to 1.
-    sample = grey[::4, ::4, ::4].astype(np.float32).ravel()
+    # Normalisation from a sample of patches: air level to 0, material level to 1.
+    sample = volumes.sample_values(grey, rng, regions=grey.regions)
     split = a.material if a.material is not None else otsu(sample)
     air = float(np.median(sample[sample < split]))
     material = float(np.median(sample[sample >= split]))
@@ -89,26 +92,15 @@ def main():
     print(f"air {air:.0f}, material {material:.0f} (split {split:.0f})", flush=True)
 
     # Patches are centred on material most of the time: that is where the structure is.
-    centres = []
-    for z in range(0, Z, 4):
-        yy, xx = np.nonzero(grey[z, ::4, ::4] >= split)
-        keep = rng.random(len(yy)) < 0.1
-        centres.append(np.stack([np.full(keep.sum(), z), yy[keep] * 4, xx[keep] * 4], 1))
-    centres = np.concatenate(centres)
-    if not len(centres):
-        sys.exit("No material in the volume")
-
-    def corner():
-        if rng.random() < 0.8:
-            c = centres[rng.integers(len(centres))]
-            return [int(np.clip(c[i] - P // 2, 0, (Z, Y, X)[i] - P)) for i in range(3)]
-        return [int(rng.integers(0, d - P + 1)) for d in (Z, Y, X)]
+    sampler = volumes.PatchSampler(grey.shape, P, rng, focus=0.8, regions=grey.regions)
 
     def batch():
         out = []
         for _ in range(a.batch):
-            z, y, x = corner()
-            g = (grey[z:z + P, y:y + P, x:x + P].astype(np.float32) - offset) * scale
+            corner = sampler.corner()
+            values = grey.read(corner, P)
+            sampler.observe(corner, {"material": values >= split})
+            g = (values.astype(np.float32) - offset) * scale
             for axis in (0, 1, 2):
                 if rng.random() < 0.5:
                     g = np.flip(g, axis)
@@ -133,15 +125,19 @@ def main():
         spot = (centre[..., 0] * P + centre[..., 1]) * P + centre[..., 2]
         return hidden.reshape(clean.shape), spot
 
-    net = UNet(1, a.channels)
+    dev = volumes.device(a.device)
+    print("training on", dev, flush=True)
+    net = UNet(1, a.channels).to(dev)
     opt = torch.optim.AdamW(net.parameters(), 1e-3, weight_decay=1e-5)
+    batches = volumes.prefetch(batch)
     budget = a.minutes * 60
     t0, step, smooth = time.time(), 0, None
     while time.time() - t0 < budget:
         for group in opt.param_groups:
             group["lr"] = 1e-3 * 0.5 * (1 + math.cos(math.pi * (time.time() - t0) / budget))
-        clean = batch()
+        clean = next(batches)
         hidden, spot = mask(clean)
+        clean, hidden, spot = clean.to(dev), hidden.to(dev), spot.to(dev)
         out = net(hidden).reshape(clean.shape[0], -1)
         target = clean.reshape(clean.shape[0], -1)
         loss = ((torch.gather(out, 1, spot) - torch.gather(target, 1, spot)) ** 2).mean()
@@ -153,10 +149,10 @@ def main():
         if step % 100 == 0:
             print(f"step {step} {time.time() - t0:.0f} s loss {smooth:.4f}", flush=True)
 
-    net.eval()
+    net = net.cpu().eval()
     export_vsm(a.out, net, a.name, [], offset, scale, task="denoising",
                description=f"Noise2Void U-Net {a.channels}, mask radius {r}, {step} steps on "
-                           f"{os.path.basename(a.grey)}")
+                           f"{grey.name}")
     print("wrote", a.out)
 
 

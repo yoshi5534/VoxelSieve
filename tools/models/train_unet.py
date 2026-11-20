@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Trains the small 3D U-Net of unet.py on a labelled scan and writes a VoxelSieve model (.vsm).
 
-Inputs are two headerless volumes of the same size, x fastest: the grey values (uint16) and
-the class of every voxel (uint8, 0 = air, 1..n = materials). Slabs given with --holdout are left
+Inputs are the grey values and the class of every voxel (0 = air, 1..n = materials) of the same
+scan: headerless volumes, x fastest (uint16 grey values, uint8 classes, with --dims), or a
+VoxelSieve dataset (.vsieve) and material volume, read through the Python package. Patches are
+read as training goes, never the whole scan (volumes.py). Slabs given with --holdout are left
 out of training (no training patch touches them), so the model can be scored on them afterwards
-with vs-segment --region. Needs PyTorch and NumPy; runs on the CPU.
+with vs-segment --region. Needs PyTorch and NumPy; trains on the GPU when there is one.
 
 Example (Me 163, see docs/adr/0014-learned-segmentation.md):
   train_unet.py --grey grey.u16 --classes classes.u8 --dims 512 3584 512 \\
@@ -25,6 +27,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from unet import UNet, export_vsm  # noqa: E402
+import volumes  # noqa: E402
 
 COLORS = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
           [142, 99, 190], [214, 190, 40], [23, 170, 170], [140, 110, 80]]
@@ -32,9 +35,10 @@ COLORS = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
 
 def parse():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--grey", required=True)
-    p.add_argument("--classes", required=True)
-    p.add_argument("--dims", type=int, nargs=3, required=True, metavar=("X", "Y", "Z"))
+    p.add_argument("--grey", required=True, help="Raw uint16 volume or dataset directory")
+    p.add_argument("--classes", required=True, help="Raw uint8 volume or material volume")
+    p.add_argument("--dims", type=int, nargs=3, metavar=("X", "Y", "Z"),
+                   help="Dimensions of raw volumes")
     p.add_argument("--holdout", action="append", default=[], metavar="AXIS:START:END")
     p.add_argument("--material", action="append", required=True, metavar="NAME:LOWER",
                    help="Material of class 1, 2, ... and the grey value it starts at")
@@ -44,6 +48,7 @@ def parse():
     p.add_argument("--batch", type=int, default=4)
     p.add_argument("--minutes", type=float, default=60.0)
     p.add_argument("--channels", type=int, nargs=3, default=[8, 16, 32])
+    p.add_argument("--device", default="auto", help="auto (GPU when there is one), cpu, cuda, mps")
     p.add_argument("--name", default="U-Net")
     p.add_argument("--out", required=True)
     return p.parse_args()
@@ -53,9 +58,10 @@ def main():
     a = parse()
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
-    X, Y, Z = a.dims
-    grey = np.memmap(a.grey, np.uint16, "r", shape=(Z, Y, X))
-    classes = np.memmap(a.classes, np.uint8, "r", shape=(Z, Y, X))
+    grey = volumes.open_grey(a.grey, a.dims)
+    classes = volumes.open_labels(a.classes, a.dims)
+    if grey.shape != classes.shape:
+        sys.exit(f"The grey values {grey.shape} and classes {classes.shape} differ in size")
     n_classes = len(a.material) + 1
     # Held-out slabs as (array axis, start, end); array axes are z, y, x.
     holdout = []
@@ -67,35 +73,17 @@ def main():
     def outside_holdout(corner):
         return all(corner[ax] + P <= s or corner[ax] >= e for ax, s, e in holdout)
 
-    # Patch centres on labelled voxels of every class (a sample of them, every 4th voxel).
-    centres = {c: [] for c in range(1, n_classes)}
-    for z in range(0, Z, 4):
-        plane = classes[z, :, ::4]
-        for c in centres:
-            yy, xx = np.nonzero(plane == c)
-            keep = rng.random(len(yy)) < 0.05
-            centres[c].append(np.stack([np.full(keep.sum(), z), yy[keep], xx[keep] * 4], 1))
-    centres = {c: np.concatenate(v) for c, v in centres.items() if sum(map(len, v))}
-
-    def corner_of(centre):
-        return [int(np.clip(centre[i] - P // 2, 0, (Z, Y, X)[i] - P)) for i in range(3)]
-
-    def sample():
-        while True:
-            if rng.random() < 0.75:  # a labelled voxel, classes equally often
-                c = list(centres)[rng.integers(len(centres))]
-                corner = corner_of(centres[c][rng.integers(len(centres[c]))])
-            else:
-                corner = [int(rng.integers(0, d - P + 1)) for d in (Z, Y, X)]
-            if outside_holdout(corner):
-                return corner
+    # Three patches in four centred on a voxel of a class seen so far, the classes equally often.
+    sampler = volumes.PatchSampler(grey.shape, P, rng, focus=0.75, regions=grey.regions,
+                                   allowed=outside_holdout)
 
     def batch():
         gs, ts = [], []
         for _ in range(a.batch):
-            z, y, x = sample()
-            g = (grey[z:z + P, y:y + P, x:x + P].astype(np.float32) - a.offset) * a.scale
-            t = classes[z:z + P, y:y + P, x:x + P].astype(np.int64)
+            corner = sampler.corner()
+            g = (grey.read(corner, P).astype(np.float32) - a.offset) * a.scale
+            t = classes.read(corner, P).astype(np.int64)
+            sampler.observe(corner, {c: t == c for c in range(1, n_classes)})
             for axis in (1, 2):
                 if rng.random() < 0.5:
                     g, t = np.flip(g, axis), np.flip(t, axis)
@@ -110,15 +98,19 @@ def main():
         den = p.sum((0, 2, 3, 4)) + oh.sum((0, 2, 3, 4))
         return 1 - ((2 * inter + 1) / (den + 1))[1:].mean()
 
-    net = UNet(n_classes, a.channels)
+    dev = volumes.device(a.device)
+    print("training on", dev, flush=True)
+    net = UNet(n_classes, a.channels).to(dev)
     opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=1e-4)
-    weight = torch.tensor([1.0] + [2.0] * (n_classes - 1))
+    weight = torch.tensor([1.0] + [2.0] * (n_classes - 1), device=dev)
+    batches = volumes.prefetch(batch)
     budget = a.minutes * 60
     t0, step = time.time(), 0
     while time.time() - t0 < budget:
         for group in opt.param_groups:
             group["lr"] = 2e-3 * 0.5 * (1 + math.cos(math.pi * (time.time() - t0) / budget))
-        g, t = batch()
+        g, t = next(batches)
+        g, t = g.to(dev, non_blocking=True), t.to(dev, non_blocking=True)
         out = net(g)
         loss = F.cross_entropy(out, t, weight) + dice_loss(out, t)
         opt.zero_grad()
@@ -133,9 +125,9 @@ def main():
         name, lower = m.rsplit(":", 1)
         materials.append({"id": i + 1, "name": name, "color": COLORS[i % len(COLORS)],
                           "lower": float(lower)})
-    net.eval()
+    net = net.cpu().eval()
     export_vsm(a.out, net, a.name, materials, a.offset, a.scale,
-               description=f"3D U-Net {a.channels}, {step} steps on {os.path.basename(a.grey)}")
+               description=f"3D U-Net {a.channels}, {step} steps on {grey.name}")
     print("wrote", a.out)
 
 
