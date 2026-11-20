@@ -46,7 +46,14 @@ add_library(voxelsieve SHARED
   preview.cpp
   orientation.cpp
   battery.cpp
+  battery_cylinder.cpp
+  battery_image_cells.cpp
   battery_images.cpp
+  battery_layers.cpp
+  battery_particles.cpp
+  battery_render.cpp
+  battery_stack.cpp
+  battery_views.cpp
   cells.cpp
   porosity.cpp
   progress.cpp
@@ -79,6 +86,11 @@ add_library(voxelsieve SHARED
   thickness.cpp
   thickness_map.cpp
   dimensional.cpp
+  dimensional_datums.cpp
+  dimensional_extraction.cpp
+  dimensional_features.cpp
+  dimensional_fit.cpp
+  dimensional_plan.cpp
   render.cpp
   resources.cpp
   synthetic.cpp
