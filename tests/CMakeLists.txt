@@ -36,6 +36,7 @@ add_executable(voxelsieve_tests
   test_telemetry.cpp
   test_tiff.cpp
   test_voxel_size.cpp
+  test_voxel_distance.cpp
   test_gzipped_xml.cpp
   test_vdb.cpp
 )

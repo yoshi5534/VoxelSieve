@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Faster surface distance of large pores**: the distance of a pore to the surface and the gap
+  between two pores (BDG P 203) are searched leaf by leaf of the pore, in parallel, instead of
+  from every voxel of it: a cavity of 46 million voxels takes 0.4 s instead of six minutes,
+  with the same results.
+
 - **3D view down to level 0**: the 3D view of the GUI streams bricks of the finer levels into
   an atlas within a VRAM budget set in the view (512 MB by default), where the picture needs
   them, instead of one detail box of at most 256³. Empty space is skipped, the view keeps its
