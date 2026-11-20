@@ -11,13 +11,12 @@
 #include <string_view>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -52,11 +51,6 @@ Options:
   --min-pore <voxels>     Smallest pore reported (default 3)
   --zone-sigma <k>        Zone detection limit in standard deviations (default 5)
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -70,56 +64,42 @@ struct Options {
   bool print_template = false;
   bool print_first_article_template = false;
   voxelsieve::PorosityOptions porosity;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--order") {
-      options.order = next();
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--surface") {
-      options.surface = next();
-    } else if (arg == "--comparison") {
-      options.comparison = next();
-    } else if (arg == "--wall-thickness") {
-      options.wall_thickness = next();
-    } else if (arg == "--template") {
-      options.report_template = next();
-    } else if (arg == "--print-template") {
+  while (args.next()) {
+    if (args.is("--order")) {
+      options.order = args.value();
+    } else if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--surface")) {
+      options.surface = args.value();
+    } else if (args.is("--comparison")) {
+      options.comparison = args.value();
+    } else if (args.is("--wall-thickness")) {
+      options.wall_thickness = args.value();
+    } else if (args.is("--template")) {
+      options.report_template = args.value();
+    } else if (args.is("--print-template")) {
       options.print_template = true;
-    } else if (arg == "--print-first-article-template") {
+    } else if (args.is("--print-first-article-template")) {
       options.print_first_article_template = true;
-    } else if (arg == "--min-pore") {
-      options.porosity.min_pore_voxels = std::stoll(next());
-    } else if (arg == "--zone-sigma") {
-      options.porosity.zone_sigma = std::stod(next());
-    } else if (arg == "--zone-min") {
-      options.porosity.min_zone_void_fraction = std::stod(next());
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (!arg.starts_with("-") && options.dataset.empty()) {
-      options.dataset = arg;
+    } else if (args.is("--min-pore")) {
+      options.porosity.min_pore_voxels = args.integer();
+    } else if (args.is("--zone-sigma")) {
+      options.porosity.zone_sigma = args.number();
+    } else if (args.is("--zone-min")) {
+      options.porosity.min_zone_void_fraction = args.number();
+    } else if (args.positional() && options.dataset.empty()) {
+      options.dataset = args.arg();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (!options.print_template && !options.print_first_article_template &&
       (options.dataset.empty() || options.order.empty() || options.out.empty())) {
-    throw std::invalid_argument("A dataset, --order and --out are required");
+    throw voxelsieve::cli::UsageError("A dataset, --order and --out are required");
   }
   return options;
 }
@@ -132,77 +112,68 @@ std::string readFile(const std::filesystem::path& path) {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+int run(const Options& options) {
+  if (options.print_template) {
+    std::cout << voxelsieve::defaultReportTemplate();
+    return 0;
+  }
+  if (options.print_first_article_template) {
+    std::cout << voxelsieve::defaultFirstArticleTemplate();
+    return 0;
+  }
+  const nlohmann::json order = nlohmann::json::parse(readFile(options.order));
+  // Relative mesh paths of inspection regions are taken from the order's directory.
+  const auto zones = voxelsieve::inspectionZonesFromJson(order, options.order.parent_path());
+  const std::string report_template = options.report_template.empty()
+                                          ? std::string(voxelsieve::defaultReportTemplate())
+                                          : readFile(options.report_template);
+
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
+  const auto result = voxelsieve::analyzePorosity(dataset, options.porosity);
+  const auto evaluation = voxelsieve::evaluate(result, zones, &dataset);
+
+  std::filesystem::create_directories(options.out);
+  voxelsieve::writeJson(options.out / "porosity.json", voxelsieve::toJson(result));
+  voxelsieve::writePorosityImages(dataset, result, options.out);
+  voxelsieve::writePorosityVdb(dataset, result, options.out / "porosity.vdb");
+
+  std::vector<std::string> warnings;
+  nlohmann::json data =
+      voxelsieve::reportData(order, result, options.porosity, evaluation, options.out, &warnings);
+  if (!options.surface.empty()) {
+    voxelsieve::addPartImages(data, voxelsieve::SurfaceMask::open(options.surface), result);
+  }
+  if (!options.comparison.empty()) {
+    voxelsieve::addComparison(data, options.comparison);
+  }
+  if (!options.wall_thickness.empty()) {
+    voxelsieve::addWallThickness(data, options.wall_thickness, order);
+  }
+  std::ofstream(options.out / "report.html", std::ios::binary)
+      << voxelsieve::renderTemplate(report_template, data);
+  data.erase("images");
+  voxelsieve::writeJson(options.out / "report.json", data);
+
+  for (const std::string& warning : warnings) {
+    std::cerr << "warning: " << warning << "\n";
+  }
+  std::cout << "report             " << (options.out / "report.html").string() << "\n";
+  if (!data.contains("evaluation")) {
+    std::cout << "evaluation         none (no acceptance limits in the order)\n";
+  } else {
+    // Inspection zones of the porosity, then the blocks of further analyses.
+    for (const auto& zone : data["evaluation"]["zones"]) {
+      std::cout << "zone               " << zone.value("name", std::string()) << ": "
+                << (zone.value("passed", true) ? "passed" : "FAILED") << "\n";
+    }
+    std::cout << "result             "
+              << (data["evaluation"].value("passed", true) ? "passed" : "FAILED") << "\n";
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-report");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    if (options->print_template) {
-      std::cout << voxelsieve::defaultReportTemplate();
-      return 0;
-    }
-    if (options->print_first_article_template) {
-      std::cout << voxelsieve::defaultFirstArticleTemplate();
-      return 0;
-    }
-    const nlohmann::json order = nlohmann::json::parse(readFile(options->order));
-    // Relative mesh paths of inspection regions are taken from the order's directory.
-    const auto zones = voxelsieve::inspectionZonesFromJson(order, options->order.parent_path());
-    const std::string report_template = options->report_template.empty()
-                                            ? std::string(voxelsieve::defaultReportTemplate())
-                                            : readFile(options->report_template);
-
-    const auto dataset = voxelsieve::Dataset::open(options->dataset);
-    const auto result = voxelsieve::analyzePorosity(dataset, options->porosity);
-    const auto evaluation = voxelsieve::evaluate(result, zones, &dataset);
-
-    std::filesystem::create_directories(options->out);
-    voxelsieve::writeJson(options->out / "porosity.json", voxelsieve::toJson(result));
-    voxelsieve::writePorosityImages(dataset, result, options->out);
-    voxelsieve::writePorosityVdb(dataset, result, options->out / "porosity.vdb");
-
-    std::vector<std::string> warnings;
-    nlohmann::json data = voxelsieve::reportData(order, result, options->porosity, evaluation,
-                                                 options->out, &warnings);
-    if (!options->surface.empty()) {
-      voxelsieve::addPartImages(data, voxelsieve::SurfaceMask::open(options->surface), result);
-    }
-    if (!options->comparison.empty()) {
-      voxelsieve::addComparison(data, options->comparison);
-    }
-    if (!options->wall_thickness.empty()) {
-      voxelsieve::addWallThickness(data, options->wall_thickness, order);
-    }
-    std::ofstream(options->out / "report.html", std::ios::binary)
-        << voxelsieve::renderTemplate(report_template, data);
-    data.erase("images");
-    voxelsieve::writeJson(options->out / "report.json", data);
-
-    for (const std::string& warning : warnings) {
-      std::cerr << "warning: " << warning << "\n";
-    }
-    std::cout << "report             " << (options->out / "report.html").string() << "\n";
-    if (!data.contains("evaluation")) {
-      std::cout << "evaluation         none (no acceptance limits in the order)\n";
-    } else {
-      // Inspection zones of the porosity, then the blocks of further analyses.
-      for (const auto& zone : data["evaluation"]["zones"]) {
-        std::cout << "zone               " << zone.value("name", std::string()) << ": "
-                  << (zone.value("passed", true) ? "passed" : "FAILED") << "\n";
-      }
-      std::cout << "result             "
-                << (data["evaluation"].value("passed", true) ? "passed" : "FAILED") << "\n";
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-report: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-report", kUsage, argc, argv, parse, run);
 }

@@ -12,12 +12,11 @@
 #include <string>
 #include <string_view>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/synthetic.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -59,9 +58,6 @@ Grey values and artefacts:
   --blur <mm>                 Unsharpness: sigma of a Gaussian point spread function (default 0)
   --rings <n>                 Number of ring artefacts around the z axis (default 0)
   --ring-strength <sigma>     Ring amplitude in grey values (default 300)
-  --threads <N>               Threads of all parallel work (default all cores)
-  --telemetry <file>          Write time and resource use per phase as JSON
-  -h, --help                  Show this help
 )";
 
 struct Options {
@@ -72,149 +68,126 @@ struct Options {
   double scale = 1.0;
   std::filesystem::path stl;
   voxelsieve::SyntheticSpec spec;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
   options.spec.noise_sigma = 500.0;
   options.spec.ring_strength = 300.0;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
+  while (args.next()) {
     auto& spec = options.spec;
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--box") {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--box")) {
       std::array<double, 3> size{};
       for (auto& edge : size) {
-        edge = std::stod(next());
+        edge = args.number();
       }
       options.box = size;
-    } else if (arg == "--part") {
-      options.part = next();
-    } else if (arg == "--scale") {
-      options.scale = std::stod(next());
-    } else if (arg == "--stl") {
-      options.stl = next();
-    } else if (arg == "--blur") {
-      spec.blur_sigma_mm = std::stod(next());
-    } else if (arg == "--voxel-size") {
-      spec.voxel_size = std::stod(next());
-    } else if (arg == "--padding") {
-      spec.padding_mm = std::stod(next());
-    } else if (arg == "--seed") {
-      spec.seed = std::stoull(next());
-    } else if (arg == "--lunker") {
-      spec.lunker_count = std::stoi(next());
-    } else if (arg == "--lunker-radius") {
-      spec.lunker_radius_mm = std::stod(next());
-    } else if (arg == "--lunker-spread") {
-      spec.lunker_size_spread = std::stod(next());
-    } else if (arg == "--hot-spots") {
+    } else if (args.is("--part")) {
+      options.part = args.value();
+    } else if (args.is("--scale")) {
+      options.scale = args.number();
+    } else if (args.is("--stl")) {
+      options.stl = args.value();
+    } else if (args.is("--blur")) {
+      spec.blur_sigma_mm = args.number();
+    } else if (args.is("--voxel-size")) {
+      spec.voxel_size = args.number();
+    } else if (args.is("--padding")) {
+      spec.padding_mm = args.number();
+    } else if (args.is("--seed")) {
+      spec.seed = std::stoull(args.value());
+    } else if (args.is("--lunker")) {
+      spec.lunker_count = static_cast<int>(args.integer());
+    } else if (args.is("--lunker-radius")) {
+      spec.lunker_radius_mm = args.number();
+    } else if (args.is("--lunker-spread")) {
+      spec.lunker_size_spread = args.number();
+    } else if (args.is("--hot-spots")) {
       spec.defects_at_hot_spots = true;
-    } else if (arg == "--loosening") {
-      spec.loosening_count = std::stoi(next());
-    } else if (arg == "--loosening-radius") {
-      spec.loosening_radius_mm = std::stod(next());
-    } else if (arg == "--loosening-porosity") {
-      spec.loosening_porosity = std::stod(next());
-    } else if (arg == "--loosening-pore") {
-      spec.loosening_pore_radius_mm = std::stod(next());
-    } else if (arg == "--air") {
-      spec.air_value = static_cast<std::uint16_t>(std::stoul(next()));
-    } else if (arg == "--material") {
-      spec.material_value = static_cast<std::uint16_t>(std::stoul(next()));
-    } else if (arg == "--noise") {
-      spec.noise_sigma = std::stod(next());
-    } else if (arg == "--noise-correlation") {
-      spec.noise_correlation_mm = std::stod(next());
-    } else if (arg == "--cupping") {
-      spec.cupping = std::stod(next());
-    } else if (arg == "--cupping-depth") {
-      spec.cupping_depth_mm = std::stod(next());
-    } else if (arg == "--rings") {
-      spec.ring_count = std::stoi(next());
-    } else if (arg == "--ring-strength") {
-      spec.ring_strength = std::stod(next());
-    } else if (!arg.starts_with("-") && options.input.empty()) {
-      options.input = arg;
+    } else if (args.is("--loosening")) {
+      spec.loosening_count = static_cast<int>(args.integer());
+    } else if (args.is("--loosening-radius")) {
+      spec.loosening_radius_mm = args.number();
+    } else if (args.is("--loosening-porosity")) {
+      spec.loosening_porosity = args.number();
+    } else if (args.is("--loosening-pore")) {
+      spec.loosening_pore_radius_mm = args.number();
+    } else if (args.is("--air")) {
+      spec.air_value = static_cast<std::uint16_t>(std::stoul(args.value()));
+    } else if (args.is("--material")) {
+      spec.material_value = static_cast<std::uint16_t>(std::stoul(args.value()));
+    } else if (args.is("--noise")) {
+      spec.noise_sigma = args.number();
+    } else if (args.is("--noise-correlation")) {
+      spec.noise_correlation_mm = args.number();
+    } else if (args.is("--cupping")) {
+      spec.cupping = args.number();
+    } else if (args.is("--cupping-depth")) {
+      spec.cupping_depth_mm = args.number();
+    } else if (args.is("--rings")) {
+      spec.ring_count = static_cast<int>(args.integer());
+    } else if (args.is("--ring-strength")) {
+      spec.ring_strength = args.number();
+    } else if (args.positional() && options.input.empty()) {
+      options.input = args.arg();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   const int geometries =
       (options.input.empty() ? 0 : 1) + (options.box ? 1 : 0) + (options.part.empty() ? 0 : 1);
   if (geometries != 1 || options.out.empty()) {
-    throw std::invalid_argument("--out and one of an STL file, --box or --part are required");
+    throw voxelsieve::cli::UsageError("--out and one of an STL file, --box or --part are required");
   }
   return options;
+}
+
+int run(const Options& options) {
+  const auto start = std::chrono::steady_clock::now();
+  voxelsieve::Mesh mesh;
+  if (options.box) {
+    mesh = voxelsieve::boxMesh(*options.box);
+  } else if (!options.part.empty()) {
+    voxelsieve::SamplePartOptions part;
+    part.scale = options.scale;
+    // Facets about as large as the voxels; the mesh is the ground truth either way.
+    part.resolution_mm = options.spec.voxel_size[0];
+    mesh = voxelsieve::samplePartMesh(options.part, part);
+  } else {
+    mesh = voxelsieve::readStl(options.input);
+  }
+  if (!options.stl.empty()) {
+    voxelsieve::writeStl(options.stl, mesh);
+  }
+  const voxelsieve::SyntheticScan scan(mesh, options.spec);
+  for (const auto& warning : scan.warnings()) {
+    std::cerr << "warning: " << warning << '\n';
+  }
+  const auto raw_path = std::filesystem::path(options.out).concat(".raw");
+  const auto json_path = std::filesystem::path(options.out).concat(".json");
+  voxelsieve::writeRaw(raw_path, scan);
+  const auto json = scan.toJson();
+  voxelsieve::writeJson(json_path, json);
+  const auto done = std::chrono::steady_clock::now();
+
+  const auto dims = scan.dims();
+  const auto& truth = json.at("ground_truth");
+  std::cout << std::fixed << std::setprecision(3) << "dims               " << dims[0] << " x "
+            << dims[1] << " x " << dims[2] << '\n'
+            << "part volume        " << truth.at("mesh_volume_mm3").get<double>() << " mm^3\n"
+            << "defects            " << scan.defects().size() << ", void volume "
+            << truth.at("void_volume_mm3").get<double>() << " mm^3 (porosity "
+            << 100.0 * truth.at("porosity").get<double>() << " %)\n"
+            << "time               " << std::chrono::duration<double>(done - start).count()
+            << " s\n"
+            << "wrote              " << raw_path.string() << ", " << json_path.string() << '\n';
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-synth");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto start = std::chrono::steady_clock::now();
-    voxelsieve::Mesh mesh;
-    if (options->box) {
-      mesh = voxelsieve::boxMesh(*options->box);
-    } else if (!options->part.empty()) {
-      voxelsieve::SamplePartOptions part;
-      part.scale = options->scale;
-      // Facets about as large as the voxels; the mesh is the ground truth either way.
-      part.resolution_mm = options->spec.voxel_size[0];
-      mesh = voxelsieve::samplePartMesh(options->part, part);
-    } else {
-      mesh = voxelsieve::readStl(options->input);
-    }
-    if (!options->stl.empty()) {
-      voxelsieve::writeStl(options->stl, mesh);
-    }
-    const voxelsieve::SyntheticScan scan(mesh, options->spec);
-    for (const auto& warning : scan.warnings()) {
-      std::cerr << "warning: " << warning << '\n';
-    }
-    const auto raw_path = std::filesystem::path(options->out).concat(".raw");
-    const auto json_path = std::filesystem::path(options->out).concat(".json");
-    voxelsieve::writeRaw(raw_path, scan);
-    const auto json = scan.toJson();
-    voxelsieve::writeJson(json_path, json);
-    const auto done = std::chrono::steady_clock::now();
-
-    const auto dims = scan.dims();
-    const auto& truth = json.at("ground_truth");
-    std::cout << std::fixed << std::setprecision(3) << "dims               " << dims[0] << " x "
-              << dims[1] << " x " << dims[2] << '\n'
-              << "part volume        " << truth.at("mesh_volume_mm3").get<double>() << " mm^3\n"
-              << "defects            " << scan.defects().size() << ", void volume "
-              << truth.at("void_volume_mm3").get<double>() << " mm^3 (porosity "
-              << 100.0 * truth.at("porosity").get<double>() << " %)\n"
-              << "time               " << std::chrono::duration<double>(done - start).count()
-              << " s\n"
-              << "wrote              " << raw_path.string() << ", " << json_path.string() << '\n';
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-synth: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-synth", kUsage, argc, argv, parse, run);
 }

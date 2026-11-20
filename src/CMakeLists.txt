@@ -55,6 +55,7 @@ add_library(voxelsieve SHARED
   battery_stack.cpp
   battery_views.cpp
   cells.cpp
+  cli.cpp
   porosity.cpp
   progress.cpp
   region.cpp

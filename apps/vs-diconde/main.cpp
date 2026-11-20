@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
@@ -18,8 +19,6 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/report.hpp"
-#include "voxelsieve/resources.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -41,11 +40,6 @@ Options:
   --description <text>    Series description of the volume
   --info <path>           Show a series instead of writing one
   --json <file>           With --info: also write what was found as JSON
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -56,51 +50,37 @@ struct Options {
   std::filesystem::path order;
   std::filesystem::path info;
   std::filesystem::path json;
-  std::filesystem::path telemetry;
   std::string description;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (!arg.starts_with("-")) {
+  while (args.next()) {
+    if (args.positional()) {
       if (!options.dataset.empty()) {
-        throw std::invalid_argument("Unexpected argument: " + std::string(arg));
+        throw voxelsieve::cli::UsageError("Unexpected argument: " + std::string(args.arg()));
       }
-      options.dataset = arg;
-    } else if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--porosity") {
-      options.porosity = next();
-    } else if (arg == "--materials") {
-      options.materials = next();
-    } else if (arg == "--order") {
-      options.order = next();
-    } else if (arg == "--description") {
-      options.description = next();
-    } else if (arg == "--info") {
-      options.info = next();
-    } else if (arg == "--json") {
-      options.json = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
+      options.dataset = args.arg();
+    } else if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--porosity")) {
+      options.porosity = args.value();
+    } else if (args.is("--materials")) {
+      options.materials = args.value();
+    } else if (args.is("--order")) {
+      options.order = args.value();
+    } else if (args.is("--description")) {
+      options.description = args.value();
+    } else if (args.is("--info")) {
+      options.info = args.value();
+    } else if (args.is("--json")) {
+      options.json = args.value();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.info.empty() && (options.dataset.empty() || options.out.empty())) {
-    throw std::invalid_argument("A dataset and --out, or --info, are required");
+    throw voxelsieve::cli::UsageError("A dataset and --out, or --info, are required");
   }
   return options;
 }
@@ -190,26 +170,17 @@ void write(const Options& options) {
   }
 }
 
+int run(const Options& options) {
+  if (!options.info.empty()) {
+    printInfo(options);
+  } else {
+    write(options);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-diconde");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    if (!options->info.empty()) {
-      printInfo(*options);
-    } else {
-      write(*options);
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-diconde: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-diconde", kUsage, argc, argv, parse, run);
 }

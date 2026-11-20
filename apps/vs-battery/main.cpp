@@ -22,11 +22,10 @@
 
 #include "voxelsieve/battery.hpp"
 #include "voxelsieve/cells.hpp"
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/report.hpp"
-#include "voxelsieve/resources.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -77,10 +76,6 @@ Options:
   --min-void <voxels>       Smallest void reported (default 8)
   --max-end-deviation <mm>  Layer ends farther than this from the median end of their edge
                             (lost layers, tabs) are left out of the overhang (default 1)
-  --memory <MB>             Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>              Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>             Threads of all parallel work (default all cores)
-  --telemetry <file>        Write time and resource use per phase as JSON
 
 Synthetic cell (writes <prefix>.raw and <prefix>.json with the ground truth):
   --cell <type>             cylindrical (wound, in a can) or stacked (sheets in a housing)
@@ -97,14 +92,12 @@ Synthetic cell (writes <prefix>.raw and <prefix>.json with the ground truth):
   --void <x> <y> <z> <r>    A gas void, mm from the volume centre
   --noise <sigma>           Gaussian noise in grey values (default 800)
   --seed <n>                Noise seed (default 7)
-  -h, --help                Show this help
 )";
 
 struct Options {
   std::filesystem::path dataset;
   std::filesystem::path out;
   voxelsieve::BatteryOptions battery;
-  std::filesystem::path telemetry;
   std::filesystem::path order;
   std::filesystem::path report_template;
   bool print_template = false;
@@ -137,77 +130,61 @@ voxelsieve::CellType typeOf(std::string_view name) {
   throw std::invalid_argument("Unknown cell type: " + std::string(name));
 }
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
   voxelsieve::CellSpec cell = voxelsieve::defaultCylindricalCell();
   cell.noise_sigma = 800.0;
   bool synthetic = false;
   // Cell options given before --cell are applied to the cell type chosen there.
   std::optional<double> overhang;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
+  while (args.next()) {
     const auto has_number = [&]() {
-      if (i + 1 >= argc) {
-        return false;
-      }
-      const std::string_view v = argv[i + 1];
+      const std::string_view v = args.peek();
       return !v.empty() && (v[0] != '-' || (v.size() > 1 && std::isdigit(v[1]) != 0));
     };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--order") {
-      options.order = next();
-    } else if (arg == "--template") {
-      options.report_template = next();
-    } else if (arg == "--print-template") {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--order")) {
+      options.order = args.value();
+    } else if (args.is("--template")) {
+      options.report_template = args.value();
+    } else if (args.is("--print-template")) {
       options.print_template = true;
       return options;
-    } else if (arg == "--type") {
-      options.battery.cell_type = typeOf(next());
-    } else if (arg == "--axis") {
-      options.battery.axis = axisOf(next());
-    } else if (arg == "--angles") {
-      options.battery.angles = std::stoi(next());
-    } else if (arg == "--sections") {
-      options.battery.sections = std::stoi(next());
-    } else if (arg == "--overhang-sections") {
-      options.battery.overhang_sections = std::stoi(next());
-    } else if (arg == "--average") {
-      options.battery.average_voxels = std::stoi(next());
-    } else if (arg == "--anode-brighter") {
+    } else if (args.is("--type")) {
+      options.battery.cell_type = typeOf(args.value());
+    } else if (args.is("--axis")) {
+      options.battery.axis = axisOf(args.value());
+    } else if (args.is("--angles")) {
+      options.battery.angles = static_cast<int>(args.integer());
+    } else if (args.is("--sections")) {
+      options.battery.sections = static_cast<int>(args.integer());
+    } else if (args.is("--overhang-sections")) {
+      options.battery.overhang_sections = static_cast<int>(args.integer());
+    } else if (args.is("--average")) {
+      options.battery.average_voxels = static_cast<int>(args.integer());
+    } else if (args.is("--anode-brighter")) {
       options.battery.cathode_brighter = false;
-    } else if (arg == "--particle-threshold") {
-      options.battery.particle_threshold = std::stof(next());
-    } else if (arg == "--void-threshold") {
-      options.battery.void_threshold = std::stof(next());
-    } else if (arg == "--min-particle") {
-      options.battery.min_particle_voxels = std::stoll(next());
-    } else if (arg == "--max-end-deviation") {
-      options.battery.max_end_deviation_mm = std::stod(next());
-    } else if (arg == "--min-void") {
-      options.battery.min_void_voxels = std::stoll(next());
-    } else if (arg == "--images") {
-      options.images = next();
-    } else if (arg == "--image-cell") {
-      options.image_cell = next();
-    } else if (arg == "--list-cells") {
+    } else if (args.is("--particle-threshold")) {
+      options.battery.particle_threshold = static_cast<float>(args.number());
+    } else if (args.is("--void-threshold")) {
+      options.battery.void_threshold = static_cast<float>(args.number());
+    } else if (args.is("--min-particle")) {
+      options.battery.min_particle_voxels = args.integer();
+    } else if (args.is("--max-end-deviation")) {
+      options.battery.max_end_deviation_mm = args.number();
+    } else if (args.is("--min-void")) {
+      options.battery.min_void_voxels = args.integer();
+    } else if (args.is("--images")) {
+      options.images = args.value();
+    } else if (args.is("--image-cell")) {
+      options.image_cell = args.value();
+    } else if (args.is("--list-cells")) {
       options.list_cells = true;
-    } else if (arg == "--pixel-size") {
-      options.battery.image_pixel_mm = std::stod(next());
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--cell") {
-      const auto type = typeOf(next());
+    } else if (args.is("--pixel-size")) {
+      options.battery.image_pixel_mm = args.number();
+    } else if (args.is("--cell")) {
+      const auto type = typeOf(args.value());
       const auto keep = cell;
       cell = type == voxelsieve::CellType::kCylindrical ? voxelsieve::defaultCylindricalCell()
                                                         : voxelsieve::defaultStackedCell();
@@ -219,41 +196,41 @@ std::optional<Options> parse(int argc, char** argv) {
       cell.voids = keep.voids;
       cell.extensions = keep.extensions;
       synthetic = true;
-    } else if (arg == "--voxel-size") {
-      cell.voxel_size = voxelsieve::VoxelSize(std::stod(next()));
-    } else if (arg == "--turns") {
-      cell.turns = std::stoi(next());
-    } else if (arg == "--layers") {
-      cell.cathode_layers = std::stoi(next());
-    } else if (arg == "--overhang") {
-      overhang = std::stod(next());
-    } else if (arg == "--ovality") {
-      cell.ovality = std::stod(next());
-    } else if (arg == "--extension") {
+    } else if (args.is("--voxel-size")) {
+      cell.voxel_size = voxelsieve::VoxelSize(args.number());
+    } else if (args.is("--turns")) {
+      cell.turns = static_cast<int>(args.integer());
+    } else if (args.is("--layers")) {
+      cell.cathode_layers = static_cast<int>(args.integer());
+    } else if (args.is("--overhang")) {
+      overhang = args.number();
+    } else if (args.is("--ovality")) {
+      cell.ovality = args.number();
+    } else if (args.is("--extension")) {
       voxelsieve::CathodeExtension e;
-      e.layer = std::stoi(next());
-      e.edge = std::stoi(next());
-      e.length_mm = std::stod(next());
+      e.layer = static_cast<int>(args.integer());
+      e.edge = static_cast<int>(args.integer());
+      e.length_mm = args.number();
       if (has_number()) {
-        e.from_deg = std::stod(next());
-        e.to_deg = std::stod(next());
+        e.from_deg = args.number();
+        e.to_deg = args.number();
       }
       cell.extensions.push_back(e);
-    } else if (arg == "--particle" || arg == "--void") {
+    } else if (args.is("--particle") || args.is("--void")) {
       voxelsieve::CellSphere s;
       for (double& c : s.center_mm) {
-        c = std::stod(next());
+        c = args.number();
       }
-      s.radius_mm = std::stod(next());
-      (arg == "--particle" ? cell.particles : cell.voids).push_back(s);
-    } else if (arg == "--noise") {
-      cell.noise_sigma = std::stod(next());
-    } else if (arg == "--seed") {
-      cell.seed = std::stoull(next());
-    } else if (!arg.starts_with("-") && options.dataset.empty()) {
-      options.dataset = arg;
+      s.radius_mm = args.number();
+      (args.is("--particle") ? cell.particles : cell.voids).push_back(s);
+    } else if (args.is("--noise")) {
+      cell.noise_sigma = args.number();
+    } else if (args.is("--seed")) {
+      cell.seed = std::stoull(args.value());
+    } else if (args.positional() && options.dataset.empty()) {
+      options.dataset = args.arg();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (!options.images.empty() && options.list_cells) {
@@ -262,7 +239,8 @@ std::optional<Options> parse(int argc, char** argv) {
   const int sources =
       (synthetic ? 1 : 0) + (options.dataset.empty() ? 0 : 1) + (options.images.empty() ? 0 : 1);
   if (options.out.empty() || sources != 1) {
-    throw std::invalid_argument("--out and one of a dataset, --images or --cell are required");
+    throw voxelsieve::cli::UsageError(
+        "--out and one of a dataset, --images or --cell are required");
   }
   if (synthetic) {
     if (overhang) {
@@ -461,52 +439,43 @@ void inspectAllCells(const Options& options) {
             << "summary            " << (options.out / "cells.csv").string() << '\n';
 }
 
+int run(const Options& options) {
+  if (options.print_template) {
+    std::cout << voxelsieve::defaultBatteryReportTemplate();
+    return 0;
+  }
+  if (const auto& cell = options.cell) {
+    return writeCell(*cell, options);
+  }
+  if (!options.images.empty() && options.list_cells) {
+    for (const std::string& name : voxelsieve::listCellImages(options.images)) {
+      std::cout << name << '\n';
+    }
+    return 0;
+  }
+  if (!options.images.empty() && options.image_cell.empty()) {
+    inspectAllCells(options);
+    return 0;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  voxelsieve::BatteryResult result;
+  if (options.images.empty()) {
+    const auto dataset = voxelsieve::Dataset::open(options.dataset);
+    result = voxelsieve::analyzeBattery(dataset, options.battery);
+  } else {
+    result = voxelsieve::analyzeBatteryImages(
+        voxelsieve::readCellImages(options.images, options.image_cell), options.battery);
+  }
+  voxelsieve::writeBatteryResult(result, options.out);
+  printResult(result, std::chrono::steady_clock::now() - start);
+  if (!options.order.empty()) {
+    writeReport(options, options.out);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    if (options->print_template) {
-      std::cout << voxelsieve::defaultBatteryReportTemplate();
-      return 0;
-    }
-    if (const auto& cell = options->cell) {
-      return writeCell(*cell, *options);
-    }
-    if (!options->images.empty() && options->list_cells) {
-      for (const std::string& name : voxelsieve::listCellImages(options->images)) {
-        std::cout << name << '\n';
-      }
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-battery");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    if (!options->images.empty() && options->image_cell.empty()) {
-      inspectAllCells(*options);
-    } else {
-      const auto start = std::chrono::steady_clock::now();
-      voxelsieve::BatteryResult result;
-      if (options->images.empty()) {
-        const auto dataset = voxelsieve::Dataset::open(options->dataset);
-        result = voxelsieve::analyzeBattery(dataset, options->battery);
-      } else {
-        result = voxelsieve::analyzeBatteryImages(
-            voxelsieve::readCellImages(options->images, options->image_cell), options->battery);
-      }
-      voxelsieve::writeBatteryResult(result, options->out);
-      printResult(result, std::chrono::steady_clock::now() - start);
-      if (!options->order.empty()) {
-        writeReport(*options, options->out);
-      }
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-battery: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-battery", kUsage, argc, argv, parse, run);
 }

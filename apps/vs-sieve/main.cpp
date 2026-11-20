@@ -7,6 +7,7 @@
 #include <unistd.h>  // isatty
 #endif
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -27,18 +28,18 @@
 #include <utility>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
-#include "voxelsieve/resources.hpp"
+#include "voxelsieve/operation.hpp"
 #include "voxelsieve/sieve.hpp"
-#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
 
 namespace {
 
-constexpr std::string_view kUsage = R"(Usage: vs-sieve <input.raw> --out <output> [options]
+constexpr std::string_view kUsageHead = R"(Usage: vs-sieve <input.raw> --out <output> [options]
        vs-sieve <slices/ | stack.tif | slices.zip> --out <output> [options]
        vs-sieve <dicom-slices/ | project.xml.gz> --out <output> [options]
        vs-sieve <part1> <part2> ... --join <x|y|z> --out <output> [options]
@@ -89,31 +90,87 @@ Options:
                           are clipped and counted
   --join <x|y|z>          Axis along which several inputs are joined (default z)
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
-  --threshold <value>     Air/material grey value (default: estimated, valley after the air peak)
-  --margin <voxels>       Air margin kept around the part (default 3)
-  --brick-size <voxels>   Brick edge length for datasets, multiple of 8 (default 256)
-  --air-from <axes>       Axes whose boundary faces let outside air in (default xyz). Use xy
-                          when the first and last slice cut through the part (a pipe, a long
-                          part scanned in sections), so its inside is kept
-  --min-material <n>      Voxels above threshold for an 8^3 block to count as material
-                          (default 1); raise it for noisy scans
-  --staging-dir <dir>     TIFF stacks, datasets: where the input is first copied to a temporary
-                          raw file (1 or 2 bytes per voxel, as the input), so every slice is decoded once
-                          (default: the output directory)
-  --no-staging            TIFF stacks, datasets: read the slices directly (no temporary file;
-                          much slower when the slices of a brick layer do not fit in memory)
-  --value-type <type>     Stored grey values: native (default: the input's 8 or 16 bit), uint16
-                          or float
-  --dense                 .vdb only: write every voxel without sieving (baseline)
+)";
+
+/// The rest of the options, after those of the sieve.
+constexpr std::string_view kUsageTail =
+    R"(  --dense                 .vdb only: write every voxel without sieving (baseline)
   --preview <file.png>    Datasets: write a first look at the input as soon as it is read: a
                           few slices spread over the volume, its sections and histogram with
                           the estimated threshold. A staged input rewrites it sharper as more
                           slices are copied. The import reads every slice only once
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
+
+/// The options of the sieve: parameters of the import operations (sieveParameters), so that
+/// their checks, defaults and descriptions are the same here.
+struct SieveFlag {
+  std::string_view flag;
+  std::string_view value;
+  std::string_view parameter;
+};
+
+constexpr std::array<SieveFlag, 7> kSieveFlags{{
+    {"--threshold", "<value>", "threshold"},
+    {"--margin", "<voxels>", "margin_voxels"},
+    {"--brick-size", "<voxels>", "brick_size"},
+    {"--air-from", "<axes>", "outside_air_axes"},
+    {"--min-material", "<n>", "min_material_voxels"},
+    {"--value-type", "<type>", "value_type"},
+    {"--staging-dir", "<dir>", "staging_dir"},
+}};
+
+/// One option of the usage text: its name in a column of 26, the description wrapped at 100.
+std::string usageEntry(std::string name, const std::string& description) {
+  constexpr std::size_t kColumn = 26;
+  constexpr std::size_t kWidth = 100;
+  std::string out = "  " + std::move(name);
+  std::string line =
+      out.size() < kColumn ? out + std::string(kColumn - out.size(), ' ') : out + ' ';
+  out.clear();
+  std::istringstream words(description);
+  std::string word;
+  bool first = true;
+  while (words >> word) {
+    if (!first && line.size() + 1 + word.size() > kWidth) {
+      out += line + '\n';
+      line = std::string(kColumn, ' ');
+      first = true;
+    }
+    line += (first ? "" : " ") + word;
+    first = false;
+  }
+  return out + line + '\n';
+}
+
+/// The usage text, with the options of the sieve from their schema.
+std::string usage() {
+  const nlohmann::json parameters = voxelsieve::sieveParameters();
+  std::string text(kUsageHead);
+  for (const SieveFlag& flag : kSieveFlags) {
+    const nlohmann::json& schema = parameters.at(std::string(flag.parameter));
+    std::string description = schema.value("description", std::string());
+    std::string note;
+    if (const auto values = schema.find("enum"); values != schema.end()) {
+      for (std::size_t i = 0; i < values->size(); ++i) {
+        note += (i == 0                    ? ""
+                 : i + 1 == values->size() ? " or "
+                                           : ", ") +
+                (*values)[i].get<std::string>();
+      }
+    }
+    if (const auto value = schema.find("default"); value != schema.end()) {
+      note += (note.empty() ? "default " : "; default ") +
+              (value->is_string() ? value->get<std::string>() : value->dump());
+    }
+    text += usageEntry(std::string(flag.flag) + " " + std::string(flag.value),
+                       note.empty() ? description : description + " (" + note + ")");
+  }
+  text += usageEntry("--no-staging",
+                     "Read slow inputs directly instead of copying them to a temporary raw file "
+                     "first: no disk space, but more decoding (parameter staging)");
+  text += kUsageTail;
+  return text;
+}
 
 struct Options {
   std::filesystem::path input;  // the input being opened; the first of `inputs` while parsing
@@ -129,112 +186,105 @@ struct Options {
   std::string folder;
   std::optional<std::array<double, 2>> value_range;
   voxelsieve::SieveOptions sieve;
+  nlohmann::json sieve_parameters = nlohmann::json::object();
   voxelsieve::DatasetOptions dataset;
   std::optional<std::int64_t> phantom;
   bool dense = false;
   std::optional<voxelsieve::ValueType> value_type;  // unset: the input's
   std::filesystem::path preview;
-  std::filesystem::path telemetry;
 
   [[nodiscard]] bool singleGrid() const { return out.extension() == ".vdb"; }
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--dims") {
+  while (args.next()) {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--dims")) {
       std::array<std::int64_t, 3> dims{};
       for (auto& d : dims) {
-        d = std::stoll(next());
+        d = args.integer();
       }
       options.dims = dims;
-    } else if (arg == "--type") {
-      const std::string type = next();
+    } else if (args.is("--type")) {
+      const std::string type = args.value();
       if (type != "uint16" && type != "uint8") {
-        throw std::invalid_argument("--type must be uint16 or uint8");
+        throw voxelsieve::cli::UsageError("--type must be uint16 or uint8");
       }
       options.sample_type =
           type == "uint8" ? voxelsieve::SampleType::kUInt8 : voxelsieve::SampleType::kUInt16;
-    } else if (arg == "--big-endian") {
+    } else if (args.is("--big-endian")) {
       options.byte_order = std::endian::big;
-    } else if (arg == "--folder") {
-      options.folder = next();
-    } else if (arg == "--value-range") {
-      const std::string text = next();
+    } else if (args.is("--folder")) {
+      options.folder = args.value();
+    } else if (args.is("--value-range")) {
+      const std::string text = args.value();
       const auto comma = text.find(',');
       if (comma == std::string::npos) {
-        throw std::invalid_argument("--value-range needs two numbers: <lo>,<hi>");
+        throw voxelsieve::cli::UsageError("--value-range needs two numbers: <lo>,<hi>");
       }
       options.value_range = {std::stod(text.substr(0, comma)), std::stod(text.substr(comma + 1))};
-    } else if (arg == "--header") {
-      options.header_bytes = std::stoull(next());
-    } else if (arg == "--voxel-size") {
-      options.voxel_size = voxelsieve::parseVoxelSize(next());
-    } else if (arg == "--slice-thickness") {
-      options.slice_thickness_mm = std::stod(next());
-    } else if (arg == "--threshold") {
-      options.sieve.threshold = std::stof(next());
-      options.dataset.threshold = options.sieve.threshold;
-    } else if (arg == "--margin") {
-      options.sieve.margin_voxels = std::stoi(next());
-      options.dataset.margin_voxels = options.sieve.margin_voxels;
-    } else if (arg == "--brick-size") {
-      options.dataset.brick_size = std::stoll(next());
-    } else if (arg == "--phantom") {
-      options.phantom = std::stoll(next());
-    } else if (arg == "--air-from") {
-      options.sieve.outside_air_axes = voxelsieve::parseAirAxes(next());
-      options.dataset.outside_air_axes = options.sieve.outside_air_axes;
-    } else if (arg == "--min-material") {
-      options.sieve.min_material_voxels = std::stoi(next());
-      options.dataset.min_material_voxels = options.sieve.min_material_voxels;
-    } else if (arg == "--staging-dir") {
-      options.dataset.staging_dir = next();
-    } else if (arg == "--no-staging") {
-      options.dataset.stage_slow_sources = false;
-    } else if (arg == "--preview") {
-      options.preview = next();
-    } else if (arg == "--dense") {
+    } else if (args.is("--header")) {
+      options.header_bytes = std::stoull(args.value());
+    } else if (args.is("--voxel-size")) {
+      options.voxel_size = voxelsieve::parseVoxelSize(args.value());
+    } else if (args.is("--slice-thickness")) {
+      options.slice_thickness_mm = args.number();
+    } else if (args.is("--phantom")) {
+      options.phantom = args.integer();
+    } else if (args.is("--no-staging")) {
+      options.sieve_parameters["staging"] = false;
+    } else if (const auto flag = std::ranges::find(kSieveFlags, args.arg(), &SieveFlag::flag);
+               flag != kSieveFlags.end()) {
+      const std::string key(flag->parameter);
+      const std::string type = voxelsieve::sieveParameters().at(key).at("type");
+      options.sieve_parameters[key] = type == "number"    ? nlohmann::json(args.number())
+                                      : type == "integer" ? nlohmann::json(args.integer())
+                                                          : nlohmann::json(args.value());
+    } else if (args.is("--preview")) {
+      options.preview = args.value();
+    } else if (args.is("--dense")) {
       options.dense = true;
-    } else if (arg == "--value-type") {
-      const std::string type = next();
-      if (type != "native") {
-        options.value_type = voxelsieve::parseValueType(type);
-      }
-      options.dataset.value_type = options.value_type;
-    } else if (arg == "--join") {
-      const std::string axis = next();
+    } else if (args.is("--join")) {
+      const std::string axis = args.value();
       if (axis != "x" && axis != "y" && axis != "z") {
-        throw std::invalid_argument("--join must be x, y or z");
+        throw voxelsieve::cli::UsageError("--join must be x, y or z");
       }
       options.join_axis = axis[0] - 'x';
-    } else if (!arg.starts_with("-")) {
-      options.inputs.emplace_back(arg);
+    } else if (args.positional()) {
+      options.inputs.emplace_back(args.arg());
       options.input = options.inputs.front();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
+  try {
+    const nlohmann::json parameters = voxelsieve::validateParameters(
+        {{"type", "object"}, {"properties", voxelsieve::sieveParameters()}},
+        options.sieve_parameters);
+    options.dataset = voxelsieve::sieveOptions(parameters);
+  } catch (const std::invalid_argument& error) {
+    // The message names the parameter; name the option instead.
+    std::string message = error.what();
+    for (const SieveFlag& flag : kSieveFlags) {
+      const std::string name = "Parameter '" + std::string(flag.parameter) + "'";
+      if (const auto at = message.find(name); at != std::string::npos) {
+        message.replace(at, name.size(), flag.flag);
+      }
+    }
+    throw voxelsieve::cli::UsageError(message);
+  }
+  options.value_type = options.dataset.value_type;
+  options.sieve.threshold = options.dataset.threshold;
+  options.sieve.margin_voxels = options.dataset.margin_voxels;
+  options.sieve.min_material_voxels = options.dataset.min_material_voxels;
+  options.sieve.outside_air_axes = options.dataset.outside_air_axes;
   if (options.out.empty() || (options.input.empty() == !options.phantom)) {
-    throw std::invalid_argument("--out and either an input file or --phantom are required");
+    throw voxelsieve::cli::UsageError("--out and either an input file or --phantom are required");
   }
   if (options.phantom && options.singleGrid()) {
-    throw std::invalid_argument("--phantom writes datasets only; use a directory for --out");
+    throw voxelsieve::cli::UsageError("--phantom writes datasets only; use a directory for --out");
   }
   return options;
 }
@@ -599,26 +649,17 @@ void runDataset(const Options& options) {
   reportClipped(floats);
 }
 
+int run(const Options& options) {
+  if (options.singleGrid()) {
+    runSingleGrid(options);
+  } else {
+    runDataset(options);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-sieve");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    if (options->singleGrid()) {
-      runSingleGrid(*options);
-    } else {
-      runDataset(*options);
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-sieve: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-sieve", usage(), argc, argv, parse, run);
 }

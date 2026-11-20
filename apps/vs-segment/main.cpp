@@ -16,13 +16,12 @@
 #include <utility>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/model.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/telemetry.hpp"
 #include "voxelsieve/tiff.hpp"
 
 namespace {
@@ -54,11 +53,6 @@ Options:
   --region <x0,y0,z0,x1,y1,z1>
                           Score only this box, for example data a model was not trained on
   --json <file>           Also write the materials and scores as JSON
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -72,175 +66,150 @@ struct Options {
   int join_axis = 2;
   voxelsieve::SegmentationOptions segmentation;
   voxelsieve::ModelSegmentationOptions model_options;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
   bool truth_list = false;  // plain arguments after --truth are more label inputs
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (!arg.starts_with("-")) {
+  while (args.next()) {
+    if (args.positional()) {
       if (truth_list) {
-        options.truth.emplace_back(arg);
+        options.truth.emplace_back(args.arg());
       } else if (options.dataset.empty()) {
-        options.dataset = arg;
+        options.dataset = args.arg();
       } else {
-        throw std::invalid_argument("Unexpected argument: " + std::string(arg));
+        throw voxelsieve::cli::UsageError("Unexpected argument: " + std::string(args.arg()));
       }
       continue;
     }
     truth_list = false;
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--json") {
-      options.json = next();
-    } else if (arg == "--materials") {
-      options.segmentation.materials = std::stoi(next());
-    } else if (arg == "--threshold") {
-      options.segmentation.air_threshold = std::stof(next());
-    } else if (arg == "--thresholds") {
-      std::stringstream list(next());
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--json")) {
+      options.json = args.value();
+    } else if (args.is("--materials")) {
+      options.segmentation.materials = static_cast<int>(args.integer());
+    } else if (args.is("--threshold")) {
+      options.segmentation.air_threshold = static_cast<float>(args.number());
+    } else if (args.is("--thresholds")) {
+      std::stringstream list(args.value());
       std::string item;
       while (std::getline(list, item, ',')) {
         options.segmentation.material_thresholds.push_back(std::stof(item));
       }
-    } else if (arg == "--min-neighbours") {
-      options.segmentation.min_neighbours = std::stoi(next());
-    } else if (arg == "--grow") {
-      options.segmentation.grow_steps = std::stoi(next());
-    } else if (arg == "--grow-fraction") {
-      options.segmentation.grow_fraction = std::stof(next());
-    } else if (arg == "--model") {
-      options.model = next();
-    } else if (arg == "--tile") {
-      options.model_options.tile = std::stoll(next());
-    } else if (arg == "--region") {
-      std::stringstream list(next());
+    } else if (args.is("--min-neighbours")) {
+      options.segmentation.min_neighbours = static_cast<int>(args.integer());
+    } else if (args.is("--grow")) {
+      options.segmentation.grow_steps = static_cast<int>(args.integer());
+    } else if (args.is("--grow-fraction")) {
+      options.segmentation.grow_fraction = static_cast<float>(args.number());
+    } else if (args.is("--model")) {
+      options.model = args.value();
+    } else if (args.is("--tile")) {
+      options.model_options.tile = args.integer();
+    } else if (args.is("--region")) {
+      std::stringstream list(args.value());
       std::vector<std::int64_t> values;
       std::string item;
       while (std::getline(list, item, ',')) {
         values.push_back(std::stoll(item));
       }
       if (values.size() != 6) {
-        throw std::invalid_argument("--region needs x0,y0,z0,x1,y1,z1");
+        throw voxelsieve::cli::UsageError("--region needs x0,y0,z0,x1,y1,z1");
       }
       options.region =
           voxelsieve::Box{{values[0], values[1], values[2]}, {values[3], values[4], values[5]}};
-    } else if (arg == "--truth") {
-      options.truth.emplace_back(next());
+    } else if (args.is("--truth")) {
+      options.truth.emplace_back(args.value());
       truth_list = true;
-    } else if (arg == "--folder") {
-      options.folder = next();
-    } else if (arg == "--join") {
-      const std::string axis = next();
+    } else if (args.is("--folder")) {
+      options.folder = args.value();
+    } else if (args.is("--join")) {
+      const std::string axis = args.value();
       if (axis != "x" && axis != "y" && axis != "z") {
-        throw std::invalid_argument("--join must be x, y or z");
+        throw voxelsieve::cli::UsageError("--join must be x, y or z");
       }
       options.join_axis = axis[0] - 'x';
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.dataset.empty() || options.out.empty()) {
-    throw std::invalid_argument("A dataset and --out are required");
+    throw voxelsieve::cli::UsageError("A dataset and --out are required");
   }
   return options;
+}
+
+int run(const Options& options) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
+  voxelsieve::MaterialVolumeInfo info;
+  if (options.model.empty()) {
+    info = voxelsieve::segmentMaterials(dataset, options.out, options.segmentation);
+  } else {
+    const auto model = voxelsieve::Model::load(options.model);
+    info =
+        voxelsieve::segmentMaterialsWithModel(dataset, model, options.out, options.model_options);
+  }
+  const auto segmented = std::chrono::steady_clock::now();
+
+  std::cout << std::fixed << std::setprecision(1);
+  if (info.model.empty()) {
+    std::cout << "air threshold      " << info.air_threshold << " (grows above "
+              << info.grow_threshold << ", " << info.grow_steps << " steps, " << info.min_neighbours
+              << " of 27 neighbours)\n";
+  } else {
+    std::cout << "model              " << info.model << "\n";
+  }
+  nlohmann::json json = nlohmann::json::parse(
+      std::ifstream(options.out / "materials.json"));  // written by segmentMaterials
+  for (const auto& material : info.materials) {
+    std::cout << "material " << material.id << "         " << material.name << " from "
+              << std::setprecision(1) << material.lower << ", " << material.voxel_count
+              << " voxels, " << std::setprecision(1) << material.volume_mm3 << " mm^3\n";
+  }
+  std::cout << std::setprecision(2) << "time               "
+            << std::chrono::duration<double>(segmented - start).count() << " s\n";
+
+  if (!options.truth.empty()) {
+    std::vector<std::unique_ptr<voxelsieve::VolumeSource>> parts;
+    voxelsieve::TiffStackOptions tiff;
+    tiff.folder = options.folder;
+    for (const auto& path : options.truth) {
+      parts.push_back(std::make_unique<voxelsieve::TiffStackSource>(path, tiff));
+    }
+    const voxelsieve::ConcatSource labels(std::move(parts), options.join_axis);
+    std::vector<std::int64_t> starts;
+    for (std::size_t p = 0; p < labels.partCount(); ++p) {
+      starts.push_back(labels.partStart(p));
+    }
+    const auto volume = voxelsieve::MaterialVolume::open(options.out);
+    const auto score = voxelsieve::scoreMaterials(volume, labels, dataset, starts,
+                                                  options.join_axis, options.region);
+    std::cout << "components         " << score.components;
+    for (std::size_t m = 1; m < score.components_per_material.size(); ++m) {
+      std::cout << (m == 1 ? " (" : ", ") << score.components_per_material[m] << " material " << m;
+    }
+    std::cout << ")\n" << std::setprecision(3) << "dice material/air  " << score.dice[0] << "\n";
+    for (std::size_t m = 1; m < score.dice.size(); ++m) {
+      std::cout << "dice material " << m << "    " << score.dice[m] << "\n";
+    }
+    json["score"] = {{"dice", score.dice},
+                     {"confusion", score.confusion},
+                     {"components", score.components},
+                     {"components_per_material", score.components_per_material}};
+    std::cout << std::setprecision(2) << "scoring time       "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - segmented).count()
+              << " s\n";
+  }
+  if (!options.json.empty()) {
+    voxelsieve::writeJson(options.json, json);
+  }
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-segment");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset);
-    voxelsieve::MaterialVolumeInfo info;
-    if (options->model.empty()) {
-      info = voxelsieve::segmentMaterials(dataset, options->out, options->segmentation);
-    } else {
-      const auto model = voxelsieve::Model::load(options->model);
-      info = voxelsieve::segmentMaterialsWithModel(dataset, model, options->out,
-                                                   options->model_options);
-    }
-    const auto segmented = std::chrono::steady_clock::now();
-
-    std::cout << std::fixed << std::setprecision(1);
-    if (info.model.empty()) {
-      std::cout << "air threshold      " << info.air_threshold << " (grows above "
-                << info.grow_threshold << ", " << info.grow_steps << " steps, "
-                << info.min_neighbours << " of 27 neighbours)\n";
-    } else {
-      std::cout << "model              " << info.model << "\n";
-    }
-    nlohmann::json json = nlohmann::json::parse(
-        std::ifstream(options->out / "materials.json"));  // written by segmentMaterials
-    for (const auto& material : info.materials) {
-      std::cout << "material " << material.id << "         " << material.name << " from "
-                << std::setprecision(1) << material.lower << ", " << material.voxel_count
-                << " voxels, " << std::setprecision(1) << material.volume_mm3 << " mm^3\n";
-    }
-    std::cout << std::setprecision(2) << "time               "
-              << std::chrono::duration<double>(segmented - start).count() << " s\n";
-
-    if (!options->truth.empty()) {
-      std::vector<std::unique_ptr<voxelsieve::VolumeSource>> parts;
-      voxelsieve::TiffStackOptions tiff;
-      tiff.folder = options->folder;
-      for (const auto& path : options->truth) {
-        parts.push_back(std::make_unique<voxelsieve::TiffStackSource>(path, tiff));
-      }
-      const voxelsieve::ConcatSource labels(std::move(parts), options->join_axis);
-      std::vector<std::int64_t> starts;
-      for (std::size_t p = 0; p < labels.partCount(); ++p) {
-        starts.push_back(labels.partStart(p));
-      }
-      const auto volume = voxelsieve::MaterialVolume::open(options->out);
-      const auto score = voxelsieve::scoreMaterials(volume, labels, dataset, starts,
-                                                    options->join_axis, options->region);
-      std::cout << "components         " << score.components;
-      for (std::size_t m = 1; m < score.components_per_material.size(); ++m) {
-        std::cout << (m == 1 ? " (" : ", ") << score.components_per_material[m] << " material "
-                  << m;
-      }
-      std::cout << ")\n" << std::setprecision(3) << "dice material/air  " << score.dice[0] << "\n";
-      for (std::size_t m = 1; m < score.dice.size(); ++m) {
-        std::cout << "dice material " << m << "    " << score.dice[m] << "\n";
-      }
-      json["score"] = {{"dice", score.dice},
-                       {"confusion", score.confusion},
-                       {"components", score.components},
-                       {"components_per_material", score.components_per_material}};
-      std::cout
-          << std::setprecision(2) << "scoring time       "
-          << std::chrono::duration<double>(std::chrono::steady_clock::now() - segmented).count()
-          << " s\n";
-    }
-    if (!options->json.empty()) {
-      voxelsieve::writeJson(options->json, json);
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-segment: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-segment", kUsage, argc, argv, parse, run);
 }
