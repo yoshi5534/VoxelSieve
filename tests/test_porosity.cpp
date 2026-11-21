@@ -141,8 +141,7 @@ TEST_F(PorosityTest, LargeLunkerCountsEveryVoxel) {
   const auto pores = openvdb::gridPtrCast<openvdb::FloatGrid>(file.readGrid("pores"));
   ASSERT_TRUE(pores);
   EXPECT_TRUE(pores->tree().hasActiveTiles());
-  EXPECT_EQ(static_cast<std::int64_t>(pores->activeVoxelCount()),
-            result.pores.front().voxel_count);
+  EXPECT_EQ(static_cast<std::int64_t>(pores->activeVoxelCount()), result.pores.front().voxel_count);
   EXPECT_LT(pores->tree().leafCount(), result.pore_labels->tree().leafCount() + 1);
   double void_voxels = 0.0;
   for (auto it = pores->cbeginValueOn(); it; ++it) {
