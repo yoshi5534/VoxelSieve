@@ -8,6 +8,14 @@
 #include <sys/mman.h>
 #endif
 
+#if defined(__SANITIZE_THREAD__)
+#define VOXELSIEVE_TEST_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define VOXELSIEVE_TEST_TSAN 1
+#endif
+#endif
+
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -219,8 +227,11 @@ TEST(TelemetryTest, MappedFilePagesAreNotOwnMemory) {
   if (record.at("system").at("memory_split").get<bool>()) {
     // The mapped pages are file pages; the process's own memory hardly grows.
     EXPECT_GE(read.at("peak_file_mb").get<double>(), 40.0);
+#ifndef VOXELSIEVE_TEST_TSAN
+    // ThreadSanitizer keeps shadow memory of its own for every page read, more than the pages.
     EXPECT_LT(read.at("peak_anon_mb").get<double>(),
               phase(record, "before").at("peak_anon_mb").get<double>() + 30.0);
+#endif
   }
 }
 
