@@ -568,6 +568,10 @@ a30c1b8), without phase 2 first. Measured at 2048³, 16 threads, 64 GB:
   over would change the results (needs a connectivity option). The 3.1 target of a porosity peak
   below 4 GB at 2048³ is not met (7.9 GB with `--memory 8192`, most of it cache and the VDB
   output).
+- 2026-11-21: the porosity VDB output stores the inside of large pores as tiles of the mean void
+  fraction (ADR 0006 amendment). At 2048³ with `--memory 3000` on 4 cores: vs-porosity 67 s and
+  2.96 GB own peak (was 79 s, 3.9 GB), so the 3.1 target of below 4 GB at 2048³ is met within a
+  3 GB budget. vs-surface 3.4 GB, vs-segment 3.1 GB, vs-thickness 3.7 GB at the same budget.
 
 ### Phase 5: Long runs that can be controlled (about 2–3 weeks, can run alongside phases 3–4)
 
