@@ -1,11 +1,16 @@
 #include "detail/voxel_distance.hpp"
 
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <queue>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace voxelsieve::detail {
@@ -57,6 +62,19 @@ void leavesByGap(const Tree& tree, const CoordBBox& query, const VoxelSize& voxe
       visit(*static_cast<const Leaf*>(next.node));
     }
   }
+}
+
+/// Squared voxelGapMm between the voxel `p` and the box of voxels from `lo` to `hi`, summed in
+/// the same order, so that its root is the same number.
+double squaredGap(const Coord& p, const Coord& lo, const Coord& hi, const VoxelSize& voxel_size) {
+  double sum = 0.0;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const int c = p[axis];
+    const int apart = std::max({0, lo[axis] - c, c - hi[axis]});
+    const double gap = static_cast<double>(std::max(0, apart - 1)) * voxel_size[axis];
+    sum += gap * gap;
+  }
+  return sum;
 }
 
 double squaredDistance(const std::array<double, 3>& a, const std::array<double, 3>& b) {
@@ -176,22 +194,60 @@ double maskGapMm(const Tree& a, const Tree& b, const VoxelSize& voxel_size, doub
   if (!a.evalActiveVoxelBoundingBox(box_a) || !b.evalActiveVoxelBoundingBox(box_b)) {
     return std::numeric_limits<double>::infinity();
   }
-  double best = bound;
-  leavesByGap(a, box_b, voxel_size, best, [&](const Leaf& leaf_a) {
-    for (auto it = leaf_a.cbeginValueOn(); it; ++it) {
-      const CoordBBox voxel(it.getCoord(), it.getCoord());
-      if (voxelGapMm(voxel, box_b, voxel_size) >= best) {
+  // The leaves of `a` nearest to `b` first, so that the bound tightens early. Each leaf of `a`
+  // meets the leaves of `b` in the order of their gap, once for all its voxels: a search per
+  // voxel took minutes for pores of millions of voxels.
+  std::vector<std::pair<double, const Leaf*>> leaves;
+  for (auto it = a.cbeginLeaf(); it; ++it) {
+    CoordBBox box;
+    it->evalActiveBoundingBox(box, true);
+    if (!box.empty()) {
+      leaves.emplace_back(voxelGapMm(box, box_b, voxel_size), &*it);
+    }
+  }
+  std::sort(leaves.begin(), leaves.end(),
+            [](const auto& x, const auto& y) { return x.first < y.first; });
+  std::atomic<double> shared{bound};
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, leaves.size()), [&](const auto& range) {
+    std::vector<Coord> voxels_a;
+    std::vector<Coord> voxels_b;
+    for (std::size_t i = range.begin(); i != range.end(); ++i) {
+      double best = shared.load(std::memory_order_relaxed);
+      if (leaves[i].first >= best) {
         continue;
       }
-      leavesByGap(b, voxel, voxel_size, best, [&](const Leaf& leaf_b) {
+      const Leaf& leaf_a = *leaves[i].second;
+      voxels_a.clear();
+      CoordBBox leaf_box;
+      for (auto it = leaf_a.cbeginValueOn(); it; ++it) {
+        voxels_a.push_back(it.getCoord());
+        leaf_box.expand(it.getCoord());
+      }
+      leavesByGap(b, leaf_box, voxel_size, best, [&](const Leaf& leaf_b) {
+        voxels_b.clear();
+        CoordBBox box;
         for (auto jt = leaf_b.cbeginValueOn(); jt; ++jt) {
-          best = std::min(best,
-                          voxelGapMm(voxel, CoordBBox(jt.getCoord(), jt.getCoord()), voxel_size));
+          voxels_b.push_back(jt.getCoord());
+          box.expand(jt.getCoord());
         }
+        double best2 = best * best;
+        for (const Coord& p : voxels_a) {
+          if (squaredGap(p, box.min(), box.max(), voxel_size) >= best2) {
+            continue;
+          }
+          for (const Coord& q : voxels_b) {
+            best2 = std::min(best2, squaredGap(p, q, q, voxel_size));
+          }
+        }
+        best = std::min(best, std::sqrt(best2));
+        best = std::min(best, shared.load(std::memory_order_relaxed));
       });
+      double seen = shared.load(std::memory_order_relaxed);
+      while (best < seen && !shared.compare_exchange_weak(seen, best, std::memory_order_relaxed)) {
+      }
     }
   });
-  return best;
+  return shared.load();
 }
 
 EnclosingSphere enclosingSphere(std::span<std::array<double, 3>> points) {

@@ -96,6 +96,10 @@ class Gui {
                                             const VolumeRequest& request,
                                             std::optional<int> materials_step = std::nullopt) const;
 
+  /// Which bricks of the dataset output of `dataset_step` hold voxels, per level (volumeBricks).
+  [[nodiscard]] VolumeBricks volumeBricks(std::optional<int> dataset_step,
+                                          std::int64_t brick_size) const;
+
   /// Display mesh of the surface output of `surface_step` (default: the latest surface) in
   /// level-0 voxel coordinates, with at most about `max_triangles` (see surfaceDisplayMesh). The
   /// last meshes stay cached.

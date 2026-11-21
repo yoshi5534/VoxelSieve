@@ -17,10 +17,10 @@
 #include <vector>
 
 #include "voxelsieve/beam_hardening.hpp"
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/render.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -52,9 +52,6 @@ Options:
   --json <file>           Also write the result as JSON
   --slices <png>          Also write a slice across the rotation axis of the input and the
                           result side by side
-  --cache <MB>            Brick cache size (default 1024)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -63,63 +60,48 @@ struct Options {
   bool measure = false;
   std::filesystem::path json;
   std::filesystem::path slices;
-  std::size_t cache_mb = 1024;
   voxelsieve::BeamHardeningOptions correction;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (!arg.starts_with("-")) {
+  while (args.next()) {
+    if (args.positional()) {
       if (!options.dataset.empty()) {
-        throw std::invalid_argument("Unexpected argument: " + std::string(arg));
+        throw voxelsieve::cli::UsageError("Unexpected argument: " + std::string(args.arg()));
       }
-      options.dataset = arg;
-    } else if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--measure") {
+      options.dataset = args.arg();
+    } else if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--measure")) {
       options.measure = true;
-    } else if (arg == "--method") {
-      options.correction.method = voxelsieve::parseBeamHardeningMethod(next());
-    } else if (arg == "--axis") {
-      const std::string axis = next();
+    } else if (args.is("--method")) {
+      options.correction.method = voxelsieve::parseBeamHardeningMethod(args.value());
+    } else if (args.is("--axis")) {
+      const std::string axis = args.value();
       if (axis != "x" && axis != "y" && axis != "z") {
-        throw std::invalid_argument("--axis must be x, y or z");
+        throw voxelsieve::cli::UsageError("--axis must be x, y or z");
       }
       options.correction.rotation_axis = axis[0] - 'x';
-    } else if (arg == "--order") {
-      options.correction.order = std::stoi(next());
-    } else if (arg == "--resolution") {
-      options.correction.resolution = std::stoll(next());
-    } else if (arg == "--value-type") {
-      const std::string type = next();
+    } else if (args.is("--order")) {
+      options.correction.order = static_cast<int>(args.integer());
+    } else if (args.is("--resolution")) {
+      options.correction.resolution = args.integer();
+    } else if (args.is("--value-type")) {
+      const std::string type = args.value();
       if (type != "native") {
         options.correction.output.value_type = voxelsieve::parseValueType(type);
       }
-    } else if (arg == "--json") {
-      options.json = next();
-    } else if (arg == "--slices") {
-      options.slices = next();
-    } else if (arg == "--cache") {
-      options.cache_mb = std::stoull(next());
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
+    } else if (args.is("--json")) {
+      options.json = args.value();
+    } else if (args.is("--slices")) {
+      options.slices = args.value();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.dataset.empty() || (options.out.empty() && !options.measure)) {
-    throw std::invalid_argument("A dataset and --out, or --measure, are required");
+    throw voxelsieve::cli::UsageError("A dataset and --out, or --measure, are required");
   }
   return options;
 }
@@ -201,68 +183,57 @@ void writeSlices(const std::filesystem::path& file,
   voxelsieve::writePng(image, file);
 }
 
+int run(const Options& options) {
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
+  if (options.measure) {
+    const int level = voxelsieve::beamHardeningLevel(dataset, options.correction.resolution);
+    const auto profile = voxelsieve::measureCupping(dataset, level);
+    printProfiles(profile, nullptr);
+    std::cout << std::fixed << std::setprecision(1) << "cupping            "
+              << 100.0 * profile.cupping << " % (level " << level << ")\n";
+    if (!options.json.empty()) {
+      voxelsieve::writeJson(options.json, {{"before", profileJson(profile)}});
+    }
+    return 0;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const auto info = voxelsieve::correctBeamHardening(dataset, options.out, options.correction);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  printProfiles(info.before, &info.after);
+  std::cout << std::fixed << std::setprecision(1) << "method             "
+            << voxelsieve::beamHardeningMethodName(info.method) << " (level " << info.level << ")\n"
+            << "cupping            " << 100.0 * info.before.cupping << " % -> "
+            << 100.0 * info.after.cupping << " %\n"
+            << std::setprecision(0) << "material spread    " << info.material_spread_before
+            << " -> " << info.material_spread_after << " grey values (" << info.fit_voxels
+            << " voxels)\n"
+            << "bricks             " << info.dataset.levels.front().bricks.size() << ", "
+            << info.dataset.active_voxel_count << " active voxels\n"
+            << std::setprecision(2) << "time               " << seconds << " s\n";
+  if (!options.json.empty()) {
+    Json json = {{"method", std::string(voxelsieve::beamHardeningMethodName(info.method))},
+                 {"level", info.level},
+                 {"before", profileJson(info.before)},
+                 {"after", profileJson(info.after)},
+                 {"material_spread_before", info.material_spread_before},
+                 {"material_spread_after", info.material_spread_after},
+                 {"fit_voxels", info.fit_voxels},
+                 {"seconds", seconds}};
+    if (!info.coefficients.empty()) {
+      json["coefficients"] = info.coefficients;
+    }
+    voxelsieve::writeJson(options.json, json);
+  }
+  if (!options.slices.empty()) {
+    const auto output = voxelsieve::Dataset::open(options.out);
+    writeSlices(options.slices, {&dataset, &output}, options.correction.rotation_axis);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-beam-hardening");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto dataset = voxelsieve::Dataset::open(options->dataset, options->cache_mb << 20U);
-    if (options->measure) {
-      const int level = voxelsieve::beamHardeningLevel(dataset, options->correction.resolution);
-      const auto profile = voxelsieve::measureCupping(dataset, level);
-      printProfiles(profile, nullptr);
-      std::cout << std::fixed << std::setprecision(1) << "cupping            "
-                << 100.0 * profile.cupping << " % (level " << level << ")\n";
-      if (!options->json.empty()) {
-        voxelsieve::writeJson(options->json, {{"before", profileJson(profile)}});
-      }
-      voxelsieve::reportTelemetry(telemetry, options->telemetry);
-      return 0;
-    }
-    const auto start = std::chrono::steady_clock::now();
-    const auto info = voxelsieve::correctBeamHardening(dataset, options->out, options->correction);
-    const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    printProfiles(info.before, &info.after);
-    std::cout << std::fixed << std::setprecision(1) << "method             "
-              << voxelsieve::beamHardeningMethodName(info.method) << " (level " << info.level
-              << ")\n"
-              << "cupping            " << 100.0 * info.before.cupping << " % -> "
-              << 100.0 * info.after.cupping << " %\n"
-              << std::setprecision(0) << "material spread    " << info.material_spread_before
-              << " -> " << info.material_spread_after << " grey values (" << info.fit_voxels
-              << " voxels)\n"
-              << "bricks             " << info.dataset.levels.front().bricks.size() << ", "
-              << info.dataset.active_voxel_count << " active voxels\n"
-              << std::setprecision(2) << "time               " << seconds << " s\n";
-    if (!options->json.empty()) {
-      Json json = {{"method", std::string(voxelsieve::beamHardeningMethodName(info.method))},
-                   {"level", info.level},
-                   {"before", profileJson(info.before)},
-                   {"after", profileJson(info.after)},
-                   {"material_spread_before", info.material_spread_before},
-                   {"material_spread_after", info.material_spread_after},
-                   {"fit_voxels", info.fit_voxels},
-                   {"seconds", seconds}};
-      if (!info.coefficients.empty()) {
-        json["coefficients"] = info.coefficients;
-      }
-      voxelsieve::writeJson(options->json, json);
-    }
-    if (!options->slices.empty()) {
-      const auto output = voxelsieve::Dataset::open(options->out, options->cache_mb << 20U);
-      writeSlices(options->slices, {&dataset, &output}, options->correction.rotation_axis);
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-beam-hardening: " << error.what() << '\n';
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-beam-hardening", kUsage, argc, argv, parse, run);
 }

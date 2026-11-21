@@ -14,6 +14,8 @@ const unsigned char kViewer[] = {@VOXELSIEVE_UI_VIEWER@};
 const unsigned char kVolume[] = {@VOXELSIEVE_UI_VOLUME@};
 const unsigned char kTransfer[] = {@VOXELSIEVE_UI_TRANSFER@};
 const unsigned char kScene[] = {@VOXELSIEVE_UI_SCENE@};
+const unsigned char kOrbit[] = {@VOXELSIEVE_UI_ORBIT@};
+const unsigned char kBricks[] = {@VOXELSIEVE_UI_BRICKS@};
 
 std::string_view text(const unsigned char* data, std::size_t size) {
   return {reinterpret_cast<const char*>(data), size};
@@ -42,6 +44,12 @@ std::string_view uiResource(std::string_view name) {
   }
   if (name == "scene.js") {
     return text(kScene, sizeof(kScene));
+  }
+  if (name == "orbit.js") {
+    return text(kOrbit, sizeof(kOrbit));
+  }
+  if (name == "bricks.js") {
+    return text(kBricks, sizeof(kBricks));
   }
   return {};
 }

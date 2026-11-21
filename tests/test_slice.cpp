@@ -194,6 +194,73 @@ TEST_F(SliceTest, VolumeRegionIsReadFinerWithTheWindowOfTheWhole) {
   EXPECT_THROW((void)readVolumePreview(*dataset_, request), std::invalid_argument);
 }
 
+TEST_F(SliceTest, VolumeBricksAreReadAtTheirLevel) {
+  // A brick of the 3D view: 8 voxels of level 1 with one around them, clipped at the volume.
+  VolumeRequest request;
+  request.level = 1;
+  request.max_size = 10;
+  request.region =
+      Box{{(8 - 1) << 1U, 0, (16 - 1) << 1U}, {(16 + 1) << 1U, (8 + 1) << 1U, (24 + 1) << 1U}};
+  request.window = std::array<float, 2>{0.0F, 30000.0F};
+  const VolumePreview brick = readVolumePreview(*dataset_, request);
+  EXPECT_EQ(brick.level, 1);
+  EXPECT_EQ(brick.origin, (std::array<std::int64_t, 3>{7, 0, 15}));
+  const auto& dims1 = dataset_->level(1).dims;
+  EXPECT_EQ(brick.dims,
+            (std::array<std::int64_t, 3>{10, 9, std::min<std::int64_t>(25, dims1[2]) - 15}));
+  const float scale = 255.0F / 30000.0F;
+  for (std::int64_t z = 0; z < brick.dims[2]; z += 2) {
+    for (std::int64_t y = 0; y < brick.dims[1]; y += 3) {
+      for (std::int64_t x = 0; x < brick.dims[0]; x += 3) {
+        const float value =
+            dataset_->sample(1, {7 + x, y, 15 + z}).value_or(dataset_->info().air_level);
+        EXPECT_EQ(brick.grey[static_cast<std::size_t>(x + brick.dims[0] * (y + brick.dims[1] * z))],
+                  std::lround(std::clamp(value * scale, 0.0F, 255.0F)));
+      }
+    }
+  }
+  // The level must hold the region within max_size, and exist.
+  request.max_size = 8;
+  EXPECT_THROW((void)readVolumePreview(*dataset_, request), std::invalid_argument);
+  request.max_size = 10;
+  request.level = 99;
+  EXPECT_THROW((void)readVolumePreview(*dataset_, request), std::invalid_argument);
+}
+
+TEST_F(SliceTest, VolumeBricksTellWhichBricksHoldVoxels) {
+  const VolumeBricks bricks = volumeBricks(*dataset_, 16);
+  ASSERT_EQ(bricks.levels.size(), dataset_->info().levels.size());
+  for (const VolumeBricks::Level& level : bricks.levels) {
+    const auto& dims = dataset_->level(level.level).dims;
+    for (std::size_t a = 0; a < 3; ++a) {
+      EXPECT_EQ(level.grid[a], (dims[a] + 15) / 16);
+    }
+    // A brick holds voxels exactly when some voxel in it is active (sampled on a grid).
+    for (std::int64_t z = 0; z < level.grid[2]; ++z) {
+      for (std::int64_t y = 0; y < level.grid[1]; ++y) {
+        for (std::int64_t x = 0; x < level.grid[0]; ++x) {
+          const auto i = static_cast<std::size_t>((z * level.grid[1] + y) * level.grid[0] + x);
+          const bool present = ((level.present[i / 8] >> (i % 8)) & 1U) != 0;
+          bool active = false;
+          for (std::int64_t k = 0; k < 16 && !active; k += 3) {
+            for (std::int64_t j = 0; j < 16 && !active; j += 3) {
+              for (std::int64_t l = 0; l < 16 && !active; l += 3) {
+                active =
+                    dataset_->sample(level.level, {x * 16 + l, y * 16 + j, z * 16 + k}).has_value();
+              }
+            }
+          }
+          if (active) {
+            EXPECT_TRUE(present) << "level " << level.level << " brick " << x << "," << y << ","
+                                 << z;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_THROW((void)volumeBricks(*dataset_, 0), std::invalid_argument);
+}
+
 TEST_F(SliceTest, PlanesMatchTheSlicesTheyLieIn) {
   const DatasetInfo& info = dataset_->info();
   const auto& pitch = info.voxel_size;

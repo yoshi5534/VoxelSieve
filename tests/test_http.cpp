@@ -235,6 +235,31 @@ TEST_F(HttpTest, RunsStepsAndServesTheirFiles) {
   ASSERT_EQ(part.status, 200U) << part.body;
   EXPECT_EQ(part.body.size(), 2U * 10U * 8U * 6U);
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume?x0=2&y0=3").status, 400U);
+  // The bricks of the 3D view: which hold voxels, and one of them with two voxels around it.
+  const Reply brick_index = request(server_->port(), http::verb::get, "/api/volume_bricks");
+  ASSERT_EQ(brick_index.status, 200U) << brick_index.body;
+  const Json bricks = Json::parse(brick_index.body);
+  EXPECT_EQ(bricks.at("brick"), 32);
+  ASSERT_FALSE(bricks.at("levels").empty());
+  const Json& level0 = bricks.at("levels").at(0);
+  const auto grid = level0.at("grid").get<std::array<std::int64_t, 3>>();
+  EXPECT_EQ(level0.at("present").get<std::string>().size(),
+            static_cast<std::size_t>((grid[0] * grid[1] * grid[2] + 7) / 8 * 2));
+  const Reply brick = request(server_->port(), http::verb::get,
+                              "/api/volume_brick?level=0&i=0&j=0&k=0&low=0&high=100");
+  ASSERT_EQ(brick.status, 200U) << brick.body;
+  const auto dims = level0.at("dims").get<std::array<std::int64_t, 3>>();
+  std::int64_t voxels = 1;
+  for (const std::int64_t d : dims) {
+    voxels *= std::min<std::int64_t>(d, 34);
+  }
+  EXPECT_EQ(brick.body.size(), static_cast<std::size_t>(2 * voxels));
+  EXPECT_EQ(request(server_->port(), http::verb::get, "/api/volume_brick?level=0&i=0").status,
+            400U);
+  EXPECT_EQ(request(server_->port(), http::verb::get,
+                    "/api/volume_brick?level=40&i=0&j=0&k=0&low=0&high=1")
+                .status,
+            400U);
 
   // The extracted surface as a mesh: float32 points, then uint32 triangles, 12 bytes each.
   EXPECT_EQ(request(server_->port(), http::verb::get, "/api/surface").status, 400U);  // none yet

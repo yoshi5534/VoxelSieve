@@ -62,13 +62,16 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     (`Project::results`, ADR 0023) are derived from the steps; new result types need no registry. The
     GUI (UI, MCP) drives everything through operations; new processing becomes an operation
   - `gui.hpp` the GUI engine and its JSON API; `mcp.hpp` serves it as MCP tools and
-    `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in); `slice.hpp`
-    reads slice tiles with the pore and zone overlay, and other objects in a slice (`samplePlane`,
-    `cutMesh`). New GUI
+    `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in; the 3D view
+    streams bricks of the finer levels into an atlas within a VRAM budget, `bricks.js`, ADR 0035);
+    `slice.hpp` reads slice tiles with the pore and zone overlay, the volume and its bricks for the
+    3D view, and other objects in a slice (`samplePlane`, `cutMesh`). New GUI
     features are API methods first, so the UI and AI systems get them alike
 - `apps/` command-line tools, one directory per executable (`vs-phantom`, `vs-sieve`, `vs-synth`,
   `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
-  a battery cell order and an example plugin (`examples/plugins/histogram`)
+  a battery cell order and an example plugin (`examples/plugins/histogram`). Every tool parses with `voxelsieve/cli.hpp` (`cli::Arguments`, `cli::runTool`: the common
+  options, usage, errors and telemetry); the options of the sieve come from the import operations'
+  schema (`sieveParameters`, `sieveOptions` in `operation.hpp`)
 - `python/` the Python package `voxelsieve` (nanobind module `_core` in `core.cpp`, numpy access,
   projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
   (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest

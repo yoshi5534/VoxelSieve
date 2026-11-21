@@ -11,12 +11,11 @@
 #include <string_view>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/mesh.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/surface.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -48,10 +47,6 @@ Options:
   --non-rigid-stiffness <s>
                           Resistance against stretching (default 1): high values let only thin
                           sections bend, low values follow almost any smooth deviation
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -60,7 +55,6 @@ struct Options {
   std::filesystem::path out;
   bool aligned_stl = false;
   voxelsieve::CompareOptions compare;
-  std::filesystem::path telemetry;
 };
 
 std::vector<double> parseNumbers(const std::string& text) {
@@ -73,104 +67,82 @@ std::vector<double> parseNumbers(const std::string& text) {
   return values;
 }
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--align") {
-      options.compare.alignment = voxelsieve::alignmentFromString(next());
-    } else if (arg == "--initial") {
-      options.compare.initial = voxelsieve::RigidTransform::fromMatrix(parseNumbers(next()));
-    } else if (arg == "--tolerance") {
-      options.compare.tolerance_mm = std::stod(next());
-    } else if (arg == "--all-surfaces") {
+  while (args.next()) {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--align")) {
+      options.compare.alignment = voxelsieve::alignmentFromString(args.value());
+    } else if (args.is("--initial")) {
+      options.compare.initial = voxelsieve::RigidTransform::fromMatrix(parseNumbers(args.value()));
+    } else if (args.is("--tolerance")) {
+      options.compare.tolerance_mm = args.number();
+    } else if (args.is("--all-surfaces")) {
       options.compare.outer_surface_only = false;
-    } else if (arg == "--non-rigid") {
+    } else if (args.is("--non-rigid")) {
       options.compare.deformation.enabled = true;
-    } else if (arg == "--non-rigid-spacing") {
-      options.compare.deformation.spacing_mm = std::stod(next());
-    } else if (arg == "--non-rigid-stiffness") {
-      options.compare.deformation.stiffness = std::stod(next());
-    } else if (arg == "--aligned-stl") {
+    } else if (args.is("--non-rigid-spacing")) {
+      options.compare.deformation.spacing_mm = args.number();
+    } else if (args.is("--non-rigid-stiffness")) {
+      options.compare.deformation.stiffness = args.number();
+    } else if (args.is("--aligned-stl")) {
       options.aligned_stl = true;
-    } else if (!arg.starts_with("-") && options.surface.empty()) {
-      options.surface = arg;
-    } else if (!arg.starts_with("-") && options.cad.empty()) {
-      options.cad = arg;
+    } else if (args.positional() && options.surface.empty()) {
+      options.surface = args.arg();
+    } else if (args.positional() && options.cad.empty()) {
+      options.cad = args.arg();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.surface.empty() || options.cad.empty() || options.out.empty()) {
-    throw std::invalid_argument("A surface file, a CAD model and --out are required");
+    throw voxelsieve::cli::UsageError("A surface file, a CAD model and --out are required");
   }
   return options;
+}
+
+int run(const Options& options) {
+  const auto mask = voxelsieve::SurfaceMask::open(options.surface);
+  const auto cad = voxelsieve::readStl(options.cad);
+  const auto result = voxelsieve::compareToCad(mask, cad, options.compare);
+  voxelsieve::writeComparison(result, options.out);
+  if (options.aligned_stl) {
+    voxelsieve::writeAlignedCad(result, cad, options.out / "cad_aligned.stl");
+  }
+  auto json = voxelsieve::toJson(result);
+  json["cad_path"] = std::filesystem::absolute(options.cad).string();
+  voxelsieve::writeJson(options.out / "compare.json", json);
+  const auto& s = result.stats;
+  const auto& t = result.cad_to_scan.translation;
+  std::cout << std::fixed << std::setprecision(4) << "alignment          "
+            << voxelsieve::toString(result.alignment) << ", rotation " << std::setprecision(2)
+            << result.cad_to_scan.angleDegrees() << " deg, translation " << std::setprecision(3)
+            << t[0] << ' ' << t[1] << ' ' << t[2] << " mm\n"
+            << std::setprecision(4) << "fit                rms " << result.fit_rms_mm << " mm, "
+            << std::setprecision(1) << 100.0 * result.fit_inliers << " % of the points, "
+            << result.fit_iterations << " iterations\n"
+            << std::setprecision(4) << "deviation          mean " << s.mean_mm << " mm, rms "
+            << s.rms_mm << " mm, min " << s.min_mm << " mm, max " << s.max_mm << " mm\n"
+            << std::setprecision(3) << "tolerance          +-" << result.tolerance_mm
+            << " mm: " << std::setprecision(1) << 100.0 * s.within_tolerance << " % within, "
+            << 100.0 * s.above_tolerance << " % above, " << 100.0 * s.below_tolerance
+            << " % below\n"
+            << "surface            " << s.vertices << " points, " << s.area_mm2 << " mm^2; "
+            << result.dropped_components << " internal surfaces left out ("
+            << result.dropped_area_mm2 << " mm^2)\n";
+  if (const auto& d = result.deformation; d.applied) {
+    std::cout << std::setprecision(4) << "non-rigid          moved up to " << d.displacement.max_mm
+              << " mm (mean " << d.displacement.mean_mm << " mm), spacing " << d.spacing_mm
+              << " mm, fit rms " << d.fit_rms_mm << " mm; rigid alone: rms " << d.rigid.rms_mm
+              << " mm, " << std::setprecision(1) << 100.0 * d.rigid.within_tolerance
+              << " % within\n";
+  }
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-compare");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto mask = voxelsieve::SurfaceMask::open(options->surface);
-    const auto cad = voxelsieve::readStl(options->cad);
-    const auto result = voxelsieve::compareToCad(mask, cad, options->compare);
-    voxelsieve::writeComparison(result, options->out);
-    if (options->aligned_stl) {
-      voxelsieve::writeAlignedCad(result, cad, options->out / "cad_aligned.stl");
-    }
-    auto json = voxelsieve::toJson(result);
-    json["cad_path"] = std::filesystem::absolute(options->cad).string();
-    voxelsieve::writeJson(options->out / "compare.json", json);
-    const auto& s = result.stats;
-    const auto& t = result.cad_to_scan.translation;
-    std::cout << std::fixed << std::setprecision(4) << "alignment          "
-              << voxelsieve::toString(result.alignment) << ", rotation " << std::setprecision(2)
-              << result.cad_to_scan.angleDegrees() << " deg, translation " << std::setprecision(3)
-              << t[0] << ' ' << t[1] << ' ' << t[2] << " mm\n"
-              << std::setprecision(4) << "fit                rms " << result.fit_rms_mm << " mm, "
-              << std::setprecision(1) << 100.0 * result.fit_inliers << " % of the points, "
-              << result.fit_iterations << " iterations\n"
-              << std::setprecision(4) << "deviation          mean " << s.mean_mm << " mm, rms "
-              << s.rms_mm << " mm, min " << s.min_mm << " mm, max " << s.max_mm << " mm\n"
-              << std::setprecision(3) << "tolerance          +-" << result.tolerance_mm
-              << " mm: " << std::setprecision(1) << 100.0 * s.within_tolerance << " % within, "
-              << 100.0 * s.above_tolerance << " % above, " << 100.0 * s.below_tolerance
-              << " % below\n"
-              << "surface            " << s.vertices << " points, " << s.area_mm2 << " mm^2; "
-              << result.dropped_components << " internal surfaces left out ("
-              << result.dropped_area_mm2 << " mm^2)\n";
-    if (const auto& d = result.deformation; d.applied) {
-      std::cout << std::setprecision(4) << "non-rigid          moved up to "
-                << d.displacement.max_mm << " mm (mean " << d.displacement.mean_mm
-                << " mm), spacing " << d.spacing_mm << " mm, fit rms " << d.fit_rms_mm
-                << " mm; rigid alone: rms " << d.rigid.rms_mm << " mm, " << std::setprecision(1)
-                << 100.0 * d.rigid.within_tolerance << " % within\n";
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-compare: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-compare", kUsage, argc, argv, parse, run);
 }

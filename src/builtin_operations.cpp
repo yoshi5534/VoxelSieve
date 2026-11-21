@@ -272,8 +272,8 @@ class OpenDataset final : public Operation {
   OperationInfo info_;
 };
 
-void addStagingParameters(Json& properties);
-DatasetOptions sieveOptions(const OperationContext& context);
+void addSieveParameters(Json& properties);
+DatasetOptions importSieveOptions(const OperationContext& context);
 
 class ImportRaw final : public Operation {
  public:
@@ -306,32 +306,10 @@ class ImportRaw final : public Operation {
            {{"type", "integer"},
             {"minimum", 0},
             {"description",
-             "Header size; default: file size minus voxel data (0 for gzip-compressed files)"}}},
-          {"threshold",
-           {{"type", "number"},
-            {"description",
-             "Air/material grey value; default: estimated (valley after the air peak)"}}},
-          {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
-          {"min_material_voxels",
-           {{"type", "integer"},
-            {"minimum", 1},
-            {"maximum", 512},
-            {"default", 1},
-            {"description",
-             "Voxels above the threshold for an 8^3 block to count as material; raise it for "
-             "noisy scans"}}},
-          {"outside_air_axes",
-           {{"type", "string"},
-            {"pattern", "^[xyz]+$"},
-            {"default", "xyz"},
-            {"description",
-             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
-             "through the part (a pipe), so its inside is kept"}}},
-          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}},
-          {"value_type", valueTypeParameter()}}},
+             "Header size; default: file size minus voxel data (0 for gzip-compressed files)"}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
-    addStagingParameters(info_.parameters["properties"]);
+    addSieveParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -374,7 +352,7 @@ class ImportRaw final : public Operation {
       context.log("gzip-compressed: decompressed once, in slice order, into the staging copy");
     }
     const DatasetInfo info =
-        writeDataset(source, context.output_dir / "dataset.vsieve", sieveOptions(context));
+        writeDataset(source, context.output_dir / "dataset.vsieve", importSieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -418,32 +396,10 @@ class ImportTiff final : public Operation {
            {{"type", "string"},
             {"description",
              "Folder of the slices when there are several; default: the grey values, not "
-             "labels or masks"}}},
-          {"threshold",
-           {{"type", "number"},
-            {"description",
-             "Air/material grey value; default: estimated (valley after the air peak)"}}},
-          {"margin_voxels", {{"type", "integer"}, {"minimum", 0}, {"default", 3}}},
-          {"min_material_voxels",
-           {{"type", "integer"},
-            {"minimum", 1},
-            {"maximum", 512},
-            {"default", 1},
-            {"description",
-             "Voxels above the threshold for an 8^3 block to count as material; raise it for "
-             "noisy scans"}}},
-          {"outside_air_axes",
-           {{"type", "string"},
-            {"pattern", "^[xyz]+$"},
-            {"default", "xyz"},
-            {"description",
-             "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
-             "through the part (a pipe), so its inside is kept"}}},
-          {"brick_size", {{"type", "integer"}, {"minimum", 8}, {"default", 256}}},
-          {"value_type", valueTypeParameter()}}},
+             "labels or masks"}}}}},
         {"required", {"path"}}};
     addVoxelSizeParameters(info_.parameters["properties"], "Default: from the files, else 1 mm");
-    addStagingParameters(info_.parameters["properties"]);
+    addSieveParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
 
@@ -481,7 +437,7 @@ class ImportTiff final : public Operation {
                   (tiff.value_range ? "" : " (estimated; set value_range)"));
     }
     const DatasetInfo info =
-        writeDataset(sieved, context.output_dir / "dataset.vsieve", sieveOptions(context));
+        writeDataset(sieved, context.output_dir / "dataset.vsieve", importSieveOptions(context));
     OperationResult result;
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
@@ -509,66 +465,11 @@ class ImportTiff final : public Operation {
   OperationInfo info_;
 };
 
-/// Where an import copies a slow input first (`DatasetOptions::stage_slow_sources`), shared by
-/// every import.
-void addStagingParameters(Json& properties) {
-  properties["staging"] = {
-      {"type", "boolean"},
-      {"default", true},
-      {"description",
-       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
-       "raw file first, so that every slice is decoded once; it needs 1 or 2 bytes per voxel (as "
-       "the input) of free "
-       "space. Off: read the slices directly, with no temporary file but more decoding"}};
-  properties["staging_dir"] = {
-      {"type", "string"},
-      {"format", "path"},
-      {"description",
-       "Directory of the temporary copy, best a fast local disk; default: the step's directory "
-       "in the project"}};
-}
+/// Parameters of the sieve shared by every import.
+void addSieveParameters(Json& properties) { properties.update(sieveParameters()); }
 
-/// Parameters of the sieve shared by the imports of DICOM stacks and gzipped XML projects.
-void addSieveParameters(Json& properties) {
-  properties["threshold"] = {
-      {"type", "number"},
-      {"description", "Air/material grey value; default: estimated (valley after the air peak)"}};
-  properties["margin_voxels"] = {{"type", "integer"}, {"minimum", 0}, {"default", 3}};
-  properties["min_material_voxels"] = {
-      {"type", "integer"},
-      {"minimum", 1},
-      {"maximum", 512},
-      {"default", 1},
-      {"description",
-       "Voxels above the threshold for an 8^3 block to count as material; raise it for noisy "
-       "scans"}};
-  properties["outside_air_axes"] = {
-      {"type", "string"},
-      {"pattern", "^[xyz]+$"},
-      {"default", "xyz"},
-      {"description",
-       "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
-       "through the part (a pipe), so its inside is kept"}};
-  properties["brick_size"] = {{"type", "integer"}, {"minimum", 8}, {"default", 256}};
-  properties["value_type"] = valueTypeParameter();
-  addStagingParameters(properties);
-}
-
-DatasetOptions sieveOptions(const OperationContext& context) {
-  const Json& p = context.params;
-  DatasetOptions options;
-  if (p.contains("threshold")) {
-    options.threshold = p.at("threshold").get<float>();
-  }
-  options.margin_voxels = p.value("margin_voxels", 3);
-  options.brick_size = p.value("brick_size", std::int64_t{256});
-  options.min_material_voxels = p.value("min_material_voxels", 1);
-  options.outside_air_axes = parseAirAxes(p.value("outside_air_axes", std::string("xyz")));
-  options.value_type = valueTypeOption(p);
-  options.stage_slow_sources = p.value("staging", true);
-  if (const std::string dir = p.value("staging_dir", std::string()); !dir.empty()) {
-    options.staging_dir = dir;
-  }
+DatasetOptions importSieveOptions(const OperationContext& context) {
+  DatasetOptions options = sieveOptions(context.params);
   options.progress = datasetProgress(context);
   options.preview = importPreview(context);
   return options;
@@ -606,7 +507,7 @@ OperationResult sieveDicom(const DicomStackSource& source, const RigidTransform&
   const int factor = context.params.value("interpolate_slices", 1);
   const DatasetInfo info =
       writeDataset(InterpolatedSource(source, factor), context.output_dir / "dataset.vsieve",
-                   sieveOptions(context));
+                   importSieveOptions(context));
   OperationResult result;
   result.outputs["dataset"] = "dataset.vsieve";
   result.summary = datasetSummary(info);
@@ -3569,6 +3470,69 @@ class ExportDiconde final : public Operation {
 };
 
 }  // namespace
+
+Json sieveParameters() {
+  Json properties = Json::object();
+  properties["threshold"] = {
+      {"type", "number"},
+      {"description", "Air/material grey value; default: estimated (valley after the air peak)"}};
+  properties["margin_voxels"] = {{"type", "integer"},
+                                 {"minimum", 0},
+                                 {"default", 3},
+                                 {"description", "Air margin kept around the part, in voxels"}};
+  properties["min_material_voxels"] = {
+      {"type", "integer"},
+      {"minimum", 1},
+      {"maximum", 512},
+      {"default", 1},
+      {"description",
+       "Voxels above the threshold for an 8^3 block to count as material; raise it for noisy "
+       "scans"}};
+  properties["outside_air_axes"] = {
+      {"type", "string"},
+      {"pattern", "^[xyz]+$"},
+      {"default", "xyz"},
+      {"description",
+       "Axes whose boundary faces let outside air in; xy when the first and last slice cut "
+       "through the part (a pipe, a long part scanned in sections), so its inside is kept"}};
+  properties["brick_size"] = {{"type", "integer"},
+                              {"minimum", 8},
+                              {"default", 256},
+                              {"description", "Brick edge length in voxels, a multiple of 8"}};
+  properties["value_type"] = valueTypeParameter();
+  properties["staging"] = {
+      {"type", "boolean"},
+      {"default", true},
+      {"description",
+       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
+       "raw file first, so that every slice is decoded once; it needs 1 or 2 bytes per voxel (as "
+       "the input) of free space. Off: read the slices directly, with no temporary file but more "
+       "decoding"}};
+  properties["staging_dir"] = {
+      {"type", "string"},
+      {"format", "path"},
+      {"description",
+       "Directory of the temporary copy, best a fast local disk; default: where the dataset is "
+       "written (the step's directory in a project)"}};
+  return properties;
+}
+
+DatasetOptions sieveOptions(const Json& params) {
+  DatasetOptions options;
+  if (params.contains("threshold")) {
+    options.threshold = params.at("threshold").get<float>();
+  }
+  options.margin_voxels = params.value("margin_voxels", 3);
+  options.brick_size = params.value("brick_size", std::int64_t{256});
+  options.min_material_voxels = params.value("min_material_voxels", 1);
+  options.outside_air_axes = parseAirAxes(params.value("outside_air_axes", std::string("xyz")));
+  options.value_type = valueTypeOption(params);
+  options.stage_slow_sources = params.value("staging", true);
+  if (const std::string dir = params.value("staging_dir", std::string()); !dir.empty()) {
+    options.staging_dir = dir;
+  }
+  return options;
+}
 
 void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<OpenDataset>());

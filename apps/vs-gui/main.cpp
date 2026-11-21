@@ -25,10 +25,10 @@
 #include <thread>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/gui.hpp"
 #include "voxelsieve/http_server.hpp"
 #include "voxelsieve/mcp.hpp"
-#include "voxelsieve/resources.hpp"
 
 namespace {
 
@@ -104,52 +104,42 @@ std::filesystem::path expandHome(const std::string& path) {
                           : std::filesystem::path(home) / path.substr(2);
 }
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  const std::vector<std::string_view> args(argv + 1, argv + argc);
-  for (std::size_t i = 0; i < args.size(); ++i) {
-    const std::string_view arg = args[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= args.size()) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return std::string(args[++i]);
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    }
-    if (arg == "--mcp") {
+  while (args.next()) {
+    if (args.is("--mcp")) {
       options.mcp = true;
-    } else if (arg == "--tools") {
-      const std::string profile = next();
+    } else if (args.is("--tools")) {
+      const std::string profile = args.value();
       if (profile == "analysis") {
         options.tools = voxelsieve::McpTools::kAnalysis;
       } else if (profile == "all") {
         options.tools = voxelsieve::McpTools::kAll;
       } else {
-        throw std::invalid_argument("Unknown tool profile " + profile + " (analysis or all)");
+        throw voxelsieve::cli::UsageError("Unknown tool profile " + profile + " (analysis or all)");
       }
-    } else if (arg == "--host") {
-      options.host = next();
-    } else if (arg == "--port") {
-      const int port = std::stoi(next());
+    } else if (args.is("--host")) {
+      options.host = args.value();
+    } else if (args.is("--port")) {
+      const std::int64_t port = args.integer();
       if (port < 0 || port > 65535) {
-        throw std::invalid_argument("Port out of range");
+        throw voxelsieve::cli::UsageError("Port out of range");
       }
       options.port = static_cast<unsigned short>(port);
-    } else if (arg == "--project") {
-      options.project = expandHome(next());
-    } else if (arg == "--no-reopen") {
+    } else if (args.is("--project")) {
+      options.project = expandHome(args.value());
+    } else if (args.is("--no-reopen")) {
       options.reopen = false;
-    } else if (arg == "--plugins") {
-      options.plugins.push_back(expandHome(next()));
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg.starts_with("-")) {
-      throw std::invalid_argument("Unknown argument " + std::string(arg));
+    } else if (args.is("--plugins")) {
+      options.plugins.push_back(expandHome(args.value()));
+    } else if (args.positional()) {
+      options.roots.push_back(expandHome(std::string(args.arg())));
     } else {
-      options.roots.push_back(expandHome(std::string(arg)));
+      args.unknown();
     }
+  }
+  if (!args.telemetry().empty()) {
+    throw voxelsieve::cli::UsageError("vs-gui records no telemetry");
   }
   return options;
 }
@@ -214,43 +204,44 @@ void serveUntilStopped(voxelsieve::HttpServer& server) {
 
 int main(int argc, char** argv) {
   try {
-    const auto options = parse(argc, argv);
-    if (!options) {
+    voxelsieve::cli::Arguments args(argc, argv);
+    if (args.help()) {
       std::cout << kUsage;
       return 0;
     }
+    const Options options = parse(args);
     auto plugin_dirs = voxelsieve::pluginPathFromEnvironment();
-    plugin_dirs.insert(plugin_dirs.end(), options->plugins.begin(), options->plugins.end());
+    plugin_dirs.insert(plugin_dirs.end(), options.plugins.begin(), options.plugins.end());
     voxelsieve::Gui gui(plugin_dirs);
-    for (const auto& root : options->roots) {
+    for (const auto& root : options.roots) {
       std::filesystem::create_directories(root);
     }
-    gui.setAllowedRoots(options->roots);
+    gui.setAllowedRoots(options.roots);
     // stdout carries the protocol; everything else goes to stderr.
     for (const std::string& message : gui.pluginMessages()) {
       std::cerr << "vs-gui: " << message << "\n";
     }
     gui.setProjectMemory(projectMemoryFile());
-    if (options->project) {
-      const bool exists = std::filesystem::exists(*options->project / "project.json");
+    if (options.project) {
+      const bool exists = std::filesystem::exists(*options.project / "project.json");
       (void)gui.call(exists ? "project_open" : "project_create",
-                     {{"path", options->project->string()}});
-    } else if (options->mcp && options->reopen) {
+                     {{"path", options.project->string()}});
+    } else if (options.mcp && options.reopen) {
       if (const auto reopened = gui.reopenProject()) {
         std::cerr << "vs-gui: reopened the project used last, " << reopened->string() << "\n";
       }
     }
-    if (options->mcp) {
+    if (options.mcp) {
 #ifdef _WIN32
       // Messages are lines ending in \n; text mode would turn them into \r\n.
       (void)_setmode(_fileno(stdin), _O_BINARY);
       (void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
-      voxelsieve::McpServer::serve(gui, std::cin, std::cout, options->tools);
+      voxelsieve::McpServer::serve(gui, std::cin, std::cout, options.tools);
       return 0;
     }
-    voxelsieve::HttpServer server(gui, options->host, options->port);
-    std::cerr << "vs-gui: http://" << (options->host == "0.0.0.0" ? "localhost" : options->host)
+    voxelsieve::HttpServer server(gui, options.host, options.port);
+    std::cerr << "vs-gui: http://" << (options.host == "0.0.0.0" ? "localhost" : options.host)
               << ":" << server.port() << "/?token=" << server.token() << "  (Ctrl+C to stop)\n";
     serveUntilStopped(server);
     return 0;

@@ -810,5 +810,6 @@ if (typeof window !== 'undefined') {
   Object.assign(window, { SliceViewer, MATERIAL_COLORS, SLICE_AXIS_NAMES: AXIS_NAMES });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { cutsToScreen, insideWindow, layerPixels, slicePixels, thicknessRgb };
+  module.exports = { cutsToScreen, insideWindow, layerPixels, slicePixels, thicknessRgb,
+    SliceViewer, TILE, MAX_REQUESTS, MIN_TILES };
 }

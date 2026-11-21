@@ -284,90 +284,33 @@ class SceneViewer {
     return p.map((c, k) => c * this.fit.size + this.fit.center[k]);
   }
 
+  /// Takes the canvas of the view; the same canvas keeps its context across re-renders.
   attach(canvas) {
+    if (this.canvas === canvas && this.gl) {
+      this.requestDraw();
+      return;
+    }
     this.canvas = canvas;
-    this.gl = canvas.getContext('webgl2');
-    if (!this.gl) {
-      throw new Error('The 3D view needs WebGL2, which this browser has turned off. Try Edge or ' +
-        'Chrome; in Firefox set webgl.force-enabled to true in about:config, or update the ' +
-        'graphics driver.');
-    }
-    for (const mesh of this.meshes.values()) mesh.buffers = null;
-    this.axes = null;
-    this.program = this.createProgram();
-    let drag = null;
-    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
-    canvas.addEventListener('pointerdown', (event) => {
-      drag = {
-        x: event.clientX, y: event.clientY, yaw: this.yaw, pitch: this.pitch,
-        target: [...this.target], pan: event.button === 2 || event.shiftKey, moved: false,
-      };
-      canvas.setPointerCapture(event.pointerId);
-    });
-    canvas.addEventListener('pointermove', (event) => {
-      if (!drag) return;
-      const dx = event.clientX - drag.x;
-      const dy = event.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-      if (!drag.moved) return;
-      if (drag.pan) {
-        const { right, up } = this.camera();
-        const scale = 0.7 * this.distance / Math.max(canvas.clientHeight, 1);
-        this.target = drag.target.map((c, i) => c - (right[i] * dx - up[i] * dy) * scale);
-      } else {
-        this.yaw = drag.yaw - dx * 0.01;
-        this.pitch = Math.min(Math.max(drag.pitch + dy * 0.01, -1.5), 1.5);
-      }
+    this.gl = attachContext(canvas, (gl) => {
+      this.gl = gl;
+      this.lost = false;
+      for (const mesh of this.meshes.values()) mesh.buffers = null;
+      this.axes = null;
+      this.program = compileProgram(gl, SCENE_VERTEX, SCENE_FRAGMENT);
       this.requestDraw();
+    }, () => {
+      this.lost = true;
     });
-    canvas.addEventListener('pointerup', (event) => {
-      if (drag?.moved) this.onInteract();
-      else if (drag && this.onPick && event.button === 0) this.pick(event);
-      drag = null;
+    attachOrbitInput(canvas, this, {
+      minDistance: 0.02, maxDistance: 20,
+      onClick: (event) => { if (this.onPick) this.pick(event); },
     });
-    canvas.addEventListener('wheel', (event) => {
-      event.preventDefault();
-      this.distance = Math.min(Math.max(this.distance * Math.exp(event.deltaY * 0.001), 0.02), 20);
-      this.requestDraw();
-      this.onInteract();
-    }, { passive: false });
-    new ResizeObserver(() => this.requestDraw()).observe(canvas);
     this.requestDraw();
-  }
-
-  createProgram() {
-    const gl = this.gl;
-    const compile = (type, source) => {
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        throw new Error(gl.getShaderInfoLog(shader));
-      }
-      return shader;
-    };
-    const program = gl.createProgram();
-    gl.attachShader(program, compile(gl.VERTEX_SHADER, SCENE_VERTEX));
-    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, SCENE_FRAGMENT));
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new Error(gl.getProgramInfoLog(program));
-    }
-    return program;
   }
 
   /// Eye position and view axes of the camera, orbiting `target` with z up.
   camera() {
-    const offset = [
-      this.distance * Math.cos(this.pitch) * Math.cos(this.yaw),
-      this.distance * Math.cos(this.pitch) * Math.sin(this.yaw),
-      this.distance * Math.sin(this.pitch),
-    ];
-    const eye = offset.map((c, i) => c + this.target[i]);
-    const forward = sceneNormalize(offset.map((c) => -c));
-    const right = sceneNormalize(sceneCross(forward, [0, 0, 1]));
-    const up = sceneCross(right, forward);
-    return { eye, forward, right, up };
+    return orbitCamera(this);
   }
 
   /// Picks the point of a shown object under the pointer and hands it to onPick.
@@ -468,7 +411,7 @@ class SceneViewer {
   draw() {
     const gl = this.gl;
     const canvas = this.canvas;
-    if (!gl) return;
+    if (!gl || this.lost) return;
     const ratio = window.devicePixelRatio || 1;
     const width = Math.round(canvas.clientWidth * ratio);
     const height = Math.round(canvas.clientHeight * ratio);
@@ -513,15 +456,6 @@ class SceneViewer {
       this.drawLines(gl.POINTS, this.toScene(pick.point), pick.color, 9 * ratio);
     }
   }
-}
-
-function sceneNormalize(v) {
-  const length = Math.hypot(...v);
-  return v.map((c) => c / length);
-}
-
-function sceneCross(a, b) {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 if (typeof window !== 'undefined') {

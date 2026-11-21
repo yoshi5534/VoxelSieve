@@ -24,6 +24,8 @@ voxelsieve_embed(VOXELSIEVE_UI_VIEWER ${VOXELSIEVE_UI_DIR}/viewer.js)
 voxelsieve_embed(VOXELSIEVE_UI_VOLUME ${VOXELSIEVE_UI_DIR}/volume.js)
 voxelsieve_embed(VOXELSIEVE_UI_TRANSFER ${VOXELSIEVE_UI_DIR}/transfer.js)
 voxelsieve_embed(VOXELSIEVE_UI_SCENE ${VOXELSIEVE_UI_DIR}/scene.js)
+voxelsieve_embed(VOXELSIEVE_UI_ORBIT ${VOXELSIEVE_UI_DIR}/orbit.js)
+voxelsieve_embed(VOXELSIEVE_UI_BRICKS ${VOXELSIEVE_UI_DIR}/bricks.js)
 configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp @ONLY)
 
 add_library(voxelsieve SHARED
@@ -44,8 +46,16 @@ add_library(voxelsieve SHARED
   preview.cpp
   orientation.cpp
   battery.cpp
+  battery_cylinder.cpp
+  battery_image_cells.cpp
   battery_images.cpp
+  battery_layers.cpp
+  battery_particles.cpp
+  battery_render.cpp
+  battery_stack.cpp
+  battery_views.cpp
   cells.cpp
+  cli.cpp
   porosity.cpp
   progress.cpp
   region.cpp
@@ -77,6 +87,11 @@ add_library(voxelsieve SHARED
   thickness.cpp
   thickness_map.cpp
   dimensional.cpp
+  dimensional_datums.cpp
+  dimensional_extraction.cpp
+  dimensional_features.cpp
+  dimensional_fit.cpp
+  dimensional_plan.cpp
   render.cpp
   resources.cpp
   synthetic.cpp
