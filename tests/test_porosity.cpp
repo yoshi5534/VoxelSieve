@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <numbers>
 #include <random>
 #include <string>
@@ -173,6 +174,37 @@ TEST_F(PorosityTest, TinyBrickCacheGivesTheSameResult) {
   EXPECT_GT(tiny.cacheStats().misses, tiny.cacheStats().bricks);
 }
 
+TEST_F(PorosityTest, BrickFacesGiveTheSameResultAsOneBrick) {
+  // Bricks of 32 voxels put many pores, zones and the part surface on brick faces, where the
+  // analysis looks at the voxels across a face from the faces it recorded instead of the
+  // neighbouring brick. One brick holding the whole volume has no faces inside it.
+  SyntheticSpec spec;
+  spec.noise_sigma = 500.0;
+  spec.lunker_count = 6;
+  spec.lunker_radius_mm = 0.4;
+  spec.loosening_count = 2;
+  const SyntheticScan scan(boxMesh({8.0, 6.0, 4.0}), spec);
+  const PorosityResult bricked = analyze(scan);
+  DatasetOptions options;
+  options.brick_size = 1024;
+  (void)writeDataset(scan, dir_ / "one.vsieve", options);
+  const auto one = Dataset::open(dir_ / "one.vsieve");
+  ASSERT_EQ(one.info().levels.front().bricks.size(), 1U);
+  const PorosityResult whole = analyzePorosity(one);
+
+  ASSERT_GE(whole.pores.size(), 4U);
+  ASSERT_EQ(bricked.pores.size(), whole.pores.size());
+  for (std::size_t i = 0; i < whole.pores.size(); ++i) {
+    EXPECT_EQ(bricked.pores[i].voxel_count, whole.pores[i].voxel_count) << "pore " << i;
+    EXPECT_NEAR(bricked.pores[i].volume_mm3, whole.pores[i].volume_mm3, 1e-9) << "pore " << i;
+    EXPECT_NEAR(bricked.pores[i].surface_distance_mm, whole.pores[i].surface_distance_mm, 1e-9)
+        << "pore " << i;
+  }
+  ASSERT_EQ(bricked.zones.size(), whole.zones.size());
+  EXPECT_NEAR(bricked.part_volume_mm3, whole.part_volume_mm3, 1e-6);
+  EXPECT_EQ(bricked.material_level, whole.material_level);
+}
+
 TEST_F(PorosityTest, ObliqueAndCurvedFacesAreNoZones) {
   // A thin-walled casting: on its cone, fillets and bores the surface cuts obliquely through the
   // blocks, so many blocks hold a sliver of the partial-volume edge.
@@ -316,6 +348,22 @@ TEST_F(PorosityTest, WritesJsonImagesAndVdb) {
     std::string signature(8, '\0');
     png.read(signature.data(), 8);
     EXPECT_EQ(signature, "\x89PNG\r\n\x1a\n") << name;
+  }
+
+  // The analysis takes the material images in its last pass; without them (a loaded result)
+  // the images read the bricks and come out the same.
+  ASSERT_EQ(result.material_projection_pixels, kPorosityImagePixels);
+  PorosityResult without = result;
+  without.material_projections = {};
+  without.material_projection_pixels = 0;
+  const auto again = dir_ / "again";
+  writePorosityImages(*dataset_, without, again);
+  for (const char* name : {"projection_x.png", "projection_y.png", "projection_z.png"}) {
+    const auto read = [](const std::filesystem::path& path) {
+      std::ifstream in(path, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    EXPECT_EQ(read(out / name), read(again / name)) << name;
   }
 
   writePorosityVdb(*dataset_, result, out / "porosity.vdb");

@@ -105,6 +105,12 @@ struct PorosityResult {
   /// Material volume in mm^3 per 8^3 block (index = block coordinate), voids excluded. Used for
   /// the part volume of a region; costs about 4 bytes per block of the part.
   openvdb::FloatGrid::Ptr material_blocks;
+  /// The material thickness images along x, y and z that `writePorosityImages` draws, with
+  /// `material_projection_pixels` as its `max_pixels`: the analysis sums them in its last pass
+  /// over the bricks, so that writing the images reads no brick again. Not saved; empty for a
+  /// loaded result, which then reads the bricks.
+  std::array<std::vector<double>, 3> material_projections;
+  std::int64_t material_projection_pixels = 0;
 
   /// Part volume of an axis-aligned box in mm (dataset coordinates, voxel index times voxel
   /// size): the material of the blocks overlapping the box, weighted by the overlap, plus the
@@ -136,8 +142,10 @@ void savePorosityResult(const PorosityResult& result, const std::filesystem::pat
 
 /// Writes projections along x, y and z as PNG images: the part as a grey thickness image, pores in
 /// red and zones in yellow. Images wider than `max_pixels` are downsampled.
+inline constexpr std::int64_t kPorosityImagePixels = 1024;
 void writePorosityImages(const Dataset& dataset, const PorosityResult& result,
-                         const std::filesystem::path& dir, std::int64_t max_pixels = 1024);
+                         const std::filesystem::path& dir,
+                         std::int64_t max_pixels = kPorosityImagePixels);
 
 /// Writes a VDB file with the grid "pores" (void fraction of pore voxels) and the grid "zones"
 /// (void fraction of flagged blocks), in the dataset's world space, for viewing next to the part

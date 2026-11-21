@@ -572,6 +572,13 @@ a30c1b8), without phase 2 first. Measured at 2048³, 16 threads, 64 GB:
   fraction (ADR 0006 amendment). At 2048³ with `--memory 3000` on 4 cores: vs-porosity 67 s and
   2.96 GB own peak (was 79 s, 3.9 GB), so the 3.1 target of below 4 GB at 2048³ is met within a
   3 GB budget. vs-surface 3.4 GB, vs-segment 3.1 GB, vs-thickness 3.7 GB at the same budget.
+- 2026-11-21, measured on a laptop with 2 cores and 7.7 GB (i7-4550U): every tool runs up to
+  2560³ (`vs-sieve --phantom`, `--memory 3000`), limited by its 24 GB of free disk. Porosity read
+  its bricks 7–8 times over (75 GB for 9 GB of level 0) and kept 1.3 of 4 threads busy. Now the
+  halo passes take the voxels across a brick face from `detail::BrickFaces` (one bit per face
+  voxel, recorded in the first pass), and the pore volumes and material images are summed in the
+  part-volume pass: at 2048³ 16.4 instead of 34.5 GB read (3.5 times level 0), 39 instead of
+  67 s on 4 cores.
 
 ### Phase 5: Long runs that can be controlled (about 2–3 weeks, can run alongside phases 3–4)
 
