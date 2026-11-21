@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Smaller porosity VDB output**: inside large pores `porosity.vdb` stores one tile per 8³ cell
+  with the mean void fraction of the cell instead of a value per voxel; the walls of the pores
+  keep the fraction of every voxel. At 2048³ (the phantom's cavity) the output phase took 5 s
+  instead of 18 s and 2.9 instead of 3.9 GB, and the file 5 MB instead of 1.5 GB.
+
 - **Training on large scans and on the GPU**: `tools/models/train_unet.py` and
   `train_denoiser.py` read their patches as they train, from raw volumes or directly from a
   dataset (`.vsieve`) and material volume, without a pass over the scan first; batches are made

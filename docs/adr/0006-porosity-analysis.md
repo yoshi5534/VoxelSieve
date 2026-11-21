@@ -95,3 +95,13 @@ optional input (`per_material`, default true, turns it off) and `vs-porosity` ta
   varies by ±1.5 %, zones need about 5 % void to stand out. On the laminate, the zone void fell
   from 33 mm³ to 0.23 mm³, all of it in the dark arc of a cone beam artefact at the end of the
   scanned range.
+
+## Amendment (2026-11-21): tiles inside large pores in the VDB output
+
+The "pores" grid of `porosity.vdb` holds the void fraction per voxel, which took 4 B for every
+pore voxel: at 2048³ the phantom's cavity made the output the peak of the whole analysis (3.9 GB
+with a 3 GB budget) and a 1.5 GB file. Where the pore labels store a cell of 8³ voxels as a tile,
+the cell lies wholly inside the pore; the grid now stores it as a tile holding the mean void
+fraction of its voxels. The void volume of the grid stays the same, and the walls of the pores,
+where partial volumes matter, keep the fraction of every voxel. At 2048³ the output phase took
+5 s instead of 18 s and 2.9 GB, the file 5 MB.

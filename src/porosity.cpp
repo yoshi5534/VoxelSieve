@@ -1699,7 +1699,11 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
   const double contrast = std::max(1.0, static_cast<double>(result.material_level) - air);
   auto pores = openvdb::FloatGrid::create(0.0F);
   if (result.pore_labels) {
-    // Leaves of void fractions built in parallel, a chunk at a time, and added in order.
+    // Void fractions built in parallel, a chunk at a time, and added in order. Cells that the
+    // labels store as tiles lie wholly inside a pore: they become tiles holding the mean void
+    // fraction of the cell, so the void volume stays the same while the grid keeps 4 B per cell
+    // instead of per voxel there (a cavity of 5e8 voxels took 2 GB as leaves). Leaves of the
+    // labels, at the walls of the pores, keep the fraction of every voxel.
     using LabelLeaf = openvdb::Int32Tree::LeafNodeType;
     using FloatLeaf = openvdb::FloatTree::LeafNodeType;
     std::vector<std::pair<Coord, const LabelLeaf*>> cells;
@@ -1708,29 +1712,43 @@ void writePorosityVdb(const Dataset& dataset, const PorosityResult& result,
     });
     constexpr std::size_t kChunk = std::size_t{1} << 14U;
     std::vector<std::unique_ptr<FloatLeaf>> leaves;
+    std::vector<float> tiles;  // mean fraction of a tile cell, at the index of its cell
     for (std::size_t begin = 0; begin < cells.size(); begin += kChunk) {
       const std::size_t end = std::min(cells.size(), begin + kChunk);
       leaves.clear();
       leaves.resize(end - begin);
+      tiles.assign(end - begin, 0.0F);
       tbb::parallel_for(tbb::blocked_range<std::size_t>(begin, end), [&](const auto& range) {
         Dataset::Sampler grey(dataset, 0);
         for (std::size_t i = range.begin(); i != range.end(); ++i) {
           const auto& [origin, leaf] = cells[i];
-          auto out = std::make_unique<FloatLeaf>(origin, 0.0F, false);
-          for (openvdb::Index pos = 0; pos < FloatLeaf::SIZE; ++pos) {
-            if (leaf != nullptr && !leaf->isValueOn(pos)) {
-              continue;
-            }
+          const auto fraction_at = [&](openvdb::Index pos) {
             const Coord c = origin + FloatLeaf::offsetToLocalCoord(pos);
             const auto value = grey({c.x(), c.y(), c.z()});
             const double fraction = value ? (result.material_level - *value) / contrast : 1.0;
-            out->setValueOn(pos, static_cast<float>(std::clamp(fraction, 0.0, 1.0)));
+            return std::clamp(fraction, 0.0, 1.0);
+          };
+          if (leaf == nullptr) {
+            double sum = 0.0;
+            for (openvdb::Index pos = 0; pos < FloatLeaf::SIZE; ++pos) {
+              sum += fraction_at(pos);
+            }
+            tiles[i - begin] = static_cast<float>(sum / static_cast<double>(FloatLeaf::SIZE));
+            continue;
+          }
+          auto out = std::make_unique<FloatLeaf>(origin, 0.0F, false);
+          for (auto on = leaf->cbeginValueOn(); on; ++on) {
+            out->setValueOn(on.pos(), static_cast<float>(fraction_at(on.pos())));
           }
           leaves[i - begin] = std::move(out);
         }
       });
-      for (auto& leaf : leaves) {
-        pores->tree().addLeaf(leaf.release());
+      for (std::size_t i = begin; i < end; ++i) {
+        if (leaves[i - begin]) {
+          pores->tree().addLeaf(leaves[i - begin].release());
+        } else {
+          pores->tree().addTile(1, cells[i].first, tiles[i - begin], true);
+        }
       }
     }
   }

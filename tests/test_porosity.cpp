@@ -129,6 +129,32 @@ TEST_F(PorosityTest, LargeLunkerCountsEveryVoxel) {
               static_cast<std::uint8_t>(SliceOverlay::kPore))
         << "level " << level;
   }
+
+  // The VDB output keeps the tiles: the inside holds the mean void fraction of each 8^3 cell,
+  // so the grid stays small while it counts the same voxels and about the same void volume as
+  // the pore result.
+  const auto out = dir_ / "out";
+  std::filesystem::create_directories(out);
+  writePorosityVdb(*dataset_, result, out / "porosity.vdb");
+  openvdb::io::File file((out / "porosity.vdb").string());
+  file.open();
+  const auto pores = openvdb::gridPtrCast<openvdb::FloatGrid>(file.readGrid("pores"));
+  ASSERT_TRUE(pores);
+  EXPECT_TRUE(pores->tree().hasActiveTiles());
+  EXPECT_EQ(static_cast<std::int64_t>(pores->activeVoxelCount()), result.pores.front().voxel_count);
+  EXPECT_LT(pores->tree().leafCount(), result.pore_labels->tree().leafCount() + 1);
+  double void_voxels = 0.0;
+  for (auto it = pores->cbeginValueOn(); it; ++it) {
+    void_voxels += static_cast<double>(*it) * static_cast<double>(it.getVoxelCount());
+  }
+  const auto& pitch = dataset_->info().voxel_size;
+  const double void_mm3 = void_voxels * pitch[0] * pitch[1] * pitch[2];
+  // The pore volume adds the partly filled shell around the pore, the grid only its voxels.
+  EXPECT_NEAR(void_mm3, truth, 0.05 * truth);
+  for (auto it = pores->cbeginValueOn(); it; ++it) {
+    ASSERT_GE(*it, 0.0F);
+    ASSERT_LE(*it, 1.0F);
+  }
 }
 
 TEST_F(PorosityTest, TinyBrickCacheGivesTheSameResult) {
