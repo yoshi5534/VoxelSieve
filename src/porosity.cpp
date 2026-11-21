@@ -1393,9 +1393,8 @@ PorosityResult analyzePorosity(const Dataset& dataset, const PorosityOptions& op
           }
           return std::nullopt;
         };
-        PoreSumList& brick_sums = brick_pore_sums[slot];
         for (const std::uint32_t l : cells_of_brick[slot]) {
-          sum_cell(l, grey_at, brick_sums);
+          sum_cell(l, grey_at, brick_pore_sums[slot]);
         }
         brick_summed[slot] = 1;
         // topologyUnion runs TBB tasks; isolated, this thread cannot pick up another brick
