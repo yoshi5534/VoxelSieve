@@ -31,6 +31,15 @@ namespace {
 
 using Json = nlohmann::json;
 
+/// A step id or null. Out of line on purpose: inlined, GCC 16 reports the std::optional of the
+/// caller as maybe uninitialized (a false positive that -Werror turns into a failed build).
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+Json stepOrNull(const std::optional<int>& step) {
+  return step ? Json(*step) : Json();
+}
+
 constexpr const char* kRunPrefix = "run_";
 // Long enough to save calls, short enough for clients that give up on a call after a minute.
 constexpr double kDefaultWaitSeconds = 30.0;
@@ -1904,8 +1913,8 @@ Json Gui::viewSlice(const Json& params) const {
       {"window", {low, high}},
       {"image", {{"mime_type", "image/png"}, {"base64", base64(png)}}}};
   result["objects"] = shown;
-  result["porosity_step"] = porosity_step ? Json(*porosity_step) : Json();
-  result["materials_step"] = materials_step ? Json(*materials_step) : Json();
+  result["porosity_step"] = stepOrNull(porosity_step);
+  result["materials_step"] = stepOrNull(materials_step);
   if (materials) {
     Json legend = Json::array();
     for (const Material& material : materials->info().materials) {
