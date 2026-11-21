@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Porosity reads the scan half as often**: the voxels across a brick face come from the faces
+  each brick leaves when it is read, not from reading the neighbouring brick again; the pore
+  volumes and the material images are summed in the pass over the bricks that the part volume
+  makes anyway. At 2048³ with `--memory 3000` on 4 cores the analysis reads 16.4 instead of
+  34.5 GB of bricks and takes 39 instead of 67 s, with the same results.
+
 - **Smaller porosity VDB output**: inside large pores `porosity.vdb` stores one tile per 8³ cell
   with the mean void fraction of the cell instead of a value per voxel; the walls of the pores
   keep the fraction of every voxel. At 2048³ (the phantom's cavity) the output phase took 5 s
