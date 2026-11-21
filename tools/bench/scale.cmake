@@ -2,12 +2,13 @@
 # peak memory and reads per tool from their telemetry (ADR 0017) into a CSV file. With LIMITS it
 # also checks the peaks and brick re-reads against recorded values (the `scale` tests).
 #
-#   cmake -DBIN=build/release/bin -DWORK=/tmp/vs-scale [-DSIZES=256;512;1024] [-DSTEPS=...]
+#   cmake -DBIN=build/release -DWORK=/tmp/vs-scale [-DSIZES=256;512;1024] [-DSTEPS=...]
 #         [-DLIMITS=tests/scale_limits.json] [-DRECORD=tests/scale_limits.json] [-DKEEP_INPUT=ON]
 #         [-DTOOL_ARGS=--memory;8192]
 #         -P tools/bench/scale.cmake
 #
-# BIN    directory of the tools (vs-phantom, vs-sieve, ...)
+# BIN    directory of the tools (vs-phantom, vs-sieve, ...): one holding all of them (an
+#        installation, a Windows build's bin), or a build tree, where each lies in apps/<tool>
 # WORK   scratch directory; every size gets WORK/<size>, cleared at the start. A phantom of N^3
 #        voxels takes 2 N^3 bytes (16 GiB at 2048), the dataset about a third of that.
 # SIZES  voxels per axis, a ;-list (default 256;512)
@@ -44,12 +45,23 @@ if(NOT DEFINED CSV)
   set(CSV "${WORK}/scale.csv")
 endif()
 set(exe "")
-if(EXISTS "${BIN}/vs-sieve.exe")
+if(EXISTS "${BIN}/vs-sieve.exe" OR EXISTS "${BIN}/bin/vs-sieve.exe")
   set(exe ".exe")
 endif()
-if(NOT EXISTS "${BIN}/vs-sieve${exe}")
-  message(FATAL_ERROR "No vs-sieve in ${BIN}")
-endif()
+# The path of a tool: in BIN, in BIN/bin, or in its own directory of a build tree (BIN/apps/<tool>,
+# or a sibling of BIN when BIN is the directory of one tool there).
+function(tool_path out tool)
+  foreach(candidate "${BIN}/${tool}${exe}" "${BIN}/bin/${tool}${exe}"
+                    "${BIN}/apps/${tool}/${tool}${exe}" "${BIN}/../${tool}/${tool}${exe}")
+    if(EXISTS "${candidate}")
+      get_filename_component(candidate "${candidate}" ABSOLUTE)
+      set(${out} "${candidate}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+  message(FATAL_ERROR "No ${tool} in ${BIN}")
+endfunction()
+tool_path(sieve_exe vs-sieve)  # fails early when BIN holds no tools
 foreach(step thickness thicknessmap compare report)
   if(step IN_LIST STEPS AND NOT "surface" IN_LIST STEPS)
     list(PREPEND STEPS surface)
@@ -136,7 +148,8 @@ set(measured "")  # entries "size|step|own_peak_tenths|reread" for the limits
 macro(run_step step)
   set(telemetry "${dir}/${step}.telemetry.json")
   message(STATUS "[${n}^3] ${step}")
-  execute_process(COMMAND "${BIN}/${tool}${exe}" ${arguments} ${TOOL_ARGS} --telemetry "${telemetry}"
+  tool_path(tool_exe ${tool})
+  execute_process(COMMAND "${tool_exe}" ${arguments} ${TOOL_ARGS} --telemetry "${telemetry}"
                   RESULT_VARIABLE result OUTPUT_FILE "${dir}/${step}.log" ERROR_FILE "${dir}/${step}.log")
   set(row "${n},${step},${result}")
   if(result EQUAL 0 AND EXISTS "${telemetry}")
@@ -219,7 +232,8 @@ foreach(n IN LISTS SIZES)
     elseif(step STREQUAL "compare")
       # The CAD model: the phantom's 8 mm box.
       if(NOT EXISTS "${WORK}/box.stl")
-        execute_process(COMMAND "${BIN}/vs-synth${exe}" --box 8 8 8 --voxel-size 0.5 --noise 0
+        tool_path(synth_exe vs-synth)
+        execute_process(COMMAND "${synth_exe}" --box 8 8 8 --voxel-size 0.5 --noise 0
                                 --stl "${WORK}/box.stl" --out "${WORK}/box"
                         RESULT_VARIABLE synth OUTPUT_QUIET ERROR_QUIET)
         if(NOT synth EQUAL 0)

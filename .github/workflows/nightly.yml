@@ -47,7 +47,7 @@ jobs:
         if: always()
         # Denoising alone takes longer than all the other tools together at 1024^3.
         run: >-
-          cmake -DBIN=build/release/bin -DWORK=${{ runner.temp }}/scale
+          cmake -DBIN=build/release -DWORK=${{ runner.temp }}/scale
           "-DSIZES=256;512;1024"
           "-DSTEPS=porosity;surface;segment;thickness;thicknessmap;compare;report"
           -DRECORD=${{ runner.temp }}/scale_limits.json

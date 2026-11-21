@@ -1,0 +1,18 @@
+# ThreadSanitizer suppressions for races inside dependencies (preset tsan, nightly). A pattern
+# matches any frame of the reported accesses, allocations and thread creations, so each names a
+# function that only the dependency's own code runs; never a frame of VoxelSieve or a module.
+
+# tbbmalloc frees and hands over blocks with its own lock-free protocol, which TSan cannot see.
+race:rml::internal::Block::freePublicObject
+race:rml::internal::OrphanedBlocks::put
+# TBB's instrumentation hooks reset their function pointers at start-up.
+race:__itt_nullify_all_pointers
+# OpenVDB's mesh to volume conversion reads the distances of neighbouring leaves while other
+# threads set the signs of their intersecting voxels (OpenVDB's own code, not ours).
+race:mesh_to_volume_internal::ComputeIntersectingVoxelSign
+# libzip converts DOS times with mktime, whose time zone state glibc guards with a lock of its
+# own that TSan does not intercept.
+race:_zip_d2u_time
+# Leaves that OpenVDB loads on access copy the file's shared stream metadata into their stream,
+# writing the same version numbers into it from every thread.
+race:io::StreamMetadata::transferTo
