@@ -19,9 +19,10 @@ namespace voxelsieve::detail {
                                 const VoxelSize& voxel_size);
 
 /// Shortest gap (voxelGapMm) between an active voxel of `a` and one of `b`, both voxelized
-/// masks. Searches both trees from their nearest nodes outward, so the time grows with the size
-/// of `a` and the number of voxels of `b` near it, not with the size of `b`. Returns `bound` when
-/// no pair is closer than that, and infinity when either mask is empty.
+/// masks. Each leaf of `a` meets the leaves of `b` nearest it first, the leaves of `a` in
+/// parallel, so the time grows with the size of `a` and the number of voxels of `b` near it, not
+/// with the size of `b`. Returns `bound` when no pair is closer than that, and infinity when
+/// either mask is empty.
 [[nodiscard]] double maskGapMm(const openvdb::BoolTree& a, const openvdb::BoolTree& b,
                                const VoxelSize& voxel_size,
                                double bound = std::numeric_limits<double>::infinity());

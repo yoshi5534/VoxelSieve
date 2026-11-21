@@ -10,12 +10,11 @@
 #include <string>
 #include <string_view>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/porosity.hpp"
-#include "voxelsieve/resources.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -33,11 +32,6 @@ Options:
   --zone-min <fraction>   Smallest void fraction of a zone block (default 0.01)
   --materials <dir>       Material volume of the dataset (vs-segment): each material is compared
                           with its own grey value, so a darker material is no zone
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 )";
 
 struct Options {
@@ -45,94 +39,71 @@ struct Options {
   std::filesystem::path out;
   std::filesystem::path materials;
   voxelsieve::PorosityOptions porosity;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--min-pore") {
-      options.porosity.min_pore_voxels = std::stoll(next());
-    } else if (arg == "--zone-sigma") {
-      options.porosity.zone_sigma = std::stod(next());
-    } else if (arg == "--zone-min") {
-      options.porosity.min_zone_void_fraction = std::stod(next());
-    } else if (arg == "--materials") {
-      options.materials = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (!arg.starts_with("-") && options.dataset.empty()) {
-      options.dataset = arg;
+  while (args.next()) {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--min-pore")) {
+      options.porosity.min_pore_voxels = args.integer();
+    } else if (args.is("--zone-sigma")) {
+      options.porosity.zone_sigma = args.number();
+    } else if (args.is("--zone-min")) {
+      options.porosity.min_zone_void_fraction = args.number();
+    } else if (args.is("--materials")) {
+      options.materials = args.value();
+    } else if (args.positional() && options.dataset.empty()) {
+      options.dataset = args.arg();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.dataset.empty() || options.out.empty()) {
-    throw std::invalid_argument("A dataset and --out are required");
+    throw voxelsieve::cli::UsageError("A dataset and --out are required");
   }
   return options;
+}
+
+int run(const Options& options) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
+  std::optional<voxelsieve::MaterialVolume> materials;
+  voxelsieve::PorosityOptions porosity = options.porosity;
+  if (!options.materials.empty()) {
+    materials = voxelsieve::MaterialVolume::open(options.materials);
+    porosity.materials = &*materials;
+  }
+  const auto result = voxelsieve::analyzePorosity(dataset, porosity);
+  const auto analysed = std::chrono::steady_clock::now();
+
+  std::filesystem::create_directories(options.out);
+  voxelsieve::writePorosityJson(result, options.out / "porosity.json");
+  voxelsieve::writePorosityImages(dataset, result, options.out);
+  voxelsieve::writePorosityVdb(dataset, result, options.out / "porosity.vdb");
+  const auto written = std::chrono::steady_clock::now();
+
+  std::cout << std::fixed << std::setprecision(4) << "part volume        " << result.part_volume_mm3
+            << " mm^3\n"
+            << "pores              " << result.pores.size() << ", " << result.poreVolumeMm3()
+            << " mm^3\n"
+            << "zones              " << result.zones.size() << ", " << result.zoneVoidVolumeMm3()
+            << " mm^3 void\n"
+            << "porosity           " << 100.0 * result.porosity() << " %\n"
+            << std::setprecision(2) << "material level     " << result.material_level << " (noise "
+            << result.noise_sigma << ")\n";
+  for (const auto& [id, level] : result.material_levels) {
+    std::cout << "  material " << id << "       " << level << "\n";
+  }
+  std::cout << "time               analyse "
+            << std::chrono::duration<double>(analysed - start).count() << " s, write "
+            << std::chrono::duration<double>(written - analysed).count() << " s\n";
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-porosity");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset);
-    std::optional<voxelsieve::MaterialVolume> materials;
-    voxelsieve::PorosityOptions porosity = options->porosity;
-    if (!options->materials.empty()) {
-      materials = voxelsieve::MaterialVolume::open(options->materials);
-      porosity.materials = &*materials;
-    }
-    const auto result = voxelsieve::analyzePorosity(dataset, porosity);
-    const auto analysed = std::chrono::steady_clock::now();
-
-    std::filesystem::create_directories(options->out);
-    voxelsieve::writePorosityJson(result, options->out / "porosity.json");
-    voxelsieve::writePorosityImages(dataset, result, options->out);
-    voxelsieve::writePorosityVdb(dataset, result, options->out / "porosity.vdb");
-    const auto written = std::chrono::steady_clock::now();
-
-    std::cout << std::fixed << std::setprecision(4) << "part volume        "
-              << result.part_volume_mm3 << " mm^3\n"
-              << "pores              " << result.pores.size() << ", " << result.poreVolumeMm3()
-              << " mm^3\n"
-              << "zones              " << result.zones.size() << ", " << result.zoneVoidVolumeMm3()
-              << " mm^3 void\n"
-              << "porosity           " << 100.0 * result.porosity() << " %\n"
-              << std::setprecision(2) << "material level     " << result.material_level
-              << " (noise " << result.noise_sigma << ")\n";
-    for (const auto& [id, level] : result.material_levels) {
-      std::cout << "  material " << id << "       " << level << "\n";
-    }
-    std::cout << "time               analyse "
-              << std::chrono::duration<double>(analysed - start).count() << " s, write "
-              << std::chrono::duration<double>(written - analysed).count() << " s\n";
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-porosity: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-porosity", kUsage, argc, argv, parse, run);
 }

@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/denoise.hpp"
 #include "voxelsieve/io.hpp"
@@ -25,9 +26,7 @@
 #include "voxelsieve/parts.hpp"
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/render.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/synthetic.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -62,11 +61,6 @@ Options:
   --json <file>           Also write the result as JSON
   --slices <png>          Also write a z slice of the input and the result side by side
   --slice-z <z>           The slice to write (default: the middle)
-  --memory <MB>           Memory budget of caches and work buffers (default 3/4 of RAM)
-  --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
-  --threads <N>           Threads of all parallel work (default all cores)
-  --telemetry <file>      Write time and resource use per phase as JSON
-  -h, --help              Show this help
 
 Benchmark options:
   --benchmark <dir>       Run the benchmark in this directory
@@ -86,71 +80,57 @@ struct Options {
   double bench_noise = 1000.0;
   double bench_voxel = 0.25;
   voxelsieve::DenoiseOptions denoise;
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (!arg.starts_with("-")) {
+  while (args.next()) {
+    if (args.positional()) {
       if (!options.dataset.empty()) {
-        throw std::invalid_argument("Unexpected argument: " + std::string(arg));
+        throw voxelsieve::cli::UsageError("Unexpected argument: " + std::string(args.arg()));
       }
-      options.dataset = arg;
-    } else if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (arg == "--model") {
-      options.model = next();
-    } else if (arg == "--strength") {
-      options.denoise.non_local_means.strength = std::stod(next());
-    } else if (arg == "--search") {
-      options.denoise.non_local_means.search_radius = std::stoi(next());
-    } else if (arg == "--limit") {
-      options.denoise.non_local_means.similarity_limit = std::stod(next());
-    } else if (arg == "--patch") {
-      options.denoise.non_local_means.patch_radius = std::stoi(next());
-    } else if (arg == "--noise") {
-      options.denoise.noise_sigma = std::stod(next());
-    } else if (arg == "--tile") {
-      options.denoise.tile = std::stoll(next());
-    } else if (arg == "--value-type") {
-      const std::string type = next();
+      options.dataset = args.arg();
+    } else if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--model")) {
+      options.model = args.value();
+    } else if (args.is("--strength")) {
+      options.denoise.non_local_means.strength = args.number();
+    } else if (args.is("--search")) {
+      options.denoise.non_local_means.search_radius = static_cast<int>(args.integer());
+    } else if (args.is("--limit")) {
+      options.denoise.non_local_means.similarity_limit = args.number();
+    } else if (args.is("--patch")) {
+      options.denoise.non_local_means.patch_radius = static_cast<int>(args.integer());
+    } else if (args.is("--noise")) {
+      options.denoise.noise_sigma = args.number();
+    } else if (args.is("--tile")) {
+      options.denoise.tile = args.integer();
+    } else if (args.is("--value-type")) {
+      const std::string type = args.value();
       if (type != "native") {
         options.denoise.output.value_type = voxelsieve::parseValueType(type);
       }
-    } else if (arg == "--reference") {
-      options.reference = next();
-    } else if (arg == "--json") {
-      options.json = next();
-    } else if (arg == "--slices") {
-      options.slices = next();
-    } else if (arg == "--slice-z") {
-      options.slice_z = std::stoll(next());
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--benchmark") {
-      options.benchmark = next();
-    } else if (arg == "--bench-noise") {
-      options.bench_noise = std::stod(next());
-    } else if (arg == "--bench-voxel") {
-      options.bench_voxel = std::stod(next());
+    } else if (args.is("--reference")) {
+      options.reference = args.value();
+    } else if (args.is("--json")) {
+      options.json = args.value();
+    } else if (args.is("--slices")) {
+      options.slices = args.value();
+    } else if (args.is("--slice-z")) {
+      options.slice_z = args.integer();
+    } else if (args.is("--benchmark")) {
+      options.benchmark = args.value();
+    } else if (args.is("--bench-noise")) {
+      options.bench_noise = args.number();
+    } else if (args.is("--bench-voxel")) {
+      options.bench_voxel = args.number();
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.benchmark.empty() && (options.dataset.empty() || options.out.empty())) {
-    throw std::invalid_argument("A dataset and --out, or --benchmark, are required");
+    throw voxelsieve::cli::UsageError("A dataset and --out, or --benchmark, are required");
   }
   return options;
 }
@@ -499,90 +479,79 @@ int runBenchmark(const Options& options) {
   return 0;
 }
 
+int run(const Options& options) {
+  if (!options.benchmark.empty()) {
+    const int status = runBenchmark(options);
+    return status;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const auto dataset = voxelsieve::Dataset::open(options.dataset);
+  voxelsieve::DenoiseOptions denoise = options.denoise;
+  std::optional<voxelsieve::Model> model;
+  if (!options.model.empty()) {
+    model.emplace(voxelsieve::Model::load(options.model));
+    denoise.method = voxelsieve::DenoiseMethod::kModel;
+    denoise.model = &*model;
+  }
+  const auto info = voxelsieve::denoiseDataset(dataset, options.out, denoise);
+  const double seconds = secondsSince(start);
+  std::cout << std::fixed << std::setprecision(1) << "method             "
+            << voxelsieve::denoiseMethodName(info.method)
+            << (info.model.empty() ? "" : " (" + info.model + ")") << '\n'
+            << "noise sigma        " << info.noise.sigma << " (correlation with x, y, z "
+            << "neighbours " << std::setprecision(2) << info.noise.correlation(1, 0, 0) << ", "
+            << info.noise.correlation(0, 1, 0) << ", " << info.noise.correlation(0, 0, 1) << ")\n"
+            << std::setprecision(1);
+  const auto output = voxelsieve::Dataset::open(options.out);
+  const double after = voxelsieve::estimateNoise(output, 1).sigma;
+  std::cout << "noise after        " << after << '\n'
+            << "bricks             " << info.dataset.levels.front().bricks.size() << ", "
+            << info.dataset.active_voxel_count << " active voxels\n"
+            << std::setprecision(2) << "time               " << seconds << " s\n";
+  Json json = {{"method", std::string(voxelsieve::denoiseMethodName(info.method))},
+               {"noise_sigma", info.noise.sigma},
+               {"noise_correlation",
+                {info.noise.correlation(1, 0, 0), info.noise.correlation(0, 1, 0),
+                 info.noise.correlation(0, 0, 1)}},
+               {"noise_sigma_after", after},
+               {"seconds", seconds}};
+  if (!info.model.empty()) {
+    json["model"] = info.model;
+  }
+  if (!options.reference.empty()) {
+    const voxelsieve::MappedRawSource reference(options.reference, info.dataset.dims,
+                                                info.dataset.voxel_size);
+    const auto score = voxelsieve::scoreDenoising(output, reference);
+    printScore(score);
+    json["score"] = scoreJson(score);
+  }
+  if (!options.json.empty()) {
+    voxelsieve::writeJson(options.json, json);
+  }
+  if (!options.slices.empty()) {
+    const auto& input = dataset.info();
+    const std::int64_t z = options.slice_z.value_or(input.dims[2] / 2);
+    if (z < 0 || z >= input.dims[2]) {
+      throw std::invalid_argument("--slice-z is outside the volume");
+    }
+    // Grey values from the 1st to the 99th percentile of the kept voxels of the input slice.
+    std::vector<float> plane(static_cast<std::size_t>(input.dims[0] * input.dims[1]));
+    dataset.readRegion(0, {{0, 0, z}, {input.dims[0], input.dims[1], z + 1}}, plane, -1.0F);
+    std::erase_if(plane, [](float value) { return value < 0.0F; });
+    float low = input.air_level;
+    float high = 2.0F * input.threshold - input.air_level;
+    if (plane.size() > 100) {
+      std::ranges::sort(plane);
+      low = plane[plane.size() / 100];
+      high = plane[plane.size() - 1 - plane.size() / 100];
+    }
+    writeSlices(options.slices, nullptr, {&dataset, &output}, z, low, std::max(high, low + 1.0F));
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-denoise");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    if (!options->benchmark.empty()) {
-      const int status = runBenchmark(*options);
-      voxelsieve::reportTelemetry(telemetry, options->telemetry);
-      return status;
-    }
-    const auto start = std::chrono::steady_clock::now();
-    const auto dataset = voxelsieve::Dataset::open(options->dataset);
-    voxelsieve::DenoiseOptions denoise = options->denoise;
-    std::optional<voxelsieve::Model> model;
-    if (!options->model.empty()) {
-      model.emplace(voxelsieve::Model::load(options->model));
-      denoise.method = voxelsieve::DenoiseMethod::kModel;
-      denoise.model = &*model;
-    }
-    const auto info = voxelsieve::denoiseDataset(dataset, options->out, denoise);
-    const double seconds = secondsSince(start);
-    std::cout << std::fixed << std::setprecision(1) << "method             "
-              << voxelsieve::denoiseMethodName(info.method)
-              << (info.model.empty() ? "" : " (" + info.model + ")") << '\n'
-              << "noise sigma        " << info.noise.sigma << " (correlation with x, y, z "
-              << "neighbours " << std::setprecision(2) << info.noise.correlation(1, 0, 0) << ", "
-              << info.noise.correlation(0, 1, 0) << ", " << info.noise.correlation(0, 0, 1) << ")\n"
-              << std::setprecision(1);
-    const auto output = voxelsieve::Dataset::open(options->out);
-    const double after = voxelsieve::estimateNoise(output, 1).sigma;
-    std::cout << "noise after        " << after << '\n'
-              << "bricks             " << info.dataset.levels.front().bricks.size() << ", "
-              << info.dataset.active_voxel_count << " active voxels\n"
-              << std::setprecision(2) << "time               " << seconds << " s\n";
-    Json json = {{"method", std::string(voxelsieve::denoiseMethodName(info.method))},
-                 {"noise_sigma", info.noise.sigma},
-                 {"noise_correlation",
-                  {info.noise.correlation(1, 0, 0), info.noise.correlation(0, 1, 0),
-                   info.noise.correlation(0, 0, 1)}},
-                 {"noise_sigma_after", after},
-                 {"seconds", seconds}};
-    if (!info.model.empty()) {
-      json["model"] = info.model;
-    }
-    if (!options->reference.empty()) {
-      const voxelsieve::MappedRawSource reference(options->reference, info.dataset.dims,
-                                                  info.dataset.voxel_size);
-      const auto score = voxelsieve::scoreDenoising(output, reference);
-      printScore(score);
-      json["score"] = scoreJson(score);
-    }
-    if (!options->json.empty()) {
-      voxelsieve::writeJson(options->json, json);
-    }
-    if (!options->slices.empty()) {
-      const auto& input = dataset.info();
-      const std::int64_t z = options->slice_z.value_or(input.dims[2] / 2);
-      if (z < 0 || z >= input.dims[2]) {
-        throw std::invalid_argument("--slice-z is outside the volume");
-      }
-      // Grey values from the 1st to the 99th percentile of the kept voxels of the input slice.
-      std::vector<float> plane(static_cast<std::size_t>(input.dims[0] * input.dims[1]));
-      dataset.readRegion(0, {{0, 0, z}, {input.dims[0], input.dims[1], z + 1}}, plane, -1.0F);
-      std::erase_if(plane, [](float value) { return value < 0.0F; });
-      float low = input.air_level;
-      float high = 2.0F * input.threshold - input.air_level;
-      if (plane.size() > 100) {
-        std::ranges::sort(plane);
-        low = plane[plane.size() / 100];
-        high = plane[plane.size() - 1 - plane.size() / 100];
-      }
-      writeSlices(options->slices, nullptr, {&dataset, &output}, z, low,
-                  std::max(high, low + 1.0F));
-    }
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-denoise: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-denoise", kUsage, argc, argv, parse, run);
 }

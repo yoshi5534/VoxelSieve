@@ -12,6 +12,8 @@
 
 namespace voxelsieve {
 
+struct DatasetOptions;
+
 /// Kinds of data that flow between operations. An artifact is a file or directory on disk.
 namespace artifact {
 inline constexpr const char* kRaw = "raw";            // raw volume with JSON sidecar
@@ -136,6 +138,16 @@ class OperationRegistry {
 
 /// Registers the operations that ship with VoxelSieve: import (sieve), porosity and report.
 void registerBuiltinOperations(OperationRegistry& registry);
+
+/// The parameters of the sieve as JSON-schema properties (threshold, margin_voxels,
+/// min_material_voxels, outside_air_axes, brick_size, value_type, staging, staging_dir): every
+/// import operation takes them and vs-sieve makes its options from them, so they are defined
+/// once.
+[[nodiscard]] nlohmann::json sieveParameters();
+
+/// The options of the sieve from parameters of sieveParameters(); those not given keep their
+/// defaults. The callbacks (progress, preview) are left to the caller.
+[[nodiscard]] DatasetOptions sieveOptions(const nlohmann::json& params);
 
 /// Fills in schema defaults and checks types and required properties. Throws std::invalid_argument
 /// with a message naming the parameter.
