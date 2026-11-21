@@ -73,7 +73,7 @@
       "name": "tsan",
       "configurePreset": "tsan",
       "output": { "outputOnFailure": true },
-      "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1" }
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1 suppressions=${sourceDir}/tests/tsan.supp" }
     },
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },

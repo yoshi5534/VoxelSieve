@@ -92,7 +92,7 @@ some ports).
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan   # ASan + UBSan
 tools/lint.sh                                                                  # clang-format + parallel clang-tidy
-cmake -DBIN=build/release/bin -DWORK=/tmp/vs-scale -DSIZES="256;512" -P tools/bench/scale.cmake  # scale benchmark
+cmake -DBIN=build/release -DWORK=/tmp/vs-scale -DSIZES="256;512" -P tools/bench/scale.cmake  # scale benchmark
 ```
 
 The scale benchmark runs every tool on phantoms of growing size and writes peak own memory,
