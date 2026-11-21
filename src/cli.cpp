@@ -11,6 +11,7 @@
 namespace voxelsieve::cli {
 
 Arguments::Arguments(int argc, char** argv) {
+  returnFreedMemoryEagerly();
   args_.emplace_back(argc > 0 ? argv[0] : "");
   for (int i = 1; i < argc; ++i) {
     args_.emplace_back(argv[i]);

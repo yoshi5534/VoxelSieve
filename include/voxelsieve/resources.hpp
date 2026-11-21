@@ -76,6 +76,18 @@ void setThreadLimit(int threads);
 /// Whether a process with this id runs (or may run: true when the system does not say).
 [[nodiscard]] bool processRunning(std::uint64_t id);
 
+/// Lets the C runtime map blocks of 1 MiB and more on their own (glibc), so that the large
+/// buffers of work in flight go back to the system when freed instead of staying in the heap of
+/// the thread that freed them (ADR 0034). Does nothing with other C runtimes. Every tool calls it
+/// (`cli::Arguments`), as does the Python package.
+void returnFreedMemoryEagerly();
+
+/// Gives memory freed in the heaps of all threads back to the system (glibc: malloc_trim, macOS:
+/// pressure relief; nothing elsewhere). The brick cache calls it after evicting bricks of a quarter
+/// of its budget, whose thousands of small leaf blocks would otherwise keep every thread's heap
+/// near the size of the cache; passes that free large trees of small blocks call it at their end.
+void releaseFreedMemory();
+
 /// For command-line tools, which all take these options: applies `--memory <MB>` (the memory
 /// budget, `setMemoryBudget`), `--cache <MB>` (budget of the shared brick cache, a part of it,
 /// `Dataset::setSharedCacheBytes`) or `--threads <N>` (`setThreadLimit`). `value` reads the

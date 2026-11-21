@@ -86,3 +86,9 @@ kept to its statistics again.
   is too high can fail a step for lack of disk space it would not have used, one that is too low
   only lets operations overlap more.
 - Plugins see `Operation::estimate` as a new virtual function: the plugin API version is 5.
+- Amendment 2026-11-21: with glibc the leaves of evicted bricks, thousands of small blocks per
+  brick, stayed in the heap of the thread that freed them while other threads loaded new bricks
+  into theirs, so the process held up to twice the cache. The cache gives freed memory back to
+  the system after evicting bricks of a quarter of its budget, at least 64 MB
+  (`releaseFreedMemory`: `malloc_trim`, on macOS pressure relief), and tools let glibc map blocks
+  of 1 MiB and more on their own (`returnFreedMemoryEagerly`). Windows uses TBB's allocator.
