@@ -16,3 +16,5 @@ race:_zip_d2u_time
 # Leaves that OpenVDB loads on access copy the file's shared stream metadata into their stream,
 # writing the same version numbers into it from every thread.
 race:io::StreamMetadata::transferTo
+# TBB's workers that are still finishing when the process exits are not joined.
+thread:tbb::detail::r1::rml::internal::thread_monitor::launch
