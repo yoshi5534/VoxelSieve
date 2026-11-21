@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Training on large scans and on the GPU**: `tools/models/train_unet.py` and
+  `train_denoiser.py` read their patches as they train, from raw volumes or directly from a
+  dataset (`.vsieve`) and material volume, without a pass over the scan first; batches are made
+  in a background thread, and training runs on CUDA or Apple's MPS when there is one
+  (`--device`).
+
+- **Command-line tools share their parsing**: every tool takes `--memory`, `--cache`, `--threads`
+  and `--telemetry` and lists them the same way; a mistake on the command line prints the usage,
+  other errors only their message. The options of the sieve in `vs-sieve` are made from the
+  parameters of the import operations, so their checks, defaults and descriptions are the same
+  in the GUI, over MCP and on the command line. `vs-beam-hardening --cache` is now the shared
+  brick cache of all tools instead of a cache of its own.
+
 - **Faster surface distance of large pores**: the distance of a pore to the surface and the gap
   between two pores (BDG P 203) are searched leaf by leaf of the pore, in parallel, instead of
   from every voxel of it: a cavity of 46 million voxels takes 0.4 s instead of six minutes,

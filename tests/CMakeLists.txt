@@ -1,6 +1,7 @@
 find_package(GTest REQUIRED)
 
 add_executable(voxelsieve_tests
+  test_cli.cpp
   test_components.cpp
   test_dataset.cpp
   test_denoise.cpp
@@ -262,7 +263,19 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_transfer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/transfer_test.cjs)
   add_test(NAME ui_scene COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/scene_test.cjs)
   add_test(NAME ui_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/viewer_test.cjs)
+  add_test(NAME ui_tiles COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/tiles_test.cjs)
   add_test(NAME ui_volume COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/volume_test.cjs)
+endif()
+
+# The streamed patches of the training scripts in tools/models (NumPy only, no PyTorch).
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy" RESULT_VARIABLE numpy_missing
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(numpy_missing EQUAL 0)
+    add_test(NAME models_volumes COMMAND ${Python3_EXECUTABLE} -B -m unittest test_volumes
+             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools/models)
+  endif()
 endif()
 
 # Scale tests (VOXELSIEVE_SCALE_TESTS, nightly): every tool on a 512^3 phantom, failing when its own

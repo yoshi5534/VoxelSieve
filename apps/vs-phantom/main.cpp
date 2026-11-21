@@ -9,11 +9,10 @@
 #include <string>
 #include <string_view>
 
+#include "voxelsieve/cli.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/phantom.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
-#include "voxelsieve/telemetry.hpp"
 
 namespace {
 
@@ -28,78 +27,52 @@ Options:
   --noise <sigma>       Gaussian noise in grey values (default 500, 0 disables)
   --seed <n>            Noise seed (default 42)
   --solid               Solid box instead of a hollow one
-  --threads <N>         Threads of all parallel work (default all cores)
-  --telemetry <file>    Write time and resource use per phase as JSON
-  -h, --help            Show this help
 )";
 
 struct Options {
   std::filesystem::path out;
   voxelsieve::PhantomSpec spec = voxelsieve::defaultPhantomSpec();
-  std::filesystem::path telemetry;
 };
 
-std::optional<Options> parse(int argc, char** argv) {
+Options parse(voxelsieve::cli::Arguments& args) {
   Options options;
   options.spec.noise_sigma = 500.0;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const auto next = [&]() -> std::string {
-      if (i + 1 >= argc) {
-        throw std::invalid_argument("Missing value for " + std::string(arg));
-      }
-      return argv[++i];
-    };
-    if (arg == "-h" || arg == "--help") {
-      return std::nullopt;
-    } else if (arg == "--out") {
-      options.out = next();
-    } else if (voxelsieve::applyResourceOption(arg, next)) {
-      // applied at once
-    } else if (arg == "--telemetry") {
-      options.telemetry = next();
-    } else if (arg == "--dims") {
-      const std::int64_t n = std::stoll(next());
+  while (args.next()) {
+    if (args.is("--out")) {
+      options.out = args.value();
+    } else if (args.is("--dims")) {
+      const std::int64_t n = args.integer();
       options.spec.dims = {n, n, n};
-    } else if (arg == "--voxel-size") {
-      options.spec.voxel_size = voxelsieve::parseVoxelSize(next());
-    } else if (arg == "--noise") {
-      options.spec.noise_sigma = std::stod(next());
-    } else if (arg == "--seed") {
-      options.spec.seed = std::stoull(next());
-    } else if (arg == "--solid") {
+    } else if (args.is("--voxel-size")) {
+      options.spec.voxel_size = voxelsieve::parseVoxelSize(args.value());
+    } else if (args.is("--noise")) {
+      options.spec.noise_sigma = args.number();
+    } else if (args.is("--seed")) {
+      options.spec.seed = std::stoull(args.value());
+    } else if (args.is("--solid")) {
       options.spec.wall_thickness_mm = 0.0;
     } else {
-      throw std::invalid_argument("Unknown option: " + std::string(arg));
+      args.unknown();
     }
   }
   if (options.out.empty()) {
-    throw std::invalid_argument("--out is required");
+    throw voxelsieve::cli::UsageError("--out is required");
   }
   return options;
+}
+
+int run(const Options& options) {
+  const auto raw_path = std::filesystem::path(options.out).concat(".raw");
+  const auto json_path = std::filesystem::path(options.out).concat(".json");
+  // Streamed in slabs that are computed in parallel, so the volume never has to fit in memory.
+  voxelsieve::writeRaw(raw_path, voxelsieve::PhantomSource(options.spec));
+  voxelsieve::writeJson(json_path, voxelsieve::phantomToJson(options.spec));
+  std::cout << "Wrote " << raw_path.string() << " and " << json_path.string() << '\n';
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    const auto options = parse(argc, argv);
-    if (!options) {
-      std::cout << kUsage;
-      return 0;
-    }
-    voxelsieve::Telemetry telemetry("vs-phantom");
-    const voxelsieve::TelemetryScope scope(telemetry);
-    const auto raw_path = std::filesystem::path(options->out).concat(".raw");
-    const auto json_path = std::filesystem::path(options->out).concat(".json");
-    // Streamed in slabs that are computed in parallel, so the volume never has to fit in memory.
-    voxelsieve::writeRaw(raw_path, voxelsieve::PhantomSource(options->spec));
-    voxelsieve::writeJson(json_path, voxelsieve::phantomToJson(options->spec));
-    std::cout << "Wrote " << raw_path.string() << " and " << json_path.string() << '\n';
-    voxelsieve::reportTelemetry(telemetry, options->telemetry);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "vs-phantom: " << error.what() << "\n\n" << kUsage;
-    return 1;
-  }
+  return voxelsieve::cli::runTool("vs-phantom", kUsage, argc, argv, parse, run);
 }
