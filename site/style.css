@@ -86,3 +86,6 @@ pre { background: var(--code-bg); color: var(--code-text); padding: 18px; border
   .gallery .wide { grid-column: auto; }
   .hero { padding-top: 32px; }
 }
+
+.news { padding-left: 22px; }
+.news li { margin-bottom: 8px; }
