@@ -668,7 +668,9 @@ and lengths along its principal axes and along a given axis, as a table (`object
 vs-gui --project /data/casting.vsproj --plugins build/release/plugins
 ```
 
-The server listens on 127.0.0.1 only and has no authentication; do not expose it to a network.
+The server listens on 127.0.0.1 only. The address it prints carries an access token that changes
+with every start; requests without it are refused. The connection is not encrypted, so do not
+expose the server to a network.
 
 ## AI systems: MCP
 
