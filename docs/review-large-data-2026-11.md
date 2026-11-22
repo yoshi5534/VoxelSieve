@@ -582,10 +582,9 @@ a30c1b8), without phase 2 first. Measured at 2048³, 16 threads, 64 GB:
 - 2026-11-21: surface, thickness and segment ran 10–30 % over `--memory` because glibc kept the
   leaves of evicted bricks in the heap of the thread that freed them while other threads loaded
   new bricks into theirs. The brick cache now gives freed memory back after evicting a quarter of
-  its budget (`releaseFreedMemory`), tools map blocks of 1 MiB and more on their own, and the
-  surface pass negates its chunk in place. At 2048³ with `--memory 3000` on 4 cores: vs-surface
-  2.68 GB (was 3.44), vs-thickness 2.7 (3.8), vs-segment 2.75 (3.1), vs-porosity 2.48 GB, at the
-  same speed and with the same surface file.
+  its budget (`releaseFreedMemory`), and the surface pass negates its chunk in place. At 2048³
+  with `--memory 3000` on 4 cores: vs-surface 2.9 GB (was 3.44), vs-thickness 2.8 (3.8),
+  vs-segment 2.9 (3.1), vs-porosity 2.48 GB, at the same speed and with the same surface file.
 
 ### Phase 5: Long runs that can be controlled (about 2–3 weeks, can run alongside phases 3–4)
 

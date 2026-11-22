@@ -218,15 +218,6 @@ bool processRunning(std::uint64_t id) {
 #endif
 }
 
-void returnFreedMemoryEagerly() {
-#if defined(__GLIBC__)
-  // A fixed threshold also stops glibc from raising it (up to 32 MiB) after a mapped block is
-  // freed, which would put the brick-sized buffers of later work into the arenas again.
-  constexpr int kMappedBlockBytes = 1 << 20;
-  (void)mallopt(M_MMAP_THRESHOLD, kMappedBlockBytes);
-#endif
-}
-
 void releaseFreedMemory() {
 #if defined(__GLIBC__)
   (void)malloc_trim(0);

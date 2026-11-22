@@ -90,5 +90,6 @@ kept to its statistics again.
   brick, stayed in the heap of the thread that freed them while other threads loaded new bricks
   into theirs, so the process held up to twice the cache. The cache gives freed memory back to
   the system after evicting bricks of a quarter of its budget, at least 64 MB
-  (`releaseFreedMemory`: `malloc_trim`, on macOS pressure relief), and tools let glibc map blocks
-  of 1 MiB and more on their own (`returnFreedMemoryEagerly`). Windows uses TBB's allocator.
+  (`releaseFreedMemory`: `malloc_trim`, on macOS pressure relief). Windows uses TBB's allocator.
+  Mapping every block of 1 MiB and more on its own as well saved another 0.2 GB in the surface
+  pass but made it 23 % slower on a 2-core laptop, for the page faults of its chunk buffers.

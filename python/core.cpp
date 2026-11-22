@@ -36,7 +36,6 @@
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/project.hpp"
-#include "voxelsieve/resources.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/vdb.hpp"
 #include "voxelsieve/voxel_size.hpp"
@@ -345,7 +344,6 @@ NB_MODULE(_core, module) {
   // NOLINTEND(misc-use-anonymous-namespace,readability-identifier-naming)
   using namespace voxelsieve;  // NOLINT(google-build-using-namespace)
   initializeVdb();
-  returnFreedMemoryEagerly();
   module.doc() = "Native part of the VoxelSieve Python package; use the voxelsieve package.";
 
   nb::class_<Dataset>(module, "Dataset")
