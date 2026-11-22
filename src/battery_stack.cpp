@@ -156,7 +156,15 @@ void stackSections(const VolumeView& volume, const BatteryOptions& options, Stac
     all_spacing.insert(all_spacing.end(), layers.spacing.begin(), layers.spacing.end());
   }
   const double spacing_median = median(all_spacing);
-  data.half_pitch = 0.5 * spacing_median * step;
+  // Without two layers in any profile there is no stack: no pitch, and no layers to measure the
+  // overhang of. The extent of the layers stays unknown, so the overhang is left out.
+  const bool stack_found = !std::isnan(spacing_median);
+  if (!stack_found) {
+    result.warnings.emplace_back(
+        "No electrode stack found: no section shows two or more layers, so the anode overhang "
+        "is not measured. Is the volume a battery cell?");
+  }
+  data.half_pitch = stack_found ? 0.5 * spacing_median * step : 0.0;
   const auto n0 = static_cast<double>(lo[at(data.n)]) * step;
   for (std::size_t k = 0; k < profiles.size(); ++k) {
     const Profile& profile = profiles[k];
@@ -165,7 +173,7 @@ void stackSections(const VolumeView& volume, const BatteryOptions& options, Stac
     section.cathode_layers = layers.cathodes;
     section.anode_layers = layers.anodes;
     section.pitch_mm = median(layers.cathode_spacing) * step;
-    if (!std::isnan(layers.first)) {
+    if (stack_found && !std::isnan(layers.first)) {
       section.stack_mm = (layers.last - layers.first) * step;
       data.first_layer = nanMin(data.first_layer, n0 + layers.first * step);
       data.last_layer = nanMax(data.last_layer, n0 + layers.last * step);
@@ -206,6 +214,9 @@ void stackOverhang(const VolumeView& volume, const BatteryOptions& options, Stac
   const auto n_hi = std::min<std::int64_t>(
       info.dims[at(data.n)],
       static_cast<std::int64_t>(std::ceil((data.last_layer + margin) / step_n)) + 1);
+  if (n_hi <= n_lo) {
+    return;
+  }
   bool unfinished = false;
   std::vector<int> hidden_edges;
   for (const int axis : {data.u, data.v}) {

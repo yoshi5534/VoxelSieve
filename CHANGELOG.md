@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Battery inspection of a part without an electrode stack**: a volume whose sections show at
+  most one layer, such as a casting given by mistake, made the inspection fail with "Region
+  outside dataset level 0"; it now finishes with the warning that no electrode stack was found
+  and leaves the overhang out.
+
+- **Packages ship every example order**: the P 203 order with its region mesh
+  (`examples/inspection_order_p203.json`, `examples/regions/boss.stl`) and the 18650 battery order
+  are installed under `share/voxelsieve/examples` with the others.
+
 - **Tools stay within `--memory` on Linux**: the brick cache gives the memory of evicted bricks
   back to the system after evicting a quarter of its budget, as glibc otherwise kept it in the heap
   of every thread. At 2048³ with `--memory 3000` vs-surface peaks at 2.9 instead of 3.4 GB,

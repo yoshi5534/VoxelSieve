@@ -14,6 +14,7 @@
 #include "voxelsieve/battery.hpp"
 #include "voxelsieve/cells.hpp"
 #include "voxelsieve/dataset.hpp"
+#include "voxelsieve/phantom.hpp"
 #include "voxelsieve/report.hpp"
 
 namespace voxelsieve {
@@ -442,6 +443,25 @@ TEST_F(BatteryTest, InspectsAStackedCell) {
   for (const LayerGap& gap : result.gaps) {
     EXPECT_NEAR(gap.size_mm - gap.expected_mm, 0.2, 0.03);
   }
+}
+
+// A part that is no battery, the hollow box of the phantom: its walls give one layer per profile,
+// so there is no stack to measure. The inspection says so instead of failing.
+TEST_F(BatteryTest, SaysSoWhenAPartHasNoElectrodeStack) {
+  DatasetOptions options;
+  options.brick_size = 64;
+  (void)writeDataset(PhantomSource(defaultPhantomSpec()), dir_ / "box.vsieve", options);
+  const Dataset dataset = Dataset::open(dir_ / "box.vsieve");
+
+  BatteryOptions battery;
+  battery.cell_type = CellType::kStacked;
+  BatteryResult result;
+  ASSERT_NO_THROW(result = analyzeBattery(dataset, battery));
+  EXPECT_EQ(result.type, CellType::kStacked);
+  EXPECT_TRUE(result.overhang.empty());
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(), [](const std::string& w) {
+    return w.starts_with("No electrode stack found");
+  }));
 }
 
 }  // namespace
