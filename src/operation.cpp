@@ -62,6 +62,14 @@ void checkValue(const std::string& name, const Json& schema, const Json& value) 
         maximum != schema.end() && value.get<double>() > maximum->get<double>()) {
       throw std::invalid_argument("Parameter '" + name + "' must be at most " + maximum->dump());
     }
+    if (const auto above = schema.find("exclusiveMinimum");
+        above != schema.end() && value.get<double>() <= above->get<double>()) {
+      throw std::invalid_argument("Parameter '" + name + "' must be greater than " + above->dump());
+    }
+    if (const auto below = schema.find("exclusiveMaximum");
+        below != schema.end() && value.get<double>() >= below->get<double>()) {
+      throw std::invalid_argument("Parameter '" + name + "' must be less than " + below->dump());
+    }
   }
   if (value.is_array()) {
     if (const auto items = schema.find("items"); items != schema.end()) {
@@ -160,6 +168,7 @@ std::vector<std::shared_ptr<const Operation>> OperationRegistry::all() const {
 
 void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
   using VersionFn = int (*)();
+  using BuildFn = const char* (*)();
   using RegisterFn = void (*)(OperationRegistry&);
 #ifdef _WIN32
   HMODULE handle = LoadLibraryW(library.c_str());
@@ -173,6 +182,7 @@ void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
       reinterpret_cast<VersionFn>(GetProcAddress(handle, "voxelsieve_plugin_api_version"));
   auto* register_operations =
       reinterpret_cast<RegisterFn>(GetProcAddress(handle, "voxelsieve_register_operations"));
+  auto* build = reinterpret_cast<BuildFn>(GetProcAddress(handle, "voxelsieve_plugin_build"));
 #else
   void* handle = dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
@@ -185,6 +195,7 @@ void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
   auto* version = reinterpret_cast<VersionFn>(dlsym(handle, "voxelsieve_plugin_api_version"));
   auto* register_operations =
       reinterpret_cast<RegisterFn>(dlsym(handle, "voxelsieve_register_operations"));
+  auto* build = reinterpret_cast<BuildFn>(dlsym(handle, "voxelsieve_plugin_build"));
 #endif
   if (version == nullptr || register_operations == nullptr) {
     throw std::runtime_error(library.string() + " is not a VoxelSieve plugin");
@@ -192,6 +203,14 @@ void OperationRegistry::loadPlugin(const std::filesystem::path& library) {
   if (const int api = version(); api != kPluginApiVersion) {
     throw std::runtime_error(library.string() + " uses plugin API " + std::to_string(api) +
                              ", this VoxelSieve needs " + std::to_string(kPluginApiVersion));
+  }
+  // The same API version does not make the same layout of the C++ types that cross the
+  // interface: a plugin from another standard library or JSON version would crash when called.
+  const std::string theirs = build != nullptr ? build() : "an unknown build";
+  if (theirs != VOXELSIEVE_PLUGIN_BUILD) {
+    throw std::runtime_error(library.string() + " was built with " + theirs +
+                             ", this VoxelSieve with " + VOXELSIEVE_PLUGIN_BUILD +
+                             "; build the plugin with the same compiler and libraries");
   }
   register_operations(*this);
   libraries_.push_back(std::move(guard));

@@ -88,7 +88,8 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--json")) {
       options.json = args.value();
     } else if (args.is("--materials")) {
-      options.segmentation.materials = static_cast<int>(args.integer());
+      options.segmentation.materials =
+          static_cast<int>(args.integer("segment_materials", "materials"));
     } else if (args.is("--threshold")) {
       options.segmentation.air_threshold = static_cast<float>(args.number());
     } else if (args.is("--thresholds")) {
@@ -98,15 +99,18 @@ Options parse(voxelsieve::cli::Arguments& args) {
         options.segmentation.material_thresholds.push_back(std::stof(item));
       }
     } else if (args.is("--min-neighbours")) {
-      options.segmentation.min_neighbours = static_cast<int>(args.integer());
+      options.segmentation.min_neighbours =
+          static_cast<int>(args.integer("segment_materials", "min_neighbours"));
     } else if (args.is("--grow")) {
-      options.segmentation.grow_steps = static_cast<int>(args.integer());
+      options.segmentation.grow_steps =
+          static_cast<int>(args.integer("segment_materials", "grow_steps"));
     } else if (args.is("--grow-fraction")) {
-      options.segmentation.grow_fraction = static_cast<float>(args.number());
+      options.segmentation.grow_fraction =
+          static_cast<float>(args.number("segment_materials", "grow_fraction"));
     } else if (args.is("--model")) {
       options.model = args.value();
     } else if (args.is("--tile")) {
-      options.model_options.tile = args.integer();
+      options.model_options.tile = args.integer("segment_model", "tile");
     } else if (args.is("--region")) {
       std::stringstream list(args.value());
       std::vector<std::int64_t> values;

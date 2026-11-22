@@ -499,6 +499,13 @@ TEST_F(ProjectTest, PluginsAddOperations) {
   const auto bad = registry.loadPlugins(dir_ / "bad");
   ASSERT_EQ(bad.size(), 1U);
   EXPECT_EQ(bad.front().find("loaded"), std::string::npos);
+  // A plugin of the right API version but built with other libraries would crash when called:
+  // it is refused, and the message names both builds.
+  const auto other = registry.loadPlugins(VOXELSIEVE_TEST_OTHER_PLUGIN_DIR);
+  ASSERT_EQ(other.size(), 1U);
+  EXPECT_NE(other.front().find("was built with another compiler"), std::string::npos)
+      << other.front();
+  EXPECT_NE(other.front().find(VOXELSIEVE_PLUGIN_BUILD), std::string::npos) << other.front();
 
   const SyntheticSpec spec;
   const SyntheticScan scan(boxMesh({4.0, 4.0, 4.0}), spec);

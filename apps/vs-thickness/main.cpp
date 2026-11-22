@@ -89,25 +89,26 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--method")) {
       options.thickness.method = voxelsieve::thicknessMethodFromString(args.value());
     } else if (args.is("--min-wall")) {
-      options.thickness.min_wall_mm = args.number();
+      options.thickness.min_wall_mm = args.number("wall_thickness", "min_wall_mm");
     } else if (args.is("--max-wall")) {
-      options.thickness.max_wall_mm = args.number();
+      options.thickness.max_wall_mm = args.number("wall_thickness", "max_wall_mm");
     } else if (args.is("--max-thickness")) {
-      options.thickness.max_thickness_mm = args.number();
+      options.thickness.max_thickness_mm = args.number("wall_thickness", "max_thickness_mm");
     } else if (args.is("--search-angle")) {
-      options.thickness.search_angle_deg = args.number();
+      options.thickness.search_angle_deg = args.number("wall_thickness", "search_angle_deg");
     } else if (args.is("--all-surfaces")) {
       options.thickness.outer_surface_only = false;
     } else if (args.is("--nominal")) {
       options.nominal = args.value();
     } else if (args.is("--nominal-tolerance")) {
-      options.nominal_tolerance_mm = args.number();
+      options.nominal_tolerance_mm = args.number("wall_thickness", "nominal_tolerance_mm");
     } else if (args.is("--volume-map")) {
       options.volume_map = true;
     } else if (args.is("--map-max-thickness")) {
-      options.map.max_thickness_mm = args.number();
+      options.map.max_thickness_mm = args.number("wall_thickness", "map_max_thickness_mm");
     } else if (args.is("--max-triangles")) {
-      options.thickness.max_triangles = std::stoull(args.value());
+      options.thickness.max_triangles =
+          static_cast<std::size_t>(args.integer("wall_thickness", "max_triangles"));
     } else if (args.positional() && options.dataset.empty()) {
       options.dataset = args.arg();
     } else {

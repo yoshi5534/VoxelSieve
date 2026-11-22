@@ -7,11 +7,31 @@ set(VOXELSIEVE_PROGRAMS
   vs-battery vs-beam-hardening vs-compare vs-denoise vs-diconde vs-phantom vs-porosity vs-report
   vs-segment vs-sieve vs-gui vs-surface vs-synth vs-thickness)
 
-install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
+install(TARGETS voxelsieve
+  EXPORT VoxelSieveTargets
   RUNTIME_DEPENDENCY_SET voxelsieve_runtime
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS ${VOXELSIEVE_PROGRAMS}
+  RUNTIME_DEPENDENCY_SET voxelsieve_runtime
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# The headers and a CMake package, so that a plugin builds against an installed VoxelSieve:
+# find_package(VoxelSieve) gives VoxelSieve::voxelsieve. The plugin needs OpenVDB and
+# nlohmann/json itself, in the versions the package names (docs: README, "Plugins").
+include(CMakePackageConfigHelpers)
+set(_vs_package_dir ${CMAKE_INSTALL_LIBDIR}/cmake/VoxelSieve)
+install(DIRECTORY include/voxelsieve DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT VoxelSieveTargets NAMESPACE VoxelSieve:: DESTINATION ${_vs_package_dir})
+configure_package_config_file(cmake/VoxelSieveConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/VoxelSieveConfig.cmake INSTALL_DESTINATION ${_vs_package_dir})
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/VoxelSieveConfigVersion.cmake
+  VERSION ${VOXELSIEVE_VERSION} COMPATIBILITY SameMinorVersion)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/VoxelSieveConfig.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/VoxelSieveConfigVersion.cmake
+              cmake/FindOpenVDBModule.cmake
+        DESTINATION ${_vs_package_dir})
 install(FILES examples/inspection_order.json examples/inspection_order_p203.json
               examples/first_article_plan.json examples/first_article_order.json
               examples/battery_order.json examples/battery_order_18650.json

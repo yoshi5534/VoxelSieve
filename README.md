@@ -570,8 +570,20 @@ project.run(registry, "report", {{"order_path", "examples/inspection_order.json"
 project.undo();
 ```
 
-A plugin is a shared library that exports `voxelsieve_plugin_api_version()` and
-`voxelsieve_register_operations()`; `examples/plugins/histogram` is a complete one. See
+A plugin is a shared library that exports `voxelsieve_plugin_api_version()`,
+`voxelsieve_plugin_build()` and `voxelsieve_register_operations()`;
+`examples/plugins/histogram` is a complete one. The release packages hold the headers and a CMake
+package, so a plugin builds against an installed VoxelSieve:
+
+```cmake
+find_package(VoxelSieve REQUIRED)        # with -DCMAKE_PREFIX_PATH=<unpacked package>
+add_library(my_plugin MODULE my_plugin.cpp)
+target_link_libraries(my_plugin PRIVATE VoxelSieve::voxelsieve)
+```
+
+The interface is C++, so the plugin needs the standard library, OpenVDB and nlohmann/json of the
+VoxelSieve that loads it. `voxelsieve_plugin_build()` returns `VOXELSIEVE_PLUGIN_BUILD`, which
+names them; a plugin whose text differs is not loaded, and the message shows both. See
 `docs/adr/0008-gui-projects-operations-ui.md`.
 
 ## Python

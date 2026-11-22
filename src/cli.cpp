@@ -6,6 +6,7 @@
 #include <string>
 #include <system_error>
 
+#include "voxelsieve/operation.hpp"
 #include "voxelsieve/resources.hpp"
 
 namespace voxelsieve::cli {
@@ -67,6 +68,43 @@ std::int64_t Arguments::integer() {
   if (error != std::errc() || end != text.data() + text.size()) {
     throw UsageError(name + " needs a whole number, not '" + text + "'");
   }
+  return result;
+}
+
+namespace {
+
+// The limits come from the schema of the operation, the name in the message from the option.
+void checkAgainstSchema(const std::string& option, const std::string& operation,
+                        const std::string& parameter, const nlohmann::json& value) {
+  nlohmann::json schema;
+  schema["properties"][parameter] = builtinParameter(operation, parameter);
+  nlohmann::json given;
+  given[parameter] = value;
+  try {
+    (void)validateParameters(schema, given);
+  } catch (const std::invalid_argument& error) {
+    std::string message = error.what();
+    const std::string subject = "Parameter '" + parameter + "'";
+    if (message.starts_with(subject)) {
+      message = option + message.substr(subject.size());
+    }
+    throw UsageError(message);
+  }
+}
+
+}  // namespace
+
+double Arguments::number(const std::string& operation, const std::string& parameter) {
+  const std::string option(arg());
+  const double result = number();
+  checkAgainstSchema(option, operation, parameter, result);
+  return result;
+}
+
+std::int64_t Arguments::integer(const std::string& operation, const std::string& parameter) {
+  const std::string option(arg());
+  const std::int64_t result = integer();
+  checkAgainstSchema(option, operation, parameter, result);
   return result;
 }
 

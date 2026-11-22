@@ -3605,6 +3605,23 @@ DatasetOptions sieveOptions(const Json& params) {
   return options;
 }
 
+Json builtinParameter(const std::string& operation, const std::string& parameter) {
+  static const OperationRegistry registry = [] {
+    OperationRegistry all;
+    registerBuiltinOperations(all);
+    return all;
+  }();
+  const auto found = registry.find(operation);
+  if (!found) {
+    throw std::logic_error("No built-in operation '" + operation + "'");
+  }
+  const Json properties = found->info().parameters.value("properties", Json::object());
+  if (!properties.contains(parameter)) {
+    throw std::logic_error("Operation '" + operation + "' has no parameter '" + parameter + "'");
+  }
+  return properties.at(parameter);
+}
+
 void registerBuiltinOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<OpenDataset>());
   registry.add(std::make_shared<ImportRaw>());

@@ -95,17 +95,19 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--model")) {
       options.model = args.value();
     } else if (args.is("--strength")) {
-      options.denoise.non_local_means.strength = args.number();
+      options.denoise.non_local_means.strength = args.number("denoise", "strength");
     } else if (args.is("--search")) {
-      options.denoise.non_local_means.search_radius = static_cast<int>(args.integer());
+      options.denoise.non_local_means.search_radius =
+          static_cast<int>(args.integer("denoise", "search_radius"));
     } else if (args.is("--limit")) {
-      options.denoise.non_local_means.similarity_limit = args.number();
+      options.denoise.non_local_means.similarity_limit = args.number("denoise", "similarity_limit");
     } else if (args.is("--patch")) {
-      options.denoise.non_local_means.patch_radius = static_cast<int>(args.integer());
+      options.denoise.non_local_means.patch_radius =
+          static_cast<int>(args.integer("denoise", "patch_radius"));
     } else if (args.is("--noise")) {
-      options.denoise.noise_sigma = args.number();
+      options.denoise.noise_sigma = args.number("denoise", "noise_sigma");
     } else if (args.is("--tile")) {
-      options.denoise.tile = args.integer();
+      options.denoise.tile = args.integer("denoise", "tile");
     } else if (args.is("--value-type")) {
       const std::string type = args.value();
       if (type != "native") {

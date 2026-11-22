@@ -493,6 +493,25 @@
   thread could start on another brick while it was still merging the previous one into its
   per-thread result. The merge now runs isolated, so the results are reproducible.
 
+- **Options of the tools take the limits of the operations**: the options that set a parameter
+  of an operation (`--min-pore`, `--zone-min`, `--materials`, `--strength`, `--order`, `--bits`,
+  `--tolerance`, `--search-angle`, `--angles` and the others of `vs-porosity`, `vs-report`,
+  `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`
+  and `vs-battery`) are checked against the schema of that parameter. `vs-porosity --min-pore 0`
+  or `--zone-min 1.5` ran with the value before; now it ends with "--min-pore must be at least
+  1". A test keeps the defaults of the tools and of the GUI the same.
+
+- **Limits that exclude the bound are checked**: a parameter declared as greater than zero (the
+  strength of the denoising, the pitch of an import) accepted zero and negative values in the
+  GUI and over MCP.
+
+- **Plugins build against a package**: the release packages hold the headers and a CMake
+  package (`find_package(VoxelSieve)`, target `VoxelSieve::voxelsieve`). A plugin now also
+  exports `voxelsieve_plugin_build()`, which returns `VOXELSIEVE_PLUGIN_BUILD`: the standard
+  library and the versions of OpenVDB and nlohmann/json it was built with. A plugin built with
+  others is refused with a message that names both, instead of crashing when it is called.
+  **Plugins need to be rebuilt with this function (plugin API 7).**
+
 ## 0.2.1 (2026-10-07)
 
 - **MCP bundles hold the server again**: the `.mcpb` files of 0.2.0 were empty (22 bytes) because
