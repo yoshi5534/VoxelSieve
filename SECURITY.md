@@ -2,8 +2,9 @@
 
 VoxelSieve reads files that may come from others: raw volumes and their sidecars, TIFF stacks
 and ZIP archives, DICOM and DICONDE files, STL meshes, projects and plugins. Its servers listen on
-the local machine only, without authentication (the browser UI on 127.0.0.1, MCP on
-stdin/stdout), and the MCP server reads and writes only in the directories it is given.
+the local machine only (the browser UI on 127.0.0.1, MCP on stdin/stdout). The browser UI needs
+the access token of the address `vs-gui` prints, which changes with every start; its connection
+is not encrypted. The MCP server reads and writes only in the directories it is given.
 
 ## Reporting a vulnerability
 
@@ -21,5 +22,6 @@ Only the latest release gets security fixes.
 
 - Plugins run as native code with the rights of the user (`--plugins`, `VOXELSIEVE_PLUGIN_PATH`);
   load only plugins you trust.
-- `vs-gui --host` with an address other than the local machine exposes the UI without
-  authentication to that network. Do this only behind your own access control.
+- `vs-gui --host` with an address other than the local machine exposes the UI to that network
+  with the access token as its only protection, over an unencrypted connection. Do this only
+  behind your own access control.
