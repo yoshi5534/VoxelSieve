@@ -782,8 +782,9 @@ void checkInspectionOrder(const nlohmann::json& order) {
     const std::string meant =
         detail::nearestKey(key, {"acceptance", "wall_thickness", "fibres", "battery"}, false);
     if (!meant.empty() && meant != key) {
-      throw std::invalid_argument("Unknown section '" + key + "' in the order; did you mean '" +
-                                  meant + "'?");
+      std::string message = "Unknown section '";
+      message.append(key).append("' in the order; did you mean '").append(meant).append("'?");
+      throw std::invalid_argument(message);
     }
   }
   const auto section = [&order](const char* name) {
