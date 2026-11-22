@@ -12,8 +12,12 @@ install(TARGETS voxelsieve ${VOXELSIEVE_PROGRAMS}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(FILES examples/inspection_order.json examples/first_article_plan.json
-              examples/first_article_order.json examples/battery_order.json DESTINATION ${CMAKE_INSTALL_DATADIR}/voxelsieve/examples)
+install(FILES examples/inspection_order.json examples/inspection_order_p203.json
+              examples/first_article_plan.json examples/first_article_order.json
+              examples/battery_order.json examples/battery_order_18650.json
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/voxelsieve/examples)
+# The P 203 order takes the region of one zone from this mesh, by a path relative to the order.
+install(FILES examples/regions/boss.stl DESTINATION ${CMAKE_INSTALL_DATADIR}/voxelsieve/examples/regions)
 install(FILES LICENSE NOTICE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/voxelsieve)
 
 if(VOXELSIEVE_INSTALL_RUNTIME_DEPS)
