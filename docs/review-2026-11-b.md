@@ -155,6 +155,9 @@ every finding of high or critical severity but A4 (step 3) and take about two we
 5. **F1:** tests for each: a save that fails, two openers, non-UTF-8 text, a failing step after
    undo.
 
+**Status (2026-11-22): done** (ADR 0036). The second process gets the error and does not open the
+project; opening read-only is left out until something needs it.
+
 ### Step 2: Orders are strict; dimensions are checked (about 1 week)
 
 1. **B1, G4, F3:** every key of an order, a region, a plan and a battery order is known or an

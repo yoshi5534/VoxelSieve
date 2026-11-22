@@ -358,7 +358,10 @@ Json toolResult(Json value, bool is_error) {
              {"mimeType", value.at("image").at("mime_type")}};
     value.erase("image");
   }
-  Json result = {{"content", {{{"type", "text"}, {"text", value.dump(2)}}}}, {"isError", is_error}};
+  Json result = {
+      {"content",
+       {{{"type", "text"}, {"text", value.dump(2, ' ', false, Json::error_handler_t::replace)}}}},
+      {"isError", is_error}};
   if (!image.is_null()) {
     result["content"].insert(result["content"].begin(), image);
   }

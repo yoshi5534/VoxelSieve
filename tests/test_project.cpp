@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "voxelsieve/io.hpp"
@@ -150,6 +153,62 @@ TEST_F(ProjectTest, UndoRedoMoveTheCursorAndANewStepDiscardsTheUndoneOnes) {
   EXPECT_TRUE(project.undo());
   EXPECT_FALSE(project.undo());
   EXPECT_EQ(latestNumber(project), -1);
+}
+
+TEST_F(ProjectTest, AStepThatFailsLeavesTheUndoneStepsForRedo) {
+  auto project = Project::create(dir_ / "p", "Test");
+  project.run(registry_, "make_number", {{"value", 1}});
+  project.run(registry_, "add", {{"amount", 10}});
+  const auto undone_dir = project.stepDir(project.steps()[1]);
+  EXPECT_TRUE(project.undo());
+  // A mistyped path, say: the new step fails, and the work of the undone one is still there.
+  EXPECT_THROW(project.run(registry_, "fail"), std::runtime_error);
+  ASSERT_EQ(project.steps().size(), 3U);
+  EXPECT_EQ(project.steps()[1].status, "failed");
+  EXPECT_EQ(project.steps()[2].operation, "add");
+  EXPECT_TRUE(std::filesystem::exists(undone_dir));
+  EXPECT_EQ(latestNumber(project), 1);
+  ASSERT_TRUE(project.canRedo());
+  EXPECT_TRUE(project.redo());
+  EXPECT_EQ(latestNumber(project), 11);
+  // The same after the program ended in between.
+  EXPECT_TRUE(project.undo());
+  auto reopened = Project::open(dir_ / "p");
+  EXPECT_TRUE(reopened.redo());
+  EXPECT_EQ(latestNumber(reopened), 11);
+}
+
+TEST(ProjectLockTest, AnotherProcessCannotOpenAProjectThatIsOpen) {
+  // Another process that opened the project took its running step for an interrupted one and
+  // removed the step's directory (ADR 0036). The other process is this test program started
+  // again by the death test: it runs this test up to the statement it is to execute, so what
+  // sets the scene is left to the first process.
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const auto dir = std::filesystem::temp_directory_path() / "voxelsieve_project_lock";
+  const bool second_process = ::testing::internal::InDeathTestChild();
+  const auto open_project = [&dir] {
+    try {
+      (void)Project::open(dir / "p");
+    } catch (const std::exception& error) {
+      std::cerr << error.what();
+      std::_Exit(3);
+    }
+    std::_Exit(0);
+  };
+  std::optional<Project> project;
+  if (!second_process) {
+    std::filesystem::remove_all(dir);
+    project = Project::create(dir / "p", "Test");
+  }
+  EXPECT_EXIT(open_project(), ::testing::ExitedWithCode(3), "open in another VoxelSieve");
+  if (!second_process) {
+    // In this process it opens again: its copies share the lock.
+    EXPECT_EQ(Project::open(dir / "p").steps().size(), 0U);
+  }
+  // Closed here, it is free for others.
+  project.reset();
+  EXPECT_EXIT(open_project(), ::testing::ExitedWithCode(0), "");
+  std::filesystem::remove_all(dir);
 }
 
 TEST_F(ProjectTest, FailedStepsAreRecordedButProvideNoOutputs) {

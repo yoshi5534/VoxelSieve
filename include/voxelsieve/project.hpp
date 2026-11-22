@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
@@ -219,6 +220,9 @@ class Project {
   std::string active_object_;
   int next_object_id_ = 1;
   SavePart save_part_ = SavePart::kAll;
+  /// The lock of the project directory between processes (ADR 0036), shared by the copies of the
+  /// project; empty where the file system has no locks.
+  std::shared_ptr<void> lock_;
 };
 
 /// An object as JSON: id, name, kind, source {step, output}, created_by, pose (row-major 4x4) and

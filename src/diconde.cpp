@@ -606,12 +606,16 @@ void applyInspectionOrder(const Json& order, DicondeWriteOptions& options,
 
 DicondeInfo readDicondeInfo(const DicomStackSource& source) {
   const auto& files = source.files();
-  const auto load = [&source, &files](std::size_t index, DcmFileFormat& file) {
+  // Text comes in the character set the file names (often Latin-1); everything here is UTF-8.
+  // Where DCMTK cannot convert, the text stays as it is and writeJson replaces what is invalid.
+  const auto to_utf8 = [](DcmFileFormat& file) { (void)file.getDataset()->convertToUTF8(); };
+  const auto load = [&source, &files, &to_utf8](std::size_t index, DcmFileFormat& file) {
     const std::filesystem::path& path = files[index];
     if (source.archive().empty()) {
       check(file.loadFileUntilTag(path.string().c_str(), EXS_Unknown, EGL_noChange,
                                   DCM_MaxReadLength, ERM_autoDetect, DCM_PixelData),
             "reading " + path.string());
+      to_utf8(file);
       return;
     }
     // A file inside a ZIP archive, read from memory in full.
@@ -624,6 +628,7 @@ DicondeInfo readDicondeInfo(const DicomStackSource& source) {
         file.readUntilTag(stream, EXS_Unknown, EGL_noChange, 0xFFFFFFFFU, DCM_PixelData);
     file.transferEnd();
     check(status, "reading " + path.string());
+    to_utf8(file);
   };
   DicondeInfo info;
   {

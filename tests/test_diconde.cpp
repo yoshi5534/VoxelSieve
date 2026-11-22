@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -12,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "dicom_writer.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
@@ -20,6 +22,7 @@
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/porosity.hpp"
+#include "voxelsieve/project.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 
@@ -331,6 +334,50 @@ TEST_F(DicondeTest, GuiExportsAndImportsAgain) {
   for (std::size_t i = 0; i < moved.size(); ++i) {
     EXPECT_NEAR(placed[i], moved[i], 1e-9) << i;
   }
+}
+
+TEST_F(DicondeTest, TextInLatin1IsReadAndSavedAsUtf8) {
+  // A component name with an umlaut in ISO 8859-1, as scanners with a German user interface
+  // write it. Its bytes are no UTF-8: unconverted, they made the project file unwritable.
+  const std::int64_t n = 24;
+  std::filesystem::create_directories(dir_ / "latin1");
+  for (std::int64_t z = 0; z < n; ++z) {
+    testing::DicomSliceSpec slice;
+    slice.rows = static_cast<std::uint16_t>(n);
+    slice.columns = static_cast<std::uint16_t>(n);
+    slice.is_signed = false;
+    slice.instance = static_cast<int>(z) + 1;
+    slice.position = {0.0, 0.0, 0.5 * static_cast<double>(z)};
+    slice.pixel_spacing = {0.5, 0.5};
+    slice.character_set = "ISO_IR 100";
+    slice.component_name = "Geh\xE4use";
+    std::vector<std::int32_t> samples(static_cast<std::size_t>(n * n), 1000);
+    for (std::int64_t y = 6; y < 18; ++y) {
+      for (std::int64_t x = 6; x < 18; ++x) {
+        samples[static_cast<std::size_t>(y * n + x)] = z >= 6 && z < 18 ? 30000 : 1000;
+      }
+    }
+    std::array<char, 32> name{};
+    (void)std::snprintf(name.data(), name.size(), "slice_%03d.dcm", static_cast<int>(z));
+    testing::writeDicomSlice(dir_ / "latin1" / name.data(), slice, samples);
+  }
+  const std::string component = readDicondeInfo(DicomStackSource(dir_ / "latin1")).component.name;
+  if (DcmSpecificCharacterSet::isConversionAvailable()) {
+    EXPECT_EQ(component, "Geh\xC3\xA4use");
+  }
+
+  // Converted or not, the import is done, the GUI takes the next call and the project is saved.
+  Gui gui({});
+  gui.call("project_create", {{"path", (dir_ / "project").string()}});
+  const Json imported =
+      gui.call("run_import_dicom", {{"path", (dir_ / "latin1").string()}, {"brick_size", 8}});
+  ASSERT_EQ(imported.at("status"), "done");
+  const Json status = gui.call("project_status", {});
+  EXPECT_TRUE(status.at("running").is_null());
+  EXPECT_FALSE(status.contains("save_error"));
+  const Project saved = Project::open(dir_ / "project");
+  ASSERT_EQ(saved.steps().size(), 1U);
+  EXPECT_EQ(saved.steps().front().status, "done");
 }
 
 }  // namespace
