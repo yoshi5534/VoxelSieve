@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VoxelSieve inspection plan",
+  "description": "Plan of a dimensional measurement (measure_dimensions, first article report). Lengths in mm in the coordinates of the CAD model.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "part": {
+      "type": "object",
+      "description": "Part data for the report; may hold anything"
+    },
+    "elements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/element"
+      },
+      "minItems": 1
+    },
+    "alignment": {
+      "description": "\"best_fit\" (default) or the datums in their order",
+      "oneOf": [
+        {
+          "const": "best_fit"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "datums": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": [
+                      "string",
+                      "number"
+                    ]
+                  },
+                  {
+                    "$ref": "#/$defs/datum"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "characteristics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/characteristic"
+      }
+    }
+  },
+  "required": [
+    "elements"
+  ],
+  "$defs": {
+    "element": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "description": "Name the characteristics and datums refer to"
+        },
+        "type": {
+          "enum": [
+            "plane",
+            "cylinder",
+            "sphere",
+            "point"
+          ]
+        },
+        "at": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Point on the element in CAD coordinates: the element is found on the CAD model there (see cad_features)"
+        },
+        "search_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Distance from the nominal element within which scan points are taken"
+        },
+        "edge_margin_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Margin kept from the edges of the element"
+        },
+        "radius_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Radius around the point within which a plane is measured"
+        },
+        "inner": {
+          "type": "boolean",
+          "description": "Hole (true) or boss (false)"
+        },
+        "point": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "normal": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "direction": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "center": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "diameter": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Nominal diameter in mm"
+        },
+        "length": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Length of the cylinder in mm"
+        }
+      },
+      "description": "Element, found on the CAD model by \"at\" or given by its nominal geometry",
+      "required": [
+        "id",
+        "type"
+      ]
+    },
+    "characteristic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "number": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "description": "Number on the drawing; default is the position in the list"
+        },
+        "type": {
+          "type": "string",
+          "description": "diameter, radius, distance, angle, coordinate, position, flatness, cylindricity, sphericity, form, profile, deviation, parallelism or perpendicularity"
+        },
+        "element": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        },
+        "datum": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "description": "Datum element of parallelism and perpendicularity"
+        },
+        "axis": {
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "description": "Axis of a coordinate"
+        },
+        "along": {
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "description": "Axis a distance is measured along"
+        },
+        "nominal": {
+          "type": "number"
+        },
+        "upper": {
+          "type": "number",
+          "description": "Upper deviation"
+        },
+        "lower": {
+          "type": "number",
+          "description": "Lower deviation"
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Symmetric tolerance, or the zone of a form or position tolerance"
+        },
+        "label": {
+          "type": "string"
+        },
+        "drawing_zone": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "datum": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "element": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "directions": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "enum": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              }
+            ]
+          },
+          "description": "Directions the datum fixes"
+        }
+      },
+      "required": [
+        "element"
+      ]
+    }
+  }
+}

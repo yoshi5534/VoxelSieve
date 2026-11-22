@@ -22,6 +22,21 @@
   soon as a new step started, so a mistyped path in it lost them. They are now removed when the
   new step is done; after a failed one, redo brings them back.
 
+- **Orders and plans are strict**: a key nothing reads in the sections of an inspection order
+  that hold limits (`acceptance` with its zones, regions and reference volume, `wall_thickness`,
+  `fibres`, `battery`) and in an inspection plan is now an error that names the key meant. Before,
+  `max_pore_size` instead of `max_pore_size_mm` or `tolerence` in a plan dropped the limit and
+  the part passed. A section named nearly like an evaluated one (`acceptence`) and a zone
+  without any limit are errors too. The sections that describe the inspection stay free. The
+  keys are listed in `docs/schema/inspection_order.schema.json` and
+  `docs/schema/inspection_plan.schema.json`. **An order that carried an unused key in one of
+  these sections is now rejected until the key is corrected or removed.**
+
+- **Dimensions are checked**: dimensions of a raw volume whose product overflows (2³² × 2³² × 1)
+  passed the size check and ended in "std::bad_alloc" or a crash of the MCP server; dimensions
+  must now lie between 1 and 1 048 576 voxels per axis. A dataset whose `index.json` is damaged
+  is reported as "Damaged dataset: …/index.json" with the reason.
+
 - **Battery inspection of a part without an electrode stack**: a volume whose sections show at
   most one layer, such as a casting given by mistake, made the inspection fail with "Region
   outside dataset level 0"; it now finishes with the warning that no electrode stack was found

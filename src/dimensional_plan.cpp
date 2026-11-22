@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "detail/dimensional.hpp"
+#include "detail/keys.hpp"
 
 namespace voxelsieve::detail::dimensional {
 namespace {
@@ -93,6 +94,10 @@ ElementPlan parseElement(const Json& item, const FeatureFinder& finder) {
   ElementPlan e;
   e.id = jsonText(item.at("id"));
   const std::string what = "Element '" + e.id + "'";
+  requireKnownKeys(item,
+                   {"id", "type", "at", "search_mm", "edge_margin_mm", "radius_mm", "inner",
+                    "point", "normal", "direction", "diameter", "length", "center"},
+                   "element '" + e.id + "' of the inspection plan");
   const ElementType type = elementTypeFromString(item.at("type").get<std::string>());
   e.search_mm = item.value("search_mm", 0.0);
   e.margin_mm = item.value("edge_margin_mm", 0.0);
@@ -168,6 +173,10 @@ CharacteristicPlan parseCharacteristic(const Json& item, std::size_t index,
   c.number = item.contains("number") ? jsonText(item.at("number")) : std::to_string(index + 1);
   c.kind = &kindInfo(item.at("type").get<std::string>());
   const std::string what = "Characteristic " + c.number;
+  requireKnownKeys(item,
+                   {"number", "type", "elements", "element", "datum", "axis", "along", "nominal",
+                    "upper", "lower", "tolerance", "label", "drawing_zone", "method", "note"},
+                   "characteristic " + c.number + " of the inspection plan");
   if (item.contains("elements")) {
     for (const Json& id : item.at("elements")) {
       c.elements.push_back(findElement(elements, id, what));

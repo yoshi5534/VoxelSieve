@@ -133,6 +133,13 @@ struct Evaluation {
                                   const std::vector<InspectionZone>& zones,
                                   const Dataset* dataset = nullptr);
 
+/// Throws std::invalid_argument when a section of the order that is evaluated ("acceptance",
+/// "wall_thickness", "fibres", "battery") holds a key nothing reads, or a section is named nearly
+/// like one of them: a misspelt limit would otherwise not be checked and the part would pass. The
+/// other sections describe the inspection for the report and may hold anything. Everything that
+/// reads limits from an order calls this.
+void checkInspectionOrder(const nlohmann::json& order);
+
 /// Reads the inspection zones from the "acceptance" section of an inspection order (see
 /// examples/inspection_order.json and examples/inspection_order_p203.json): name, region
 /// (InspectionRegion::fromJson), the limits as fields named like the members of

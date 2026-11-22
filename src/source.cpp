@@ -67,15 +67,18 @@ void convertSamples(const unsigned char* samples, std::size_t count, const RawLa
   }
 }
 
-void checkDims(const RawLayout& layout) {
-  for (const std::int64_t d : layout.dims) {
-    if (d <= 0) {
-      throw std::invalid_argument("Raw volume dimensions must be positive");
+}  // namespace
+
+void checkVolumeDims(const std::array<std::int64_t, 3>& dims, std::string_view what) {
+  for (const std::int64_t d : dims) {
+    if (d <= 0 || d > kMaxVolumeEdge) {
+      throw std::invalid_argument(std::string(what) + ": dimensions must be between 1 and " +
+                                  std::to_string(kMaxVolumeEdge) + " voxels per axis, not " +
+                                  std::to_string(dims[0]) + " x " + std::to_string(dims[1]) +
+                                  " x " + std::to_string(dims[2]));
     }
   }
 }
-
-}  // namespace
 
 void MemorySource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   checkRegion(box, volume_.dims, out);
@@ -145,7 +148,7 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path,
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLayout& layout)
     : mapping_(std::make_unique<Mapping>()), layout_(layout) {
-  checkDims(layout);
+  checkVolumeDims(layout.dims, path.string());
   const std::uintmax_t payload =
       static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]) *
       sampleBytes(layout.sample_type);
@@ -281,7 +284,7 @@ GzipRawSource::GzipRawSource(const std::filesystem::path& path, const RawLayout&
     : stream_(std::make_unique<Stream>(path)),
       layout_(layout),
       header_bytes_(layout.header_bytes.value_or(0)) {
-  checkDims(layout);
+  checkVolumeDims(layout.dims, path.string());
 }
 
 GzipRawSource::~GzipRawSource() = default;

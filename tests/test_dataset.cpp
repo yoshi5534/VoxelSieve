@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <latch>
 #include <map>
@@ -737,6 +738,53 @@ std::int64_t level0Mismatches(const std::filesystem::path& dir, const Volume16& 
 nlohmann::json readIndex(const std::filesystem::path& dir) {
   std::ifstream in(dir / "index.json");
   return nlohmann::json::parse(in);
+}
+
+// Dimensions whose product does not fit into 64 bits used to pass the size check by overflow and
+// end in an allocation of the wrong size.
+TEST_F(DatasetTest, DimensionsOutOfRangeAreRejected) {
+  std::filesystem::create_directories(dir_);
+  const std::filesystem::path path = dir_ / "tiny.raw";
+  std::ofstream(path, std::ios::binary) << std::string(64, '\0');
+  const std::int64_t huge = std::int64_t{1} << 32;
+  EXPECT_THROW(MappedRawSource(path, {huge, huge, 1}, 1.0), std::invalid_argument);
+  EXPECT_THROW(MappedRawSource(path, {huge, huge, huge}, 1.0), std::invalid_argument);
+  EXPECT_THROW(MappedRawSource(path, {4, 0, 8}, 1.0), std::invalid_argument);
+  EXPECT_THROW(MappedRawSource(path, {4, -2, 8}, 1.0), std::invalid_argument);
+  EXPECT_NO_THROW(MappedRawSource(path, {4, 4, 2}, 1.0));
+}
+
+TEST_F(DatasetTest, ADamagedIndexIsAnErrorThatNamesTheFile) {
+  PhantomSpec phantom = spec();
+  phantom.dims = {40, 36, 20};
+  DatasetOptions options;
+  options.brick_size = 16;
+  (void)writeDataset(PhantomSource(phantom), dir_, options);
+  const std::filesystem::path index = dir_ / "index.json";
+  std::ifstream in(index);
+  const nlohmann::json good = nlohmann::json::parse(in);
+  in.close();
+  const auto damaged = [&](const std::function<void(nlohmann::json&)>& change) {
+    nlohmann::json json = good;
+    change(json);
+    std::ofstream(index) << json.dump();
+    try {
+      (void)readDatasetInfo(dir_);
+    } catch (const std::runtime_error& error) {
+      return std::string(error.what());
+    }
+    return std::string();
+  };
+  EXPECT_EQ(damaged([](nlohmann::json&) {}), "");
+  const std::int64_t huge = std::int64_t{1} << 40;
+  for (const std::string& message :
+       {damaged([&](nlohmann::json& j) { j["dims"] = {huge, huge, huge}; }),
+        damaged([](nlohmann::json& j) { j["dims"] = {40, 0, 20}; }),
+        damaged([](nlohmann::json& j) { j["brick_size"] = 0; }),
+        damaged([](nlohmann::json& j) { j.erase("levels"); }),
+        damaged([](nlohmann::json& j) { j["dims"] = "large"; })}) {
+    EXPECT_NE(message.find("index.json"), std::string::npos) << message;
+  }
 }
 
 TEST_F(DatasetTest, StoresSixteenBitInputExactlyAsUInt16) {

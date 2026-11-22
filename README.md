@@ -424,6 +424,14 @@ surface, with pores to disregard (P 203). A zone takes the porosity key as writt
 (`"porosity_key": "BDG P203 - PV7/ Øp3/ UØp0,3"`) or the same limits as fields. The limits
 come from the drawing or the customer.
 
+The sections of an order that hold limits (`acceptance`, `wall_thickness`, `fibres`, `battery`)
+take only the keys that are evaluated: a misspelt limit such as `max_pore_size` is an error that
+names `max_pore_size_mm`, not a limit that is silently left out, and so is a zone without any
+limit. The other sections describe the inspection for the report and may hold anything a template
+shows. `docs/schema/inspection_order.schema.json` lists every key with its meaning and
+`docs/schema/inspection_plan.schema.json` those of the plan of a dimensional measurement; an
+editor that knows JSON Schema completes and checks the files with them.
+
 A zone is the whole part or a region: the union of boxes, spheres, cylinders and closed meshes
 (STL), minus excluded ones. In the GUI a region can name a mesh object of the project, such as a
 region drawn on the CAD model, and follows its pose; `inspection_regions` shows the regions as

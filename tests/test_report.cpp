@@ -2,6 +2,9 @@
 
 #include <array>
 #include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -197,6 +200,140 @@ TEST_F(ReportTest, ZonesAreReadFromTheOrder) {
   EXPECT_THROW((void)inspectionZonesFromJson(
                    Json::parse(R"({"acceptance": {"zones": [{"box_mm": [1, 2]}]}})")),
                std::invalid_argument);
+}
+
+/// What reading an order with a slip says, or nothing when it is accepted.
+std::string orderError(const Json& order) {
+  try {
+    (void)inspectionZonesFromJson(order);
+  } catch (const std::invalid_argument& error) {
+    return error.what();
+  }
+  return {};
+}
+
+TEST(OrderTest, TheExampleOrdersAreAccepted) {
+  const std::filesystem::path examples = std::filesystem::path(VOXELSIEVE_SOURCE_DIR) / "examples";
+  for (const char* name :
+       {"inspection_order.json", "inspection_order_p203.json", "first_article_order.json",
+        "battery_order.json", "battery_order_18650.json"}) {
+    std::ifstream file(examples / name);
+    const Json order = Json::parse(file);
+    EXPECT_NO_THROW(checkInspectionOrder(order)) << name;
+    EXPECT_NO_THROW((void)inspectionZonesFromJson(order, examples)) << name;
+  }
+}
+
+// A limit under a key nothing reads is not checked, so the part would pass: every such key in a
+// section that is evaluated is an error that names the key meant.
+TEST(OrderTest, MisspeltKeysOfEvaluatedSectionsAreRejected) {
+  const auto zone = [](Json item) {
+    return Json{{"acceptance", {{"zones", Json::array({std::move(item)})}}}};
+  };
+  EXPECT_NE(orderError(zone({{"max_pore_size", 0.5}})).find("did you mean 'max_pore_size_mm'"),
+            std::string::npos);
+  EXPECT_NE(orderError(zone({{"max_porosity_precent", 1}})).find("'max_porosity_percent'"),
+            std::string::npos);
+  EXPECT_NE(orderError(zone({{"max_pore_size_mm", 1}, {"disregard", {{"volume", 0.1}}}}))
+                .find("'volume_mm3'"),
+            std::string::npos);
+  EXPECT_NE(orderError(zone({{"max_reference_porosity_percent", 1},
+                             {"reference_volume", {{"shape", "cube"}, {"edge", 5}}}}))
+                .find("'edge_mm'"),
+            std::string::npos);
+  EXPECT_NE(orderError(zone({{"max_pore_size_mm", 1}, {"region", {{"includes", Json::array()}}}}))
+                .find("'include'"),
+            std::string::npos);
+  EXPECT_NE(
+      orderError(zone({{"max_pore_size_mm", 1},
+                       {"region", {{{"sphere", {{"center_mm", {0, 0, 0}}, {"radius", 2}}}}}}}))
+          .find("'radius_mm'"),
+      std::string::npos);
+  EXPECT_NE(orderError({{"acceptance", {{"zone", Json::array()}}}}).find("'zones'"),
+            std::string::npos);
+  // A zone without a limit passes whatever the part looks like.
+  EXPECT_NE(
+      orderError(zone({{"name", "A"}, {"box_mm", {{0, 0, 0}, {1, 2, 3}}}})).find("has no limit"),
+      std::string::npos);
+  EXPECT_EQ(orderError(zone({{"allow_loosening", false}})), "");
+  // A section named nearly like an evaluated one would switch the whole evaluation off.
+  EXPECT_NE(orderError({{"acceptence", {{"zones", Json::array()}}}}).find("'acceptance'"),
+            std::string::npos);
+  EXPECT_NE(orderError({{"wall_thickness", {{"min", 2.0}}}}).find("'min_mm'"), std::string::npos);
+  EXPECT_NE(orderError({{"fibres", {{"families", {{{"name", "0°"}, {"tolerance", 10}}}}}}})
+                .find("'tolerance_deg'"),
+            std::string::npos);
+  EXPECT_NE(orderError({{"battery", {{"min_overhang", 0.1}}}}).find("'min_overhang_mm'"),
+            std::string::npos);
+  EXPECT_NE(orderError({{"battery", {{"diameter_mm", {{"nominal", 18}, {"tol", 0.1}}}}}})
+                .find("Unknown key 'tol'"),
+            std::string::npos);
+  // The sections that only describe the inspection hold what the template of the user shows.
+  EXPECT_EQ(orderError({{"part", {{"colour", "blue"}}},
+                        {"notes", "anything"},
+                        {"customer_reference", 7},
+                        {"acceptance", {{"guideline", "BDG P 202"}}}}),
+            "");
+}
+
+/// The keys an error about an unknown key lists as known.
+std::set<std::string> knownKeys(const std::string& message) {
+  std::set<std::string> keys;
+  const std::string marker = "known keys:";
+  const auto at = message.find(marker);
+  if (at != std::string::npos) {
+    std::istringstream words(message.substr(at + marker.size()));
+    for (std::string word; words >> word;) {
+      keys.insert(word);
+    }
+  }
+  return keys;
+}
+
+std::set<std::string> schemaKeys(const Json& object) {
+  std::set<std::string> keys;
+  for (const auto& [key, value] : object.at("properties").items()) {
+    keys.insert(key);
+  }
+  return keys;
+}
+
+// docs/schema/inspection_order.schema.json is the reference of the order for people and editors:
+// it lists exactly the keys the code reads.
+TEST(OrderTest, TheSchemaListsTheKeysTheCodeReads) {
+  std::ifstream file(std::filesystem::path(VOXELSIEVE_SOURCE_DIR) /
+                     "docs/schema/inspection_order.schema.json");
+  const Json schema = Json::parse(file);
+  const Json& defs = schema.at("$defs");
+  // No known key is near this one, so the error lists them all.
+  const Json unknown = {{"qqqqqqqqqqqqqqqqqqqqqqqq", 1}};
+  const auto zone = [](Json item) {
+    item["max_pore_size_mm"] = 1;
+    return Json{{"acceptance", {{"zones", Json::array({std::move(item)})}}}};
+  };
+  const auto solid = [&](const Json& item) { return zone({{"region", Json::array({item})}}); };
+  EXPECT_EQ(knownKeys(orderError({{"acceptance", unknown}})),
+            schemaKeys(schema.at("properties").at("acceptance")));
+  EXPECT_EQ(knownKeys(orderError(zone(unknown))), schemaKeys(defs.at("zone")));
+  EXPECT_EQ(knownKeys(orderError(zone({{"disregard", unknown}}))),
+            schemaKeys(defs.at("disregard")));
+  EXPECT_EQ(knownKeys(orderError(zone({{"reference_volume", unknown}}))),
+            schemaKeys(defs.at("reference_volume")));
+  EXPECT_EQ(knownKeys(orderError(zone({{"region", unknown}}))),
+            schemaKeys(defs.at("region").at("oneOf").at(1)));
+  EXPECT_EQ(knownKeys(orderError(solid(unknown))), schemaKeys(defs.at("solid")));
+  EXPECT_EQ(knownKeys(orderError(solid({{"sphere", unknown}}))),
+            schemaKeys(defs.at("solid").at("properties").at("sphere")));
+  EXPECT_EQ(knownKeys(orderError(solid({{"cylinder", unknown}}))),
+            schemaKeys(defs.at("solid").at("properties").at("cylinder")));
+  EXPECT_EQ(knownKeys(orderError({{"wall_thickness", unknown}})),
+            schemaKeys(defs.at("wall_thickness")));
+  EXPECT_EQ(knownKeys(orderError({{"fibres", unknown}})), schemaKeys(defs.at("fibres")));
+  EXPECT_EQ(knownKeys(orderError({{"fibres", {{"families", Json::array({unknown})}}}})),
+            schemaKeys(defs.at("fibre_family")));
+  EXPECT_EQ(knownKeys(orderError({{"battery", unknown}})), schemaKeys(defs.at("battery")));
+  EXPECT_EQ(knownKeys(orderError({{"battery", {{"diameter_mm", unknown}}}})),
+            schemaKeys(defs.at("range")));
 }
 
 TEST_F(ReportTest, DefaultTemplateRendersReportWithMissingFieldsMarked) {

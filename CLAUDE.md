@@ -134,4 +134,7 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - File formats, compression and crypto always come from an established library (libtiff, libzip,
   libpng, tinyply, Boost.Iostreams, OpenVDB, nlohmann/json, …), never our own parser, codec or
   checksum (ADR 0016). Only VoxelSieve's own formats are written here.
+- Orders and plans are strict: a key nothing reads is an error (`detail/keys.hpp`,
+  `checkInspectionOrder`). A new key goes into the key list where it is read and into
+  `docs/schema/`; a test keeps the two in step.
 - Work happens on branches and pull requests; `main` stays green.

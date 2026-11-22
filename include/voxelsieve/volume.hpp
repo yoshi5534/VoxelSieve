@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "voxelsieve/voxel_size.hpp"
@@ -18,9 +20,20 @@ struct Volume16 {
 
   Volume16() = default;
   Volume16(std::array<std::int64_t, 3> volume_dims, const VoxelSize& size)
-      : dims(volume_dims),
-        voxel_size(size),
-        data(static_cast<std::size_t>(volume_dims[0] * volume_dims[1] * volume_dims[2])) {}
+      : dims(volume_dims), voxel_size(size), data(checkedVoxelCount(volume_dims)) {}
+
+  /// The number of voxels of a volume of these dimensions; throws std::invalid_argument for
+  /// dimensions that are negative or so large that their product would overflow.
+  [[nodiscard]] static std::size_t checkedVoxelCount(const std::array<std::int64_t, 3>& dims) {
+    constexpr std::int64_t kMaxEdge = std::int64_t{1} << 20;
+    for (const std::int64_t d : dims) {
+      if (d < 0 || d > kMaxEdge) {
+        throw std::invalid_argument("The dimensions of a volume must be between 0 and " +
+                                    std::to_string(kMaxEdge) + " voxels per axis");
+      }
+    }
+    return static_cast<std::size_t>(dims[0] * dims[1] * dims[2]);
+  }
 
   [[nodiscard]] std::size_t voxelCount() const { return data.size(); }
 

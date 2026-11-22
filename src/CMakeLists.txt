@@ -71,6 +71,7 @@ add_library(voxelsieve SHARED
   diconde.cpp
   dicom.cpp
   detail/blocks.cpp
+  detail/keys.cpp
   detail/components.cpp
   detail/sweep.cpp
   detail/convolution.cpp
