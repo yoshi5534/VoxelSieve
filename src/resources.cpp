@@ -19,6 +19,12 @@
 #endif
 #endif
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#endif
+
 #include <tbb/task_arena.h>
 
 #include <algorithm>
@@ -209,6 +215,14 @@ bool processRunning(std::uint64_t id) {
   return running;
 #else
   return kill(static_cast<pid_t>(id), 0) == 0 || errno != ESRCH;
+#endif
+}
+
+void releaseFreedMemory() {
+#if defined(__GLIBC__)
+  (void)malloc_trim(0);
+#elif defined(__APPLE__)
+  (void)malloc_zone_pressure_relief(nullptr, 0);
 #endif
 }
 

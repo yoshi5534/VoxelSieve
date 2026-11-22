@@ -1096,6 +1096,35 @@ TEST_F(DatasetReaderTest, ConcurrentRequestsLoadABrickOnce) {
   EXPECT_EQ(dataset.cacheStats().misses, dataset.level(0).bricks.size());
 }
 
+// Bricks evicted from a small cache while other threads load new ones: the freed memory goes back
+// to the system now and then (releaseFreedMemory), and every brick still reads the same.
+TEST_F(DatasetReaderTest, BricksReadTheSameThroughACacheThatKeepsEvicting) {
+  (void)writeReference();
+  const Dataset reference = Dataset::open(dir_, std::size_t{1} << 30U);
+  const auto& bricks = reference.level(0).bricks;
+  std::vector<openvdb::Index64> active(bricks.size());
+  for (std::size_t i = 0; i < bricks.size(); ++i) {
+    active[i] = reference.brick(0, bricks[i])->base().activeVoxelCount();
+  }
+  const auto one_brick =
+      static_cast<std::size_t>(reference.brick(0, bricks.front())->base().memUsage());
+  const Dataset small = Dataset::open(dir_, 2 * one_brick);
+  // Enough rounds to free several times the 64 MB after which the memory goes back.
+  const std::size_t rounds =
+      std::max<std::size_t>(2, (std::size_t{256} << 20U) / (one_brick * bricks.size()) + 1);
+  std::atomic<int> mismatches{0};
+  for (std::size_t round = 0; round < rounds; ++round) {
+    tbb::parallel_for(std::size_t{0}, bricks.size(), [&](std::size_t i) {
+      if (small.brick(0, bricks[i])->base().activeVoxelCount() != active[i]) {
+        ++mismatches;
+      }
+    });
+  }
+  EXPECT_EQ(mismatches.load(), 0);
+  EXPECT_GE(small.cacheStats().misses, rounds * bricks.size() / 2);
+  releaseFreedMemory();  // also safe to call at any time
+}
+
 #ifndef _WIN32
 // OpenVDB copies files it loads on access to a temp file unless told not to (readBrick).
 TEST_F(DatasetReaderTest, LoadingOnAccessWritesNoTempCopies) {

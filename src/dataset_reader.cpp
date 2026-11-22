@@ -97,6 +97,10 @@ std::size_t g_shared_cache_bytes = 0;      // 0: the default; guarded by g_share
 std::atomic<std::uint64_t> g_cache_budgets{0};
 std::atomic<int> g_shared_cache_open{0};
 
+/// Bytes of evicted bricks freed since the freed memory last went back to the system.
+std::atomic<std::size_t> g_freed_brick_bytes{0};
+constexpr std::size_t kMinReleaseBytes = std::size_t{64} << 20U;
+
 std::size_t sharedCacheBudget(std::size_t set) {
   return set > 0 ? set : Dataset::defaultCacheBytes();
 }
@@ -262,7 +266,33 @@ struct Dataset::Impl {
       throw;
     }
     loaded.set_value(grid);
+    releaseEvicted(evicted);
     return grid;
+  }
+
+  /// Frees evicted bricks. Their leaves are thousands of small blocks, freed into the heap of
+  /// whichever thread loaded them, while other threads load new bricks into theirs; each heap
+  /// would grow towards the size of the cache (ADR 0034). So whenever bricks of a quarter of the
+  /// cache budget have been freed, the freed memory goes back to the system.
+  void releaseEvicted(std::list<Entry>& evicted) const {
+    if (evicted.empty()) {
+      return;
+    }
+    std::size_t bytes = 0;
+    for (const Entry& entry : evicted) {
+      bytes += entry.bytes;
+    }
+    std::size_t budget = 0;
+    {
+      const std::scoped_lock lock(cache->mutex);
+      budget = cache->budget;
+    }
+    evicted.clear();
+    const std::size_t freed = g_freed_brick_bytes += bytes;
+    if (freed >= std::max(budget / 4, kMinReleaseBytes)) {
+      g_freed_brick_bytes = 0;
+      releaseFreedMemory();
+    }
   }
 
   /// Reads a brick and puts it into the cache, under the budget; bricks pushed out go to

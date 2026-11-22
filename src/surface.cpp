@@ -356,17 +356,17 @@ class SurfaceWriter {
       return out;
     }
 
-    // Distances to the triangulated iso-surface. Material is inside, so mesh -grey at -iso.
+    // Distances to the triangulated iso-surface. Material is inside, so mesh -grey at -iso. The
+    // grey values are negated in place, which saves a copy of the chunk: material is below -iso.
+    std::transform(grey.begin(), grey.end(), grey.begin(), [](float g) { return -g; });
     std::vector<float> distance;
     {
-      std::vector<float> negated(grey.size());
-      std::transform(grey.begin(), grey.end(), negated.begin(), [](float g) { return -g; });
       const openvdb::CoordBBox bbox(
           openvdb::Coord(static_cast<int>(region.min[0]), static_cast<int>(region.min[1]),
                          static_cast<int>(region.min[2])),
           openvdb::Coord(static_cast<int>(region.max[0] - 1), static_cast<int>(region.max[1] - 1),
                          static_cast<int>(region.max[2] - 1)));
-      const openvdb::tools::Dense<float, openvdb::tools::LayoutXYZ> dense(bbox, negated.data());
+      const openvdb::tools::Dense<float, openvdb::tools::LayoutXYZ> dense(bbox, grey.data());
       openvdb::FloatGrid field(-info_.air_level);
       openvdb::tools::copyFromDense(dense, field, -1.0F);  // negative tolerance: all active
       distance = surfaceDistances(field, -iso, geometry.box, info_.band_voxels);
@@ -398,7 +398,7 @@ class SurfaceWriter {
             const auto offset = static_cast<std::size_t>(
                 (voxel[0] - region.min[0]) +
                 size[0] * ((voxel[1] - region.min[1]) + size[1] * (voxel[2] - region.min[2])));
-            const bool inside = grey[offset] > iso;
+            const bool inside = grey[offset] < -iso;
             const float d = distance[static_cast<std::size_t>(
                 (voxel[0] - geometry.box.min[0]) +
                 geometry.box.size(0) * ((voxel[1] - geometry.box.min[1]) +
@@ -628,8 +628,8 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
 
   const SurfaceWriter writer(dataset, info, resolved);
   // Chunks in work, as many as the work memory holds (ADR 0034): a chunk with its halo takes its
-  // grey values, their negation, a dense VDB copy, the distances and the codes: about 22 bytes per
-  // voxel, as measured at 2048^3.
+  // grey values (negated in place), a dense VDB copy, the mesher's grids, the distances and the
+  // codes: below 22 bytes per voxel, as measured at 2048^3.
   const auto chunk_edge = static_cast<std::uint64_t>(
       info.chunk_size + 2 * (static_cast<std::int64_t>(std::ceil(info.band_voxels)) + 3));
   // A cancelled or failed run leaves no partial file.
@@ -719,6 +719,7 @@ SurfaceInfo writeSurface(const Dataset& dataset, const std::filesystem::path& fi
   }
   std::filesystem::rename(temporary, file);
   info.file_bytes = std::filesystem::file_size(file);
+  releaseFreedMemory();  // the grids of the chunks, in the arenas of all threads
   return info;
 }
 
@@ -1451,6 +1452,7 @@ IndexedMesh makeDisplayMesh(const SurfaceMask& mask, std::size_t max_triangles, 
         mesh.triangles.push_back({q[0], q[1], q[2]});
         mesh.triangles.push_back({q[0], q[2], q[3]});
       }
+      releaseFreedMemory();  // the level set and the mesher's grids
       return mesh;
     }
   }

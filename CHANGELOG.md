@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Tools stay within `--memory` on Linux**: the brick cache gives the memory of evicted bricks
+  back to the system after evicting a quarter of its budget, as glibc otherwise kept it in the heap
+  of every thread. At 2048³ with `--memory 3000` vs-surface peaks at 2.9 instead of 3.4 GB,
+  vs-thickness at 2.8 instead of 3.8 GB and vs-segment at 2.9 instead of 3.1 GB, at the same
+  speed. vs-surface also needs one copy of each chunk less.
+
 - **Porosity reads the scan half as often**: the voxels across a brick face come from the faces
   each brick leaves when it is read, not from reading the neighbouring brick again; the pore
   volumes and the material images are summed in the pass over the bricks that the part volume
