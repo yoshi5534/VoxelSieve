@@ -78,8 +78,9 @@ Ask in your own words. These three requests use the sample data; replace the pat
 
 The assistant creates a project next to the scan, imports it, runs the porosity analysis and
 writes the report. Expect 3 pores with together about 3.6 mm³ (the sidecar says 1.33, 1.13 and
-1.16 mm³), and a failed part: zone A, the sealing face, permits no loosened microstructure, and the
-zone of loosened microstructure lies in it. The report itself is `report.html` in the project
+1.16 mm³), one zone of loosened microstructure, and a part that passes: the zone and the pores lie
+outside zone A, the sealing face, which permits no loosened microstructure, and the pores of the
+whole part stay below 3 mm. The report itself is `report.html` in the project
 directory; the assistant can also attach it to the conversation.
 
 **Comparison with the CAD model:**
