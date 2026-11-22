@@ -729,7 +729,8 @@ Imports and analyses of large scans can take longer than a client waits for one 
 operations one after the other in one call, for example import, `isolate_part`,
 `segment_materials` and `material_meshes`.
 
-Tools: `project_create`, `project_open`, `project_status`, `project_save_as`, `undo`, `redo`,
+Tools: `project_create`, `project_open`, `project_status` (the steps in brief; `step` gives one
+in full), `project_save_as`, `undo`, `redo`,
 `objects`, `results`, `object_select`, `dataset_info`, `histogram` (grey values with the
 threshold and a suggested number of materials), `cad_features` (planes, cylinders and spheres of
 a CAD model with a picture, for inspection plans), `view_slice` (a slice as an image, with pores and

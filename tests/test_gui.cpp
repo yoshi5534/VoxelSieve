@@ -430,7 +430,7 @@ TEST_F(GuiTest, ApiRunsTheWorkflowAndReportsTheProtocol) {
     Gui other;
     return other.call("project_open", {{"path", (dir_ / "p").string()}});
   }();
-  EXPECT_EQ(reopened.at("steps").size(), 9U);
+  EXPECT_EQ(reopened.at("steps").size(), 8U);
 
   EXPECT_THROW(gui.call("nope", {}), std::invalid_argument);
   EXPECT_THROW(gui.call("undo", Json::array()), std::invalid_argument);
@@ -927,6 +927,27 @@ TEST_F(GuiTest, McpServesToolsOverJsonRpc) {
   EXPECT_EQ(sent.front().at("method"), "notifications/progress");
   EXPECT_EQ(sent.front().at("params").at("progressToken"), "t");
 
+  // The status lists the steps briefly and without indentation, since a model reads it on
+  // every turn; one step in full comes from step.
+  const Json status = handle(
+      request(12, "tools/call", {{"name", "project_status"}, {"arguments", Json::object()}}));
+  const std::string status_text = status.at("result").at("content")[0].at("text");
+  EXPECT_EQ(status_text.find('\n'), std::string::npos);
+  const Json& brief = status.at("result").at("structuredContent").at("steps");
+  ASSERT_EQ(brief.size(), 2U);
+  EXPECT_EQ(brief[1].at("operation"), "porosity");
+  EXPECT_EQ(brief[1].at("status"), "done");
+  EXPECT_EQ(brief[1].at("outputs").at("porosity"), "porosity");
+  EXPECT_TRUE(brief[1].contains("summary"));
+  for (const char* left_out : {"params", "telemetry", "inputs", "messages"}) {
+    EXPECT_FALSE(brief[1].contains(left_out)) << left_out;
+  }
+  EXPECT_EQ(gui.call("project_status", {}).at("steps")[1].at("params").at("zone_sigma"), 5.0);
+  const Json whole = handle(
+      request(13, "tools/call", {{"name", "step"}, {"arguments", {{"step", brief[1].at("id")}}}}));
+  EXPECT_TRUE(whole.at("result").at("structuredContent").contains("params"));
+  EXPECT_TRUE(whole.at("result").at("structuredContent").contains("telemetry"));
+
   // Images come back as image content next to the JSON text.
   const Json slice =
       handle(request(11, "tools/call", {{"name", "view_slice"}, {"arguments", Json::object()}}));
@@ -1118,6 +1139,50 @@ TEST_F(GuiTest, AllowedRootsKeepPathsInside) {
             "done");
 }
 
+TEST_F(GuiTest, MissingPrerequisitesRunAsStepsAndAReportNeedsNoPorosity) {
+  Gui gui;
+  gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+
+  // What is wrong before anything runs makes no step: a path that does not exist, an order with
+  // a misspelt limit.
+  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "none.raw").string()}}),
+               std::invalid_argument);
+  EXPECT_THROW(gui.call("run_compare_cad", {{"cad_path", (dir_ / "none.stl").string()}}),
+               std::invalid_argument);
+  EXPECT_THROW(gui.call("run_report", {{"order", {{"wall_thickness", {{"min", 1.0}}}}}}),
+               std::invalid_argument);
+  EXPECT_EQ(gui.call("project_status", {}).at("steps").size(), 1U);
+
+  // The wall thickness needs the surface: the project extracts it first, as a step of its own
+  // that the answer names and later steps use.
+  const Json walls = gui.call("run_wall_thickness", Json::object());
+  ASSERT_EQ(walls.at("status"), "done");
+  ASSERT_EQ(walls.at("preceded_by").size(), 1U);
+  EXPECT_EQ(walls.at("preceded_by")[0].at("operation"), "surface");
+  EXPECT_EQ(walls.at("inputs").at("surface").at("step"), walls.at("preceded_by")[0].at("id"));
+  writeStl(dir_ / "cad.stl", boxMesh({6.0, 5.0, 4.0}));
+  const Json compared = gui.call("run_compare_cad", {{"cad_path", (dir_ / "cad.stl").string()}});
+  EXPECT_FALSE(compared.contains("preceded_by"));
+  EXPECT_EQ(compared.at("inputs").at("surface"), walls.at("inputs").at("surface"));
+  EXPECT_EQ(gui.call("project_status", {}).at("steps").size(), 4U);
+
+  // A report of the wall thickness and the comparison alone, without a porosity analysis.
+  const Json report = gui.call("run_report", {{"order", {{"wall_thickness", {{"min_mm", 1.0}}}}}});
+  ASSERT_EQ(report.at("status"), "done");
+  EXPECT_TRUE(report.at("summary").contains("passed"));
+  const std::string html = gui.call("read_file", {{"file", "report.html"}}).at("text");
+  EXPECT_NE(html.find("Wall thickness"), std::string::npos);
+  EXPECT_NE(html.find("the porosity was not analysed"), std::string::npos);
+  EXPECT_EQ(html.find("Pores by size"), std::string::npos);
+  // Limits for pores cannot be met without the analysis; the failed step is not active.
+  const Json pores = {{"acceptance", {{"zones", {{{"name", "A"}, {"max_pore_size_mm", 1.0}}}}}}};
+  EXPECT_THROW(gui.call("run_report", {{"order", pores}}), std::invalid_argument);
+  const Json steps = gui.call("project_status", {}).at("steps");
+  EXPECT_EQ(steps.back().at("status"), "failed");
+  EXPECT_FALSE(steps.back().at("active"));
+}
+
 TEST_F(GuiTest, CancelledOperationsFailAtTheirNextProgressReport) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
@@ -1147,7 +1212,8 @@ TEST_F(GuiTest, AProjectThatCannotBeSavedKeepsItsStepAndTakesTheNextCall) {
   // No operation is left "running": the next one starts, and once the file can be written again
   // the project is saved with both steps.
   std::filesystem::remove_all(project / "project.json");
-  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "missing.raw").string()}}),
+  // (A file that is no raw volume: one that does not exist would make no step at all.)
+  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "scan.json").string()}}),
                std::exception);
   status = gui.call("project_status", {});
   EXPECT_FALSE(status.contains("save_error"));

@@ -57,10 +57,11 @@ constexpr std::array<std::string_view, 8> kHiddenAnalysisMethods = {
     "view_rename", "view_delete", "list_operations", "object_add"};
 
 /// Methods that change nothing: no project, no file, no state of the GUI.
-constexpr std::array<std::string_view, 17> kReadOnlyMethods = {
-    "project_status", "objects",     "results",    "step_telemetry", "list_operations",
-    "dataset_info",   "histogram",   "list_files", "view_slice",     "view_objects",
-    "view_list",      "view_image",  "browse",     "read_file",      "import_preview",
+constexpr std::array<std::string_view, 18> kReadOnlyMethods = {
+    "step",           "project_status",  "objects",      "results",
+    "step_telemetry", "list_operations", "dataset_info", "histogram",
+    "list_files",     "view_slice",      "view_objects", "view_list",
+    "view_image",     "browse",          "read_file",    "import_preview",
     "wait",           "cad_features"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
@@ -349,6 +350,39 @@ Json resultResponse(const Json& id, Json result) {
   return {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
 }
 
+/// Methods that answer with the whole project.
+constexpr std::array<std::string_view, 6> kStatusMethods = {
+    "project_status", "project_open", "project_create", "project_save_as", "undo", "redo"};
+
+/// The steps of a status in brief. A model reads the status on every turn, and it grows with
+/// every step: parameters (an inline order in each report step) and telemetry made a project of
+/// six steps answer with 34 kB. The method step returns one in full.
+void briefSteps(Json& status) {
+  if (!status.is_object() || !status.contains("steps") || !status.at("steps").is_array()) {
+    return;
+  }
+  for (Json& step : status["steps"]) {
+    Json brief = Json::object();
+    for (const char* key :
+         {"id", "operation", "title", "status", "active", "object", "summary", "resumable"}) {
+      if (step.contains(key)) {
+        brief[key] = step.at(key);
+      }
+    }
+    Json outputs = Json::object();
+    // Kept alive: items() only refers to it.
+    const Json given = step.value("outputs", Json::object());
+    for (const auto& [name, output] : given.items()) {
+      outputs[name] = output.value("type", "");
+    }
+    brief["outputs"] = std::move(outputs);
+    if (step.value("status", "") != "done" && step.contains("messages")) {
+      brief["messages"] = step.at("messages");
+    }
+    step = std::move(brief);
+  }
+}
+
 Json toolResult(Json value, bool is_error) {
   // An "image" member ({mime_type, base64}) becomes image content next to the JSON text.
   Json image;
@@ -359,8 +393,9 @@ Json toolResult(Json value, bool is_error) {
     value.erase("image");
   }
   Json result = {
+      // Without indentation: it is read by a model, and the spaces are a third of the text.
       {"content",
-       {{{"type", "text"}, {"text", value.dump(2, ' ', false, Json::error_handler_t::replace)}}}},
+       {{{"type", "text"}, {"text", value.dump(-1, ' ', false, Json::error_handler_t::replace)}}}},
       {"isError", is_error}};
   if (!image.is_null()) {
     result["content"].insert(result["content"].begin(), image);
@@ -515,7 +550,11 @@ Json McpServer::callTool(const Json& id, const Json& params) {
     }
   } const done{*this, id.dump()};
   try {
-    return toolResult(gui_.call(name, arguments, progress), false);
+    Json value = gui_.call(name, arguments, progress);
+    if (contains(kStatusMethods, name)) {
+      briefSteps(value);
+    }
+    return toolResult(std::move(value), false);
   } catch (const std::exception& error) {
     // Failures are tool results, so the model sees the message and can react.
     return toolResult(Json{{"error", error.what()}}, true);

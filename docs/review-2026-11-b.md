@@ -198,6 +198,11 @@ journal too and can follow the same way.
    not active.
 5. **E3:** `--version` in `cli::runTool`; the version of source builds from `git describe`.
 
+**Status (2026-11-23): done.** Prerequisites are declared per input (`PortInfo::made_by`) and
+run by `Project::run`, so the Python package gets them too; `align_surfaces` reads the surfaces
+of objects, not an input, and still asks for a surface step. The check before the step is
+`Operation::check`. The help of `vs-gui` (G2) is corrected with it.
+
 ### Step 5: One definition per parameter (2–3 weeks)
 
 1. **D1, B2:** the tools build their options, ranges and help from the operation schema, as

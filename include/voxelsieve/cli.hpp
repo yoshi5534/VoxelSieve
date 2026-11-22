@@ -29,6 +29,7 @@ inline constexpr std::string_view kCommonOptions =
   --cache <MB>            Brick cache of all datasets (default a third of the memory budget)
   --threads <N>           Threads of all parallel work (default all cores)
   --telemetry <file>      Write time and resource use per phase as JSON
+  --version               Show the version
   -h, --help              Show this help
 )";
 ;
@@ -69,6 +70,8 @@ class Arguments {
   [[noreturn]] void unknown() const;
 
   [[nodiscard]] bool help() const { return help_; }
+  /// --version was given: like --help, it ends the walk at once.
+  [[nodiscard]] bool version() const { return version_; }
   /// The file given with --telemetry, empty without.
   [[nodiscard]] const std::filesystem::path& telemetry() const { return telemetry_; }
 
@@ -76,8 +79,13 @@ class Arguments {
   std::vector<std::string> args_;
   std::size_t index_ = 0;
   bool help_ = false;
+  bool version_ = false;
   std::filesystem::path telemetry_;
 };
+
+/// The version of this VoxelSieve: of the release, or for a build from a checkout what git said
+/// about it ("0.7.0-12-g21fd9a5").
+[[nodiscard]] std::string_view versionText();
 
 /// Prints the usage text of a tool followed by the common options.
 void printUsage(std::ostream& out, std::string_view usage);
@@ -96,6 +104,10 @@ int runTool(std::string_view name, std::string_view usage, int argc, char** argv
     Arguments args(argc, argv);  // NOLINT(misc-const-correctness): parse walks it
     if (args.help()) {
       printUsage(std::cout, usage);
+      return 0;
+    }
+    if (args.version()) {
+      std::cout << name << ' ' << versionText() << '\n';
       return 0;
     }
     const auto options = parse(args);

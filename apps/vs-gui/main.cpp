@@ -45,8 +45,8 @@ instead. Register it with an MCP client as a stdio server, for example:
   {"command": "vs-gui", "args": ["--mcp", "--project", "/data/casting.vsproj"]}
 Every GUI function is a tool: projects, undo/redo, operations (run_<id>), dataset info,
 slice pictures and reading result files. The result files of the steps are also resources, and
-the prompts porosity_check, compare_with_cad, wall_thickness_check and first_look walk through
-typical inspections.
+the prompts first_look, porosity_check, compare_with_cad, wall_thickness_check,
+first_article_inspection and battery_cell_inspection walk through typical inspections.
 
 Directories given after the options are the only places the GUI reads data from and keeps
 projects in (with everything below them); without any, every path is allowed. Give the
@@ -56,8 +56,9 @@ since MCP clients start the server without a shell that would expand it.
 
 Options:
   --port <n>            Port of the browser UI (default 8410, 0 picks a free one)
-  --host <address>      Address to listen on (default 127.0.0.1). The server has no
-                        authentication; keep it on the local machine
+  --host <address>      Address to listen on (default 127.0.0.1). The token in the address
+                        is the only protection and travels unencrypted; keep the server
+                        on the local machine
   --mcp                 Serve MCP on stdin/stdout instead of the browser UI
   --tools <profile>     Tools offered over MCP: analysis (default) leaves out the methods
                         that keep the browser UI's saved views, list_operations and
@@ -73,6 +74,7 @@ Options:
   --cache <MB>          Brick cache of the datasets operations read (default a third of
                         the budget); the slice views keep a sixteenth of the budget
   --threads <N>         Threads of all parallel work (default all cores)
+  --version             Show the version
   -h, --help            Show this help
 )";
 
@@ -207,6 +209,10 @@ int main(int argc, char** argv) {
     voxelsieve::cli::Arguments args(argc, argv);
     if (args.help()) {
       std::cout << kUsage;
+      return 0;
+    }
+    if (args.version()) {
+      std::cout << "vs-gui " << voxelsieve::cli::versionText() << '\n';
       return 0;
     }
     const Options options = parse(args);

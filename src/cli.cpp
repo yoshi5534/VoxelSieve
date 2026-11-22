@@ -15,11 +15,14 @@ Arguments::Arguments(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     args_.emplace_back(argv[i]);
     help_ = help_ || args_.back() == "-h" || args_.back() == "--help";
+    version_ = version_ || args_.back() == "--version";
   }
 }
 
+std::string_view versionText() { return VOXELSIEVE_VERSION; }
+
 bool Arguments::next() {
-  if (help_) {
+  if (help_ || version_) {
     return false;
   }
   while (++index_ < args_.size()) {

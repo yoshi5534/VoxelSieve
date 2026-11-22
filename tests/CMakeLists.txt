@@ -62,6 +62,13 @@ add_test(NAME vs_sieve_cli COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_phan
          --out ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom.vdb)
 set_tests_properties(vs_sieve_cli PROPERTIES DEPENDS vs_phantom_cli
                      PASS_REGULAR_EXPRESSION "values +uint16")
+# Every tool says which VoxelSieve it is: the release, or what git says about a checkout.
+add_test(NAME vs_sieve_version COMMAND vs-sieve --version)
+set_tests_properties(vs_sieve_version PROPERTIES
+                     PASS_REGULAR_EXPRESSION "^vs-sieve [0-9]+\\.[0-9]+\\.[0-9]+")
+add_test(NAME vs_gui_version COMMAND vs-gui --version)
+set_tests_properties(vs_gui_version PROPERTIES
+                     PASS_REGULAR_EXPRESSION "^vs-gui [0-9]+\\.[0-9]+\\.[0-9]+")
 # Float grids on request, for viewers that read only float (ADR 0021).
 add_test(NAME vs_sieve_float_cli COMMAND vs-sieve ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom.raw
          --value-type float --out ${CMAKE_CURRENT_BINARY_DIR}/cli_phantom_float.vdb)

@@ -297,6 +297,8 @@ class Gui {
   std::string running_operation_;
   /// Why the project could not be saved after the last operation; empty when it was.
   std::string save_error_;
+  /// Adds what the status says about step `index` beyond the project file.
+  void completeStep(nlohmann::json& json, std::size_t index) const;
   std::condition_variable idle_;  // notified when running_ turns false
   // The operation started with background: true, and the outcome of the latest one: its step, or
   // {operation, error}. Guarded by mutex_.

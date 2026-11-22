@@ -139,7 +139,7 @@ target_include_directories(voxelsieve PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 target_include_directories(voxelsieve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(voxelsieve PRIVATE VOXELSIEVE_VERSION="${VOXELSIEVE_VERSION_TEXT}")
 find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json

@@ -924,14 +924,15 @@ function renderProtocol() {
   const steps = state.status.steps ?? [];
   $('protocol-empty').hidden = steps.length > 0;
   for (const step of steps) {
-    const classes = [step.status, step.active ? '' : 'undone'].join(' ');
+    const undone = !step.active && step.status !== 'failed';
+    const classes = [step.status, undone ? 'undone' : ''].join(' ');
     const statusText = { done: '✓', failed: '✗', running: '…' }[step.status] ?? step.status;
     const item = el('li', { className: classes },
       el('div', { className: 'title' }, statusText + ' ' + step.id + '. ' + step.title),
       el('div', { className: 'meta' }, formatTime(step.started),
         step.size_bytes ? ' · ' + formatBytes(step.size_bytes) : '',
         telemetryLine(step.telemetry),
-        step.active ? '' : ' · undone'),
+        undone ? ' · undone' : ''),
       step.messages.slice(-2).map((message) => el('div', { className: 'message' }, message)),
       // A step that was interrupted and kept its files continues when it runs again as it was.
       step.resumable

@@ -114,6 +114,25 @@ Json validateParameters(const Json& schema, const Json& params) {
 
 OperationEstimate Operation::estimate(const OperationContext& /*context*/) const { return {}; }
 
+void Operation::check(const nlohmann::json& params) const {
+  const nlohmann::json& schema = info().parameters;
+  if (!params.is_object() || !schema.contains("properties")) {
+    return;
+  }
+  for (const auto& [key, property] : schema.at("properties").items()) {
+    if (property.value("format", "") != "path" || !params.contains(key) ||
+        !params.at(key).is_string()) {
+      continue;
+    }
+    const std::filesystem::path path = params.at(key).get<std::string>();
+    std::error_code error;
+    if (!std::filesystem::exists(path, error)) {
+      throw std::invalid_argument("No such file or directory: " + path.string() + " (parameter '" +
+                                  key + "')");
+    }
+  }
+}
+
 void OperationRegistry::add(std::shared_ptr<const Operation> operation) {
   if (!operation) {
     throw std::invalid_argument("Cannot register a null operation");
