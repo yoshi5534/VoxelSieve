@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "damaged_files.hpp"
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/parts.hpp"
@@ -500,6 +501,17 @@ TEST_F(SurfaceTest, RejectsInvalidOptionsAndFiles) {
   std::filesystem::resize_file(dir_ / "s.vss", size - 3);
   EXPECT_THROW((void)SurfaceMask::open(dir_ / "s.vss"), std::runtime_error);
   EXPECT_THROW((void)readSurfaceInfo(dir_ / "missing.vss"), std::exception);
+}
+
+TEST_F(SurfaceTest, DamagedFilesAreRefused) {
+  const auto scan = scanOf("bracket", 0.25, 0.5);
+  const Dataset dataset = sieve(*scan, "bracket.vsieve", 32);
+  (void)writeSurface(dataset, dir_ / "s.vss");
+  readDamagedCopies(dir_ / "s.vss", 400, [](const std::filesystem::path& file) {
+    (void)readSurfaceInfo(file);
+    const SurfaceMask mask = SurfaceMask::open(file);
+    (void)surfaceDisplayMesh(mask, 20000);
+  });
 }
 
 }  // namespace

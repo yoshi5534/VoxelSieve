@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "damaged_files.hpp"
 #include "dicom_writer.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gui.hpp"
@@ -264,6 +265,12 @@ TEST_F(GzippedXmlTest, GuiImportsTheVolumeWhereTheProjectPlacesIt) {
   EXPECT_ANY_THROW(gui.call("run_import_gzipped_xml", {{"path", path.string()}, {"volume", 1}}));
   std::filesystem::remove(dir_ / "part" / "slices" / "s3.dcm");
   EXPECT_ANY_THROW(gui.call("run_import_gzipped_xml", {{"path", path.string()}}));
+}
+
+TEST_F(GzippedXmlTest, DamagedProjectsAreRefused) {
+  const auto path = writeProject(false);
+  readDamagedCopies(path, 400,
+                    [](const std::filesystem::path& file) { (void)readGzippedXmlProject(file); });
 }
 
 }  // namespace
