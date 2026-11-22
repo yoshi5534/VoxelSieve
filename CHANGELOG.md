@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A project that cannot be saved no longer blocks the program**: when writing `project.json`
+  failed after a step (a full disk), every later call answered "Operation … is still running"
+  until the program was started again, and the step was lost. The step now stays in the project,
+  the status names the error under `save_error`, and the project is saved with the next change.
+
+- **DICOM text in other character sets**: names and descriptions in ISO 8859-1 and the other
+  character sets of DICOM are converted to UTF-8 when they are read. An import of a series with
+  an umlaut in the component name failed at its end with "invalid UTF-8 byte". Text of any input
+  that is not UTF-8 no longer makes the write of a result file fail: the byte is replaced.
+
+- **One program per project** (ADR 0036): a second program that opened a project took its running
+  step for an interrupted one and removed its files, for example an MCP server started while the
+  browser UI was importing. A project is now locked while it is open; a second program gets
+  "The project … is open in another VoxelSieve program", and `vs-gui --mcp` starts without a
+  project instead of reopening that one.
+
+- **A step that fails keeps the undone steps**: the steps taken back with undo were deleted as
+  soon as a new step started, so a mistyped path in it lost them. They are now removed when the
+  new step is done; after a failed one, redo brings them back.
+
 - **Battery inspection of a part without an electrode stack**: a volume whose sections show at
   most one layer, such as a casting given by mistake, made the inspection fail with "Region
   outside dataset level 0"; it now finishes with the warning that no electrode stack was found

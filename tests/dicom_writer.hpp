@@ -6,6 +6,7 @@
 #include <dcmtk/config/osconfig.h>
 #include <dcmtk/dcmdata/dctk.h>
 #include <dcmtk/dcmdata/dcrleerg.h>
+#include <dcmtk/dcmdata/dcspchrs.h>
 // clang-format on
 
 #include <array>
@@ -36,6 +37,9 @@ struct DicomSliceSpec {
   E_TransferSyntax transfer = EXS_LittleEndianExplicit;
   /// False: the data set alone, without preamble and meta header, as some scanners write it.
   bool file_format = true;
+  /// Specific Character Set and the component name (Patient's Name) in its bytes; none if empty.
+  std::string character_set;
+  std::string component_name;
 };
 
 inline std::string decimals(std::initializer_list<double> values) {
@@ -68,6 +72,12 @@ inline void writeDicomSlice(const std::filesystem::path& path, const DicomSliceS
   check(data.putAndInsertString(DCM_SOPClassUID, UID_CTImageStorage));
   check(data.putAndInsertString(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(uid.data())));
   check(data.putAndInsertString(DCM_Modality, "CT"));
+  if (!spec.character_set.empty()) {
+    check(data.putAndInsertString(DCM_SpecificCharacterSet, spec.character_set.c_str()));
+  }
+  if (!spec.component_name.empty()) {
+    check(data.putAndInsertString(DCM_PatientName, spec.component_name.c_str()));
+  }
   check(data.putAndInsertString(DCM_SeriesInstanceUID, spec.series.c_str()));
   if (spec.instance) {
     check(data.putAndInsertString(DCM_InstanceNumber, std::to_string(*spec.instance).c_str()));

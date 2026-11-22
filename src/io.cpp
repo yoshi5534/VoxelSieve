@@ -185,7 +185,9 @@ void writeFile(const std::filesystem::path& path, std::string_view bytes) {
 }
 
 void writeJson(const std::filesystem::path& path, const nlohmann::json& json) {
-  writeFile(path, json.dump(2) + '\n');
+  // Text from input files (names, descriptions, tags) need not be UTF-8: a byte that is not is
+  // replaced rather than failing the write of a result that took hours.
+  writeFile(path, json.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + '\n');
 }
 
 }  // namespace voxelsieve

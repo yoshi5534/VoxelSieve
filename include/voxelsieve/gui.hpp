@@ -231,9 +231,8 @@ class Gui {
   [[nodiscard]] std::vector<RunRequest> followUps(const nlohmann::json& step) const;
   /// Ends a sequence: no operation runs any more.
   void releaseRun();
-  /// Runs a prepared operation and makes its project copy the project, also when it fails; then
-  /// no operation runs any more when it failed (and stays running for the next step of a
-  /// sequence otherwise).
+  /// Runs a prepared operation and makes its project copy the project, also when it fails or
+  /// cannot be saved.
   nlohmann::json executeRun(PreparedRun& run, const std::function<void(double)>& progress);
   /// The wait method: waits up to `seconds` until no operation runs; needs mutex_ not held.
   nlohmann::json waitForOperation(double seconds);
@@ -296,6 +295,8 @@ class Gui {
   bool running_ = false;  // guarded by mutex_, like project_
   int run_id_ = 0;        // of the latest run, so a client can tell its run from a later one
   std::string running_operation_;
+  /// Why the project could not be saved after the last operation; empty when it was.
+  std::string save_error_;
   std::condition_variable idle_;  // notified when running_ turns false
   // The operation started with background: true, and the outcome of the latest one: its step, or
   // {operation, error}. Guarded by mutex_.

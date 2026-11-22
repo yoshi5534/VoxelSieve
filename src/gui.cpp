@@ -897,6 +897,9 @@ Json Gui::status() const {
     return {{"open", false}, {"running", running}};
   }
   Json json = project_->toJson();
+  if (!save_error_.empty()) {
+    json["save_error"] = save_error_;
+  }
   for (std::size_t i = 0; i < project_->steps().size(); ++i) {
     const Step& step = project_->steps()[i];
     json["steps"][i]["active"] = i < project_->cursor();
@@ -2066,6 +2069,18 @@ Json Gui::runSequence(std::vector<RunRequest> requests, bool background, bool pi
 
 Json Gui::executeSequence(PreparedRun first, std::vector<RunRequest> rest,
                           const std::function<void(double)>& progress, bool pipeline) {
+  // However the sequence ends, also by an error nobody expected, no operation runs afterwards:
+  // one that kept "running" would refuse every later call until the program is started again.
+  struct Release {
+    explicit Release(Gui* owner) : gui(owner) {}
+    Release(const Release&) = delete;
+    Release& operator=(const Release&) = delete;
+    Release(Release&&) = delete;
+    Release& operator=(Release&&) = delete;
+    ~Release() { gui->releaseRun(); }
+    Gui* gui;
+  };
+  const Release release(this);
   std::deque<RunRequest> queue(std::make_move_iterator(rest.begin()),
                                std::make_move_iterator(rest.end()));
   Json steps = Json::array();
@@ -2118,13 +2133,11 @@ Json Gui::executeSequence(PreparedRun first, std::vector<RunRequest> rest,
     if (next_error.empty()) {
       break;
     }
-    releaseRun();
     if (!pipeline) {
       throw std::invalid_argument(next_error);
     }
     return failed(next_operation, next_error);
   }
-  releaseRun();
   if (pipeline) {
     return {{"status", "done"}, {"steps", steps}};
   }
@@ -2182,11 +2195,18 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
       progress(overall);
     }
   };
-  const auto install = [this, &working] {
+  const auto install = [this, &working]() noexcept {
     const std::scoped_lock lock(mutex_);
     // Views saved while the operation ran went to the project, not to the working copy.
     working.setSavePart(Project::SavePart::kAll);
-    working.adoptViews(*project_);
+    try {
+      working.adoptViews(*project_);
+      save_error_.clear();
+    } catch (const std::exception& error) {
+      // A project that cannot be saved (a full disk) is still the project: it keeps the step in
+      // memory, says so in its status and is saved with the next change.
+      save_error_ = error.what();
+    }
     project_ = std::move(working);
   };
   const auto preview = [this](const Json& summary, const std::vector<std::uint8_t>& png) {
@@ -2206,7 +2226,6 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   } catch (...) {
     install();  // the failed step is part of the protocol
     run.working.reset();
-    releaseRun();
     throw;
   }
 }

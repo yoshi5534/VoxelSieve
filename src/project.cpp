@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <boost/interprocess/sync/file_lock.hpp>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <utility>
 
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/resources.hpp"
@@ -22,6 +24,7 @@ using Json = nlohmann::json;
 // Format 2 records the object of every step (ADR 0018); format 1 projects are migrated on open.
 constexpr int kProjectFormat = 2;
 constexpr const char* kTelemetryFile = "telemetry.json";
+constexpr const char* kLockFile = "project.lock";
 constexpr std::size_t kMaxViewNameBytes = 200;
 constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
 
@@ -123,6 +126,45 @@ std::string directoryName(const Step& step) {
   return std::to_string(step.id) + "-" + step.operation;
 }
 
+/// The lock of a project directory between processes (ADR 0036): a lock of the operating system
+/// on `project.lock`, which ends with the process, so a crash leaves nothing behind.
+struct ProjectLock {
+  boost::interprocess::file_lock lock;
+};
+
+/// Takes the lock of the project in `dir`. The copies of a project and every opening of it in
+/// this process share one lock; another process that holds it makes this throw. A file system
+/// without locks gives none: the project then works as before, unprotected.
+std::shared_ptr<void> lockProject(const std::filesystem::path& dir) {
+  static std::mutex mutex;
+  static std::map<std::string, std::weak_ptr<ProjectLock>> held;
+  std::error_code error;
+  const std::filesystem::path canonical = std::filesystem::weakly_canonical(dir, error);
+  const std::string key = (error ? std::filesystem::absolute(dir) : canonical).string();
+  const std::scoped_lock guard(mutex);
+  if (auto lock = held[key].lock()) {
+    return lock;
+  }
+  const std::filesystem::path file = dir / kLockFile;
+  bool locked = false;
+  auto lock = std::make_shared<ProjectLock>();
+  try {
+    if (!std::filesystem::exists(file)) {
+      std::ofstream(file, std::ios::binary).close();
+    }
+    lock->lock = boost::interprocess::file_lock(file.string().c_str());
+    locked = lock->lock.try_lock();
+  } catch (const std::exception&) {
+    return nullptr;  // read-only or a file system without locks
+  }
+  if (!locked) {
+    throw std::runtime_error("The project " + dir.string() +
+                             " is open in another VoxelSieve program; close it there first");
+  }
+  held[key] = lock;
+  return lock;
+}
+
 }  // namespace
 
 Project Project::create(const std::filesystem::path& dir, const std::string& name) {
@@ -132,6 +174,7 @@ Project Project::create(const std::filesystem::path& dir, const std::string& nam
   std::filesystem::create_directories(dir / "steps");
   Project project;
   project.dir_ = std::filesystem::absolute(dir);
+  project.lock_ = lockProject(project.dir_);
   project.name_ = name;
   project.created_ = nowUtc();
   project.save();
@@ -139,6 +182,12 @@ Project Project::create(const std::filesystem::path& dir, const std::string& nam
 }
 
 Project Project::open(const std::filesystem::path& dir) {
+  if (!std::filesystem::exists(dir / "project.json")) {
+    throw std::invalid_argument("Not a VoxelSieve project: " + dir.string());
+  }
+  // Before anything is read or cleaned up: a step that is "running" in the file of a project
+  // another process holds is running there, not interrupted.
+  std::shared_ptr<void> lock = lockProject(std::filesystem::absolute(dir));
   // Closed before a migration saves the project: Windows cannot replace a file that is open.
   const Json json = [&dir] {
     std::ifstream in(dir / "project.json");
@@ -153,6 +202,7 @@ Project Project::open(const std::filesystem::path& dir) {
   }
   Project project;
   project.dir_ = std::filesystem::absolute(dir);
+  project.lock_ = std::move(lock);
   project.name_ = json.value("name", "");
   project.created_ = json.value("created", "");
   bool changed = false;
@@ -504,23 +554,19 @@ const Step& Project::run(
     throw std::invalid_argument(info.id + " creates no object, so it takes no object name");
   }
 
-  // Discard undone steps: a new step starts a new history.
-  while (steps_.size() > cursor_) {
-    std::filesystem::remove_all(stepDir(steps_.back()));
-    steps_.pop_back();
-  }
-
+  // A new step starts a new history, but only once it is done: until then the undone steps stay
+  // behind it, so a step that fails (a mistyped path) leaves them for redo.
   step.id = next_id_++;
   step.status = "running";
   step.started = nowUtc();
-  steps_.push_back(step);
-  cursor_ = steps_.size();
+  steps_.insert(steps_.begin() + static_cast<std::ptrdiff_t>(cursor_), step);
+  ++cursor_;
   save();
 
   const auto dir = stepDir(step);
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
-  Step& stored = steps_.back();
+  Step& stored = steps_[cursor_ - 1];
   OperationContext context;
   context.params = step.params;
   for (const auto& [name, ref] : step.inputs) {
@@ -595,9 +641,16 @@ const Step& Project::run(
     save();
     throw;
   }
+  // The step is done: the undone steps behind it are history no more.
+  while (steps_.size() > cursor_) {
+    std::error_code ignored;
+    std::filesystem::remove_all(stepDir(steps_.back()), ignored);
+    steps_.pop_back();
+  }
   const Json record = telemetry.finish();
   stored.telemetry = telemetrySummary(record);
-  writeFile(dir / kTelemetryFile, record.dump() + '\n');
+  writeFile(dir / kTelemetryFile,
+            record.dump(-1, ' ', false, Json::error_handler_t::replace) + '\n');
   stored.finished = nowUtc();
   save();
   return stored;
@@ -625,8 +678,17 @@ void Project::saveAs(const std::filesystem::path& dir) {
   if (std::filesystem::exists(dir)) {
     throw std::invalid_argument("Target already exists: " + dir.string());
   }
-  std::filesystem::copy(dir_, dir, std::filesystem::copy_options::recursive);
+  // Everything but the lock file, which belongs to this directory (and cannot be read on Windows
+  // while it is locked).
+  std::filesystem::create_directories(dir);
+  for (const auto& entry : std::filesystem::directory_iterator(dir_)) {
+    if (entry.path().filename() != kLockFile) {
+      std::filesystem::copy(entry.path(), dir / entry.path().filename(),
+                            std::filesystem::copy_options::recursive);
+    }
+  }
   dir_ = std::filesystem::absolute(dir);
+  lock_ = lockProject(dir_);
   save();
 }
 

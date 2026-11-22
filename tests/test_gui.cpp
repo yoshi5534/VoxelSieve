@@ -49,6 +49,27 @@ class Spin final : public Operation {
   OperationInfo info_;
 };
 
+/// Puts a directory where the project file is, so the project cannot be saved: as on a full disk.
+class BlockProjectFile final : public Operation {
+ public:
+  BlockProjectFile() {
+    info_.id = "block_project_file";
+    info_.title = "Block the project file";
+    info_.outputs = {{"table", "table", ""}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const auto file = context.output_dir.parent_path().parent_path() / "project.json";
+    std::filesystem::remove(file);
+    std::filesystem::create_directories(file / "in the way");
+    std::ofstream(context.output_dir / "table.txt") << "1";
+    return {{{"table", "table.txt"}}, {}};
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class GuiTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -1086,6 +1107,32 @@ TEST_F(GuiTest, CancelledOperationsFailAtTheirNextProgressReport) {
       std::runtime_error);
   ASSERT_EQ(project.steps().size(), 1U);
   EXPECT_EQ(project.steps().front().status, "failed");
+}
+
+TEST_F(GuiTest, AProjectThatCannotBeSavedKeepsItsStepAndTakesTheNextCall) {
+  Gui gui;
+  gui.registry().add(std::make_shared<BlockProjectFile>());
+  gui.registry().add(std::make_shared<Spin>());
+  const auto project = dir_ / "p";
+  gui.call("project_create", {{"path", project.string()}});
+  // The step is done, but the project cannot be written: the call says so.
+  EXPECT_THROW(gui.call("run_block_project_file", {}), std::exception);
+  Json status = gui.call("project_status", {});
+  EXPECT_TRUE(status.at("running").is_null());
+  EXPECT_TRUE(status.contains("save_error"));
+  ASSERT_EQ(status.at("steps").size(), 1U);
+  EXPECT_EQ(status.at("steps")[0].at("status"), "done");
+  // No operation is left "running": the next one starts, and once the file can be written again
+  // the project is saved with both steps.
+  std::filesystem::remove_all(project / "project.json");
+  EXPECT_THROW(gui.call("run_import_raw", {{"path", (dir_ / "missing.raw").string()}}),
+               std::exception);
+  status = gui.call("project_status", {});
+  EXPECT_FALSE(status.contains("save_error"));
+  const Project saved = Project::open(project);
+  ASSERT_EQ(saved.steps().size(), 2U);
+  EXPECT_EQ(saved.steps()[0].status, "done");
+  EXPECT_EQ(saved.steps()[1].status, "failed");
 }
 
 TEST_F(GuiTest, OperationsRunInTheBackgroundUntilDoneOrCancelled) {
