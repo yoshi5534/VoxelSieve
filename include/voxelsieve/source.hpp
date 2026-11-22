@@ -32,6 +32,10 @@ inline constexpr std::int64_t kMaxVolumeEdge = std::int64_t{1} << 20;
 /// Throws std::invalid_argument unless every dimension is between 1 and kMaxVolumeEdge. `what`
 /// names the volume in the message. Dimensions from parameters and files go through this before
 /// anything is computed from them.
+/// The identity of a file (absolute path, size, time of the last change) or of a directory
+/// (path, number of files, their total size and latest change), as text.
+[[nodiscard]] std::string inputIdentity(const std::filesystem::path& path);
+
 void checkVolumeDims(const std::array<std::int64_t, 3>& dims, std::string_view what);
 
 /// Linear map from the stored 16-bit grey values to the values of the scan, for scans whose values
@@ -81,6 +85,10 @@ class VolumeSource {
   /// memory-mapped input; later reads work as before. Called once a source has been copied, and
   /// for a raw copy now and then while it is read.
   virtual void releaseMemory() const {}
+  /// What tells this input from another of the same size, for sources that read files: the
+  /// path, the size and the time of the last change (inputIdentity). An interrupted import
+  /// resumes only for the same identity. Empty when the source has no such thing.
+  [[nodiscard]] virtual std::string identity() const { return {}; }
 
   /// Copies the voxels of `box` into `out`, x fastest. `box` must lie inside the volume and
   /// `out.size()` must equal `box.voxelCount()`.
@@ -113,6 +121,7 @@ class InterpolatedSource final : public VolumeSource {
   [[nodiscard]] bool slowRandomAccess() const override { return base_.slowRandomAccess(); }
   [[nodiscard]] bool sequentialAccess() const override { return base_.sequentialAccess(); }
   void releaseMemory() const override { base_.releaseMemory(); }
+  [[nodiscard]] std::string identity() const override { return base_.identity(); }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
  private:
@@ -150,6 +159,7 @@ class MappedRawSource final : public VolumeSource {
   /// True when the file lies on a network share (SMB, NFS, a mapped network drive): the import
   /// then reads it once, slice by slice, instead of twice in small pieces (ADR 0020).
   [[nodiscard]] bool slowRandomAccess() const override { return on_network_share_; }
+  [[nodiscard]] std::string identity() const override { return identity_; }
   /// Lets the pages read so far go from the process's memory; they are read again when needed.
   void releaseMemory() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
@@ -160,6 +170,7 @@ class MappedRawSource final : public VolumeSource {
   RawLayout layout_;
   std::uint64_t header_bytes_ = 0;
   bool on_network_share_ = false;
+  std::string identity_;
 };
 
 /// Raw volume file compressed with gzip (`.raw.gz`), decompressed with zlib as it is read (ADR
@@ -177,6 +188,7 @@ class GzipRawSource final : public VolumeSource {
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
   [[nodiscard]] SampleType sampleType() const override { return layout_.sample_type; }
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
+  [[nodiscard]] std::string identity() const override { return identity_; }
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
   [[nodiscard]] bool sequentialAccess() const override { return true; }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
@@ -186,6 +198,7 @@ class GzipRawSource final : public VolumeSource {
   std::unique_ptr<Stream> stream_;
   RawLayout layout_;
   std::uint64_t header_bytes_ = 0;
+  std::string identity_;
 };
 
 /// Whether `path` is a gzip file (it starts with the gzip magic bytes 1f 8b).
@@ -233,6 +246,7 @@ class ConcatSource final : public VolumeSource {
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   [[nodiscard]] int axis() const { return axis_; }
+  [[nodiscard]] std::string identity() const override;
   [[nodiscard]] std::size_t partCount() const { return parts_.size(); }
   /// First voxel of part `i` along `axis`.
   [[nodiscard]] std::int64_t partStart(std::size_t i) const { return starts_[i]; }

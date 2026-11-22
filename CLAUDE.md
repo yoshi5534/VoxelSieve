@@ -57,7 +57,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     without a cache of their own, so they share the one budget (`Dataset::sharedCache`)
   - `operation.hpp` operations with JSON-schema parameters, the registry and plugin loading;
     `project.hpp` projects with a step protocol, undo/redo and atomic saves (ADR 0008), open in
-    one process at a time (ADR 0036), and their
+    one process at a time (ADR 0036), whose interrupted imports resume (`OperationInfo::resumable`,
+    ADR 0037), and their
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
     `transform.hpp`); poses change only through steps. Analysis results per object
     (`Project::results`, ADR 0023) are derived from the steps; new result types need no registry. The

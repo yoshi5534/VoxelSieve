@@ -1094,6 +1094,28 @@ TEST_F(GuiTest, AllowedRootsKeepPathsInside) {
   const Json step = gui.call("run_import_raw",
                              {{"path", (dir_ / "data" / "scan.raw").string()}, {"brick_size", 32}});
   EXPECT_EQ(step.at("status"), "done");
+
+  // A file that a file names is held to the same boundary as a path given directly: the mesh
+  // of a region in an inspection order.
+  writeStl(dir_ / "region.stl", boxMesh({2.0, 2.0, 2.0}));
+  const auto order = [](const std::filesystem::path& mesh) {
+    return Json{{"order",
+                 {{"acceptance",
+                   {{"zones",
+                     {{{"name", "A"},
+                       {"max_pore_size_mm", 1.0},
+                       {"region", {{{"mesh", mesh.string()}}}}}}}}}}}};
+  };
+  try {
+    (void)gui.call("run_inspection_regions", order(dir_ / "region.stl"));
+    ADD_FAILURE() << "read a mesh outside the allowed directories";
+  } catch (const std::exception& error) {
+    EXPECT_NE(std::string(error.what()).find("Outside the allowed directories"), std::string::npos)
+        << error.what();
+  }
+  std::filesystem::copy_file(dir_ / "region.stl", dir_ / "data" / "region.stl");
+  EXPECT_EQ(gui.call("run_inspection_regions", order(dir_ / "data" / "region.stl")).at("status"),
+            "done");
 }
 
 TEST_F(GuiTest, CancelledOperationsFailAtTheirNextProgressReport) {
@@ -1310,6 +1332,8 @@ TEST_F(GuiTest, FirstArticleReportIsMadeThroughTheApi) {
          {"elements", {"right"}},
          {"datum", "A"},
          {"tolerance", 0.1}}}}};
+  // The comparison keeps the model it was made with: the file may move or change afterwards.
+  std::filesystem::remove(dir_ / "cad.stl");
   const Json measured = gui.call("run_measure_dimensions", {{"plan", plan}});
   ASSERT_EQ(measured.at("status"), "done") << measured.dump(2);
   const Json& summary = measured.at("summary");

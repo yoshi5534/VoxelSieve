@@ -933,6 +933,14 @@ function renderProtocol() {
         telemetryLine(step.telemetry),
         step.active ? '' : ' · undone'),
       step.messages.slice(-2).map((message) => el('div', { className: 'message' }, message)),
+      // A step that was interrupted and kept its files continues when it runs again as it was.
+      step.resumable
+        ? el('button', {
+          disabled: state.busy,
+          onclick: () => runStep(step.operation,
+            { ...step.params, ...(step.object_name ? { object_name: step.object_name } : {}) }),
+        }, 'Resume')
+        : '',
       el('details', {}, el('summary', {}, 'Details'),
         summaryTable(step.summary),
         el('pre', {}, JSON.stringify({ params: step.params, inputs: step.inputs }, null, 1))),

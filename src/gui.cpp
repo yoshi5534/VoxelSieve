@@ -2215,6 +2215,7 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
     running_preview_png_ = png;
   };
   try {
+    working.setPathCheck([this](const std::filesystem::path& path) { checkAllowedPath(path); });
     const Step& step = working.run(registry_, run.operation, run.params, run.inputs, report,
                                    run.cancel.get(), run.target, preview);
     Json json = working.toJson().at("steps").back();

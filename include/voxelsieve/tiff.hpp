@@ -53,6 +53,7 @@ class TiffStackSource final : public VolumeSource {
   [[nodiscard]] bool slowRandomAccess() const override;
   /// Empties the cache of decoded strips and tiles and drops the pages of a ZIP archive.
   void releaseMemory() const override;
+  [[nodiscard]] std::string identity() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   /// Voxel size from the files: from an OME-XML image description (PhysicalSizeX, Y, Z), else

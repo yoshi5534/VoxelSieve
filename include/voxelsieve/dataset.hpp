@@ -78,8 +78,12 @@ struct DatasetOptions {
   /// An import that was interrupted leaves a journal in the output directory (import.json, the
   /// result of pass 1 and the finished bricks). Written again into that directory with the same
   /// input size and options, it resumes: pass 1 and the finished bricks are skipped (a slow
-  /// source is staged again). Off, or with other options, the directory must be empty.
+  /// source is staged again). Off, the directory must be empty. The journal of another input (a
+  /// file with another path, size or time of change) or of other options is an error, unless
+  /// `replace_other_import` is set: then it is removed and the import starts again, for callers
+  /// that own the directory, such as the step of a project.
   bool resume = true;
+  bool replace_other_import = false;
 };
 
 struct LevelInfo {

@@ -321,6 +321,7 @@ std::uint64_t pixelOffset(const SliceHeader& header) {
   return explicit_vr || implicit_vr ? offset : 0;
 }
 struct DicomStackSource::Impl {
+  std::string identity;
   DicomStackOptions options;
   DicomFiles source;
   std::vector<SliceHeader> slices;  // in slice order
@@ -537,6 +538,7 @@ DicomStackSource::DicomStackSource(const std::filesystem::path& path,
                                    const DicomStackOptions& options)
     : impl_(std::make_unique<Impl>()) {
   impl_->options = options;
+  impl_->identity = inputIdentity(path);
   std::vector<std::filesystem::path> candidates;
   if (std::filesystem::is_directory(path)) {
     for (const auto& entry : std::filesystem::directory_iterator(path)) {
@@ -572,6 +574,7 @@ DicomStackSource::DicomStackSource(const std::vector<std::filesystem::path>& fil
       throw std::runtime_error("No such file: " + file.string());
     }
   }
+  impl_->identity = std::to_string(files.size()) + " files from " + inputIdentity(files.front());
   impl_->open(files);
   if (impl_->skipped > 0) {
     throw std::runtime_error(std::to_string(impl_->skipped) +
@@ -580,6 +583,8 @@ DicomStackSource::DicomStackSource(const std::vector<std::filesystem::path>& fil
 }
 
 DicomStackSource::~DicomStackSource() = default;
+
+std::string DicomStackSource::identity() const { return impl_->identity; }
 
 std::array<std::int64_t, 3> DicomStackSource::dims() const { return impl_->dims; }
 

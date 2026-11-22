@@ -183,6 +183,9 @@ because report templates show whatever they hold.
    context, which applies the directory boundary.
 5. **A7:** flush `project.json`, `index.json` and the journal before the rename.
 
+**Status (2026-11-23): done** (ADR 0037). Only the imports resume; the thickness map has a
+journal too and can follow the same way.
+
 ### Step 4: The API answers briefly and treats prerequisites one way (about 1 week)
 
 1. **E1:** over MCP, the status lists steps as id, operation, status, outputs and summary, without

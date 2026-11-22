@@ -687,6 +687,27 @@ TEST_F(DatasetTest, InterruptedImportResumesWithTheFinishedBricks) {
   // A partial file that the interrupted process left is no content.
   std::ofstream(out / "level0" / "0_0_0.vdb.partial-999999999-0") << "cut off";
 
+  // Nor for another scan of the same size, as the next part of a series: the journal names the
+  // file it was written for.
+  {
+    const Volume16 volume = generatePhantom(phantom);
+    writeRaw(dir_ / "a.raw", volume);
+    writeRaw(dir_ / "b.raw", volume);
+    const MappedRawSource a(dir_ / "a.raw", phantom.dims, phantom.voxel_size);
+    const MappedRawSource b(dir_ / "b.raw", phantom.dims, phantom.voxel_size);
+    EXPECT_NE(a.identity(), b.identity());
+    EXPECT_EQ(a.identity(),
+              MappedRawSource(dir_ / "a.raw", phantom.dims, phantom.voxel_size).identity());
+    const auto series = dir_ / "series";
+    EXPECT_THROW((void)writeDataset(a, series, interrupted), std::runtime_error);
+    EXPECT_THROW((void)writeDataset(b, series, options), std::invalid_argument);
+    // Who owns the directory, as the step of a project does, has it started again instead.
+    DatasetOptions replace = options;
+    replace.replace_other_import = true;
+    (void)writeDataset(b, series, replace);
+    expectSameDataset(dir_ / "whole", series);
+  }
+
   // With other options the directory is not taken for this import.
   DatasetOptions other = options;
   other.margin_voxels = 5;
