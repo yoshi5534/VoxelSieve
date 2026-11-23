@@ -114,6 +114,7 @@ bool isTiffStackPath(const std::filesystem::path& path) {
 }
 
 struct TiffStackSource::Impl {
+  std::string identity;
   struct Slice {
     std::filesystem::path file;                        // file on disk, or
     const detail::ZipArchive::Entry* entry = nullptr;  // entry of the archive
@@ -422,6 +423,7 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error("No such file or directory: " + path.string());
   }
+  impl.identity = inputIdentity(path);
 
   // Candidate slices by folder: relative folder -> names.
   std::map<std::string, std::vector<std::string>> folders;
@@ -580,6 +582,8 @@ TiffStackSource::TiffStackSource(const std::filesystem::path& path, const TiffSt
 bool TiffStackSource::slowRandomAccess() const { return !impl_->in_place; }
 
 TiffStackSource::~TiffStackSource() = default;
+
+std::string TiffStackSource::identity() const { return impl_->identity; }
 
 std::array<std::int64_t, 3> TiffStackSource::dims() const { return impl_->dims; }
 

@@ -279,6 +279,7 @@ class ImportRaw final : public Operation {
  public:
   ImportRaw() {
     info_.id = "import_raw";
+    info_.resumable = true;
     info_.title = "Import raw volume";
     info_.description =
         "Removes the outside air from a raw CT volume and writes a bricked dataset. Dimensions "
@@ -370,6 +371,7 @@ class ImportTiff final : public Operation {
  public:
   ImportTiff() {
     info_.id = "import_tiff";
+    info_.resumable = true;
     info_.title = "Import TIFF stack";
     info_.description =
         "Removes the outside air from a TIFF stack and writes a bricked dataset. Reads a "
@@ -472,6 +474,8 @@ DatasetOptions importSieveOptions(const OperationContext& context) {
   DatasetOptions options = sieveOptions(context.params);
   options.progress = datasetProgress(context);
   options.preview = importPreview(context);
+  // The directory is the step's: what it holds of another input or other options is replaced.
+  options.replace_other_import = true;
   return options;
 }
 
@@ -552,6 +556,7 @@ class ImportDicom final : public Operation {
  public:
   ImportDicom() {
     info_.id = "import_dicom";
+    info_.resumable = true;
     info_.title = "Import DICOM stack";
     info_.description =
         "Removes the outside air from a stack of DICOM slices and writes a bricked dataset. "
@@ -611,6 +616,7 @@ class ImportGzippedXml final : public Operation {
  public:
   ImportGzippedXml() {
     info_.id = "import_gzipped_xml";
+    info_.resumable = true;
     info_.title = "Import gzipped XML project";
     info_.description =
         "Imports a volume of a gzipped XML project from the files it was imported from, "
@@ -672,6 +678,8 @@ class ImportGzippedXml final : public Operation {
     std::size_t missing = 0;
     for (const GzippedXmlFile& file : volume.files) {
       if (file.path) {
+        // The project file names them: they are read with the rights of the caller.
+        context.check_path(*file.path);
         files.push_back(*file.path);
       } else if (missing++ == 0) {
         context.log("Missing: " + file.reference);
@@ -1239,6 +1247,9 @@ void addDeformationSummary(const CompareResult& compared, Json& summary) {
   summary["rigid_within_tolerance_percent"] = 100.0 * d.rigid.within_tolerance;
 }
 
+/// The CAD model a comparison was made with, copied beside its compare.json.
+constexpr const char* kNominalCopy = "nominal.stl";
+
 class CompareCad final : public Operation {
  public:
   CompareCad() {
@@ -1298,6 +1309,11 @@ class CompareCad final : public Operation {
     }
     Json json = toJson(compared);
     json["cad_path"] = cad_path.string();
+    // The project keeps the model it was compared with: later steps (nominal wall thickness,
+    // dimensional measurement) read this copy, also when the file has moved or changed since.
+    std::filesystem::copy_file(cad_path, dir / kNominalCopy,
+                               std::filesystem::copy_options::overwrite_existing);
+    json["cad_file"] = kNominalCopy;
     writeJson(dir / "compare.json", json);
     const DeviationStats& s = compared.stats;
     OperationResult result;
@@ -1335,6 +1351,19 @@ struct ComparedNominal {
   bool bent = false;  // the comparison also registered it non-rigidly
 };
 
+/// The CAD file of a comparison: the copy beside its compare.json, or for comparisons written
+/// before there was one (and by vs-compare) the file where it was.
+std::filesystem::path comparedCadFile(const std::filesystem::path& comparison_dir,
+                                      const Json& compared) {
+  if (compared.contains("cad_file")) {
+    const auto copy = comparison_dir / compared.at("cad_file").get<std::string>();
+    if (std::filesystem::exists(copy)) {
+      return copy;
+    }
+  }
+  return compared.at("cad_path").get<std::string>();
+}
+
 ComparedNominal comparedNominal(const OperationContext& context,
                                 const std::filesystem::path& comparison_dir) {
   std::ifstream in(comparison_dir / "compare.json");
@@ -1348,7 +1377,7 @@ ComparedNominal comparedNominal(const OperationContext& context,
   nominal.bent = json.contains("deformation");
   if (json.contains("cad_path")) {
     const std::filesystem::path path = json.at("cad_path").get<std::string>();
-    nominal.mesh = readStl(path);
+    nominal.mesh = readStl(comparedCadFile(comparison_dir, json));
     nominal.source = path.filename().string();
   } else if (json.contains("nominal_object")) {
     const std::string id = json.at("nominal_object").get<std::string>();
@@ -1620,8 +1649,17 @@ std::vector<InspectionZone> orderZones(const Json& order, const OperationContext
   const RigidTransform to_volume = context.object.empty()
                                        ? RigidTransform{}
                                        : entryPose(objectEntry(context, context.object)).inverse();
+  const std::filesystem::path base =
+      context.params.contains("order_path")
+          ? std::filesystem::path(context.params.at("order_path").get<std::string>()).parent_path()
+          : std::filesystem::path();
   const auto resolve = [&](Json& solids) {
     for (Json& solid : solids) {
+      if (solid.is_object() && solid.contains("mesh") && solid.at("mesh").is_string()) {
+        // A file the order names is read with the rights of the caller, like the order itself.
+        const std::filesystem::path mesh = solid.at("mesh").get<std::string>();
+        context.check_path(mesh.is_relative() && !base.empty() ? base / mesh : mesh);
+      }
       if (!solid.is_object() || !solid.contains("mesh_object")) {
         continue;
       }
@@ -1653,10 +1691,6 @@ std::vector<InspectionZone> orderZones(const Json& order, const OperationContext
       }
     }
   }
-  const std::filesystem::path base =
-      context.params.contains("order_path")
-          ? std::filesystem::path(context.params.at("order_path").get<std::string>()).parent_path()
-          : std::filesystem::path();
   return inspectionZonesFromJson(resolved, base);
 }
 
@@ -3027,13 +3061,14 @@ class CompareObjects final : public Operation {
 /// The nominal geometry of a comparison in the coordinates its compare.json places in the scan
 /// with cad_to_scan: the CAD file it was made with or the nominal object.
 Mesh comparisonNominal(const OperationContext& context, const Json& compared,
+                       const std::filesystem::path& comparison_dir,
                        std::filesystem::path& cad_path) {
   if (!cad_path.empty()) {
     return readStl(cad_path);
   }
   if (compared.contains("cad_path")) {
     cad_path = compared.at("cad_path").get<std::string>();
-    return readStl(cad_path);
+    return readStl(comparedCadFile(comparison_dir, compared));
   }
   if (compared.contains("nominal_object")) {
     const std::string id = compared.at("nominal_object").get<std::string>();
@@ -3124,7 +3159,7 @@ class MeasureDimensions final : public Operation {
     if (p.contains("cad_path")) {
       cad_path = std::filesystem::absolute(p.at("cad_path").get<std::string>());
     }
-    const Mesh cad = comparisonNominal(context, compared, cad_path);
+    const Mesh cad = comparisonNominal(context, compared, comparison_dir, cad_path);
     const RigidTransform cad_to_scan =
         RigidTransform::fromMatrix(compared.at("cad_to_scan").get<std::vector<double>>());
     DimensionalOptions options;

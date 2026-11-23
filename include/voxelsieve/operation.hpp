@@ -58,6 +58,11 @@ struct OperationInfo {
   /// JSON schema (type "object") of the parameters; UI forms and MCP tool schemas are built from
   /// it.
   nlohmann::json parameters = {{"type", "object"}, {"properties", nlohmann::json::object()}};
+  /// The operation continues work it finds in its output directory, such as an import with its
+  /// journal. A project then keeps the files of a run that failed or was interrupted and hands
+  /// them to the next run with the same parameters and inputs; without this, an operation
+  /// always starts in an empty directory.
+  bool resumable = false;
 };
 
 /// What an operation gets to run: resolved input paths, validated parameters with defaults, an
@@ -82,6 +87,12 @@ struct OperationContext {
   /// member, so plugins built against the same API version keep the layout of the others.
   std::function<void(const nlohmann::json& summary, const std::vector<std::uint8_t>& png)> preview =
       [](const nlohmann::json&, const std::vector<std::uint8_t>&) {};
+  /// Throws when the caller may not read `path`, as a server that is limited to some
+  /// directories. Parameters that are paths are checked before the operation runs; an operation
+  /// calls this for every file that another file names (the mesh of a region in an inspection
+  /// order, the volume files of a project file) before it reads it.
+  std::function<void(const std::filesystem::path& path)> check_path =
+      [](const std::filesystem::path&) {};
 };
 
 /// Result of an operation: output paths (relative to the output directory) per output port, and a
@@ -162,7 +173,7 @@ inline constexpr const char* kPluginExtension = ".so";
 #endif
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 5;
+inline constexpr int kPluginApiVersion = 6;
 
 }  // namespace voxelsieve
 

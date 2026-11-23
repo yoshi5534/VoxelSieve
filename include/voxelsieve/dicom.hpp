@@ -55,6 +55,7 @@ class DicomStackSource final : public VolumeSource {
   /// parsed as a whole.
   [[nodiscard]] bool slowRandomAccess() const override;
   void releaseMemory() const override;
+  [[nodiscard]] std::string identity() const override;
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override;
 
   /// Voxel size from the files; nothing when they give no pixel spacing.

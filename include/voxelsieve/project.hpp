@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -44,6 +45,10 @@ struct Step {
   std::string object;
   /// Set when the step created its object: the object's name.
   std::string object_name;
+  /// A failed or interrupted step of an operation that can resume (OperationInfo::resumable)
+  /// whose files are kept: the same operation run again with the same parameters and inputs
+  /// takes them over and continues. Any other step that runs removes them.
+  bool resumable = false;
 };
 
 /// Kinds of objects.
@@ -151,6 +156,12 @@ class Project {
                   const std::function<void(const nlohmann::json&,
                                            const std::vector<std::uint8_t>&)>& preview = {});
 
+  /// The check operations apply to files named inside files (OperationContext::check_path);
+  /// none by default.
+  void setPathCheck(std::function<void(const std::filesystem::path&)> check) {
+    path_check_ = std::move(check);
+  }
+
   bool undo();
   bool redo();
 
@@ -223,6 +234,7 @@ class Project {
   /// The lock of the project directory between processes (ADR 0036), shared by the copies of the
   /// project; empty where the file system has no locks.
   std::shared_ptr<void> lock_;
+  std::function<void(const std::filesystem::path&)> path_check_;
 };
 
 /// An object as JSON: id, name, kind, source {step, output}, created_by, pose (row-major 4x4) and

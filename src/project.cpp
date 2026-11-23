@@ -25,6 +25,17 @@ using Json = nlohmann::json;
 constexpr int kProjectFormat = 2;
 constexpr const char* kTelemetryFile = "telemetry.json";
 constexpr const char* kLockFile = "project.lock";
+constexpr const char* kResumeHint =
+    "Its files are kept until the next step: run it again with the same parameters to continue";
+
+bool sameInputs(const std::map<std::string, ArtifactRef>& a,
+                const std::map<std::string, ArtifactRef>& b) {
+  return a.size() == b.size() &&
+         std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y) {
+           return x.first == y.first && x.second.step == y.second.step &&
+                  x.second.output == y.second.output;
+         });
+}
 constexpr std::size_t kMaxViewNameBytes = 200;
 constexpr std::size_t kMaxViewStateBytes = std::size_t{256} << 10U;
 
@@ -50,20 +61,24 @@ Json stepToJson(const Step& step) {
   for (const auto& [name, path] : step.outputs) {
     outputs[name] = {{"path", path.string()}, {"type", step.output_types.at(name)}};
   }
-  return {{"id", step.id},
-          {"operation", step.operation},
-          {"title", step.title},
-          {"params", step.params},
-          {"inputs", inputs},
-          {"outputs", outputs},
-          {"status", step.status},
-          {"started", step.started},
-          {"finished", step.finished},
-          {"messages", step.messages},
-          {"summary", step.summary},
-          {"telemetry", step.telemetry},
-          {"object", step.object},
-          {"object_name", step.object_name}};
+  Json json = {{"id", step.id},
+               {"operation", step.operation},
+               {"title", step.title},
+               {"params", step.params},
+               {"inputs", inputs},
+               {"outputs", outputs},
+               {"status", step.status},
+               {"started", step.started},
+               {"finished", step.finished},
+               {"messages", step.messages},
+               {"summary", step.summary},
+               {"telemetry", step.telemetry},
+               {"object", step.object},
+               {"object_name", step.object_name}};
+  if (step.resumable) {
+    json["resumable"] = true;
+  }
+  return json;
 }
 
 Step stepFromJson(const Json& json) {
@@ -90,6 +105,7 @@ Step stepFromJson(const Json& json) {
   step.telemetry = json.value("telemetry", Json::object());
   step.object = json.value("object", "");
   step.object_name = json.value("object_name", "");
+  step.resumable = json.value("resumable", false);
   return step;
 }
 
@@ -211,10 +227,13 @@ Project Project::open(const std::filesystem::path& dir) {
     if (step.status == "running") {
       step.status = "failed";
       step.messages.emplace_back("Interrupted: the application ended while the step was running");
-      // Its partial outputs go, as those of a step that failed: an interrupted import can leave a
-      // staging copy of the whole scan there.
-      std::error_code ignored;
-      std::filesystem::remove_all(project.stepDir(step), ignored);
+      if (step.resumable) {
+        step.messages.emplace_back(kResumeHint);
+      } else {
+        // Its partial outputs go, as those of a step that failed.
+        std::error_code ignored;
+        std::filesystem::remove_all(project.stepDir(step), ignored);
+      }
       changed = true;
     }
     project.next_id_ = std::max(project.next_id_, step.id + 1);
@@ -559,12 +578,34 @@ const Step& Project::run(
   step.id = next_id_++;
   step.status = "running";
   step.started = nowUtc();
+  // While it runs, so a project opened after the program was killed knows to keep its files.
+  step.resumable = info.resumable;
+  const auto dir = stepDir(step);
+  std::filesystem::remove_all(dir);
+  // Files kept from a run that failed or was interrupted go to the same operation with the same
+  // parameters and inputs, which continues with them; otherwise they are removed now, so they
+  // take space only until the next step.
+  for (Step& old : steps_) {
+    if (!old.resumable) {
+      continue;
+    }
+    old.resumable = false;
+    std::erase(old.messages, std::string(kResumeHint));
+    const auto kept = stepDir(old);
+    std::error_code error;
+    if (info.resumable && old.operation == step.operation && old.params == step.params &&
+        sameInputs(old.inputs, step.inputs) && !std::filesystem::exists(dir)) {
+      std::filesystem::rename(kept, dir, error);
+      if (!error) {
+        continue;
+      }
+    }
+    std::filesystem::remove_all(kept, error);
+  }
   steps_.insert(steps_.begin() + static_cast<std::ptrdiff_t>(cursor_), step);
   ++cursor_;
   save();
 
-  const auto dir = stepDir(step);
-  std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   Step& stored = steps_[cursor_ - 1];
   OperationContext context;
@@ -586,6 +627,9 @@ const Step& Project::run(
   context.cancel = cancel;
   if (preview) {
     context.preview = preview;
+  }
+  if (path_check_) {
+    context.check_path = path_check_;
   }
   // The objects with their latest output of every type, so operations can work on several.
   std::map<std::string, Json> outputs;
@@ -630,12 +674,23 @@ const Step& Project::run(
     }
     stored.summary = std::move(result.summary);
     stored.status = "done";
+    stored.resumable = false;
   } catch (const std::exception& error) {
     stored.status = "failed";
     stored.messages.emplace_back(error.what());
     stored.outputs.clear();
     stored.output_types.clear();
-    std::filesystem::remove_all(dir);
+    // What a run that can resume has written stays for the next try (a full disk, a network
+    // share that went away), unless the user stopped it.
+    std::error_code ignored;
+    const bool cancelled = cancel != nullptr && cancel->load();
+    stored.resumable = info.resumable && !cancelled && std::filesystem::exists(dir, ignored) &&
+                       !std::filesystem::is_empty(dir, ignored);
+    if (stored.resumable) {
+      stored.messages.emplace_back(kResumeHint);
+    } else {
+      std::filesystem::remove_all(dir, ignored);
+    }
     stored.telemetry = telemetrySummary(telemetry.finish());
     stored.finished = nowUtc();
     save();
@@ -845,7 +900,8 @@ void Project::save() const {
     }
   }
   // Through a temporary file: never a half-written project, also on a full disk.
-  writeJson(file, json);
+  // And to the disk: a power cut must not leave it empty.
+  writeJson(file, json, /*to_disk=*/true);
 }
 
 }  // namespace voxelsieve

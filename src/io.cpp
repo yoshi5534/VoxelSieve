@@ -15,9 +15,39 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include "voxelsieve/resources.hpp"
 
 namespace voxelsieve {
+
+namespace {
+
+/// Has the operating system write the file, or on POSIX also a directory, to the disk. Not every
+/// file system can; then the write is as safe as it was without.
+void flushToDisk(const std::filesystem::path& path) {
+#ifdef _WIN32
+  const int file = _wopen(path.c_str(), _O_RDWR | _O_BINARY);
+  if (file >= 0) {
+    (void)_commit(file);
+    (void)_close(file);
+  }
+#else
+  const int file = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);  // NOLINT(*-vararg)
+  if (file >= 0) {
+    (void)::fsync(file);
+    (void)::close(file);
+  }
+#endif
+}
+
+}  // namespace
 
 static_assert(std::endian::native == std::endian::little,
               "Raw I/O assumes a little-endian host; add byte swapping for big-endian targets.");
@@ -136,7 +166,8 @@ void throwWriteError(const std::filesystem::path& path) {
   throw std::runtime_error("Cannot write " + path.string());
 }
 
-void writeFile(const std::filesystem::path& path, const std::function<void(std::ostream&)>& write) {
+void writeFile(const std::filesystem::path& path, const std::function<void(std::ostream&)>& write,
+               bool to_disk) {
   // A name of its own for each write: two threads writing the same file (the GUI saves the
   // project while a step runs) must not write into, or move away, each other's partial file.
   static std::atomic<std::uint64_t> writes{0};
@@ -157,6 +188,9 @@ void writeFile(const std::filesystem::path& path, const std::function<void(std::
     if (!out) {
       throwWriteError(path);
     }
+    if (to_disk) {
+      flushToDisk(partial);
+    }
     // Windows cannot replace a file that another program holds open for a moment, such as a
     // virus scanner looking at a new file or a reader of the previous version: try again shortly.
     constexpr int kAttempts = 20;
@@ -172,22 +206,32 @@ void writeFile(const std::filesystem::path& path, const std::function<void(std::
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
+#ifndef _WIN32
+    if (to_disk) {
+      // The new name is an entry of the directory.
+      flushToDisk(path.parent_path().empty() ? "." : path.parent_path());
+    }
+#endif
   } catch (...) {
     discard();
     throw;
   }
 }
 
-void writeFile(const std::filesystem::path& path, std::string_view bytes) {
-  writeFile(path, [bytes](std::ostream& out) {
-    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  });
+void writeFile(const std::filesystem::path& path, std::string_view bytes, bool to_disk) {
+  writeFile(
+      path,
+      [bytes](std::ostream& out) {
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      },
+      to_disk);
 }
 
-void writeJson(const std::filesystem::path& path, const nlohmann::json& json) {
+void writeJson(const std::filesystem::path& path, const nlohmann::json& json, bool to_disk) {
   // Text from input files (names, descriptions, tags) need not be UTF-8: a byte that is not is
   // replaced rather than failing the write of a result that took hours.
-  writeFile(path, json.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + '\n');
+  writeFile(path, json.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + '\n',
+            to_disk);
 }
 
 }  // namespace voxelsieve

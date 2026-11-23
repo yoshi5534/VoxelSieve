@@ -34,11 +34,14 @@ void writeRaw(const std::filesystem::path& path, const VolumeSource& source);
 /// Writes a file with `write`, into a temporary file beside it that replaces `path` only once all
 /// of it is written and closed, so `path` is never left half written. When a write fails it
 /// throws std::runtime_error naming the file, and a full disk as the reason, and leaves no
-/// temporary file behind.
-void writeFile(const std::filesystem::path& path, const std::function<void(std::ostream&)>& write);
+/// temporary file behind. With `to_disk`, the file is flushed to the disk before it replaces
+/// `path`, so a power cut leaves the old or the new file, never an empty one: for the few files
+/// everything else hangs on (a project, the index of a dataset, a journal), not for bulk data.
+void writeFile(const std::filesystem::path& path, const std::function<void(std::ostream&)>& write,
+               bool to_disk = false);
 
 /// `writeFile` of a text or a block of bytes.
-void writeFile(const std::filesystem::path& path, std::string_view bytes);
+void writeFile(const std::filesystem::path& path, std::string_view bytes, bool to_disk = false);
 
 /// Throws std::runtime_error naming what when dir's device has less than ytes free. Does
 /// nothing when the free space cannot be read.
@@ -49,6 +52,6 @@ void requireFreeSpace(const std::filesystem::path& dir, std::uint64_t bytes, std
 [[noreturn]] void throwWriteError(const std::filesystem::path& path);
 
 /// Writes JSON with `writeFile`.
-void writeJson(const std::filesystem::path& path, const nlohmann::json& json);
+void writeJson(const std::filesystem::path& path, const nlohmann::json& json, bool to_disk = false);
 
 }  // namespace voxelsieve

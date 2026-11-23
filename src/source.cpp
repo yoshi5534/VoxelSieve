@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -147,7 +148,7 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path,
                                       std::uint64_t{0}}) {}
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLayout& layout)
-    : mapping_(std::make_unique<Mapping>()), layout_(layout) {
+    : mapping_(std::make_unique<Mapping>()), layout_(layout), identity_(inputIdentity(path)) {
   checkVolumeDims(layout.dims, path.string());
   const std::uintmax_t payload =
       static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]) *
@@ -283,7 +284,8 @@ struct GzipRawSource::Stream {
 GzipRawSource::GzipRawSource(const std::filesystem::path& path, const RawLayout& layout)
     : stream_(std::make_unique<Stream>(path)),
       layout_(layout),
-      header_bytes_(layout.header_bytes.value_or(0)) {
+      header_bytes_(layout.header_bytes.value_or(0)),
+      identity_(inputIdentity(path)) {
   checkVolumeDims(layout.dims, path.string());
 }
 
@@ -351,6 +353,45 @@ void PhantomSource::readRegion(const Box& box, std::span<std::uint16_t> out) con
       }
     }
   }
+}
+
+std::string ConcatSource::identity() const {
+  std::string identity;
+  for (const auto& part : parts_) {
+    identity += part->identity() + ";";
+  }
+  return identity;
+}
+
+std::string inputIdentity(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto ticks = [](const std::filesystem::file_time_type& time) {
+    // Microseconds in 64 bits: the count of the clock itself has 128 bits on macOS.
+    using Microseconds = std::chrono::duration<std::int64_t, std::micro>;
+    return std::to_string(
+        std::chrono::duration_cast<Microseconds>(time.time_since_epoch()).count());
+  };
+  const std::string identity = std::filesystem::absolute(path, error).generic_string();
+  if (std::filesystem::is_directory(path, error)) {
+    std::uintmax_t files = 0;
+    std::uintmax_t bytes = 0;
+    std::filesystem::file_time_type latest{};
+    for (std::filesystem::directory_iterator it(path, error), end; !error && it != end;
+         it.increment(error)) {
+      std::error_code ignored;
+      if (!it->is_regular_file(ignored)) {
+        continue;
+      }
+      ++files;
+      bytes += it->file_size(ignored);
+      latest = std::max(latest, it->last_write_time(ignored));
+    }
+    return identity + " | " + std::to_string(files) + " files | " + std::to_string(bytes) +
+           " bytes | " + ticks(latest);
+  }
+  const auto bytes = std::filesystem::file_size(path, error);
+  const auto time = std::filesystem::last_write_time(path, error);
+  return identity + " | " + std::to_string(error ? 0 : bytes) + " bytes | " + ticks(time);
 }
 
 ConcatSource::ConcatSource(std::vector<std::unique_ptr<VolumeSource>> parts, int axis)

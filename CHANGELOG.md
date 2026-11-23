@@ -37,6 +37,28 @@
   must now lie between 1 and 1 048 576 voxels per axis. A dataset whose `index.json` is damaged
   is reported as "Damaged dataset: …/index.json" with the reason.
 
+- **An interrupted import in a project resumes** (ADR 0037): a step of an import that failed (a
+  full disk, a share that went away) or was running when the program ended keeps its files; run
+  again with the same parameters, or with "Resume" at the step in the UI, it continues from its
+  journal instead of starting over. Any other step that runs removes the kept files. Plugins
+  can mark their own operations with `OperationInfo::resumable`; the plugin API version is 6.
+
+- **An import resumes only for the same input**: the journal now holds the path, size and time
+  of the last change of the input. Another scan of the same size imported into the directory of
+  an interrupted import continued it and mixed the bricks of both.
+
+- **Projects keep the CAD model of a comparison**: `compare_cad` copies the model into the
+  project, and the nominal wall thickness and the dimensional measurement read that copy. They
+  failed once the file had moved and measured against a changed file without notice.
+
+- **Files named inside files stay within the allowed directories**: the mesh of a region in an
+  inspection order and the volume files of a gzipped XML project were read wherever they lay,
+  also when the server was limited to some directories.
+
+- **Safer against power cuts**: `project.json`, the index of a dataset and the journal of an
+  import are flushed to the disk before they replace the old file, and a resumed import writes
+  again the bricks whose files did not reach the disk.
+
 - **Battery inspection of a part without an electrode stack**: a volume whose sections show at
   most one layer, such as a casting given by mistake, made the inspection fail with "Region
   outside dataset level 0"; it now finishes with the warning that no electrode stack was found

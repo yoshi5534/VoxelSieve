@@ -819,7 +819,7 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
   }
 
   // Last and whole: a dataset whose write was interrupted has no index.json, and never half of one.
-  writeJson(dir / "index.json", toJson(info));
+  writeJson(dir / "index.json", toJson(info), /*to_disk=*/true);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -834,9 +834,12 @@ constexpr std::string_view kBricksLog = "bricks.log";
 constexpr std::string_view kDerivedJournalFile = "derived.json";
 constexpr int kJournalVersion = 1;
 
-/// What must match for an import to resume: the input's size and the options that shape bricks.
-nlohmann::json journalKey(const DatasetInfo& info, const DatasetOptions& options) {
+/// What must match for an import to resume: the input (its identity and size) and the options
+/// that shape bricks. Scans of a series have one size, so the size alone would mix two of them.
+nlohmann::json journalKey(const DatasetInfo& info, const DatasetOptions& options,
+                          const std::string& input) {
   nlohmann::json key = {
+      {"input", input},
       {"dims", info.dims},
       {"brick_size", options.brick_size},
       {"margin_voxels", options.margin_voxels},
@@ -862,18 +865,24 @@ struct Journal {
 
 void writePass1(const std::filesystem::path& dir, const nlohmann::json& key,
                 const BlockStatistics& stats) {
-  writeFile(dir / kPass1File, [&](std::ostream& out) {
-    out.write(reinterpret_cast<const char*>(stats.block_kth.data()),
-              static_cast<std::streamsize>(stats.block_kth.size() * sizeof(std::uint16_t)));
-    out.write(reinterpret_cast<const char*>(stats.histogram.data()),
-              static_cast<std::streamsize>(stats.histogram.size() * sizeof(Histogram::value_type)));
-  });
-  writeJson(dir / kJournalFile, {{"format", "voxelsieve-import"},
-                                 {"version", kJournalVersion},
-                                 {"key", key},
-                                 {"block_dims", stats.block_dims},
-                                 {"blocks", stats.block_kth.size()},
-                                 {"bins", stats.histogram.size()}});
+  writeFile(
+      dir / kPass1File,
+      [&](std::ostream& out) {
+        out.write(reinterpret_cast<const char*>(stats.block_kth.data()),
+                  static_cast<std::streamsize>(stats.block_kth.size() * sizeof(std::uint16_t)));
+        out.write(
+            reinterpret_cast<const char*>(stats.histogram.data()),
+            static_cast<std::streamsize>(stats.histogram.size() * sizeof(Histogram::value_type)));
+      },
+      /*to_disk=*/true);
+  writeJson(dir / kJournalFile,
+            {{"format", "voxelsieve-import"},
+             {"version", kJournalVersion},
+             {"key", key},
+             {"block_dims", stats.block_dims},
+             {"blocks", stats.block_kth.size()},
+             {"bins", stats.histogram.size()}},
+            /*to_disk=*/true);
 }
 
 std::vector<std::pair<Index3, std::int64_t>> readBrickLog(const std::filesystem::path& file);
@@ -941,6 +950,17 @@ std::vector<std::pair<Index3, std::int64_t>> readBrickLog(const std::filesystem:
   finished.erase(std::unique(finished.begin(), finished.end(),
                              [](const auto& a, const auto& b) { return a.first == b.first; }),
                  finished.end());
+  // Bricks are not flushed to the disk one by one: after a power cut the log can list a brick
+  // whose file is missing or empty. Such a brick is written again.
+  const std::filesystem::path dir = file.parent_path();
+  std::erase_if(finished, [&dir](const auto& entry) {
+    if (entry.second == 0) {
+      return false;
+    }
+    std::error_code error;
+    const auto size = std::filesystem::file_size(brickPath(dir, 0, entry.first), error);
+    return error || size == 0;
+  });
   return finished;
 }
 
@@ -1113,17 +1133,28 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   // An interrupted import of the same input with the same options resumes from its journal;
   // anything else in the directory is an error. Copies and partial files of processes that ended
   // are no content.
-  const nlohmann::json journal_key = journalKey(info, options);
+  const nlohmann::json journal_key = journalKey(info, options, input.identity());
   std::optional<Journal> journal;
   if (std::filesystem::exists(dir)) {
     removeStaleCopies(dir);
     removeStalePartials(dir);
   }
   if (std::filesystem::exists(dir) && !std::filesystem::is_empty(dir)) {
+    bool replaced = false;
     if (options.resume && !std::filesystem::exists(dir / "index.json")) {
-      journal = readJournal(dir, journal_key);
+      try {
+        journal = readJournal(dir, journal_key);
+      } catch (const std::invalid_argument&) {
+        if (!options.replace_other_import) {
+          throw;
+        }
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+          std::filesystem::remove_all(entry.path());
+        }
+        replaced = true;
+      }
     }
-    if (!journal) {
+    if (!journal && !replaced) {
       throw std::invalid_argument("Output directory is not empty: " + dir.string());
     }
   }

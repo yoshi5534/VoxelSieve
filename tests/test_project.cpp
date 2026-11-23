@@ -89,6 +89,32 @@ class Fail final : public Operation {
   OperationInfo info_;
 };
 
+/// Work in tries that continues with what it finds in its directory: fails until it has run
+/// `tries` times there, then gives the number of tries.
+class Tries final : public Operation {
+ public:
+  Tries() {
+    info_.id = "tries";
+    info_.title = "Tries";
+    info_.outputs = {{"number", "number", ""}};
+    info_.parameters = {{"type", "object"},
+                        {"properties", {{"tries", {{"type", "integer"}, {"default", 2}}}}}};
+    info_.resumable = true;
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const int tries = readNumber(context.output_dir / "n.txt") + 1;
+    std::ofstream(context.output_dir / "n.txt") << tries;
+    if (tries < context.params.at("tries").get<int>()) {
+      throw std::runtime_error("not done yet");
+    }
+    return {{{"number", "n.txt"}}, {{"value", tries}}};
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class ProjectTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -99,6 +125,7 @@ class ProjectTest : public ::testing::Test {
     registry_.add(std::make_shared<MakeNumber>());
     registry_.add(std::make_shared<AddNumber>());
     registry_.add(std::make_shared<Fail>());
+    registry_.add(std::make_shared<Tries>());
   }
   void TearDown() override { std::filesystem::remove_all(dir_); }
 
@@ -176,6 +203,54 @@ TEST_F(ProjectTest, AStepThatFailsLeavesTheUndoneStepsForRedo) {
   auto reopened = Project::open(dir_ / "p");
   EXPECT_TRUE(reopened.redo());
   EXPECT_EQ(latestNumber(reopened), 11);
+}
+
+TEST_F(ProjectTest, AStepThatCanResumeContinuesWithItsFiles) {
+  auto project = Project::create(dir_ / "p", "Test");
+  // The first run fails and keeps what it wrote; the same step run again takes it over.
+  EXPECT_THROW(project.run(registry_, "tries", {{"tries", 3}}), std::runtime_error);
+  const auto first_dir = project.stepDir(project.steps()[0]);
+  EXPECT_TRUE(project.steps()[0].resumable);
+  EXPECT_EQ(readNumber(first_dir / "n.txt"), 1);
+  EXPECT_THROW(project.run(registry_, "tries", {{"tries", 3}}), std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(first_dir));
+  EXPECT_FALSE(project.steps()[0].resumable);
+  EXPECT_TRUE(project.steps()[1].resumable);
+
+  // The program ended while the step was running: its files are still kept when the project is
+  // opened again, and the step says how to continue.
+  const auto second_dir = project.stepDir(project.steps()[1]);
+  {
+    Json json;
+    std::ifstream(dir_ / "p" / "project.json") >> json;
+    json["steps"][1]["status"] = "running";
+    std::ofstream(dir_ / "p" / "project.json") << json;
+  }
+  project = Project::open(dir_ / "p");
+  EXPECT_EQ(project.steps()[1].status, "failed");
+  EXPECT_TRUE(project.steps()[1].resumable);
+  EXPECT_NE(project.steps()[1].messages.back().find("run it again"), std::string::npos);
+  EXPECT_EQ(readNumber(second_dir / "n.txt"), 2);
+  const Step& done = project.run(registry_, "tries", {{"tries", 3}});
+  EXPECT_EQ(done.status, "done");
+  EXPECT_FALSE(done.resumable);
+  EXPECT_EQ(latestNumber(project), 3);
+  EXPECT_FALSE(std::filesystem::exists(second_dir));
+
+  // With other parameters, or when another step runs, the kept files go.
+  EXPECT_THROW(project.run(registry_, "tries", {{"tries", 5}}), std::runtime_error);
+  EXPECT_THROW(project.run(registry_, "tries", {{"tries", 4}}), std::runtime_error);
+  EXPECT_EQ(readNumber(project.stepDir(project.steps()[4]) / "n.txt"), 1);
+  EXPECT_FALSE(std::filesystem::exists(project.stepDir(project.steps()[3])));
+  project.run(registry_, "make_number", {{"value", 7}});
+  EXPECT_FALSE(std::filesystem::exists(project.stepDir(project.steps()[4])));
+  EXPECT_FALSE(project.steps()[4].resumable);
+
+  // A step the user stopped keeps nothing.
+  const std::atomic<bool> cancel{true};
+  EXPECT_THROW(project.run(registry_, "tries", {{"tries", 9}}, {}, {}, &cancel), std::exception);
+  EXPECT_FALSE(project.steps().back().resumable);
+  EXPECT_FALSE(std::filesystem::exists(project.stepDir(project.steps().back())));
 }
 
 TEST(ProjectLockTest, AnotherProcessCannotOpenAProjectThatIsOpen) {
