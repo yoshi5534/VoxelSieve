@@ -12,8 +12,9 @@
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <regex>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "voxelsieve/source.hpp"
@@ -36,51 +37,179 @@ std::string lower(std::string text) {
   return text;
 }
 
+bool isDigit(char c) { return c >= '0' && c <= '9'; }
+bool isLetter(char c) { return c >= 'a' && c <= 'z'; }
+
+/// The words of a lower-case name: runs of letters and digits, with the characters between them.
+struct Word {
+  std::string text;
+  std::string before;  // the separator before it
+};
+
+std::vector<Word> wordsOf(const std::string& text) {
+  std::vector<Word> words;
+  std::string separator;
+  std::size_t i = 0;
+  while (i < text.size()) {
+    if (isDigit(text[i]) || isLetter(text[i])) {
+      Word word{.text = {}, .before = separator};
+      while (i < text.size() && (isDigit(text[i]) || isLetter(text[i]))) {
+        word.text += text[i++];
+      }
+      words.push_back(std::move(word));
+      separator.clear();
+    } else {
+      separator += text[i++];
+    }
+  }
+  return words;
+}
+
+/// The bits a word names: "16bit", "uint8", "u16", "int16"; with `bits_follow` also a bare
+/// "16" or "uint16" before the word "bit".
+std::optional<int> bitsOf(std::string word, bool bits_follow) {
+  bool typed = false;
+  for (const std::string prefix : {"uint", "int", "u"}) {
+    if (word.starts_with(prefix) && word.size() > prefix.size() && isDigit(word[prefix.size()])) {
+      word = word.substr(prefix.size());
+      typed = true;
+      break;
+    }
+  }
+  std::size_t digits = 0;
+  while (digits < word.size() && isDigit(word[digits])) {
+    ++digits;
+  }
+  const std::string number = word.substr(0, digits);
+  const std::string rest = word.substr(digits);
+  if (number != "8" && number != "16" && number != "32") {
+    return std::nullopt;
+  }
+  if (rest == "bit" || rest == "bits" || (rest.empty() && (typed || bits_follow))) {
+    return std::stoi(number);
+  }
+  return std::nullopt;
+}
+
 /// Reads the hints of one name; `hints` keeps what an earlier name gave.
 void readName(const std::string& name, NameHints& hints) {
   const std::string text = lower(name);
-  std::smatch match;
+  const auto number_at = [&](std::size_t& i) -> std::optional<std::int64_t> {
+    const std::size_t start = i;
+    while (i < text.size() && isDigit(text[i]) && i - start < 7) {
+      ++i;
+    }
+    if (i == start || i - start > 6) {
+      return std::nullopt;
+    }
+    return std::stoll(text.substr(start, i - start));
+  };
+  const auto skip_spaces = [&](std::size_t& i) {
+    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) != 0) {
+      ++i;
+    }
+  };
+  const auto times_at = [&](std::size_t& i) {
+    if (i < text.size() && text[i] == 'x') {
+      ++i;
+      return true;
+    }
+    if (text.compare(i, 2, "\xC3\x97") == 0) {  // ×
+      i += 2;
+      return true;
+    }
+    return false;
+  };
   // 512x512x400, 512 x 512 x 400, 512×512×400 (UTF-8).
-  static const std::regex dims(
-      R"((\d{1,6})\s*(?:x|\xC3\x97)\s*(\d{1,6})\s*(?:x|\xC3\x97)\s*(\d{1,6}))");
-  if (!hints.dims && std::regex_search(text, match, dims)) {
-    const std::array<std::int64_t, 3> found = {
-        std::stoll(match[1].str()), std::stoll(match[2].str()), std::stoll(match[3].str())};
-    if (std::ranges::all_of(found, [](std::int64_t n) { return n > 0; })) {
+  for (std::size_t start = 0; start < text.size() && !hints.dims; ++start) {
+    if (!isDigit(text[start]) || (start > 0 && isDigit(text[start - 1]))) {
+      continue;
+    }
+    std::size_t i = start;
+    std::array<std::int64_t, 3> found{};
+    bool complete = true;
+    for (std::size_t axis = 0; axis < 3 && complete; ++axis) {
+      if (axis > 0) {
+        skip_spaces(i);
+        complete = times_at(i);
+        skip_spaces(i);
+      }
+      const auto n = complete ? number_at(i) : std::nullopt;
+      complete = complete && n && *n > 0;
+      if (complete) {
+        found[axis] = *n;
+      }
+    }
+    if (complete) {
       hints.dims = found;
     }
   }
-  static const std::regex bits(R"((?:^|[^a-z0-9])(?:u?int)?(8|16|32)[-_ ]?bits?(?:$|[^a-z]))");
-  static const std::regex type(R"((?:^|[^a-z0-9])(?:u?int|u)(8|16|32)(?:$|[^a-z0-9]))");
-  if (!hints.sample_type &&
-      (std::regex_search(text, match, bits) || std::regex_search(text, match, type))) {
-    if (match[1].str() == "32") {
-      throw std::invalid_argument(
-          "The name says 32 bit: raw files of 32-bit or float values are not read; export the "
-          "scan as a float TIFF stack, which is imported with a recorded value mapping");
+
+  const std::vector<Word> words = wordsOf(text);
+  for (std::size_t w = 0; w < words.size(); ++w) {
+    const bool bits_follow =
+        w + 1 < words.size() && (words[w + 1].text == "bit" || words[w + 1].text == "bits") &&
+        (words[w + 1].before == "-" || words[w + 1].before == "_" || words[w + 1].before == " ");
+    const std::string& word = words[w].text;
+    if (!hints.sample_type) {
+      if (const auto bits = bitsOf(word, bits_follow)) {
+        if (*bits == 32) {
+          throw std::invalid_argument(
+              "The name says 32 bit: raw files of 32-bit or float values are not read; export "
+              "the scan as a float TIFF stack, which is imported with a recorded value mapping");
+        }
+        hints.sample_type = *bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16;
+      } else if (word == "float" || word == "float32" || word == "real32") {
+        throw std::invalid_argument(
+            "The name says float: raw files of float values are not read; export the scan as a "
+            "float TIFF stack, which is imported with a recorded value mapping");
+      }
     }
-    hints.sample_type = match[1].str() == "8" ? SampleType::kUInt8 : SampleType::kUInt16;
+    const bool endian_follows =
+        w + 1 < words.size() && words[w + 1].text == "endian" &&
+        (words[w + 1].before == "-" || words[w + 1].before == "_" || words[w + 1].before == " ");
+    if (word == "bigendian" || word == "be" || word == "msb" || (word == "big" && endian_follows)) {
+      hints.big_endian = true;
+    }
   }
-  static const std::regex float_word(R"((?:^|[^a-z0-9])(float|float32|real32)(?:$|[^a-z0-9]))");
-  if (!hints.sample_type && std::regex_search(text, match, float_word)) {
-    throw std::invalid_argument(
-        "The name says float: raw files of float values are not read; export the scan as a "
-        "float TIFF stack, which is imported with a recorded value mapping");
-  }
-  static const std::regex big(R"(big[-_ ]?endian|(?:^|[^a-z0-9])(?:be|msb)(?:$|[^a-z0-9]))");
-  if (std::regex_search(text, match, big)) {
-    hints.big_endian = true;
-  }
+
   // 0.05mm, 0,05 mm, 50um, 50µm, 50μm, 50 micron.
-  static const std::regex pitch(
-      R"((\d+(?:[.,]\d+)?)\s*(mm|um|\xC2\xB5m|\xCE\xBCm|microns?)(?:$|[^a-z]))");
-  if (!hints.voxel_size_mm && std::regex_search(text, match, pitch)) {
-    std::string number = match[1].str();
+  for (std::size_t start = 0; start < text.size() && !hints.voxel_size_mm; ++start) {
+    if (!isDigit(text[start]) || (start > 0 && isDigit(text[start - 1]))) {
+      continue;
+    }
+    std::size_t i = start;
+    while (i < text.size() && isDigit(text[i])) {
+      ++i;
+    }
+    if (i + 1 < text.size() && (text[i] == '.' || text[i] == ',') && isDigit(text[i + 1])) {
+      ++i;
+      while (i < text.size() && isDigit(text[i])) {
+        ++i;
+      }
+    }
+    std::string number = text.substr(start, i - start);
     std::ranges::replace(number, ',', '.');
-    const double value = std::stod(number);
-    const double mm = match[2].str() == "mm" ? value : value / 1000.0;
-    if (mm >= 1e-4 && mm <= 10.0) {
-      hints.voxel_size_mm = mm;
+    skip_spaces(i);
+    double scale = 0.0;
+    for (const auto& [unit, factor] :
+         std::array<std::pair<std::string_view, double>, 6>{{{"mm", 1.0},
+                                                             {"um", 1e-3},
+                                                             {"\xC2\xB5m", 1e-3},
+                                                             {"\xCE\xBCm", 1e-3},
+                                                             {"microns", 1e-3},
+                                                             {"micron", 1e-3}}}) {
+      if (text.compare(i, unit.size(), unit) == 0 &&
+          (i + unit.size() == text.size() || !isLetter(text[i + unit.size()]))) {
+        scale = factor;
+        break;
+      }
+    }
+    if (scale > 0.0) {
+      const double mm = std::stod(number) * scale;
+      if (mm >= 1e-4 && mm <= 10.0) {
+        hints.voxel_size_mm = mm;
+      }
     }
   }
 }
