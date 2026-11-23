@@ -71,6 +71,7 @@ std::string samplesOf(const std::vector<T>& values, std::endian order = std::end
 /// Floats of the phantom: an attenuation-like range with negative values.
 std::vector<float> floatsOf(const std::vector<std::uint16_t>& voxels) {
   std::vector<float> values;
+  values.reserve(voxels.size());
   for (const std::uint16_t v : voxels) {
     values.push_back(static_cast<float>(v) * 1e-5F - 0.05F);
   }
@@ -79,6 +80,7 @@ std::vector<float> floatsOf(const std::vector<std::uint16_t>& voxels) {
 
 std::vector<std::int16_t> signedOf(const std::vector<std::uint16_t>& voxels) {
   std::vector<std::int16_t> values;
+  values.reserve(voxels.size());
   for (const std::uint16_t v : voxels) {
     values.push_back(static_cast<std::int16_t>(static_cast<int>(v) / 2 - 12000));
   }
@@ -132,6 +134,8 @@ class Formats : public ::testing::Test {
   }
   void TearDown() override { std::filesystem::remove_all(dir_); }
 
+  // Callers often only need the file, so the path may be ignored.
+  // NOLINTNEXTLINE(modernize-use-nodiscard)
   std::filesystem::path write(const std::string& name, const std::string& bytes) const {
     const auto path = dir_ / name;
     std::filesystem::create_directories(path.parent_path());
@@ -193,7 +197,7 @@ TEST_F(Formats, KeepsSignedSamplesExactly) {
 }
 
 TEST_F(Formats, KeepsThirtyTwoBitIntegersThatFitAndMapsLargerOnes) {
-  std::vector<std::uint32_t> small(voxels_.begin(), voxels_.end());
+  const std::vector<std::uint32_t> small(voxels_.begin(), voxels_.end());
   RawLayout layout(kDims, VoxelSize(0.1));
   layout.stored_type = RawSampleType::kUInt32;
   const MappedRawSource kept(write("small.raw", samplesOf(small)), layout);
@@ -201,6 +205,7 @@ TEST_F(Formats, KeepsThirtyTwoBitIntegersThatFitAndMapsLargerOnes) {
   EXPECT_EQ(readAll(kept), voxels_);
 
   std::vector<std::uint32_t> large;
+  large.reserve(voxels_.size());
   for (const std::uint16_t v : voxels_) {
     large.push_back(std::uint32_t{v} * 1000U);
   }
@@ -215,7 +220,7 @@ TEST_F(Formats, ReadsGzippedFloatsAndDoubles) {
   layout.stored_type = RawSampleType::kFloat32;
   const GzipRawSource gz(write("scan.raw.gz", compressed(samplesOf(floats), true)), layout);
   expectValues(gz, floats);
-  std::vector<double> doubles(floats.begin(), floats.end());
+  const std::vector<double> doubles(floats.begin(), floats.end());
   layout.stored_type = RawSampleType::kFloat64;
   const auto source =
       openRawVolume(write("doubles.raw.gz", compressed(samplesOf(doubles), true)), layout);
@@ -403,6 +408,7 @@ std::vector<std::vector<std::uint8_t>> pngSlices(const std::vector<std::uint16_t
 
 std::vector<std::uint16_t> upperBytes(const std::vector<std::uint16_t>& voxels) {
   std::vector<std::uint16_t> bytes;
+  bytes.reserve(voxels.size());
   for (const std::uint16_t v : voxels) {
     bytes.push_back(static_cast<std::uint16_t>(v >> 8U));
   }
@@ -491,7 +497,7 @@ TEST_F(Formats, ReadsTheLargestVolumeOfAnHdf5File) {
   const std::vector<float> values = floatsOf(voxels_);
   writeHdf5(file, "/exchange/data", values, H5T_NATIVE_FLOAT, true, 0,
             std::array{200.0, 100.0, 50.0});
-  std::vector<std::uint8_t> labels(voxels_.size(), 1);
+  const std::vector<std::uint8_t> labels(voxels_.size(), 1);
   writeHdf5(file, "/exchange/labels", labels, H5T_NATIVE_UINT8, false);
   ASSERT_TRUE(isHdf5File(file));
   EXPECT_FALSE(isHdf5File(write("not.h5", "plain text, no signature")));
