@@ -439,9 +439,9 @@ Roundness measureRoundness(const Dataset& dataset, int level) {
   };
   Roundness best;
   double best_score = 0.0;
-  for (int axis = 0; axis < 3; ++axis) {
-    const int u = (axis + 1) % 3;
-    const int v = (axis + 2) % 3;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const std::size_t u = (axis + 1) % 3;
+    const std::size_t v = (axis + 2) % 3;
     std::vector<std::uint8_t> shadow(static_cast<std::size_t>(dims[u] * dims[v]), 0);
     std::array<std::int64_t, 3> lo = {dims[0], dims[1], dims[2]};
     std::array<std::int64_t, 3> hi = {-1, -1, -1};
@@ -453,7 +453,7 @@ Roundness measureRoundness(const Dataset& dataset, int level) {
           }
           const std::array<std::int64_t, 3> p = {x, y, z};
           shadow[static_cast<std::size_t>(p[u] + (dims[u] * p[v]))] = 1;
-          for (int a = 0; a < 3; ++a) {
+          for (std::size_t a = 0; a < 3; ++a) {
             lo[a] = std::min(lo[a], p[a]);
             hi[a] = std::max(hi[a], p[a]);
           }
@@ -476,7 +476,7 @@ Roundness measureRoundness(const Dataset& dataset, int level) {
     constexpr double kRound = 0.9;
     if (square > kRound && std::abs(disk - 1.0) < 0.08 && score > best_score) {
       best_score = score;
-      best.axis = axis;
+      best.axis = static_cast<int>(axis);
       best.diameter_mm = 0.5 * (width_mm + height_mm);
       best.length_mm = static_cast<double>(hi[axis] - lo[axis] + 1) * info.voxel_size[axis];
     }

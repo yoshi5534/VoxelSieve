@@ -313,7 +313,7 @@ std::optional<RawLayoutGuess> fromGreyValues(std::ifstream& in, std::uint64_t fi
     return std::nullopt;
   }
   const auto width = static_cast<std::int64_t>(row.lag);
-  const std::uint64_t row_bytes = width * bytes_per_voxel;
+  const std::uint64_t row_bytes = static_cast<std::uint64_t>(row.lag) * bytes_per_voxel;
 
   // Slices: every height whose slices fill the file up to a header, compared at that offset.
   const std::uint64_t total_rows = file_bytes / row_bytes;
@@ -328,7 +328,7 @@ std::optional<RawLayoutGuess> fromGreyValues(std::ifstream& in, std::uint64_t fi
     const std::vector<float> other =
         decode(readBytes(in, middle + lag_bytes, bytes), type, big_endian);
     double sum = 0.0;
-    const std::size_t count = std::min(other.size(), bytes / bytes_per_voxel);
+    const std::size_t count = std::min<std::size_t>(other.size(), bytes / bytes_per_voxel);
     for (std::size_t i = 0; i < count; ++i) {
       sum += std::abs(base[i] - other[i]);
     }
@@ -338,12 +338,13 @@ std::optional<RawLayoutGuess> fromGreyValues(std::ifstream& in, std::uint64_t fi
   std::vector<double> all_differences;
   for (std::int64_t height = kMinEdge; height <= static_cast<std::int64_t>(total_rows) / kMinSlices;
        ++height) {
-    const Fit fit = fitSlices(file_bytes, height * row_bytes);
-    if (fit.header > std::min<std::uint64_t>(kMaxHeaderBytes, height * row_bytes) ||
+    const Fit fit = fitSlices(file_bytes, static_cast<std::uint64_t>(height) * row_bytes);
+    if (fit.header > std::min<std::uint64_t>(kMaxHeaderBytes,
+                                             static_cast<std::uint64_t>(height) * row_bytes) ||
         fit.header % bytes_per_voxel != 0) {
       continue;
     }
-    const std::uint64_t lag_bytes = height * row_bytes;
+    const std::uint64_t lag_bytes = static_cast<std::uint64_t>(height) * row_bytes;
     if (middle + lag_bytes + block_bytes > file_bytes) {
       continue;
     }
@@ -366,7 +367,8 @@ std::optional<RawLayoutGuess> fromGreyValues(std::ifstream& in, std::uint64_t fi
                           return best.second % height == 0;
                         });
     if (chosen) {
-      heights.emplace_back(compare(height * row_bytes, block_bytes), height);
+      heights.emplace_back(compare(static_cast<std::uint64_t>(height) * row_bytes, block_bytes),
+                           height);
     }
   }
   if (heights.empty()) {
@@ -411,7 +413,7 @@ std::optional<RawLayoutGuess> fromGreyValues(std::ifstream& in, std::uint64_t fi
   if (confidence < kMinConfidence) {
     return std::nullopt;
   }
-  const Fit fit = fitSlices(file_bytes, height * row_bytes);
+  const Fit fit = fitSlices(file_bytes, static_cast<std::uint64_t>(height) * row_bytes);
   RawLayoutGuess guess;
   guess.layout.dims = {width, height, fit.slices};
   guess.layout.sample_type = type;
