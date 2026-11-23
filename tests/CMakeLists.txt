@@ -275,6 +275,19 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/viewer_test.cjs)
   add_test(NAME ui_tiles COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/tiles_test.cjs)
   add_test(NAME ui_volume COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/volume_test.cjs)
+  # The inspection of the sample part in a browser, as a user clicks through it (ADR 0038). Runs
+  # where node finds playwright or playwright-core (NODE_PATH) at configure time.
+  execute_process(COMMAND ${NODE_EXECUTABLE} -e
+                  "try { require.resolve('playwright') } catch { require.resolve('playwright-core') }"
+                  RESULT_VARIABLE playwright_missing OUTPUT_QUIET ERROR_QUIET)
+  if(playwright_missing EQUAL 0)
+    add_test(NAME ui_smoke
+             COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/smoke_test.cjs
+                     $<TARGET_FILE:vs-gui> $<TARGET_FILE:vs-synth>
+                     ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+                     ${CMAKE_CURRENT_BINARY_DIR}/ui_smoke)
+    set_tests_properties(ui_smoke PROPERTIES TIMEOUT 1200)
+  endif()
 endif()
 
 # The streamed patches of the training scripts in tools/models (NumPy only, no PyTorch).

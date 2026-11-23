@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A test clicks through the browser UI**: the inspection of the sample part (new project,
+  import, porosity, report, slice and 3D view, undo and redo) runs in a headless browser as the
+  test `ui_smoke`, in CI with every pull request (ADR 0038). Playwright drives the browser; it is
+  a tool of this test only.
+
 - **A project that cannot be saved no longer blocks the program**: when writing `project.json`
   failed after a step (a full disk), every later call answered "Operation … is still running"
   until the program was started again, and the step was lost. The step now stays in the project,
