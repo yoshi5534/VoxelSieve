@@ -291,7 +291,7 @@ TEST_F(Formats, ReadsCompressedMetaImageWithTheDataAttached) {
 
 TEST_F(Formats, ReadsSlicesNamedByAPatternWithOneValueRange) {
   const std::vector<float> values = floatsOf(voxels_);
-  const auto slice = static_cast<std::size_t>(kDims[0] * kDims[1]);
+  const std::int64_t slice = kDims[0] * kDims[1];
   for (std::int64_t z = 0; z < kDims[2]; ++z) {
     const std::vector<float> part(values.begin() + static_cast<std::ptrdiff_t>(z * slice),
                                   values.begin() + static_cast<std::ptrdiff_t>((z + 1) * slice));
