@@ -39,6 +39,9 @@ void ProgressToken::report(double fraction) const {
   const double overall = begin_ + (end_ - begin_) * std::clamp(fraction, 0.0, 1.0);
   const auto percent = static_cast<int>(std::floor(100.0 * overall + 1e-9));
   const std::scoped_lock lock(state_->mutex);
+  // Another thread may have cancelled the run while this one waited for the lock: nothing is
+  // reported after a cancellation.
+  check();
   if (percent <= state_->percent) {
     return;
   }
