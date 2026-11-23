@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -31,6 +32,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -162,6 +164,59 @@ struct BlockStatistics {
   Index3 block_dims{};
 };
 
+/// The staging copy in memory: the slices one after another, as in the raw file.
+class StagedMemorySource final : public VolumeSource {
+ public:
+  StagedMemorySource(const std::uint8_t* data, const Index3& dims, const VoxelSize& voxel_size,
+                     bool narrow)
+      : data_(data), dims_(dims), voxel_size_(voxel_size), narrow_(narrow) {}
+  [[nodiscard]] Index3 dims() const override { return dims_; }
+  [[nodiscard]] VoxelSize voxelSize() const override { return voxel_size_; }
+  [[nodiscard]] SampleType sampleType() const override {
+    return narrow_ ? SampleType::kUInt8 : SampleType::kUInt16;
+  }
+  void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
+    if (box.voxelCount() != static_cast<std::int64_t>(out.size())) {
+      throw std::invalid_argument("Region and buffer differ in size");
+    }
+    const auto row = static_cast<std::size_t>(box.size(0));
+    std::size_t offset = 0;
+    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+      for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+        const auto first = static_cast<std::size_t>(box.min[0] + dims_[0] * (y + dims_[1] * z));
+        if (narrow_) {
+          std::copy_n(data_ + first, row, &out[offset]);
+        } else {
+          std::memcpy(&out[offset], data_ + first * sizeof(std::uint16_t),
+                      row * sizeof(std::uint16_t));
+        }
+        offset += row;
+      }
+    }
+  }
+
+ private:
+  const std::uint8_t* data_;
+  Index3 dims_;
+  VoxelSize voxel_size_;
+  bool narrow_;
+};
+
+/// Whether a staging copy of `bytes` goes into memory: when it leaves room in the work memory for
+/// the bricks that pass 2 builds at once (ADR 0034).
+bool stageInMemory(std::uint64_t bytes, const DatasetOptions& options) {
+  if (!options.stage_in_memory) {
+    return false;
+  }
+  const auto brick = static_cast<std::uint64_t>(options.brick_size);
+  // Per thread: the brick's values with their margin, its grid and its downsampled part.
+  const std::uint64_t per_task = 4 * brick * brick * brick * sizeof(std::uint16_t);
+  const auto threads = static_cast<std::uint64_t>(
+      std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
+  const std::uint64_t work = workMemoryBytes();
+  return bytes + threads * per_task <= work;
+}
+
 /// A temporary raw copy of a source, removed on destruction. The slices of the preview are copied
 /// first, round by round, coarse to fine, then the rest, so the preview costs no extra reading.
 class StagedSource {
@@ -177,6 +232,36 @@ class StagedSource {
     const std::uint64_t bytes = product(dims_) * (narrow_ ? 1U : 2U);
     std::filesystem::create_directories(dir);
     removeStaleCopies(dir);
+    // In memory when it fits: then the copy is neither written to the disk nor read back from it
+    // (twice the input's voxels in bytes of disk traffic, and the system may write the pages back
+    // while pass 2 waits for them).
+    if (stageInMemory(bytes, options)) {
+      try {
+        // Not initialised: each page is first touched by the slice copied into it.
+        memory_.resize(static_cast<std::size_t>(bytes));
+      } catch (const std::bad_alloc&) {
+        UninitializedVector<std::uint8_t>().swap(memory_);
+      }
+    }
+    if (!memory_.empty()) {
+      slice_bytes_ = static_cast<std::size_t>(dims_[0] * dims_[1]) * (narrow_ ? 1U : 2U);
+    } else {
+      createFile(dir, bytes);
+    }
+    // Pass 1 on the way (the block maxima need k = 1): every slice passes through memory once.
+    if (options.min_material_voxels == 1) {
+      block_dims_ = ceilDiv3(dims_, kBlockSize);
+      block_max_ = std::vector<std::atomic<std::uint16_t>>(product(block_dims_));
+    }
+  }
+  StagedSource(const StagedSource&) = delete;
+  StagedSource& operator=(const StagedSource&) = delete;
+  StagedSource(StagedSource&&) = delete;
+  StagedSource& operator=(StagedSource&&) = delete;
+  ~StagedSource() { remove(); }
+
+ private:
+  void createFile(const std::filesystem::path& dir, std::uint64_t bytes) {
     const std::uint64_t available = std::filesystem::space(dir).available;
     if (available < bytes) {
       constexpr double kGb = 1024.0 * 1024.0 * 1024.0;
@@ -211,18 +296,9 @@ class StagedSource {
       remove();
       throw;
     }
-    // Pass 1 on the way (the block maxima need k = 1): every slice passes through memory once.
-    if (options.min_material_voxels == 1) {
-      block_dims_ = ceilDiv3(dims_, kBlockSize);
-      block_max_ = std::vector<std::atomic<std::uint16_t>>(product(block_dims_));
-    }
   }
-  StagedSource(const StagedSource&) = delete;
-  StagedSource& operator=(const StagedSource&) = delete;
-  StagedSource(StagedSource&&) = delete;
-  StagedSource& operator=(StagedSource&&) = delete;
-  ~StagedSource() { remove(); }
 
+ public:
   /// Copies the preview slices `round` (indices into `preview.targets()`) and hands each to
   /// `preview` while it is still in memory.
   void copyRound(detail::PreviewBuilder& preview, const std::vector<std::size_t>& round) {
@@ -251,12 +327,17 @@ class StagedSource {
             preview->count(slice);
           }
         });
+    wide_.clear();  // the slice buffers of the threads
+    narrow_buffers_.clear();
+    if (!memory_.empty()) {
+      raw_ =
+          std::make_unique<StagedMemorySource>(memory_.data(), dims_, input_.voxelSize(), narrow_);
+      return;
+    }
     out_.close();
     if (out_.fail()) {
       throwWriteError(path_);
     }
-    wide_.clear();  // the slice buffers of the threads
-    narrow_buffers_.clear();
     raw_ = std::make_unique<MappedRawSource>(
         path_,
         RawLayout{dims_, input_.voxelSize(), narrow_ ? SampleType::kUInt8 : SampleType::kUInt16,
@@ -313,7 +394,9 @@ class StagedSource {
         data = reinterpret_cast<const char*>(narrow.data());
         bytes = slice_voxels;
       }
-      {
+      if (!memory_.empty()) {
+        std::memcpy(memory_.data() + static_cast<std::size_t>(z) * slice_bytes_, data, bytes);
+      } else {
         const std::scoped_lock lock(write_mutex_);
         out_.seekp(static_cast<std::streamoff>(static_cast<std::uint64_t>(z) * bytes));
         out_.write(data, static_cast<std::streamsize>(bytes));
@@ -368,11 +451,14 @@ class StagedSource {
 
   void remove() {
     raw_.reset();
+    UninitializedVector<std::uint8_t>().swap(memory_);  // frees the copy
     if (out_.is_open()) {
       out_.close();
     }
-    std::error_code ignored;
-    std::filesystem::remove(path_, ignored);
+    if (!path_.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(path_, ignored);
+    }
   }
 
   const VolumeSource& input_;
@@ -391,7 +477,9 @@ class StagedSource {
   std::vector<std::atomic<std::uint16_t>> block_max_;
   mutable tbb::combinable<Histogram> histograms_{[] { return Histogram(kHistogramBins, 0); }};
   tbb::enumerable_thread_specific<std::vector<std::uint16_t>> row_max_;
-  std::unique_ptr<MappedRawSource> raw_;
+  UninitializedVector<std::uint8_t> memory_;  // the copy, when held in memory
+  std::size_t slice_bytes_ = 0;
+  std::unique_ptr<VolumeSource> raw_;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -735,15 +823,152 @@ nlohmann::json toJson(const DatasetInfo& info) {
   return json;
 }
 
+/// Level 1 of an import, built while pass 2 writes level 0: each level-0 brick is downsampled
+/// while it is still in memory, and the level-1 brick above is written as soon as the up to 8
+/// below it are in. Level 0 is then not read back for the coarser levels. Pass 2 builds the bricks
+/// in `order()`, the bricks below one level-1 brick one after another, so only the level-1 bricks
+/// that the threads work on at the moment hold parts. Level-1 bricks above a brick of an
+/// interrupted import that is already done are left to `writeCoarseLevels`, which reads level 0.
+class FirstLevel {
+ public:
+  FirstLevel(const std::filesystem::path& dir, const DatasetInfo& info,
+             const std::function<bool(const Index3&)>& finished_before)
+      : dir_(dir),
+        info_(info),
+        bricks_(ceilDiv3(info.dims, info.brick_size)),
+        dims_(ceilDiv3(ceilDiv3(info.dims, 2), info.brick_size)),
+        // Level 2 exists: the level-1 bricks are kept downsampled for it, as far as an eighth of
+        // the work memory holds them (each is at most an eighth of a brick).
+        keep_parts_(std::any_of(dims_.begin(), dims_.end(), [](std::int64_t d) { return d > 1; })),
+        keep_bytes_(workMemoryBytes() / 8),
+        groups_(product(dims_)) {
+    std::filesystem::create_directories(brickPath(dir, 1, {0, 0, 0}).parent_path());
+    for (std::size_t g = 0; g < groups_.size(); ++g) {
+      const Index3 parent = unravel(g, dims_);
+      Group& group = groups_[g];
+      for (std::int64_t slot = 0; slot < 8; ++slot) {
+        const Index3 child = childOf(parent, slot);
+        if (child[0] < bricks_[0] && child[1] < bricks_[1] && child[2] < bricks_[2]) {
+          ++group.remaining;
+          order_.push_back(child);
+          if (finished_before(child)) {
+            group.from_disk = true;
+          }
+        }
+      }
+    }
+  }
+
+  /// The level-0 bricks, each once, in the order in which pass 2 is to build them.
+  [[nodiscard]] const std::vector<Index3>& order() const { return order_; }
+
+  /// Takes level-0 brick `brick` once it is written (no grid when it is empty).
+  void add(const Index3& brick, GreyGrid grid) {
+    const Index3 parent{brick[0] / 2, brick[1] / 2, brick[2] / 2};
+    Group& group = groups_[index(parent)];
+    if (group.from_disk) {
+      return;
+    }
+    GreyGrid part = grid ? downsample(std::move(grid), info_.value_type) : GreyGrid();
+    std::vector<GreyGrid> parts;
+    {
+      const std::scoped_lock lock(group.mutex);
+      group.parts[static_cast<std::size_t>(slotOf(brick))] = std::move(part);
+      if (--group.remaining > 0) {
+        return;
+      }
+      // In the order writeCoarseLevels combines them, so the brick is the same either way.
+      for (GreyGrid& p : group.parts) {
+        parts.push_back(std::move(p));
+      }
+    }
+    GreyGrid coarse = combineParts(parts);
+    parts.clear();
+    if (coarse) {
+      setGridProperties(coarse.base(), 1, info_.voxel_size);
+      writeBrick(brickPath(dir_, 1, parent), coarse);
+      {
+        const std::scoped_lock lock(mutex_);
+        written_.push_back(parent);
+      }
+      if (keep_parts_) {
+        GreyGrid kept = downsample(std::move(coarse), info_.value_type);
+        const auto bytes = static_cast<std::uint64_t>(kept.base().memUsage());
+        if (kept_bytes_.fetch_add(bytes) + bytes <= keep_bytes_) {
+          group.kept = std::move(kept);
+        } else {
+          kept_bytes_ -= bytes;  // read back from its file instead
+        }
+      }
+    }
+    group.built = true;
+  }
+
+  /// Whether level-1 brick `brick` was written, or found empty, while pass 2 ran.
+  [[nodiscard]] bool built(const Index3& brick) const { return groups_[index(brick)].built; }
+
+  /// The level-1 bricks written while pass 2 ran.
+  [[nodiscard]] const std::vector<Index3>& written() const { return written_; }
+
+  /// Level-1 brick `brick` downsampled for level 2, once: kept from pass 2, else read back from
+  /// its file. No grid when it is empty.
+  [[nodiscard]] GreyGrid takePart(const Index3& brick) {
+    Group& group = groups_[index(brick)];
+    if (group.kept) {
+      return std::exchange(group.kept, GreyGrid());
+    }
+    const std::filesystem::path file = brickPath(dir_, 1, brick);
+    if (std::find(written_.begin(), written_.end(), brick) == written_.end()) {
+      return {};
+    }
+    return downsample(readBrick(file, /*delay_load=*/false), info_.value_type);
+  }
+
+ private:
+  struct Group {
+    std::mutex mutex;
+    std::array<GreyGrid, 8> parts;  // by slot, guarded by mutex
+    int remaining = 0;              // level-0 bricks below still to come, guarded by mutex
+    bool from_disk = false;         // a brick below was done before: writeCoarseLevels builds it
+    std::atomic<bool> built{false};
+    GreyGrid kept;  // downsampled for level 2
+  };
+
+  /// Child `slot` of a coarse brick: x fastest, as writeCoarseLevels walks them.
+  static Index3 childOf(const Index3& parent, std::int64_t slot) {
+    return {2 * parent[0] + (slot & 1), 2 * parent[1] + ((slot >> 1) & 1),
+            2 * parent[2] + ((slot >> 2) & 1)};
+  }
+  static std::int64_t slotOf(const Index3& child) {
+    return (child[0] & 1) + 2 * (child[1] & 1) + 4 * (child[2] & 1);
+  }
+  [[nodiscard]] std::size_t index(const Index3& brick) const {
+    return static_cast<std::size_t>(brick[0] + dims_[0] * (brick[1] + dims_[1] * brick[2]));
+  }
+
+  std::filesystem::path dir_;
+  const DatasetInfo& info_;
+  Index3 bricks_;  // of level 0, per axis
+  Index3 dims_;    // bricks of level 1, per axis
+  bool keep_parts_;
+  std::uint64_t keep_bytes_;
+  std::atomic<std::uint64_t> kept_bytes_{0};
+  std::vector<Group> groups_;
+  std::vector<Index3> order_;
+  std::mutex mutex_;
+  std::vector<Index3> written_;  // guarded by mutex_
+};
+
 /// Writes the coarser levels of a dataset whose level 0 is written and listed in `info`, until one
 /// brick holds the whole volume, then overview.vdb and index.json.
 ///
 /// The coarse bricks form a tree over the level-0 bricks, built depth first and in parallel at
 /// every node: a coarse brick is written as soon as the bricks below it are, and handed to its
 /// parent in memory, so no level waits for the one before it to finish and only level 0 is read
-/// back from disk.
+/// back from disk. With `first`, the level-1 bricks it built are taken from it instead.
 void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
-                       const std::function<void(std::string_view, double)>& progress) {
+                       const std::function<void(std::string_view, double)>& progress,
+                       FirstLevel* first = nullptr) {
   std::vector<LevelInfo> coarse;
   for (const LevelInfo* finer = &info.levels.back();
        std::any_of(finer->dims.begin(), finer->dims.end(),
@@ -757,7 +982,22 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
   const TelemetryPhase phase("levels");
   const LevelInfo& base = info.levels.front();
   const std::set<Index3> base_bricks(base.bricks.begin(), base.bricks.end());
-  ProgressCounter level_progress(progress, "levels", coarse.empty() ? 0 : base.bricks.size());
+  const auto built = [&](int level, const Index3& brick) {
+    return first != nullptr && level == 1 && first->built(brick);
+  };
+  if (first != nullptr && !coarse.empty()) {
+    coarse.front().bricks = first->written();
+  }
+  // One step per level-0 brick, at once for those below a level-1 brick built with them, and a
+  // last one when all levels are written.
+  ProgressCounter level_progress(progress, "levels", coarse.empty() ? 0 : base.bricks.size() + 1);
+  if (!coarse.empty()) {
+    for (const Index3& b : base.bricks) {
+      if (built(1, {b[0] / 2, b[1] / 2, b[2] / 2})) {
+        level_progress.step();
+      }
+    }
+  }
   std::mutex mutex;
 
   // Coarse brick `brick` of `level` (1 or more), written and returned; no grid when no brick of
@@ -779,6 +1019,10 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
     }
     std::vector<GreyGrid> parts(children.size());
     tbb::parallel_for(std::size_t{0}, children.size(), [&](std::size_t i) {
+      if (built(level - 1, children[i])) {
+        parts[i] = first->takePart(children[i]);  // downsampled already
+        return;
+      }
       GreyGrid child = level == 1 ? readBrick(brickPath(dir, 0, children[i]), /*delay_load=*/false)
                                   : build(level - 1, children[i]);
       if (child) {
@@ -799,7 +1043,10 @@ void writeCoarseLevels(const std::filesystem::path& dir, DatasetInfo& info,
     return grid;
   };
   if (!coarse.empty()) {
-    build(coarse.back().level, {0, 0, 0});
+    if (!built(coarse.back().level, {0, 0, 0})) {
+      build(coarse.back().level, {0, 0, 0});
+    }
+    level_progress.step();
   }
   for (LevelInfo& level : coarse) {
     std::sort(level.bricks.begin(), level.bricks.end());
@@ -1281,9 +1528,17 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
       }
     }
   }
+  // Level 1 on the way, from the bricks while they are in memory: none when one brick holds the
+  // volume.
+  std::optional<FirstLevel> first;
+  if (std::any_of(info.dims.begin(), info.dims.end(),
+                  [&](std::int64_t d) { return d > info.brick_size; })) {
+    first.emplace(dir, info,
+                  [&](const Index3& brick) { return journal && journal->isFinished(brick); });
+  }
   tbb::enumerable_thread_specific<UninitializedVector<std::uint16_t>> buffers;
   tbb::parallel_for(std::size_t{0}, product(brick_dims), [&](std::size_t i) {
-    const Index3 brick = unravel(i, brick_dims);
+    const Index3 brick = first ? first->order()[i] : unravel(i, brick_dims);
     if (journal && journal->isFinished(brick)) {
       return;
     }
@@ -1300,6 +1555,9 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
         bricks_release.step();
         if (!grid) {
           log->add(brick, 0);
+          if (first) {
+            first->add(brick, {});
+          }
           brick_progress.step();
           return;
         }
@@ -1315,6 +1573,9 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
           level0.bricks.push_back(brick);
           info.active_voxel_count += active;
         }
+        if (first) {
+          first->add(brick, grid);
+        }
         brick_progress.step();
       });
     });
@@ -1324,7 +1585,7 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
   info.levels.push_back(std::move(level0));
 
   phase.reset();
-  writeCoarseLevels(dir, info, options.progress);
+  writeCoarseLevels(dir, info, options.progress, first ? &*first : nullptr);
   // The dataset is whole: the journal is no longer needed.
   for (const std::string_view name : {kJournalFile, kPass1File, kBricksLog}) {
     std::error_code ignored;

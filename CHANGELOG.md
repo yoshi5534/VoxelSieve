@@ -14,6 +14,13 @@
   or the file name), kept with a value mapping as float TIFF stacks are. All of them open with
   one click through `open_scan`, and `vs-sieve` reads them.
 
+- **Imports of TIFF stacks and other slow inputs touch the disk less**: the staging copy is held
+  in memory when it fits into the memory budget instead of being written to a file and read back,
+  and level 1 is built from the bricks while pass 2 has them in memory instead of reading level 0
+  back from disk. On a float TIFF ZIP of 768 x 768 x 1536 voxels the import wrote 2.3 GB instead
+  of 4.0 GB and read no bricks back (2.0 GB before); the levels took 0.6 s instead of 4.7 s.
+  Larger copies, or a smaller `--memory`, still go to the staging file (ADR 0011).
+
 - **Open a scan in one step** (ADR 0039): the browser UI starts with "Open a scan …". It finds
   out what the file is, creates a project next to the scan (or opens the one that has it), imports
   it without a form and shows the part in 3D. Detected or assumed values (size from the grey

@@ -90,3 +90,23 @@ no chunk cache, no reopening of the file for every strip. `slowRandomAccess()` i
 stack whose first slice is stored so, in local files; compressed slices, archives and network
 shares are staged as before, and a single slice stored otherwise is still decoded. The passes
 let the mapped pages go now and then, as for a raw input.
+
+## Amendment: staging in memory, level 1 with the bricks (2026-11-23)
+
+A float stack of 1250 x 1250 x 4000 voxels (15 GB as a ZIP) read 44.5 GB and wrote 26.8 GB on an
+import: the ZIP, the 12.5 GB staging copy written and read back, and level 0 (13 GB) read back
+again to build the coarser levels. Two changes take both extra rounds off the disk:
+
+- The staging copy is held in memory instead of a file when it fits into the work memory
+  (`workMemoryBytes`, ADR 0034) next to the bricks pass 2 builds at once
+  (`DatasetOptions::stage_in_memory`, on by default). Larger copies, or a smaller `--memory`,
+  still go to the file. The process then holds the copy until pass 2 ends: its peak memory grows
+  by the copy, within the budget.
+- Pass 2 downsamples each level-0 brick while it is still in memory and writes the level-1 brick
+  above as soon as the up to eight bricks below it are in; for that, it builds the bricks in the
+  order of their level-1 brick, so only the level-1 bricks the threads work on hold parts. The
+  level-1 bricks are kept downsampled for level 2, as far as an eighth of the work memory holds
+  them, and read back otherwise. Level-1 bricks above bricks of an interrupted import that were
+  done before still come from level 0 on disk. The levels are the same either way (tested
+  against a derived dataset, which builds them from level 0 on disk).
+
