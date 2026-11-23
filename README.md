@@ -134,9 +134,10 @@ comes from an OME-XML image description (`PhysicalSizeX`, `Y`, `Z`), a centimetr
 inch resolution that is not a printing default such as 72 or 300 dpi, or a key=value image
 description (including its slice `spacing`), otherwise 1 mm is assumed and printed; set it with
 `--voxel-size`. In the GUI this is the operation `import_tiff`.
-For a dataset, the slices are first decoded once, on all cores, into a temporary raw file of 2
-bytes per voxel in the output directory (elsewhere with `--staging-dir`), which is removed at the
-end; `--no-staging` reads the slices directly, which is much slower for large stacks.
+For a dataset, the slices are first decoded once, on all cores, into a copy of 2 bytes per
+voxel: in memory when it fits into the memory budget (`--memory`), else a temporary raw file in
+the output directory (elsewhere with `--staging-dir`), which is removed at the end;
+`--no-staging` reads the slices directly, which is much slower for large stacks.
 
 ### DICOM stacks
 
