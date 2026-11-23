@@ -34,10 +34,10 @@ struct RawInput {
                                        const nlohmann::json& params);
 
 /// What a file or directory is and how to open it (the inspect_scan method): kind (dataset, raw,
-/// metaimage, nrrd, hdf5, png, tiff, dicom, gzipped_xml, mesh, project or unknown), the operation that opens
-/// it and its parameters, what was found (dimensions, sample type, voxel size, size) with where
-/// each comes from, notes for the user, whether anything was guessed (`check`: the user should look
-/// at the values before importing) and a project directory next to the scan for it.
+/// metaimage, nrrd, hdf5, png, tiff, dicom, gzipped_xml, mesh, project or unknown), the operation
+/// that opens it and its parameters, what was found (dimensions, sample type, voxel size, size)
+/// with where each comes from, notes for the user, whether anything was guessed (`check`: the user
+/// should look at the values before importing) and a project directory next to the scan for it.
 [[nodiscard]] nlohmann::json inspectScan(const std::filesystem::path& path);
 
 /// A directory for a new project of the scan `path`: `<name>.vsproj` next to it, or
