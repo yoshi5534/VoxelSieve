@@ -32,6 +32,7 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/hdf5.hpp"
 #include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/operation.hpp"
 #include "voxelsieve/png_stack.hpp"
@@ -56,7 +57,8 @@ signed ones shifted into the unsigned range, 32-bit and float ones mapped onto 1
 over --value-range (docs/adr/0040).
 
 Also reads MetaImage (.mhd, .mha) and NRRD (.nhdr, .nrrd) files, whose header gives the layout,
-the spacing and the data files, and PNG stacks (a directory or ZIP archive of slices).
+the spacing and the data files, PNG stacks (a directory or ZIP archive of slices), and volumes
+in HDF5 files (.h5, .nxs; the largest three-dimensional dataset, or --dataset; docs/adr/0041).
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
@@ -94,6 +96,7 @@ Options:
   --big-endian            Samples of several bytes are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
   --folder <name>         TIFF and PNG stacks: folder of the slices when there are several
+  --dataset <path>        HDF5 files: the volume inside the file (default: the largest)
   --value-range <lo,hi>   Float TIFF stacks, 32-bit and float raw data: values mapped to grey 0
                           and 65535; values outside are clipped and counted
   --join <x|y|z>          Axis along which several inputs are joined (default z)
@@ -195,6 +198,7 @@ struct Options {
   std::endian byte_order = std::endian::little;
   std::optional<std::uint64_t> header_bytes;
   std::string folder;
+  std::string dataset_path;
   std::optional<std::array<double, 2>> value_range;
   voxelsieve::SieveOptions sieve;
   nlohmann::json sieve_parameters = nlohmann::json::object();
@@ -230,6 +234,8 @@ Options parse(voxelsieve::cli::Arguments& args) {
       options.byte_order = std::endian::big;
     } else if (args.is("--folder")) {
       options.folder = args.value();
+    } else if (args.is("--dataset")) {
+      options.dataset_path = args.value();
     } else if (args.is("--value-range")) {
       const std::string text = args.value();
       const auto comma = text.find(',');
@@ -425,6 +431,38 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, Float
   if (isDicomInput(options)) {
     return openDicom(options);
   }
+  if (voxelsieve::isHdf5File(options.input)) {
+    voxelsieve::Hdf5Options hdf5;
+    hdf5.dataset = options.dataset_path;
+    hdf5.value_range = options.value_range;
+    hdf5.voxel_size = options.voxel_size;
+    if (options.slice_thickness_mm) {
+      hdf5.voxel_size = withThickness(
+          hdf5.voxel_size.value_or(voxelsieve::Hdf5Source(options.input, hdf5).voxelSize()),
+          options);
+    }
+    auto source = std::make_unique<voxelsieve::Hdf5Source>(options.input, hdf5);
+    const auto dims = source->dims();
+    std::cout << "hdf5               " << source->volume().path << ", " << dims[0] << "x" << dims[1]
+              << "x" << dims[2] << " "
+              << voxelsieve::rawSampleTypeName(source->volume().sample_type) << "\n";
+    for (const auto& other : source->otherVolumes()) {
+      std::cout << "also in input      " << other.path << " (choose with --dataset)\n";
+    }
+    if (const auto range = source->valueRange()) {
+      std::cout << "values             " << (*range)[0] << " .. " << (*range)[1]
+                << " -> grey 0 .. 65535"
+                << (options.value_range ? "" : " (estimated; set --value-range)") << "\n";
+      floats.push_back(source.get());
+    }
+    if (const auto mapping = source->valueMapping(); !mapping.isIdentity()) {
+      std::cout << "value              " << mapping.offset << " + " << mapping.scale << " * grey\n";
+    }
+    std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize())
+              << (source->voxelSizeFrom() == "assumed" ? " (assumed; set --voxel-size)" : "")
+              << "\n";
+    return source;
+  }
   if (voxelsieve::isHeaderVolumeFile(options.input)) {
     const voxelsieve::HeaderVolume header = voxelsieve::readHeaderVolume(options.input);
     std::optional<voxelsieve::VoxelSize> size = options.voxel_size;
@@ -554,6 +592,8 @@ void reportClipped(const FloatInputs& floats) {
   for (const auto* source : floats) {
     if (const auto* tiff = dynamic_cast<const voxelsieve::TiffStackSource*>(source)) {
       clipped += tiff->clippedValues();
+    } else if (const auto* hdf5 = dynamic_cast<const voxelsieve::Hdf5Source*>(source)) {
+      clipped += hdf5->clippedValues();
     } else if (const auto raw = voxelsieve::rawClippedValues(*source)) {
       clipped += raw->clipped;
     }

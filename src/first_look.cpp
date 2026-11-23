@@ -14,6 +14,7 @@
 #include "voxelsieve/beam_hardening.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/hdf5.hpp"
 #include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/png_stack.hpp"
@@ -251,6 +252,52 @@ std::optional<std::filesystem::path> headerNamingData(const std::filesystem::pat
   return std::nullopt;
 }
 
+Json fromHdf5(const std::filesystem::path& path, Json& result) {
+  Json notes = Json::array();
+  result["operation"] = "import_hdf5";
+  const std::vector<Hdf5Volume> volumes = listHdf5Volumes(path);
+  if (volumes.empty()) {
+    result["params"] = {{"path", path.string()}};
+    result["ready"] = false;
+    notes.push_back("The file holds no three-dimensional dataset of grey values.");
+    return notes;
+  }
+  const Hdf5Volume& volume = volumes.front();
+  result["params"] = {{"path", path.string()}, {"dataset", volume.path}};
+  const Hdf5Source source(path, {.dataset = volume.path, .voxel_size = {}, .value_range = {}});
+  result["found"] = {{"dims", volume.dims},
+                     {"sample_type", rawSampleTypeName(volume.sample_type)},
+                     {"dataset", volume.path}};
+  Json others = Json::array();
+  for (std::size_t i = 1; i < volumes.size(); ++i) {
+    others.push_back(volumes[i].path);
+  }
+  if (!others.empty()) {
+    result["found"]["other_datasets"] = others;
+    notes.push_back("The file holds " + std::to_string(volumes.size()) + " volumes; " +
+                    volume.path + " is read (choose another under 'dataset').");
+  }
+  if (source.voxelSizeFrom() == "assumed") {
+    result["from"] = {{"dims", "files"}, {"voxel_size", "assumed"}};
+    notes.push_back(
+        "The file gives no voxel size: 1 mm is assumed. Enter it if you know it, so that "
+        "lengths and volumes are right.");
+    result["check"] = true;
+  } else {
+    result["found"]["voxel_size_mm"] = voxelSizeJson(source.voxelSize());
+    result["from"] = {{"dims", "files"},
+                      {"voxel_size", source.voxelSizeFrom() == "file" ? "files" : "file name"}};
+  }
+  if (volume.sample_type != RawSampleType::kUInt8 && volume.sample_type != RawSampleType::kUInt16) {
+    notes.push_back("The samples are " + std::string(rawSampleTypeName(volume.sample_type)) +
+                    (isMappedType(volume.sample_type)
+                         ? ": they are mapped onto 16-bit grey values"
+                         : ": they are shifted into the unsigned range") +
+                    ", and the mapping is kept with the dataset.");
+  }
+  return notes;
+}
+
 Json fromPng(const std::filesystem::path& path, Json& result) {
   Json notes = Json::array();
   result["operation"] = "import_png";
@@ -450,6 +497,9 @@ Json inspectScan(const std::filesystem::path& requested) {
       result["kind"] = "mesh";
       result["operation"] = "add_mesh";
       result["params"] = {{"path", path.string()}};
+    } else if (!directory && isHdf5File(path)) {
+      result["kind"] = "hdf5";
+      notes = fromHdf5(path, result);
     } else if (!directory && isHeaderVolumeFile(path)) {
       notes = fromHeader(path, result);
     } else if (const auto header = directory ? std::nullopt : headerNamingData(path)) {

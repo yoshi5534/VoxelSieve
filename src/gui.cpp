@@ -21,6 +21,7 @@
 #include "voxelsieve/dimensional.hpp"
 #include "voxelsieve/first_look.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/hdf5.hpp"
 #include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
@@ -554,7 +555,8 @@ std::vector<GuiMethod> Gui::methods() const {
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
        "object, as a step. Raw volumes, TIFF stacks, DICOM stacks and gzipped XML projects become "
        "objects through run_import_raw, run_import_tiff, run_import_png, run_import_dicom, "
-       "run_import_header_volume (MetaImage, NRRD) and run_import_gzipped_xml. Objects are placed "
+       "run_import_header_volume (MetaImage, NRRD), run_import_hdf5 and run_import_gzipped_xml. "
+       "Objects are placed "
        "with run_move.",
        objectSchema({{"path",
                       {{"type", "string"},
@@ -835,7 +837,8 @@ std::vector<GuiMethod> Gui::methods() const {
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
        "DICOM file or a directory with DICOM slices, for import_dicom), png (a directory or ZIP "
        "archive of PNG slices, for import_png), metaimage and nrrd (a .mhd/.mha or .nhdr/.nrrd "
-       "header, for import_header_volume), gzipped_xml (a gzipped XML "
+       "header, for import_header_volume), hdf5 (an HDF5 or NeXus file, for import_hdf5), "
+       "gzipped_xml (a gzipped XML "
        "project, for import_gzipped_xml), mesh (an STL file) or file; raw also stands for files "
        "named like raw volumes (.raw, .vol, .rec, .img, .bin, .dat) without a sidecar, whose "
        "layout open_scan detects; directories carry directory: true.",
@@ -2553,7 +2556,8 @@ Json Gui::call(const std::string& method, const Json& arguments,
     throw std::invalid_argument("Not a dataset or an STL file: " + path.string() +
                                 "; import scans with open_scan, or with run_import_raw, "
                                 "run_import_tiff, run_import_png, run_import_dicom, "
-                                "run_import_header_volume and run_import_gzipped_xml");
+                                "run_import_header_volume, run_import_hdf5 and "
+                                "run_import_gzipped_xml");
   }
   if (method == "open_scan" || method == "inspect_scan" || method == "suggest_analyses") {
     // Not under the lock: reading a scan's files and measuring a dataset take a while.

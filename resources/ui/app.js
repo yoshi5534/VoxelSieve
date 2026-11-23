@@ -639,7 +639,7 @@ async function browserLoad(path) {
 
 function kindLabel(kind) {
   return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
-    tiff: 'TIFF', png: 'PNG', dicom: 'DICOM', metaimage: 'MetaImage', nrrd: 'NRRD',
+    tiff: 'TIFF', png: 'PNG', dicom: 'DICOM', metaimage: 'MetaImage', nrrd: 'NRRD', hdf5: 'HDF5',
     gzipped_xml: 'Gzipped XML', mesh: 'CAD model', file: 'File' }[kind] ?? kind;
 }
 
@@ -699,8 +699,8 @@ function setupBrowser() {
 // and the analyses that suit it.
 
 /// Entry kinds the scan browser offers.
-const SCAN_KINDS = ['dataset', 'raw', 'tiff', 'png', 'dicom', 'metaimage', 'nrrd', 'gzipped_xml',
-  'project', 'mesh', 'file'];
+const SCAN_KINDS = ['dataset', 'raw', 'tiff', 'png', 'dicom', 'metaimage', 'nrrd', 'hdf5',
+  'gzipped_xml', 'project', 'mesh', 'file'];
 
 const FROM_LABELS = {
   sidecar: 'from the sidecar file',
@@ -1018,7 +1018,7 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
           onclick: async () => {
             const chosen = await browse({ title: LABELS[name] ?? name,
               kinds: ['file', 'raw', 'mesh', 'tiff', 'png', 'dicom', 'metaimage', 'nrrd',
-                'gzipped_xml'] });
+                'hdf5', 'gzipped_xml'] });
             if (chosen) input.value = chosen.path;
           },
         }, '…'));

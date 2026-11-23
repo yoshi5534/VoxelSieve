@@ -44,6 +44,7 @@ the triplet or the runner's compiler changes.
 | VDB | OpenVDB | (already used) |
 | JSON | nlohmann/json | (already used) |
 | DICOM, XML, gzip (ADR 0019) | DCMTK, pugixml, zlib | (new formats) |
+| HDF5 (ADR 0041) | hdf5 (C API, deflate filter) | (new format) |
 
 Adding a dependency still needs a reason; the question for format and codec code is only *which*
 established library, not whether to write our own. A new library is added to `vcpkg.json` and to

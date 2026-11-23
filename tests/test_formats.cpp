@@ -2,6 +2,7 @@
 // NRRD headers, PNG stacks, checked against the phantom whose grey values are known.
 
 #include <gtest/gtest.h>
+#include <hdf5.h>
 #include <zip.h>
 #include <zlib.h>
 
@@ -20,6 +21,7 @@
 #include "detail/png.hpp"
 #include "voxelsieve/first_look.hpp"
 #include "voxelsieve/gui.hpp"
+#include "voxelsieve/hdf5.hpp"
 #include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/phantom.hpp"
 #include "voxelsieve/png_stack.hpp"
@@ -442,6 +444,100 @@ TEST_F(Formats, ReadsPngStacksFromDirectoriesAndArchives) {
   EXPECT_EQ(inspectScan(zip_path).at("operation"), "import_png");
 }
 
+// --- HDF5 ---------------------------------------------------------------------------------------
+
+/// Writes `values` as dataset `name` of `file` (created when `create`), shape z, y, x with
+/// `leading` extra dimensions of size 1 in front, chunked and deflated; with the attribute
+/// element_size_um when `um` is given.
+template <class T>
+void writeHdf5(const std::filesystem::path& file, const std::string& name,
+               const std::vector<T>& values, hid_t type, bool create, int leading = 0,
+               std::optional<std::array<double, 3>> um = std::nullopt) {
+  const hid_t f = create ? H5Fcreate(file.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT)
+                         : H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  ASSERT_GE(f, 0);
+  std::vector<hsize_t> dims(static_cast<std::size_t>(leading), 1);
+  dims.insert(dims.end(), {static_cast<hsize_t>(kDims[2]), static_cast<hsize_t>(kDims[1]),
+                           static_cast<hsize_t>(kDims[0])});
+  std::vector<hsize_t> chunk = dims;
+  chunk[dims.size() - 3] = 4;
+  const hid_t space = H5Screate_simple(static_cast<int>(dims.size()), dims.data(), nullptr);
+  const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+  H5Pset_chunk(properties, static_cast<int>(chunk.size()), chunk.data());
+  H5Pset_deflate(properties, 4);
+  const hid_t links = H5Pcreate(H5P_LINK_CREATE);
+  H5Pset_create_intermediate_group(links, 1);
+  const hid_t dataset = H5Dcreate2(f, name.c_str(), type, space, links, properties, H5P_DEFAULT);
+  ASSERT_GE(dataset, 0);
+  ASSERT_GE(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()), 0);
+  if (um) {
+    const hsize_t three = 3;
+    const hid_t attribute_space = H5Screate_simple(1, &three, nullptr);
+    const hid_t attribute = H5Acreate2(dataset, "element_size_um", H5T_NATIVE_DOUBLE,
+                                       attribute_space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attribute, H5T_NATIVE_DOUBLE, um->data());
+    H5Aclose(attribute);
+    H5Sclose(attribute_space);
+  }
+  H5Dclose(dataset);
+  H5Pclose(links);
+  H5Pclose(properties);
+  H5Sclose(space);
+  H5Fclose(f);
+}
+
+TEST_F(Formats, ReadsTheLargestVolumeOfAnHdf5File) {
+  const auto file = dir_ / "scan.h5";
+  const std::vector<float> values = floatsOf(voxels_);
+  writeHdf5(file, "/exchange/data", values, H5T_NATIVE_FLOAT, true, 0,
+            std::array{200.0, 100.0, 50.0});
+  std::vector<std::uint8_t> labels(voxels_.size(), 1);
+  writeHdf5(file, "/exchange/labels", labels, H5T_NATIVE_UINT8, false);
+  ASSERT_TRUE(isHdf5File(file));
+  EXPECT_FALSE(isHdf5File(write("not.h5", "plain text, no signature")));
+  const auto volumes = listHdf5Volumes(file);
+  ASSERT_EQ(volumes.size(), 2U);
+  EXPECT_EQ(volumes.front().path, "/exchange/data");  // labels last
+  const Hdf5Source source(file);
+  EXPECT_EQ(source.dims(), kDims);
+  EXPECT_EQ(source.voxelSizeFrom(), "file");
+  // element_size_um is z, y, x.
+  EXPECT_DOUBLE_EQ(source.voxelSize()[0], 0.05);
+  EXPECT_DOUBLE_EQ(source.voxelSize()[2], 0.2);
+  EXPECT_TRUE(source.valueRange().has_value());
+  expectValues(source, values);
+  EXPECT_THROW(Hdf5Source(file, {.dataset = "/nowhere", .voxel_size = {}, .value_range = {}}),
+               std::invalid_argument);
+
+  const Json inspected = inspectScan(file);
+  EXPECT_EQ(inspected.at("kind"), "hdf5");
+  EXPECT_EQ(inspected.at("params").at("dataset"), "/exchange/data");
+  EXPECT_FALSE(inspected.at("check"));
+}
+
+TEST_F(Formats, ReadsSignedHdf5VolumesWithALeadingAxisOfOne) {
+  const auto file = dir_ / "scan.nxs";
+  const std::vector<std::int16_t> values = signedOf(voxels_);
+  writeHdf5(file, "/entry/data/data", values, H5T_NATIVE_INT16, true, 1);
+  const Hdf5Source source(file);
+  EXPECT_EQ(source.dims(), kDims);
+  EXPECT_EQ(source.voxelSizeFrom(), "assumed");
+  EXPECT_EQ(source.valueMapping(), (ValueMapping{-32768.0, 1.0}));
+  // A region away from the origin, as a brick is read.
+  const Box box{{3, 2, 5}, {20, 17, 11}};
+  std::vector<std::uint16_t> grey(static_cast<std::size_t>(box.voxelCount()));
+  source.readRegion(box, grey);
+  std::size_t i = 0;
+  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
+      for (std::int64_t x = box.min[0]; x < box.max[0]; ++x) {
+        ASSERT_EQ(static_cast<int>(grey[i++]) - 32768,
+                  values[static_cast<std::size_t>(x + kDims[0] * (y + kDims[1] * z))]);
+      }
+    }
+  }
+}
+
 // --- Through the GUI ----------------------------------------------------------------------------
 
 TEST_F(Formats, OpensNrrdAndPngScansInOneGo) {
@@ -462,6 +558,13 @@ TEST_F(Formats, OpensNrrdAndPngScansInOneGo) {
   EXPECT_EQ(summary.at("dims"), kDims);
   EXPECT_EQ(summary.at("format"), "nrrd");
   EXPECT_EQ(summary.at("value_mapping").at("offset"), -32768.0);
+
+  writeHdf5(dir_ / "scans/beamline.h5", "/exchange/data", voxels_, H5T_NATIVE_UINT16, true);
+  const Json h5 = gui.call("open_scan", {{"path", (dir_ / "scans/beamline.h5").string()},
+                                         {"params", {{"brick_size", 8}, {"voxel_size_mm", 0.1}}}});
+  ASSERT_EQ(h5.at("run").at("status"), "done") << h5.dump();
+  EXPECT_EQ(h5.at("run").at("summary").at("dataset"), "/exchange/data");
+  EXPECT_EQ(h5.at("run").at("summary").at("dims"), kDims);
 }
 
 }  // namespace

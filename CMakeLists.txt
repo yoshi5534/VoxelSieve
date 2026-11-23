@@ -107,6 +107,7 @@ find_package(tinyply CONFIG REQUIRED)
 find_package(DCMTK CONFIG REQUIRED)
 find_package(pugixml CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(HDF5 REQUIRED COMPONENTS C)
 
 add_library(voxelsieve_warnings INTERFACE)
 if(MSVC)

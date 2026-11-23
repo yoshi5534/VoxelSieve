@@ -45,7 +45,7 @@ add_executable(voxelsieve_tests
   test_vdb.cpp
 )
 target_link_libraries(voxelsieve_tests PRIVATE VoxelSieve::voxelsieve voxelsieve_warnings GTest::gtest_main Boost::headers
-                      TIFF::TIFF libzip::zip DCMTK::dcmdata ZLIB::ZLIB)
+                      TIFF::TIFF libzip::zip DCMTK::dcmdata ZLIB::ZLIB HDF5::HDF5)
 # Tests of internals (detail/) see the private headers.
 target_include_directories(voxelsieve_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

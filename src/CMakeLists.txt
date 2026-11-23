@@ -109,6 +109,7 @@ add_library(voxelsieve SHARED
   tiff.cpp
   vdb.cpp
   gzipped_xml.cpp
+  hdf5.cpp
   header_volume.cpp
   png_stack.cpp
   voxel_size.cpp
@@ -155,7 +156,7 @@ find_package(Boost REQUIRED COMPONENTS iostreams)
 target_link_libraries(voxelsieve
   PUBLIC OpenVDB::openvdb nlohmann_json::nlohmann_json
   PRIVATE Boost::iostreams Boost::headers TIFF::TIFF PNG::PNG libzip::zip tinyply
-          DCMTK::dcmdata pugixml::pugixml ZLIB::ZLIB
+          DCMTK::dcmdata pugixml::pugixml ZLIB::ZLIB HDF5::HDF5
           ${CMAKE_DL_LIBS}
   PRIVATE voxelsieve_warnings
 )

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **HDF5 and NeXus volumes** (ADR 0041): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
+  are imported with the HDF5 library, the largest volume or the one named by `dataset`, with the
+  voxel size from the dataset's attributes where it has them (operation `import_hdf5`,
+  `vs-sieve --dataset`). New dependency: `hdf5` (C library, deflate filter).
+
 - **More scan formats** (ADR 0040): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
   with their spacing and position, raw and gzip/zlib data in one or many files (operation
   `import_header_volume`); PNG slice stacks from a directory or ZIP archive (`import_png`); raw

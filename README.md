@@ -166,6 +166,21 @@ grey, label folders skipped. PNG files give no reliable voxel size, so it comes 
 `--voxel-size` or the folder name (`scan_50um`), else 1 mm is assumed and printed. In the GUI this
 is the operation `import_png`.
 
+### HDF5 and NeXus
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve recon.h5 --out recon.vsieve                    # the largest volume
+./build/release/apps/vs-sieve/vs-sieve scan.nxs --dataset /entry/data/data --out scan.vsieve
+```
+
+Volumes in HDF5 files, as synchrotron beamlines and tomography pipelines write them, are read
+with the HDF5 library (`voxelsieve::Hdf5Source`, ADR 0041): any dataset of three dimensions (C
+order, the last is x) of 8-, 16- or 32-bit integers or floats, chunked and deflated or not.
+Without `--dataset` the largest that does not look like labels is read and the others are
+printed. Samples become grey values as for raw files; the voxel size comes from
+`--voxel-size`, an attribute of the dataset (`element_size_um`, `voxel_size`, `pixel_size`,
+`spacing`) or the file name, else 1 mm is assumed. In the GUI this is the operation `import_hdf5`.
+
 ### DICOM stacks
 
 ```sh

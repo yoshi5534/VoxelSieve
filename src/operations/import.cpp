@@ -732,6 +732,93 @@ class ImportPng final : public Operation {
   OperationInfo info_;
 };
 
+class ImportHdf5 final : public Operation {
+ public:
+  ImportHdf5() {
+    info_.id = "import_hdf5";
+    info_.resumable = true;
+    info_.title = "Import HDF5 volume";
+    info_.description =
+        "Removes the outside air from a volume in an HDF5 file (.h5, .hdf5, NeXus .nxs), as "
+        "synchrotron beamlines and tomography pipelines write them, and writes a bricked "
+        "dataset. Without 'dataset' the largest three-dimensional dataset that does not look "
+        "like labels is read. Signed, 32-bit and float samples are kept with a value mapping. The "
+        "voxel size comes from the parameters, an attribute of the dataset (element_size_um, "
+        "voxel_size, pixel_size, spacing) or the file name, else 1 mm is assumed.";
+    info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
+    info_.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"path", {{"type", "string"}, {"format", "path"}, {"description", "HDF5 file"}}},
+          {"dataset",
+           {{"type", "string"},
+            {"description",
+             "Path of the volume inside the file, such as /exchange/data; default: the "
+             "largest"}}},
+          {"value_range", valueRangeParameter("32-bit and float samples")}}},
+        {"required", {"path"}}};
+    addVoxelSizeParameters(info_.parameters["properties"],
+                           "Default: from the file or its name, else 1 mm");
+    addSieveParameters(info_.parameters["properties"]);
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const std::filesystem::path path = p.at("path").get<std::string>();
+    Hdf5Options hdf5;
+    hdf5.dataset = p.value("dataset", std::string());
+    if (p.contains("value_range")) {
+      hdf5.value_range = p.at("value_range").get<std::array<double, 2>>();
+    }
+    if (!p.contains("voxel_size_mm") && p.contains("slice_thickness_mm")) {
+      hdf5.voxel_size = Hdf5Source(path, hdf5).voxelSize();
+    }
+    hdf5.voxel_size = voxelSizeParameter(p, hdf5.voxel_size);
+    const Hdf5Source source(path, hdf5);
+    const RawSampleType type = source.volume().sample_type;
+    context.log("HDF5 volume " + source.volume().path + ": " + describeDims(source.dims()) +
+                " voxels of " + std::string(rawSampleTypeName(type)) + ", voxel size " +
+                describe(source.voxelSize()) + " (" + source.voxelSizeFrom() + ")");
+    for (const Hdf5Volume& other : source.otherVolumes()) {
+      context.log("Also in the file: " + other.path + ", " + describeDims(other.dims) +
+                  " (choose with 'dataset')");
+    }
+    if (const auto range = source.valueRange()) {
+      context.log("Values " + std::to_string((*range)[0]) + " to " + std::to_string((*range)[1]) +
+                  " mapped to grey 0 to 65535" +
+                  (hdf5.value_range ? "" : " (estimated; set value_range)"));
+    } else if (const ValueMapping mapping = source.valueMapping(); !mapping.isIdentity()) {
+      context.log("Signed samples shifted by " + std::to_string(std::lround(-mapping.offset)) +
+                  " into the unsigned range; the shift is kept with the dataset");
+    }
+    const int factor = p.at("interpolate_slices").get<int>();
+    const InterpolatedSource sieved(source, factor);
+    const DatasetInfo info =
+        writeDataset(sieved, context.output_dir / "dataset.vsieve", importSieveOptions(context));
+    OperationResult result;
+    result.outputs["dataset"] = "dataset.vsieve";
+    result.summary = datasetSummary(info);
+    result.summary["dataset"] = source.volume().path;
+    result.summary["sample_type"] = rawSampleTypeName(type);
+    result.summary["voxel_size_from"] = source.voxelSizeFrom();
+    result.summary["warnings"] =
+        voxelSizeWarnings(source.voxelSize(), factor, source.voxelSizeFrom() == "assumed", context);
+    if (const auto range = source.valueRange()) {
+      result.summary["value_range"] = *range;
+      result.summary["clipped_values"] = source.clippedValues();
+      if (source.clippedValues() > 0) {
+        context.log(std::to_string(source.clippedValues()) +
+                    " values lay outside the value range and were clipped; widen value_range");
+      }
+    }
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
 class ImportHeaderVolume final : public Operation {
  public:
   ImportHeaderVolume() {
@@ -824,6 +911,7 @@ void registerImportOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<ImportGzippedXml>());
   registry.add(std::make_shared<ImportHeaderVolume>());
   registry.add(std::make_shared<ImportPng>());
+  registry.add(std::make_shared<ImportHdf5>());
 }
 
 }  // namespace voxelsieve::operations
