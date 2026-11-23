@@ -521,7 +521,9 @@ TEST_F(GuiTest, OpensAScanWithoutSidecarInOneCallAndSuggestsAnalyses) {
   const Json opened = gui.call("open_scan", {{"path", (scans / "casting.raw").string()},
                                              {"params", {{"voxel_size_mm", 0.1}}}});
   EXPECT_TRUE(opened.at("created"));
-  EXPECT_EQ(opened.at("project_dir"), (scans / "casting.vsproj").string());
+  // The open project names its directory canonically (macOS: /private/var for /var).
+  EXPECT_TRUE(std::filesystem::equivalent(opened.at("project_dir").get<std::string>(),
+                                          scans / "casting.vsproj"));
   ASSERT_EQ(opened.at("run").at("status"), "done");
   EXPECT_EQ(opened.at("run").at("summary").at("dims"), dims);
   // The detected values are parameters of the step, so the protocol can repeat it.
