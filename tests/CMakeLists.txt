@@ -3,6 +3,7 @@ find_package(GTest REQUIRED)
 add_executable(voxelsieve_tests
   test_cli.cpp
   test_components.cpp
+  test_damaged.cpp
   test_dataset.cpp
   test_denoise.cpp
   test_beam_hardening.cpp
@@ -279,6 +280,13 @@ endif()
 # The streamed patches of the training scripts in tools/models (NumPy only, no PyTorch).
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  # The inspection of the sample part through the MCP server, as a client drives it.
+  add_test(NAME mcp_walk
+           COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/mcp_walk.py
+                   $<TARGET_FILE:vs-gui> $<TARGET_FILE:vs-synth>
+                   ${PROJECT_SOURCE_DIR}/examples/inspection_order.json
+                   ${CMAKE_CURRENT_BINARY_DIR}/mcp_walk)
+  set_tests_properties(mcp_walk PROPERTIES TIMEOUT 1200)
   execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy" RESULT_VARIABLE numpy_missing
                   OUTPUT_QUIET ERROR_QUIET)
   if(numpy_missing EQUAL 0)

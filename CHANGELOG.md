@@ -92,6 +92,27 @@
   (`examples/inspection_order_p203.json`, `examples/regions/boss.stl`) and the 18650 battery order
   are installed under `share/voxelsieve/examples` with the others.
 
+- **Options of the tools take the limits of the operations**: the options that set a parameter
+  of an operation (`--min-pore`, `--zone-min`, `--materials`, `--strength`, `--order`, `--bits`,
+  `--tolerance`, `--search-angle`, `--angles` and the others of `vs-porosity`, `vs-report`,
+  `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`
+  and `vs-battery`) are checked against the schema of that parameter. `vs-porosity --min-pore 0`
+  or `--zone-min 1.5` ran with the value before; now it ends with "--min-pore must be at least
+  1". A test keeps the defaults of the tools and of the GUI the same.
+
+- **Limits that exclude the bound are checked**: a parameter declared as greater than zero (the
+  strength of the denoising, the pitch of an import) accepted zero and negative values in the
+  GUI and over MCP.
+
+- **Plugins build against a package**: the release packages hold the headers and a CMake
+  package (`find_package(VoxelSieve)`, target `VoxelSieve::voxelsieve`). A plugin now also
+  exports `voxelsieve_plugin_build()`, which returns `VOXELSIEVE_PLUGIN_BUILD`: the standard
+  library and the versions of OpenVDB and nlohmann/json it was built with. A plugin built with
+  others is refused with a message that names both, instead of crashing when it is called.
+  **Plugins need to be rebuilt with this function (plugin API 7).**
+
+## 0.7.0 (2026-11-22)
+
 - **Tools stay within `--memory` on Linux**: the brick cache gives the memory of evicted bricks
   back to the system after evicting a quarter of its budget, as glibc otherwise kept it in the heap
   of every thread. At 2048³ with `--memory 3000` vs-surface peaks at 2.9 instead of 3.4 GB,
@@ -160,6 +181,8 @@
   brick into a new dataset (`write_derived_dataset`), material labels as arrays, and projects
   that run every operation by id with its parameters, as the GUI does (`docs/python.md`,
   ADR 0031). Releases carry wheels for Linux, Windows and macOS (Python 3.12 and newer).
+
+## 0.6.1 (2026-10-25)
 
 - **Staging copy kept in memory on Windows**: the temporary copy of a TIFF stack is created as a
   temporary file, which Windows keeps in memory instead of writing it to disk while memory
@@ -233,6 +256,8 @@
   layers fewer than six pixels apart the overhang is reported as not measured rather than read
   from the blur of two or three pixels.
 
+## 0.6.0 (2026-10-23)
+
 - **Battery images with many findings**: sections of findings are joined through a grid instead
   of comparing every pair, which kept one core busy for hours on large cells.
 
@@ -295,6 +320,8 @@
   lighter insert is no longer taken for loosened zones. The material segmentation splits classes
   in the valley of the histogram when the peaks are clear, instead of by Otsu.
 
+## 0.5.2 (2026-10-18)
+
 - **Tool titles for MCP clients**: every MCP tool has a readable `title`, also in its
   annotations next to `readOnlyHint` and `destructiveHint`, as the Claude directory asks.
 
@@ -303,9 +330,13 @@
   MCP clients start the server without a shell, so the Claude plugin can now default to
   `~/VoxelSieve`. The MCP bundle has an icon.
 
+## 0.5.1 (2026-10-17)
+
 - **Docker image in the MCP registry entry**: the `server.json` attached to each release also
   lists the image on ghcr.io, run with `--mcp` on the scan directory mounted at `/data`, once the
   image is published (`PUBLISH_IMAGE`).
+
+## 0.5.0 (2026-10-17)
 
 - **First article inspection report**: the new operation `measure_dimensions` measures the
   characteristics of a drawing on the scan (sizes, distances, angles, form, orientation, position
@@ -314,6 +345,27 @@
   characteristic list, ballooned views and decision; `cad_features` lists the planes, cylinders
   and spheres of a CAD model with a picture, and the MCP prompt `first_article_inspection` walks
   an AI assistant through it (ADR 0027).
+
+- **Gaps between slices**: imports warn in their summary (`warnings`) when the slices are thinner
+  than their spacing, much farther apart than the pixels, or the voxel size was only assumed, and
+  `interpolate_slices` fills the gaps with linearly interpolated slices.
+
+- **DICOM from ZIP archives**: `import_dicom` and `vs-sieve` read a ZIP archive of DICOM slices
+  directly, without extracting it.
+
+- **The project stays open**: `vs-gui --mcp` reopens the project used last when it starts, so
+  an AI client that restarts the server between chats finds it open (`--no-reopen` turns this
+  off).
+
+- **Measure objects**: the new operation `measure_objects` measures every connected object of a
+  material, and the enclosed air with material 0: volume, surface area, centroid, bounding box,
+  lengths along the principal axes and along a given axis, written as `objects.csv` and
+  `objects.json`.
+
+- **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
+  in the background as well, and stops at the first failure.
+
+## 0.4.1 (2026-10-16)
 
 - **Histogram with a suggested number of materials**: the new tool `histogram` shows the grey
   values of a dataset as numbers and a picture, with the air threshold and one material per
@@ -336,28 +388,11 @@
   objects of the project in the materials' colours, at the pose of the segmented volume; objects
   can have a colour of their own (`color` of `add_mesh`).
 
-- **Gaps between slices**: imports warn in their summary (`warnings`) when the slices are thinner
-  than their spacing, much farther apart than the pixels, or the voxel size was only assumed, and
-  `interpolate_slices` fills the gaps with linearly interpolated slices.
-
-- **DICOM from ZIP archives**: `import_dicom` and `vs-sieve` read a ZIP archive of DICOM slices
-  directly, without extracting it.
-
-- **The project stays open**: `vs-gui --mcp` reopens the project used last when it starts, so
-  an AI client that restarts the server between chats finds it open (`--no-reopen` turns this
-  off).
-
-- **Measure objects**: the new operation `measure_objects` measures every connected object of a
-  material, and the enclosed air with material 0: volume, surface area, centroid, bounding box,
-  lengths along the principal axes and along a given axis, written as `objects.csv` and
-  `objects.json`.
-
-- **Pipelines**: the new tool `pipeline` runs several operations one after the other in one call,
-  in the background as well, and stops at the first failure.
-
 - **Voxel size of more TIFF stacks**: the pixel size is now also read from OME-XML image
   descriptions and from inch resolutions that are not printing defaults; the import summary says
   whether the voxel size came from the files, the parameters or was assumed (1 mm).
+
+## 0.4.0 (2026-10-15)
 
 - **Ready for the MCP registry and ghcr.io**: every release gets `server.json`, the entry of its
   MCP bundles with download links and hashes for the official MCP registry, and the Docker image
@@ -373,11 +408,15 @@
   leaves out `list_operations` and `object_add`, which other tools already cover; `--tools all`
   still offers them.
 
+## 0.3.2 (2026-10-13)
+
 - **Release packages carry the release's version**: the packages and MCP bundles attached to the
   releases 0.2.2 to 0.3.1 were named and versioned 0.2.1, and so were the MCP server, reports and
   DICONDE files written with them.
   They now take the version of the release tag. Run by hand with a tag, the "Packages" workflow
   rebuilds that release's packages and replaces the misnamed ones.
+
+## 0.3.1 (2026-10-13)
 
 - **Smooth material edges in the 3D view**: with a material segmentation shown, the surface
   view drew the voxels of the segmentation as blocks where it and the grey-value threshold
@@ -413,6 +452,8 @@
   the current ones, and *Show in the view* chooses which result the slice and 3D views show; the
   views name it above the picture. The API method `results` and `project_status` give the same
   list to MCP clients and exports (ADR 0023).
+
+## 0.3.0 (2026-10-11)
 
 - **Disk reads in the telemetry on Windows**: device reads and writes and hard page faults now come
   from the system-wide performance counters (ADR 0017 amendment). Windows counts reads of
@@ -461,6 +502,8 @@
   each material be hidden, so the base material can be left out to see the inclusions in it. The
   legend also gives each material's share of all material in percent.
 
+## 0.2.2 (2026-10-09)
+
 - **Bell housing sample part and realistic defect placement**: `vs-synth --part bellhousing` scans
   a cast bell housing (75 mm across) with flanges, bolt lugs, bosses, ribs, a starter motor mount
   and an inspection window. `--hot-spots` places lunkers and loosened zones in the thickest
@@ -492,25 +535,6 @@
   gave slightly different pore and part volumes for the same dataset (relative about 1e-5): a
   thread could start on another brick while it was still merging the previous one into its
   per-thread result. The merge now runs isolated, so the results are reproducible.
-
-- **Options of the tools take the limits of the operations**: the options that set a parameter
-  of an operation (`--min-pore`, `--zone-min`, `--materials`, `--strength`, `--order`, `--bits`,
-  `--tolerance`, `--search-angle`, `--angles` and the others of `vs-porosity`, `vs-report`,
-  `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`
-  and `vs-battery`) are checked against the schema of that parameter. `vs-porosity --min-pore 0`
-  or `--zone-min 1.5` ran with the value before; now it ends with "--min-pore must be at least
-  1". A test keeps the defaults of the tools and of the GUI the same.
-
-- **Limits that exclude the bound are checked**: a parameter declared as greater than zero (the
-  strength of the denoising, the pitch of an import) accepted zero and negative values in the
-  GUI and over MCP.
-
-- **Plugins build against a package**: the release packages hold the headers and a CMake
-  package (`find_package(VoxelSieve)`, target `VoxelSieve::voxelsieve`). A plugin now also
-  exports `voxelsieve_plugin_build()`, which returns `VOXELSIEVE_PLUGIN_BUILD`: the standard
-  library and the versions of OpenVDB and nlohmann/json it was built with. A plugin built with
-  others is refused with a message that names both, instead of crashing when it is called.
-  **Plugins need to be rebuilt with this function (plugin API 7).**
 
 ## 0.2.1 (2026-10-07)
 

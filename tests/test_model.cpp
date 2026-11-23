@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "damaged_files.hpp"
 #include "detail/convolution.hpp"
 #include "material_scene.hpp"
 #include "voxelsieve/dataset.hpp"
@@ -288,6 +289,16 @@ TEST(ConvolutionTest, VectorisedKernelMatchesThePortableOne) {
       }
     }
   }
+}
+
+TEST_F(ModelTest, DamagedFilesAreRefused) {
+  writeModel(dir_ / "m.vsm", randomUNet());
+  readDamagedCopies(dir_ / "m.vsm", 600, [](const std::filesystem::path& file) {
+    const Model model = Model::load(file);
+    // A model that loads must also run: its layers were checked against each other.
+    const Dims dims{8, 8, 8};
+    (void)model.forward(std::vector<float>(512, 180.0F), dims);
+  });
 }
 
 TEST_F(ModelTest, RoundTripsThroughFile) {

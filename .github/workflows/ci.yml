@@ -17,8 +17,39 @@ env:
   VCPKG_DISABLE_METRICS: 1
 
 jobs:
+  # A pull request that changes only documents (docs/ without the schemas, which a test reads,
+  # the site and the Markdown files at the top) needs no build: the other jobs are skipped.
+  changes:
+    name: Changed files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Look for changes outside the documents
+        id: files
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          code=true
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            files="$(git diff --name-only "$BASE"...HEAD)"
+            other="$(grep -v -E '^(docs/|site/|[^/]+\.md$)' <<<"$files" || true)"
+            schemas="$(grep -E '^docs/schema/' <<<"$files" || true)"
+            if [[ -n "$files" && -z "$other" && -z "$schemas" ]]; then
+              code=false
+            fi
+            echo "$files"
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   dependencies:
     name: vcpkg dependencies
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # Building OpenVDB, Boost and TBB from source takes long, but only when vcpkg.json changes.
     timeout-minutes: 120
@@ -170,6 +201,8 @@ jobs:
   # keeps its own vcpkg binary cache; the first run builds the dependencies from source.
   platforms:
     name: Build and test (${{ matrix.preset }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     strategy:

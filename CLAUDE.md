@@ -79,7 +79,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
   (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest
   `python_package`
-- `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`
+- `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`; a reader of
+  an own format gets a test with damaged copies of a valid file (`tests/damaged_files.hpp`)
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 
 ## Build and test
@@ -139,4 +140,6 @@ in parallel and filters the noise about suppressed header findings. CI runs all 
 - Orders and plans are strict: a key nothing reads is an error (`detail/keys.hpp`,
   `checkInspectionOrder`). A new key goes into the key list where it is read and into
   `docs/schema/`; a test keeps the two in step.
+- `CHANGELOG.md` is kept by release: new entries go under "Unreleased", and a release moves them
+  below a heading `## <version> (<date>)`.
 - Work happens on branches and pull requests; `main` stays green.

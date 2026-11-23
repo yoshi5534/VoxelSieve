@@ -38,6 +38,22 @@ env:
   VCPKG_DISABLE_METRICS: 1
 
 jobs:
+  # The changelog is kept by release. A release whose tag has no heading there still gets its
+  # packages (the tag cannot be changed any more), but the run says so.
+  changelog:
+    name: Changelog heading
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Look for the heading of this release
+        run: |
+          version="${GITHUB_REF_NAME#[vV]}"
+          if ! grep -q "^## ${version} (" CHANGELOG.md; then
+            echo "::warning file=CHANGELOG.md::No heading '## ${version} (date)' in CHANGELOG.md: move the entries of this release from 'Unreleased' below such a heading."
+          fi
+
   package:
     name: Package (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
