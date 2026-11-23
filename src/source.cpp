@@ -7,12 +7,17 @@
 #include <bit>
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <limits>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -50,25 +55,283 @@ void copyRows(const std::uint16_t* data, const std::array<std::int64_t, 3>& dims
   }
 }
 
-std::size_t sampleBytes(SampleType type) { return type == SampleType::kUInt8 ? 1 : 2; }
-
-/// Converts `count` samples of a raw file to 16-bit grey values.
-void convertSamples(const unsigned char* samples, std::size_t count, const RawLayout& layout,
-                    std::uint16_t* target) {
-  if (layout.sample_type == SampleType::kUInt8) {
-    std::copy(samples, samples + count, target);
-    return;
+/// One sample of type T from `p`, its bytes reversed when the file's byte order is not the
+/// machine's. memcpy handles samples that are not aligned (headers of odd length).
+template <class T>
+T loadSample(const unsigned char* p, bool swap) {
+  std::array<unsigned char, sizeof(T)> bytes{};
+  std::memcpy(bytes.data(), p, sizeof(T));
+  if (swap) {
+    std::reverse(bytes.begin(), bytes.end());
   }
-  // memcpy handles headers of odd length, where the samples are not 2-byte aligned.
-  std::memcpy(target, samples, count * sizeof(std::uint16_t));
-  if (layout.byte_order != std::endian::native) {
-    std::transform(target, target + count, target, [](std::uint16_t v) {
-      return static_cast<std::uint16_t>((v >> 8U) | (v << 8U));
-    });
+  T value{};
+  std::memcpy(&value, bytes.data(), sizeof(T));
+  return value;
+}
+
+/// Grey value of `value` under `mapping`, clipped to 0..65535; values outside and not a number
+/// are counted in `outside`.
+std::uint16_t mapToGrey(double value, const ValueMapping& mapping, std::uint64_t& outside) {
+  const double grey = std::round(mapping.toGrey(value));
+  if (!(grey >= 0.0 && grey <= 65535.0)) {
+    ++outside;
+    if (std::isnan(grey)) {
+      return 0;
+    }
+  }
+  return static_cast<std::uint16_t>(std::clamp(grey, 0.0, 65535.0));
+}
+
+template <class T>
+void convertTyped(const unsigned char* samples, std::size_t count, bool swap, bool mapped,
+                  const ValueMapping& mapping, std::uint16_t* target, std::uint64_t& outside) {
+  for (std::size_t i = 0; i < count; ++i) {
+    const T value = loadSample<T>(samples + i * sizeof(T), swap);
+    if constexpr (std::is_same_v<T, std::int8_t>) {
+      target[i] = static_cast<std::uint16_t>(value + 128);
+    } else if constexpr (std::is_same_v<T, std::int16_t>) {
+      target[i] = static_cast<std::uint16_t>(value + 32768);
+    } else if constexpr (std::is_integral_v<T>) {
+      if (mapped) {
+        target[i] = mapToGrey(static_cast<double>(value), mapping, outside);
+      } else if (value < 0 || value > 65535) {
+        ++outside;
+        target[i] = value < 0 ? 0 : 65535;
+      } else {
+        target[i] = static_cast<std::uint16_t>(value);
+      }
+    } else {
+      target[i] = mapToGrey(static_cast<double>(value), mapping, outside);
+    }
   }
 }
 
 }  // namespace
+
+namespace detail {
+
+/// How the samples of a raw file become 16-bit grey values (ADR 0040), and the count of values
+/// that were clipped.
+struct RawSamples {
+  RawSampleType type = RawSampleType::kUInt16;
+  bool swap = false;
+  /// Wide samples mapped linearly over `range`; false for the types that are kept exactly.
+  bool mapped = false;
+  std::array<double, 2> range{0.0, 65535.0};
+  ValueMapping mapping;
+  mutable std::mutex mutex;
+  mutable std::set<std::array<std::int64_t, 6>> counted;  // regions whose clipped values count
+  mutable std::uint64_t clipped = 0;
+
+  [[nodiscard]] std::size_t bytes() const { return rawSampleBytes(type); }
+
+  /// Sets up the mapping. `sample` gives the values of slice z (or a part of it) for the
+  /// estimate of the range; slices are taken from 0 to `last` (inclusive).
+  void setUp(const RawLayout& layout, std::int64_t last,
+             const std::function<std::vector<double>(std::int64_t)>& sample) {
+    type = storedSampleType(layout);
+    swap = rawSampleBytes(type) > 1 && layout.byte_order != std::endian::native;
+    const bool wide = type == RawSampleType::kUInt32 || type == RawSampleType::kInt32 ||
+                      type == RawSampleType::kFloat32 || type == RawSampleType::kFloat64;
+    if (type == RawSampleType::kInt8) {
+      mapping = {-128.0, 1.0};
+    } else if (type == RawSampleType::kInt16) {
+      mapping = {-32768.0, 1.0};
+    }
+    if (!wide) {
+      if (layout.value_range) {
+        throw std::invalid_argument("A value range applies only to 32-bit and float samples");
+      }
+      return;
+    }
+    const bool is_float = type == RawSampleType::kFloat32 || type == RawSampleType::kFloat64;
+    if (layout.value_range) {
+      range = *layout.value_range;
+      mapped = true;
+    } else {
+      constexpr std::int64_t kSampleSlices = 33;
+      const std::int64_t count = std::min(kSampleSlices, last + 1);
+      std::vector<std::array<double, 2>> ranges(static_cast<std::size_t>(count));
+      for (std::int64_t i = 0; i < count; ++i) {
+        const std::int64_t z = count == 1 ? 0 : i * last / (count - 1);
+        std::array<double, 2> found{std::numeric_limits<double>::infinity(),
+                                    -std::numeric_limits<double>::infinity()};
+        for (const double v : sample(z)) {
+          if (std::isfinite(v)) {
+            found = {std::min(found[0], v), std::max(found[1], v)};
+          }
+        }
+        ranges[static_cast<std::size_t>(i)] = found;
+      }
+      std::array<double, 2> found{std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()};
+      for (const auto& r : ranges) {
+        found = {std::min(found[0], r[0]), std::max(found[1], r[1])};
+      }
+      if (!(found[0] <= found[1])) {
+        throw std::runtime_error("The raw file holds no finite values");
+      }
+      if (!is_float && found[0] >= 0.0 && found[1] <= 65535.0) {
+        return;  // 32-bit integers that fit: kept exactly
+      }
+      const double margin = found[1] > found[0] ? 0.1 * (found[1] - found[0]) : 0.5;
+      range = {found[0] - margin, found[1] + margin};
+      if (!is_float) {
+        range[0] = std::floor(range[0]);
+        range[1] = std::ceil(range[1]);
+      }
+      mapped = true;
+    }
+    if (!(std::isfinite(range[0]) && std::isfinite(range[1]) && range[0] < range[1])) {
+      throw std::invalid_argument("The value range must be two finite numbers, low before high");
+    }
+    mapping = {range[0], (range[1] - range[0]) / 65535.0};
+  }
+
+  /// Converts `count` samples; values outside the range are added to `outside`.
+  void convert(const unsigned char* samples, std::size_t count, std::uint16_t* target,
+               std::uint64_t& outside) const {
+    switch (type) {
+      case RawSampleType::kUInt8:
+        std::copy(samples, samples + count, target);
+        return;
+      case RawSampleType::kUInt16:
+        std::memcpy(target, samples, count * sizeof(std::uint16_t));
+        if (swap) {
+          std::transform(target, target + count, target, [](std::uint16_t v) {
+            return static_cast<std::uint16_t>((v >> 8U) | (v << 8U));
+          });
+        }
+        return;
+      case RawSampleType::kInt8:
+        convertTyped<std::int8_t>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+      case RawSampleType::kInt16:
+        convertTyped<std::int16_t>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+      case RawSampleType::kUInt32:
+        convertTyped<std::uint32_t>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+      case RawSampleType::kInt32:
+        convertTyped<std::int32_t>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+      case RawSampleType::kFloat32:
+        convertTyped<float>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+      case RawSampleType::kFloat64:
+        convertTyped<double>(samples, count, swap, mapped, mapping, target, outside);
+        return;
+    }
+  }
+
+  /// The values of `count` samples, for the estimate of the range.
+  [[nodiscard]] std::vector<double> values(const unsigned char* samples, std::size_t count) const {
+    std::vector<double> result(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      const unsigned char* p = samples + i * bytes();
+      switch (type) {
+        case RawSampleType::kUInt32:
+          result[i] = loadSample<std::uint32_t>(p, swap);
+          break;
+        case RawSampleType::kInt32:
+          result[i] = loadSample<std::int32_t>(p, swap);
+          break;
+        case RawSampleType::kFloat32:
+          result[i] = loadSample<float>(p, swap);
+          break;
+        case RawSampleType::kFloat64:
+          result[i] = loadSample<double>(p, swap);
+          break;
+        default:
+          result[i] = 0.0;
+      }
+    }
+    return result;
+  }
+
+  /// Adds the clipped values of a region read, once per region.
+  void count(const Box& box, std::uint64_t outside) const {
+    if (outside == 0) {
+      return;
+    }
+    const std::scoped_lock lock(mutex);
+    if (counted.insert({box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2]})
+            .second) {
+      clipped += outside;
+    }
+  }
+
+  [[nodiscard]] SampleType greyType() const {
+    return type == RawSampleType::kUInt8 || type == RawSampleType::kInt8 ? SampleType::kUInt8
+                                                                         : SampleType::kUInt16;
+  }
+};
+
+}  // namespace detail
+
+std::size_t rawSampleBytes(RawSampleType type) {
+  switch (type) {
+    case RawSampleType::kUInt8:
+    case RawSampleType::kInt8:
+      return 1;
+    case RawSampleType::kUInt16:
+    case RawSampleType::kInt16:
+      return 2;
+    case RawSampleType::kUInt32:
+    case RawSampleType::kInt32:
+    case RawSampleType::kFloat32:
+      return 4;
+    case RawSampleType::kFloat64:
+      return 8;
+  }
+  return 2;
+}
+
+namespace {
+
+constexpr std::array<std::pair<RawSampleType, std::string_view>, 8> kSampleTypeNames{{
+    {RawSampleType::kUInt8, "uint8"},
+    {RawSampleType::kUInt16, "uint16"},
+    {RawSampleType::kInt8, "int8"},
+    {RawSampleType::kInt16, "int16"},
+    {RawSampleType::kUInt32, "uint32"},
+    {RawSampleType::kInt32, "int32"},
+    {RawSampleType::kFloat32, "float32"},
+    {RawSampleType::kFloat64, "float64"},
+}};
+
+}  // namespace
+
+std::string_view rawSampleTypeName(RawSampleType type) {
+  for (const auto& [t, name] : kSampleTypeNames) {
+    if (t == type) {
+      return name;
+    }
+  }
+  return "uint16";
+}
+
+std::optional<RawSampleType> rawSampleTypeFromName(std::string_view name) {
+  if (name == "float") {
+    return RawSampleType::kFloat32;
+  }
+  if (name == "double") {
+    return RawSampleType::kFloat64;
+  }
+  for (const auto& [t, n] : kSampleTypeNames) {
+    if (n == name) {
+      return t;
+    }
+  }
+  return std::nullopt;
+}
+
+RawSampleType storedSampleType(const RawLayout& layout) {
+  if (layout.stored_type) {
+    return *layout.stored_type;
+  }
+  return layout.sample_type == SampleType::kUInt8 ? RawSampleType::kUInt8 : RawSampleType::kUInt16;
+}
 
 void checkVolumeDims(const std::array<std::int64_t, 3>& dims, std::string_view what) {
   for (const std::int64_t d : dims) {
@@ -148,11 +411,14 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path,
                                       std::uint64_t{0}}) {}
 
 MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLayout& layout)
-    : mapping_(std::make_unique<Mapping>()), layout_(layout), identity_(inputIdentity(path)) {
+    : mapping_(std::make_unique<Mapping>()),
+      samples_(std::make_unique<detail::RawSamples>()),
+      layout_(layout),
+      identity_(inputIdentity(path)) {
   checkVolumeDims(layout.dims, path.string());
+  const std::size_t sample_bytes = rawSampleBytes(storedSampleType(layout));
   const std::uintmax_t payload =
-      static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]) *
-      sampleBytes(layout.sample_type);
+      static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]) * sample_bytes;
   const std::uintmax_t file_bytes = std::filesystem::file_size(path);
   if (file_bytes < payload) {
     throw std::runtime_error(path.string() + " is smaller than its voxel data (" +
@@ -172,9 +438,34 @@ MappedRawSource::MappedRawSource(const std::filesystem::path& path, const RawLay
     throw std::runtime_error("Cannot map " + path.string());
   }
   on_network_share_ = detail::onNetworkShare(path);
+  // Up to a million samples of a slice, spread over it, for the estimate of the value range.
+  const auto slice = static_cast<std::size_t>(layout.dims[0] * layout.dims[1]);
+  const std::size_t step = std::max<std::size_t>(1, slice >> 20U);
+  samples_->setUp(layout_, layout.dims[2] - 1, [&](std::int64_t z) {
+    const auto* data =
+        reinterpret_cast<const unsigned char*>(mapping_->file.data()) + header_bytes_;
+    std::vector<double> values;
+    detail::readMapped(mapping_->path, [&] {
+      for (std::size_t i = 0; i < slice; i += step) {
+        const auto index = static_cast<std::size_t>(z) * slice + i;
+        values.push_back(samples_->values(data + index * sample_bytes, 1).front());
+      }
+    });
+    return values;
+  });
 }
 
 MappedRawSource::~MappedRawSource() = default;
+
+SampleType MappedRawSource::sampleType() const { return samples_->greyType(); }
+ValueMapping MappedRawSource::valueMapping() const { return samples_->mapping; }
+std::optional<std::array<double, 2>> MappedRawSource::valueRange() const {
+  return samples_->mapped ? std::optional(samples_->range) : std::nullopt;
+}
+std::uint64_t MappedRawSource::clippedValues() const {
+  const std::scoped_lock lock(samples_->mutex);
+  return samples_->clipped;
+}
 
 void MappedRawSource::releaseMemory() const {
   detail::releaseMappedPages(mapping_->file.data(), mapping_->file.size());
@@ -183,7 +474,7 @@ void MappedRawSource::releaseMemory() const {
 void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   const auto& dims = layout_.dims;
   checkRegion(box, dims, out);
-  const std::size_t bytes = sampleBytes(layout_.sample_type);
+  const std::size_t bytes = samples_->bytes();
   const auto* data = reinterpret_cast<const unsigned char*>(mapping_->file.data()) + header_bytes_;
   const auto row_length = static_cast<std::size_t>(box.size(0));
   // Read ahead: the rows of each slice of the region lie in one span of the file.
@@ -194,16 +485,18 @@ void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) c
     detail::prefetchMappedPages(data + first * bytes, (last - first) * bytes);
   }
   std::size_t offset = 0;
+  std::uint64_t outside = 0;
   // An I/O error while reading the mapping becomes an exception instead of ending the process.
   detail::readMapped(mapping_->path, [&] {
     for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
       for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
         const auto first = static_cast<std::size_t>(box.min[0] + dims[0] * (y + dims[1] * z));
-        convertSamples(data + first * bytes, row_length, layout_, &out[offset]);
+        samples_->convert(data + first * bytes, row_length, &out[offset], outside);
         offset += row_length;
       }
     }
   });
+  samples_->count(box, outside);
   // Reads of a mapping are page faults, which no process counter reports as bytes read.
   countRead(CountedRead::kMappedFile, offset * bytes);
 }
@@ -212,13 +505,14 @@ void MappedRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) c
 struct GzipRawSource::Stream {
   static constexpr std::size_t kChunk = std::size_t{1} << 20U;
 
-  explicit Stream(std::filesystem::path file_path)
-      : path(std::move(file_path)), input(kChunk), scratch(kChunk) {
+  Stream(std::filesystem::path file_path, std::uint64_t start)
+      : path(std::move(file_path)), input(kChunk), scratch(kChunk), first_byte(start) {
     file.open(path, std::ios::binary);
     if (!file) {
       throw std::runtime_error("Cannot open " + path.string());
     }
-    if (inflateInit2(&z, 16 + MAX_WBITS) != Z_OK) {  // 16: gzip header and trailer
+    file.seekg(static_cast<std::streamoff>(first_byte));
+    if (inflateInit2(&z, 32 + MAX_WBITS) != Z_OK) {  // 32: a gzip or a zlib header
       throw std::runtime_error("Cannot initialise zlib");
     }
   }
@@ -230,7 +524,7 @@ struct GzipRawSource::Stream {
 
   void rewind() {
     file.clear();
-    file.seekg(0);
+    file.seekg(static_cast<std::streamoff>(first_byte));
     inflateReset(&z);
     z.avail_in = 0;
     position = 0;
@@ -277,39 +571,80 @@ struct GzipRawSource::Stream {
   z_stream z{};
   std::vector<unsigned char> input;
   std::vector<unsigned char> scratch;
-  std::uint64_t position = 0;  // decompressed bytes read
+  std::uint64_t position = 0;    // decompressed bytes read
+  std::uint64_t first_byte = 0;  // of the compressed data in the file
   std::mutex mutex;
 };
 
 GzipRawSource::GzipRawSource(const std::filesystem::path& path, const RawLayout& layout)
-    : stream_(std::make_unique<Stream>(path)),
+    : stream_(std::make_unique<Stream>(path, layout.compressed_offset)),
+      samples_(std::make_unique<detail::RawSamples>()),
       layout_(layout),
       header_bytes_(layout.header_bytes.value_or(0)),
       identity_(inputIdentity(path)) {
   checkVolumeDims(layout.dims, path.string());
+  // deflate packs at most about 1032 bytes into one: a file that would hold more voxels than
+  // that is refused before any of it is allocated (a damaged or wrong header).
+  const std::uintmax_t file_bytes = std::filesystem::file_size(path);
+  const std::uintmax_t compressed =
+      file_bytes > layout.compressed_offset ? file_bytes - layout.compressed_offset : 0;
+  const auto voxels = static_cast<std::uintmax_t>(layout.dims[0] * layout.dims[1] * layout.dims[2]);
+  if (voxels * rawSampleBytes(storedSampleType(layout)) / 1100 > compressed) {
+    throw std::runtime_error(path.string() + " is too small for compressed data of " +
+                             std::to_string(voxels) + " voxels; check dimensions and sample type");
+  }
+  // The value range from slices spread over the volume; of a large file from the first quarter
+  // of the slices only, since going further would mean decompressing much of it twice.
+  const auto slice = static_cast<std::size_t>(layout.dims[0] * layout.dims[1]);
+  const std::size_t bytes = rawSampleBytes(storedSampleType(layout));
+  constexpr std::uintmax_t kWholeVolumeBytes = std::uintmax_t{4} << 30U;
+  const bool whole = voxels * bytes <= kWholeVolumeBytes;
+  samples_->setUp(layout_,
+                  whole ? layout.dims[2] - 1 : std::max<std::int64_t>(0, (layout.dims[2] - 1) / 4),
+                  [&](std::int64_t z) {
+                    std::vector<unsigned char> data(slice * bytes);
+                    stream_->seek(header_bytes_ + static_cast<std::uint64_t>(z) * slice * bytes);
+                    stream_->read(data.data(), data.size());
+                    return samples_->values(data.data(), slice);
+                  });
+  stream_->rewind();
 }
 
 GzipRawSource::~GzipRawSource() = default;
 
+SampleType GzipRawSource::sampleType() const { return samples_->greyType(); }
+ValueMapping GzipRawSource::valueMapping() const { return samples_->mapping; }
+std::optional<std::array<double, 2>> GzipRawSource::valueRange() const {
+  return samples_->mapped ? std::optional(samples_->range) : std::nullopt;
+}
+std::uint64_t GzipRawSource::clippedValues() const {
+  const std::scoped_lock lock(samples_->mutex);
+  return samples_->clipped;
+}
+
 void GzipRawSource::readRegion(const Box& box, std::span<std::uint16_t> out) const {
   const auto& dims = layout_.dims;
   checkRegion(box, dims, out);
-  const std::size_t bytes = sampleBytes(layout_.sample_type);
+  const std::size_t bytes = samples_->bytes();
   // Whole rows of whole slices lie one after another in the file: one read per slice.
   const bool whole_slices = box.size(0) == dims[0] && box.size(1) == dims[1];
   const auto run = static_cast<std::size_t>(whole_slices ? dims[0] * dims[1] : box.size(0));
   std::vector<unsigned char> samples(run * bytes);
-  const std::scoped_lock lock(stream_->mutex);
-  std::size_t offset = 0;
-  for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
-    for (std::int64_t y = box.min[1]; y < box.max[1]; y += whole_slices ? dims[1] : 1) {
-      const auto first = static_cast<std::uint64_t>(box.min[0] + dims[0] * (y + dims[1] * z));
-      stream_->seek(header_bytes_ + first * bytes);
-      stream_->read(samples.data(), samples.size());
-      convertSamples(samples.data(), run, layout_, &out[offset]);
-      offset += run;
+  std::uint64_t outside = 0;
+  {
+    const std::scoped_lock lock(stream_->mutex);
+    std::size_t offset = 0;
+    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+      for (std::int64_t y = box.min[1]; y < box.max[1]; y += whole_slices ? dims[1] : 1) {
+        const auto first = static_cast<std::uint64_t>(box.min[0] + dims[0] * (y + dims[1] * z));
+        stream_->seek(header_bytes_ + first * bytes);
+        stream_->read(samples.data(), samples.size());
+        samples_->convert(samples.data(), run, &out[offset], outside);
+        offset += run;
+      }
     }
   }
+  samples_->count(box, outside);
 }
 
 bool isGzipFile(const std::filesystem::path& path) {
@@ -329,7 +664,7 @@ std::filesystem::path rawSidecarPath(const std::filesystem::path& raw) {
 
 std::unique_ptr<VolumeSource> openRawVolume(const std::filesystem::path& path,
                                             const RawLayout& layout, std::uint64_t* header_bytes) {
-  if (isGzipFile(path)) {
+  if (layout.compressed_offset > 0 || isGzipFile(path)) {
     auto source = std::make_unique<GzipRawSource>(path, layout);
     if (header_bytes != nullptr) {
       *header_bytes = source->headerBytes();

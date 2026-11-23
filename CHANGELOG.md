@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **More scan formats** (ADR 0040): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
+  with their spacing and position, raw and gzip/zlib data in one or many files (operation
+  `import_header_volume`); PNG slice stacks from a directory or ZIP archive (`import_png`); raw
+  files of signed, 32-bit and float samples (`import_raw` `sample_type`, sidecar `format.dtype`,
+  or the file name), kept with a value mapping as float TIFF stacks are. All of them open with
+  one click through `open_scan`, and `vs-sieve` reads them.
+
 - **Open a scan in one step** (ADR 0039): the browser UI starts with "Open a scan …". It finds
   out what the file is, creates a project next to the scan (or opens the one that has it), imports
   it without a form and shows the part in 3D. Detected or assumed values (size from the grey

@@ -109,6 +109,8 @@ add_library(voxelsieve SHARED
   tiff.cpp
   vdb.cpp
   gzipped_xml.cpp
+  header_volume.cpp
+  png_stack.cpp
   voxel_size.cpp
 )
 add_library(VoxelSieve::voxelsieve ALIAS voxelsieve)

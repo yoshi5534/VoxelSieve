@@ -134,9 +134,10 @@ TEST_F(RawDetect, ReadsTheName) {
   EXPECT_EQ(big.layout.header_bytes, 512U);
 }
 
-TEST_F(RawDetect, RefusesFloatsAndDimensionsTooLargeForTheFile) {
+TEST_F(RawDetect, NeedsDimensionsForFloatsAndRefusesDimensionsTooLargeForTheFile) {
   const std::array<std::int64_t, 3> dims = {64, 64, 32};
-  EXPECT_THROW((void)detectRawLayout(write("scan_float32.raw", dims)), std::invalid_argument);
+  // The grey values show the rows of 8- and 16-bit samples only.
+  EXPECT_FALSE(detectRawLayout(write("scan_float32.raw", dims)));
   EXPECT_THROW((void)detectRawLayout(write("scan_640x640x320.raw", dims)), std::invalid_argument);
 }
 

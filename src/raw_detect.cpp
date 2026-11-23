@@ -26,6 +26,8 @@ namespace {
 struct NameHints {
   std::optional<std::array<std::int64_t, 3>> dims;
   std::optional<SampleType> sample_type;
+  /// 32-bit and float samples (ADR 0040); sample_type is then unset.
+  std::optional<RawSampleType> wide_type;
   bool big_endian = false;
   std::optional<double> voxel_size_mm;
 };
@@ -151,18 +153,18 @@ void readName(const std::string& name, NameHints& hints) {
         w + 1 < words.size() && (words[w + 1].text == "bit" || words[w + 1].text == "bits") &&
         (words[w + 1].before == "-" || words[w + 1].before == "_" || words[w + 1].before == " ");
     const std::string& word = words[w].text;
-    if (!hints.sample_type) {
-      if (const auto bits = bitsOf(word, bits_follow)) {
+    if (!hints.sample_type && !hints.wide_type) {
+      if (word == "float" || word == "float32" || word == "real32" || word == "f32") {
+        hints.wide_type = RawSampleType::kFloat32;
+      } else if (word == "double" || word == "float64" || word == "real64" || word == "f64") {
+        hints.wide_type = RawSampleType::kFloat64;
+      } else if (const auto bits = bitsOf(word, bits_follow)) {
         if (*bits == 32) {
-          throw std::invalid_argument(
-              "The name says 32 bit: raw files of 32-bit or float values are not read; export "
-              "the scan as a float TIFF stack, which is imported with a recorded value mapping");
+          hints.wide_type =
+              word.starts_with("int") ? RawSampleType::kInt32 : RawSampleType::kUInt32;
+        } else {
+          hints.sample_type = *bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16;
         }
-        hints.sample_type = *bits == 8 ? SampleType::kUInt8 : SampleType::kUInt16;
-      } else if (word == "float" || word == "float32" || word == "real32") {
-        throw std::invalid_argument(
-            "The name says float: raw files of float values are not read; export the scan as a "
-            "float TIFF stack, which is imported with a recorded value mapping");
       }
     }
     const bool endian_follows =
@@ -578,6 +580,9 @@ std::optional<RawLayoutGuess> detectRawLayout(const std::filesystem::path& path)
     const auto voxels = static_cast<std::uint64_t>(dims[0] * dims[1] * dims[2]);
     const auto slice = static_cast<std::uint64_t>(dims[0] * dims[1]);
     std::optional<SampleType> type = hints.sample_type;
+    if (hints.wide_type) {
+      type = SampleType::kUInt16;  // not used: the wide type gives the size
+    }
     if (!type && !gzip) {
       // The size tells 8 from 16 bits: the voxel data fills the file up to a header.
       if (2 * voxels <= file_bytes &&
@@ -597,11 +602,11 @@ std::optional<RawLayoutGuess> detectRawLayout(const std::filesystem::path& path)
       guess.emplace();
       guess->layout.dims = dims;
       guess->layout.sample_type = type.value_or(SampleType::kUInt16);
+      guess->layout.stored_type = hints.wide_type;
       guess->dims_from = "file name";
       guess->confidence = 1.0;
       if (!gzip) {
-        const std::uint64_t data =
-            voxels * (guess->layout.sample_type == SampleType::kUInt8 ? 1 : 2);
+        const std::uint64_t data = voxels * rawSampleBytes(storedSampleType(guess->layout));
         if (data > file_bytes) {
           throw std::invalid_argument("The name says " + std::to_string(dims[0]) + " x " +
                                       std::to_string(dims[1]) + " x " + std::to_string(dims[2]) +
@@ -616,9 +621,10 @@ std::optional<RawLayoutGuess> detectRawLayout(const std::filesystem::path& path)
     if (!in) {
       throw std::runtime_error("Cannot read " + path.string());
     }
-    if (!guess) {
+    if (!guess && !hints.wide_type) {  // the grey values show the layout of 8 and 16 bit only
       guess = fromGreyValues(in, file_bytes, hints);
-    } else if (guess->layout.sample_type == SampleType::kUInt16 && !hints.big_endian) {
+    } else if (guess && guess->layout.sample_type == SampleType::kUInt16 && !hints.wide_type &&
+               !hints.big_endian) {
       // The byte order from the grey values when the name does not give it.
       const auto middle = (file_bytes / 2) & ~1ULL;
       const auto bytes = readBytes(in, middle,

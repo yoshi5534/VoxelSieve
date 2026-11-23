@@ -58,6 +58,9 @@ Outside the rule, deliberately:
   needed (OBJ, 3MF), Assimp is the candidate and STL moves with it.
 - Base64 for data URLs and JSON transport is a text encoding, not a file format.
 - Vendor raw headers are skipped by size (ADR 0004), not parsed.
+- The text headers of MetaImage and NRRD files are read by our own code (ADR 0040, agreed by the
+  maintainer): the only library in vcpkg that reads them is ITK. Their voxel data goes through
+  the raw sources and zlib, and PNG stacks through libpng and libzip.
 
 ## Consequences
 

@@ -32,7 +32,9 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/operation.hpp"
+#include "voxelsieve/png_stack.hpp"
 #include "voxelsieve/sieve.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/vdb.hpp"
@@ -49,7 +51,12 @@ Reads a raw volume (x fastest). Dimensions and voxel size come from <input>.json
 vs-phantom) unless given on the command line. A vendor header before the voxel data is detected
 from the file size and skipped; use --header when the file also has a footer. A gzip-compressed
 raw file (<name>.raw.gz with <name>.json) is decompressed once, in slice order, into the staging
-file; give --header when it has a header.
+file; give --header when it has a header. Signed, 32-bit and float samples (--type) are read:
+signed ones shifted into the unsigned range, 32-bit and float ones mapped onto 16-bit grey values
+over --value-range (docs/adr/0040).
+
+Also reads MetaImage (.mhd, .mha) and NRRD (.nhdr, .nrrd) files, whose header gives the layout,
+the spacing and the data files, and PNG stacks (a directory or ZIP archive of slices).
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from
@@ -82,12 +89,13 @@ Options:
                           (e.g. 0.33,0.33,0.6 for a coarser slice spacing)
   --slice-thickness <mm>  Slices thinner than their spacing (a gap between slices); recorded,
                           measurements use the spacing
-  --type <uint16|uint8>   Sample type of the raw file (default uint16)
-  --big-endian            16-bit samples are big endian (default little endian)
+  --type <type>           Sample type of the raw file: uint8, uint16 (default), int8, int16,
+                          uint32, int32, float32 or float64
+  --big-endian            Samples of several bytes are big endian (default little endian)
   --header <bytes>        Header size; default: file size minus voxel data
-  --folder <name>         TIFF stacks: folder of the slices when there are several
-  --value-range <lo,hi>   Float TIFF stacks: values mapped to grey 0 and 65535; values outside
-                          are clipped and counted
+  --folder <name>         TIFF and PNG stacks: folder of the slices when there are several
+  --value-range <lo,hi>   Float TIFF stacks, 32-bit and float raw data: values mapped to grey 0
+                          and 65535; values outside are clipped and counted
   --join <x|y|z>          Axis along which several inputs are joined (default z)
   --phantom <n>           Use a computed n^3 phantom instead of an input file (benchmarks)
 )";
@@ -183,7 +191,7 @@ struct Options {
   std::optional<std::array<std::int64_t, 3>> dims;
   std::optional<voxelsieve::VoxelSize> voxel_size;
   std::optional<double> slice_thickness_mm;
-  voxelsieve::SampleType sample_type = voxelsieve::SampleType::kUInt16;
+  voxelsieve::RawSampleType sample_type = voxelsieve::RawSampleType::kUInt16;
   std::endian byte_order = std::endian::little;
   std::optional<std::uint64_t> header_bytes;
   std::string folder;
@@ -212,11 +220,12 @@ Options parse(voxelsieve::cli::Arguments& args) {
       options.dims = dims;
     } else if (args.is("--type")) {
       const std::string type = args.value();
-      if (type != "uint16" && type != "uint8") {
-        throw voxelsieve::cli::UsageError("--type must be uint16 or uint8");
+      const auto parsed = voxelsieve::rawSampleTypeFromName(type);
+      if (!parsed) {
+        throw voxelsieve::cli::UsageError(
+            "--type must be uint8, uint16, int8, int16, uint32, int32, float32 or float64");
       }
-      options.sample_type =
-          type == "uint8" ? voxelsieve::SampleType::kUInt8 : voxelsieve::SampleType::kUInt16;
+      options.sample_type = *parsed;
     } else if (args.is("--big-endian")) {
       options.byte_order = std::endian::big;
     } else if (args.is("--folder")) {
@@ -343,7 +352,7 @@ bool isTiffInput(const Options& options) {
 }
 
 /// Float TIFF inputs, to report their clipped values after the run.
-using FloatInputs = std::vector<const voxelsieve::TiffStackSource*>;
+using FloatInputs = std::vector<const voxelsieve::VolumeSource*>;
 
 /// A DICOM stack: a directory or ZIP archive of slices, or the first volume of a gzipped XML
 /// project.
@@ -398,9 +407,71 @@ bool isDicomInput(const Options& options) {
          (std::filesystem::is_directory(options.input) && voxelsieve::containsDicom(options.input));
 }
 
+/// Prints how the samples of a raw source became grey values and keeps it for reportClipped.
+void reportMapping(const voxelsieve::VolumeSource& source, const Options& options,
+                   FloatInputs& floats) {
+  if (const auto clipped = voxelsieve::rawClippedValues(source)) {
+    std::cout << "values             " << clipped->range[0] << " .. " << clipped->range[1]
+              << " -> grey 0 .. 65535"
+              << (options.value_range ? "" : " (estimated; set --value-range)") << "\n";
+    floats.push_back(&source);
+  }
+  if (const auto mapping = source.valueMapping(); !mapping.isIdentity()) {
+    std::cout << "value              " << mapping.offset << " + " << mapping.scale << " * grey\n";
+  }
+}
+
 std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, FloatInputs& floats) {
   if (isDicomInput(options)) {
     return openDicom(options);
+  }
+  if (voxelsieve::isHeaderVolumeFile(options.input)) {
+    const voxelsieve::HeaderVolume header = voxelsieve::readHeaderVolume(options.input);
+    std::optional<voxelsieve::VoxelSize> size = options.voxel_size;
+    if (options.slice_thickness_mm) {
+      size = withThickness(size.value_or(header.layout.voxel_size), options);
+    }
+    auto source = voxelsieve::openHeaderVolume(header, size, options.value_range);
+    const auto dims = source->dims();
+    std::cout << header.format << (header.format == "nrrd" ? "               " : "          ")
+              << dims[0] << "x" << dims[1] << "x" << dims[2] << " "
+              << voxelsieve::rawSampleTypeName(voxelsieve::storedSampleType(header.layout))
+              << (header.compressed ? ", compressed" : "") << ", " << header.files.size()
+              << " data file(s)\n";
+    for (const std::string& note : header.notes) {
+      std::cout << "note               " << note << "\n";
+    }
+    reportMapping(*source, options, floats);
+    if (!header.voxel_size_known && !options.voxel_size) {
+      std::cout << "voxel size         not in the header, 1 mm assumed (set --voxel-size)\n";
+    } else {
+      std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize()) << "\n";
+    }
+    return source;
+  }
+  if ((std::filesystem::is_directory(options.input) && !voxelsieve::containsTiff(options.input)) ||
+      options.input.extension() == ".zip") {
+    if (voxelsieve::containsPngSlices(options.input)) {
+      voxelsieve::PngStackOptions png;
+      png.folder = options.folder;
+      png.voxel_size = options.voxel_size;
+      if (options.slice_thickness_mm) {
+        png.voxel_size = withThickness(
+            png.voxel_size.value_or(voxelsieve::PngStackSource(options.input, png).voxelSize()),
+            options);
+      }
+      auto source = std::make_unique<voxelsieve::PngStackSource>(options.input, png);
+      const auto dims = source->dims();
+      std::cout << "png stack          " << dims[2] << " slices of " << dims[0] << "x" << dims[1]
+                << ", " << source->bitDepth() << " bit"
+                << (source->folder().empty() ? "" : ", folder " + source->folder()) << "\n";
+      for (const std::string& other : source->otherFolders()) {
+        std::cout << "also in input      " << other << " (choose with --folder)\n";
+      }
+      std::cout << "voxel size         " << voxelsieve::describe(source->voxelSize())
+                << (source->voxelSizeKnown() ? "" : " (assumed; set --voxel-size)") << "\n";
+      return source;
+    }
   }
   if (isTiffInput(options)) {
     voxelsieve::TiffStackOptions tiff;
@@ -437,11 +508,18 @@ std::unique_ptr<voxelsieve::VolumeSource> openPart(const Options& options, Float
   }
   const Geometry geometry = resolveGeometry(options);
   std::uint64_t header_bytes = 0;
-  auto source = voxelsieve::openRawVolume(
-      options.input,
-      voxelsieve::RawLayout{geometry.dims, geometry.voxel_size, options.sample_type,
-                            options.byte_order, options.header_bytes},
-      &header_bytes);
+  voxelsieve::RawLayout layout{geometry.dims, geometry.voxel_size,
+                               options.sample_type == voxelsieve::RawSampleType::kUInt8
+                                   ? voxelsieve::SampleType::kUInt8
+                                   : voxelsieve::SampleType::kUInt16,
+                               options.byte_order, options.header_bytes};
+  if (options.sample_type != voxelsieve::RawSampleType::kUInt8 &&
+      options.sample_type != voxelsieve::RawSampleType::kUInt16) {
+    layout.stored_type = options.sample_type;
+  }
+  layout.value_range = options.value_range;
+  auto source = voxelsieve::openRawVolume(options.input, layout, &header_bytes);
+  reportMapping(*source, options, floats);
   if (source->sequentialAccess()) {
     std::cout << "gzip               decompressed once, in slice order\n";
   }
@@ -474,7 +552,11 @@ std::unique_ptr<voxelsieve::VolumeSource> openSource(const Options& options, Flo
 void reportClipped(const FloatInputs& floats) {
   std::uint64_t clipped = 0;
   for (const auto* source : floats) {
-    clipped += source->clippedValues();
+    if (const auto* tiff = dynamic_cast<const voxelsieve::TiffStackSource*>(source)) {
+      clipped += tiff->clippedValues();
+    } else if (const auto raw = voxelsieve::rawClippedValues(*source)) {
+      clipped += raw->clipped;
+    }
   }
   if (!floats.empty()) {
     std::cout << "clipped values     " << clipped

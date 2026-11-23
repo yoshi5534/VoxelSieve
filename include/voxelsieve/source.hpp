@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -15,6 +16,10 @@
 #include "voxelsieve/voxel_size.hpp"
 
 namespace voxelsieve {
+
+namespace detail {
+struct RawSamples;
+}  // namespace detail
 
 /// Axis-aligned voxel box, `min` inclusive and `max` exclusive.
 struct Box {
@@ -129,9 +134,43 @@ class InterpolatedSource final : public VolumeSource {
   std::int64_t factor_;
 };
 
+/// Type of the samples in a raw file (ADR 0040). Unsigned 8 and 16 bit are the grey values
+/// themselves; signed samples are shifted into the unsigned range (int8 by 128, int16 by 32768),
+/// which keeps them exactly; 32-bit integers that lie within 0..65535 are kept as they are, and
+/// wider ones and floats are mapped linearly onto 0..65535 over a value range. The mapping is
+/// recorded with the dataset (ValueMapping, ADR 0015).
+enum class RawSampleType : std::uint8_t {
+  kUInt8,
+  kUInt16,
+  kInt8,
+  kInt16,
+  kUInt32,
+  kInt32,
+  kFloat32,
+  kFloat64
+};
+
+/// Bytes of one sample.
+[[nodiscard]] std::size_t rawSampleBytes(RawSampleType type);
+/// "uint8", "uint16", "int8", "int16", "uint32", "int32", "float32", "float64".
+[[nodiscard]] std::string_view rawSampleTypeName(RawSampleType type);
+/// The type of one of those names, also "float" and "double"; nothing for others.
+[[nodiscard]] std::optional<RawSampleType> rawSampleTypeFromName(std::string_view name);
+
 /// Layout of a raw volume file: voxels x fastest, optionally preceded by a vendor header and
 /// followed by a footer, both of which are skipped.
 struct RawLayout {
+  RawLayout() = default;
+  RawLayout(const std::array<std::int64_t, 3>& dims_in, const VoxelSize& voxel_size_in,
+            SampleType sample_type_in = SampleType::kUInt16,
+            std::endian byte_order_in = std::endian::little,
+            std::optional<std::uint64_t> header_bytes_in = std::nullopt)
+      : dims(dims_in),
+        voxel_size(voxel_size_in),
+        sample_type(sample_type_in),
+        byte_order(byte_order_in),
+        header_bytes(header_bytes_in) {}
+
   std::array<std::int64_t, 3> dims{0, 0, 0};
   VoxelSize voxel_size;
   SampleType sample_type = SampleType::kUInt16;
@@ -139,7 +178,21 @@ struct RawLayout {
   /// Bytes before the voxel data. When unset, everything in the file beyond the voxel data is
   /// taken to be a header at the start (the common case for proprietary CT raw files).
   std::optional<std::uint64_t> header_bytes;
+  /// The samples of the file when they are not unsigned 8 or 16 bit (ADR 0040); `sample_type`
+  /// then gives nothing. See storedSampleType.
+  std::optional<RawSampleType> stored_type;
+  /// 32-bit and float samples: the values mapped to grey 0 and 65535. Unset: estimated from 33
+  /// slices spread over the volume (over its first quarter when it is compressed and holds more
+  /// than 4 GiB), widened by 10 % on each side; 32-bit integers within 0..65535 are then kept as
+  /// they are.
+  std::optional<std::array<double, 2>> value_range;
+  /// Bytes of the file before compressed voxel data, as in formats whose text header is followed
+  /// by gzip or zlib data in the same file. `header_bytes` counts in the decompressed data.
+  std::uint64_t compressed_offset = 0;
 };
+
+/// The type of the samples of `layout`: `stored_type`, else `sample_type`.
+[[nodiscard]] RawSampleType storedSampleType(const RawLayout& layout);
 
 /// Raw volume file, memory-mapped. Only the pages that are read are loaded, and the operating
 /// system evicts them under memory pressure. 8-bit samples are returned unchanged as 16-bit values.
@@ -153,7 +206,15 @@ class MappedRawSource final : public VolumeSource {
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
-  [[nodiscard]] SampleType sampleType() const override { return layout_.sample_type; }
+  [[nodiscard]] SampleType sampleType() const override;
+  /// Identity for unsigned 8- and 16-bit samples, else how the samples became grey values.
+  [[nodiscard]] ValueMapping valueMapping() const override;
+  /// 32-bit and float samples: the values mapped to grey 0 and 65535, as given or estimated;
+  /// nothing when the samples are kept exactly.
+  [[nodiscard]] std::optional<std::array<double, 2>> valueRange() const;
+  /// Samples read so far that lay outside the value range or were not finite (each region
+  /// counted once); they became grey 0 or 65535 (not a number: 0).
+  [[nodiscard]] std::uint64_t clippedValues() const;
   /// Header size in bytes, as given or detected.
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   /// True when the file lies on a network share (SMB, NFS, a mapped network drive): the import
@@ -167,14 +228,15 @@ class MappedRawSource final : public VolumeSource {
  private:
   struct Mapping;
   std::unique_ptr<Mapping> mapping_;
+  std::unique_ptr<detail::RawSamples> samples_;
   RawLayout layout_;
   std::uint64_t header_bytes_ = 0;
   bool on_network_share_ = false;
   std::string identity_;
 };
 
-/// Raw volume file compressed with gzip (`.raw.gz`), decompressed with zlib as it is read (ADR
-/// 0020). gzip can only be read forward, so this source is read in one pass in slice order;
+/// Raw volume file compressed with gzip (`.raw.gz`) or zlib, decompressed with zlib as it is read
+/// (ADR 0020). gzip can only be read forward, so this source is read in one pass in slice order;
 /// reading a region before the last one starts again at the beginning of the file. A header in
 /// the uncompressed data is skipped when `header_bytes` is given (default 0: the size of the
 /// uncompressed data is not known without reading it all). Concatenated gzip members (pigz) are
@@ -186,7 +248,10 @@ class GzipRawSource final : public VolumeSource {
 
   [[nodiscard]] std::array<std::int64_t, 3> dims() const override { return layout_.dims; }
   [[nodiscard]] VoxelSize voxelSize() const override { return layout_.voxel_size; }
-  [[nodiscard]] SampleType sampleType() const override { return layout_.sample_type; }
+  [[nodiscard]] SampleType sampleType() const override;
+  [[nodiscard]] ValueMapping valueMapping() const override;
+  [[nodiscard]] std::optional<std::array<double, 2>> valueRange() const;
+  [[nodiscard]] std::uint64_t clippedValues() const;
   [[nodiscard]] std::uint64_t headerBytes() const { return header_bytes_; }
   [[nodiscard]] std::string identity() const override { return identity_; }
   [[nodiscard]] bool slowRandomAccess() const override { return true; }
@@ -196,6 +261,7 @@ class GzipRawSource final : public VolumeSource {
  private:
   struct Stream;
   std::unique_ptr<Stream> stream_;
+  std::unique_ptr<detail::RawSamples> samples_;
   RawLayout layout_;
   std::uint64_t header_bytes_ = 0;
   std::string identity_;
@@ -233,8 +299,9 @@ struct RawLayoutGuess {
 /// The voxel size a file name (or its directory's) gives, as detectRawLayout reads it.
 [[nodiscard]] std::optional<VoxelSize> voxelSizeFromName(const std::filesystem::path& path);
 
-/// A raw volume file: gzip-compressed (GzipRawSource) or plain (MappedRawSource). `header_bytes`
-/// receives the header size skipped.
+/// A raw volume file: gzip-compressed (GzipRawSource, also when compressed data starts at
+/// `layout.compressed_offset`) or plain (MappedRawSource). `header_bytes` receives the header size
+/// skipped.
 [[nodiscard]] std::unique_ptr<VolumeSource> openRawVolume(const std::filesystem::path& path,
                                                           const RawLayout& layout,
                                                           std::uint64_t* header_bytes = nullptr);
@@ -274,6 +341,7 @@ class ConcatSource final : public VolumeSource {
   [[nodiscard]] int axis() const { return axis_; }
   [[nodiscard]] std::string identity() const override;
   [[nodiscard]] std::size_t partCount() const { return parts_.size(); }
+  [[nodiscard]] const VolumeSource& part(std::size_t i) const { return *parts_.at(i); }
   /// First voxel of part `i` along `axis`.
   [[nodiscard]] std::int64_t partStart(std::size_t i) const { return starts_[i]; }
 

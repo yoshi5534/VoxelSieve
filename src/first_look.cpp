@@ -14,7 +14,9 @@
 #include "voxelsieve/beam_hardening.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/materials.hpp"
+#include "voxelsieve/png_stack.hpp"
 #include "voxelsieve/tiff.hpp"
 #include "voxelsieve/voxel_size.hpp"
 
@@ -50,8 +52,8 @@ std::string scanName(const std::filesystem::path& path) {
   return name.string();
 }
 
-std::string sampleTypeName(SampleType type) {
-  return type == SampleType::kUInt8 ? "uint8" : "uint16";
+bool isMappedType(RawSampleType type) {
+  return type != RawSampleType::kInt8 && type != RawSampleType::kInt16;
 }
 
 Json voxelSizeJson(const VoxelSize& size) {
@@ -103,9 +105,10 @@ Json fromRaw(const std::filesystem::path& path, Json& result) {
     const RawInput input = resolveRawInput(path, Json::object());
     const RawLayout& layout = input.layout;
     result["operation"] = "import_raw";
+    const std::string type_name(rawSampleTypeName(storedSampleType(layout)));
     Json params = {{"path", path.string()},
                    {"dims", layout.dims},
-                   {"sample_type", sampleTypeName(layout.sample_type)},
+                   {"sample_type", type_name},
                    {"big_endian", layout.byte_order == std::endian::big}};
     if (layout.header_bytes) {
       params["header_bytes"] = *layout.header_bytes;
@@ -115,7 +118,7 @@ Json fromRaw(const std::filesystem::path& path, Json& result) {
     }
     result["params"] = params;
     result["found"] = {{"dims", layout.dims},
-                       {"sample_type", sampleTypeName(layout.sample_type)},
+                       {"sample_type", type_name},
                        {"byte_order", layout.byte_order == std::endian::big ? "big" : "little"},
                        {"header_bytes", layout.header_bytes.value_or(0)}};
     if (input.voxel_size_known) {
@@ -132,6 +135,15 @@ Json fromRaw(const std::filesystem::path& path, Json& result) {
       result["check"] = true;
     } else if (dims_from == "file name") {
       notes.push_back("Dimensions from the file name.");
+    }
+    if (layout.stored_type) {
+      notes.push_back(std::string(isMappedType(*layout.stored_type)
+                                      ? "The samples are " + type_name +
+                                            ": they are mapped onto 16-bit grey values, and "
+                                            "the mapping is kept with the dataset."
+                                      : "The samples are " + type_name +
+                                            ": they are shifted into the unsigned range, "
+                                            "exactly, and the shift is kept with the dataset."));
     }
     if (!input.voxel_size_known) {
       notes.push_back(
@@ -175,6 +187,89 @@ Json fromTiff(const std::filesystem::path& path, Json& result) {
     notes.push_back(
         "Float slices: the values are mapped onto 16-bit grey values, and the "
         "mapping is kept with the dataset.");
+  }
+  return notes;
+}
+
+Json fromHeader(const std::filesystem::path& path, Json& result) {
+  Json notes = Json::array();
+  const HeaderVolume header = readHeaderVolume(path);
+  result["kind"] = header.format;
+  result["operation"] = "import_header_volume";
+  result["params"] = {{"path", path.string()}};
+  const RawSampleType type = storedSampleType(header.layout);
+  result["found"] = {{"dims", header.layout.dims},
+                     {"sample_type", rawSampleTypeName(type)},
+                     {"files", header.files.size()},
+                     {"compressed", header.compressed}};
+  if (header.voxel_size_known) {
+    result["found"]["voxel_size_mm"] = voxelSizeJson(header.layout.voxel_size);
+    result["from"] = {{"dims", "header"}, {"voxel_size", "header"}};
+  } else {
+    result["from"] = {{"dims", "header"}, {"voxel_size", "assumed"}};
+    notes.push_back(
+        "The header gives no spacing: 1 mm is assumed. Enter it if you know it, so that "
+        "lengths and volumes are right.");
+    result["check"] = true;
+  }
+  if (header.layout.stored_type) {
+    notes.push_back("The samples are " + std::string(rawSampleTypeName(type)) +
+                    (isMappedType(type) ? ": they are mapped onto 16-bit grey values"
+                                        : ": they are shifted into the unsigned range") +
+                    ", and the mapping is kept with the dataset.");
+  }
+  for (const std::string& note : header.notes) {
+    notes.push_back(note);
+  }
+  return notes;
+}
+
+/// The MetaImage or NRRD header next to a raw data file that names it as its data.
+std::optional<std::filesystem::path> headerNamingData(const std::filesystem::path& data) {
+  std::filesystem::path stem = data;
+  if (lowerExtension(stem) == ".gz") {
+    stem.replace_extension();
+  }
+  for (const char* extension : {".mhd", ".nhdr"}) {
+    std::filesystem::path header = stem;
+    header.replace_extension(extension);
+    std::error_code error;
+    if (!isHeaderVolumeFile(header)) {
+      continue;
+    }
+    try {
+      const HeaderVolume volume = readHeaderVolume(header);
+      for (const auto& file : volume.files) {
+        if (std::filesystem::equivalent(file, data, error)) {
+          return header;
+        }
+      }
+    } catch (const std::exception&) {
+      continue;  // a header that cannot be read: the raw file on its own
+    }
+  }
+  return std::nullopt;
+}
+
+Json fromPng(const std::filesystem::path& path, Json& result) {
+  Json notes = Json::array();
+  result["operation"] = "import_png";
+  result["params"] = {{"path", path.string()}};
+  const PngStackSource stack(path);
+  result["found"] = {
+      {"dims", stack.dims()}, {"bits", stack.bitDepth()}, {"slices", stack.dims()[2]}};
+  if (!stack.folder().empty()) {
+    result["found"]["folder"] = stack.folder();
+  }
+  if (stack.voxelSizeKnown()) {
+    result["found"]["voxel_size_mm"] = voxelSizeJson(stack.voxelSize());
+    result["from"] = {{"dims", "files"}, {"voxel_size", "file name"}};
+  } else {
+    result["from"] = {{"dims", "files"}, {"voxel_size", "assumed"}};
+    notes.push_back(
+        "PNG files give no voxel size: 1 mm is assumed. Enter it if you know it, so that "
+        "lengths and volumes are right.");
+    result["check"] = true;
   }
   return notes;
 }
@@ -223,23 +318,36 @@ RawInput resolveRawInput(const std::filesystem::path& path, const Json& params) 
   }
   const Json format =
       sidecar.is_object() ? sidecar.value("format", Json::object()) : Json::object();
-  if (params.contains("sample_type")) {
-    layout.sample_type =
-        params.at("sample_type") == "uint8" ? SampleType::kUInt8 : SampleType::kUInt16;
-    input.from["sample_type"] = "parameters";
-  } else if (format.contains("dtype")) {
-    const std::string dtype = format.at("dtype").get<std::string>();
-    if (dtype != "uint8" && dtype != "uint16") {
-      throw std::invalid_argument("The sidecar gives the sample type '" + dtype +
-                                  "'; raw files of uint8 or uint16 are read");
+  const auto set_type = [&](const std::string& name, const std::string& from) {
+    const auto type = rawSampleTypeFromName(name);
+    if (!type) {
+      throw std::invalid_argument("The " + from + " gives the sample type '" + name +
+                                  "'; raw files of uint8, uint16, int8, int16, uint32, int32, "
+                                  "float32 or float64 are read");
     }
-    layout.sample_type = dtype == "uint8" ? SampleType::kUInt8 : SampleType::kUInt16;
-    input.from["sample_type"] = "sidecar";
+    if (*type == RawSampleType::kUInt8 || *type == RawSampleType::kUInt16) {
+      layout.sample_type =
+          *type == RawSampleType::kUInt8 ? SampleType::kUInt8 : SampleType::kUInt16;
+    } else {
+      layout.stored_type = type;
+    }
+    input.from["sample_type"] = from;
+  };
+  if (params.contains("sample_type")) {
+    set_type(params.at("sample_type").get<std::string>(), "parameters");
+  } else if (format.contains("dtype")) {
+    set_type(format.at("dtype").get<std::string>(), "sidecar");
   } else if (guess) {
     layout.sample_type = guess->layout.sample_type;
+    layout.stored_type = guess->layout.stored_type;
     input.from["sample_type"] = guess->dims_from;
   } else {
     input.from["sample_type"] = "assumed";
+  }
+  if (params.contains("value_range")) {
+    layout.value_range = params.at("value_range").get<std::array<double, 2>>();
+  } else if (format.contains("value_range")) {
+    layout.value_range = format.at("value_range").get<std::array<double, 2>>();
   }
   if (params.contains("big_endian")) {
     layout.byte_order =
@@ -342,9 +450,20 @@ Json inspectScan(const std::filesystem::path& requested) {
       result["kind"] = "mesh";
       result["operation"] = "add_mesh";
       result["params"] = {{"path", path.string()}};
+    } else if (!directory && isHeaderVolumeFile(path)) {
+      notes = fromHeader(path, result);
+    } else if (const auto header = directory ? std::nullopt : headerNamingData(path)) {
+      notes = fromHeader(*header, result);
+      result["path"] = header->string();
+      notes.push_back("Opened through its header " + header->filename().string() +
+                      ", which gives the layout.");
     } else if (isDicomArchive(path) || (directory ? containsDicom(path) : isDicomFile(path))) {
       result["kind"] = "dicom";
       notes = fromDicom(path, result);
+    } else if ((directory && !containsTiff(path)) || extension == ".zip" ? containsPngSlices(path)
+                                                                         : false) {
+      result["kind"] = "png";
+      notes = fromPng(path, result);
     } else if (directory ? containsTiff(path)
                          : extension == ".tif" || extension == ".tiff" || extension == ".zip") {
       result["kind"] = "tiff";
@@ -361,7 +480,7 @@ Json inspectScan(const std::filesystem::path& requested) {
       result["kind"] = "unknown";
       result["operation"] = nullptr;
       result["ready"] = false;
-      notes.push_back("This folder holds no TIFF or DICOM slices, dataset or project.");
+      notes.push_back("This folder holds no TIFF, PNG or DICOM slices, dataset or project.");
     }
   } catch (const std::exception& error) {
     if (!result.contains("kind")) {

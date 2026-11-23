@@ -21,8 +21,10 @@
 #include "voxelsieve/dimensional.hpp"
 #include "voxelsieve/first_look.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
+#include "voxelsieve/header_volume.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
+#include "voxelsieve/png_stack.hpp"
 #include "voxelsieve/render.hpp"
 #include "voxelsieve/resources.hpp"
 #include "voxelsieve/thickness.hpp"
@@ -365,6 +367,12 @@ std::string lowerExtension(const std::filesystem::path& path) {
   return extension;
 }
 
+/// The browse kind of a MetaImage or NRRD header.
+std::string readHeaderKind(const std::filesystem::path& path) {
+  const std::string extension = lowerExtension(path);
+  return extension == ".nrrd" || extension == ".nhdr" ? "nrrd" : "metaimage";
+}
+
 /// Extensions of raw volume files that have no sidecar, which import_raw reads by detecting
 /// their layout (ADR 0039).
 bool isRawName(const std::filesystem::path& path) {
@@ -413,14 +421,17 @@ Json browse(const std::filesystem::path& requested) {
                       : std::filesystem::exists(path / "index.json", ignored) ? "dataset"
                       : containsTiff(path)                                    ? "tiff"
                       : containsDicom(path)                                   ? "dicom"
+                      : containsPngSlices(path)                               ? "png"
                                                                               : "dir";
       entry["directory"] = true;
     } else {
       const auto sidecar = rawSidecarPath(path);
-      entry["kind"] = isDicomArchive(path)                                 ? "dicom"
-                      : isTiffFile(path) || lowerExtension(path) == ".zip" ? "tiff"
-                      : isGzippedXmlFile(path)                             ? "gzipped_xml"
-                      : isDicomFile(path)                                  ? "dicom"
+      entry["kind"] = isDicomArchive(path)       ? "dicom"
+                      : isHeaderVolumeFile(path) ? readHeaderKind(path)
+                      : lowerExtension(path) == ".zip" && containsPngSlices(path) ? "png"
+                      : isTiffFile(path) || lowerExtension(path) == ".zip"        ? "tiff"
+                      : isGzippedXmlFile(path)                                    ? "gzipped_xml"
+                      : isDicomFile(path)                                         ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
                       : isRawName(path)                ? "raw"
@@ -542,8 +553,9 @@ std::vector<GuiMethod> Gui::methods() const {
       {"object_add",
        "Adds a dataset (a .vsieve directory) or a mesh such as a CAD model (STL in mm) as a new "
        "object, as a step. Raw volumes, TIFF stacks, DICOM stacks and gzipped XML projects become "
-       "objects through run_import_raw, run_import_tiff, run_import_dicom and "
-       "run_import_gzipped_xml. Objects are placed with run_move.",
+       "objects through run_import_raw, run_import_tiff, run_import_png, run_import_dicom, "
+       "run_import_header_volume (MetaImage, NRRD) and run_import_gzipped_xml. Objects are placed "
+       "with run_move.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
@@ -821,7 +833,9 @@ std::vector<GuiMethod> Gui::methods() const {
        "Entries have a kind: dir, project, dataset, raw (a file with a JSON sidecar, also "
        "name.raw.gz with name.json), tiff (a "
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
-       "DICOM file or a directory with DICOM slices, for import_dicom), gzipped_xml (a gzipped XML "
+       "DICOM file or a directory with DICOM slices, for import_dicom), png (a directory or ZIP "
+       "archive of PNG slices, for import_png), metaimage and nrrd (a .mhd/.mha or .nhdr/.nrrd "
+       "header, for import_header_volume), gzipped_xml (a gzipped XML "
        "project, for import_gzipped_xml), mesh (an STL file) or file; raw also stands for files "
        "named like raw volumes (.raw, .vol, .rec, .img, .bin, .dat) without a sidecar, whose "
        "layout open_scan detects; directories carry directory: true.",
@@ -2537,9 +2551,9 @@ Json Gui::call(const std::string& method, const Json& arguments,
       return runOperation("add_mesh", run, progress);
     }
     throw std::invalid_argument("Not a dataset or an STL file: " + path.string() +
-                                "; import raw volumes, TIFF stacks, DICOM stacks and gzipped XML "
-                                "projects with run_import_raw, run_import_tiff, run_import_dicom "
-                                "and run_import_gzipped_xml");
+                                "; import scans with open_scan, or with run_import_raw, "
+                                "run_import_tiff, run_import_png, run_import_dicom, "
+                                "run_import_header_volume and run_import_gzipped_xml");
   }
   if (method == "open_scan" || method == "inspect_scan" || method == "suggest_analyses") {
     // Not under the lock: reading a scan's files and measuring a dataset take a while.
