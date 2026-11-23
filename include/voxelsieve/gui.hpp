@@ -239,6 +239,11 @@ class Gui {
   [[nodiscard]] std::filesystem::path artifactPath(const nlohmann::json& params) const;
   [[nodiscard]] ArtifactRef artifactRef(const nlohmann::json& params,
                                         const std::string& type) const;
+  /// The open_scan method (ADR 0039); needs mutex_ not held.
+  nlohmann::json openScan(const nlohmann::json& params,
+                          const std::function<void(double)>& progress);
+  /// The suggest_analyses method; needs mutex_ not held.
+  [[nodiscard]] nlohmann::json suggestAnalysesOf(const nlohmann::json& params) const;
   nlohmann::json viewSlice(const nlohmann::json& params) const;
   /// The import_preview method; needs mutex_.
   [[nodiscard]] nlohmann::json importPreview(const nlohmann::json& params) const;

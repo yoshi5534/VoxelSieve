@@ -1,6 +1,7 @@
 // The inspection of the sample part (docs/quickstart.md) in a browser, as a user clicks through
-// it: a new project, the import, the porosity analysis, the report, the slice and the 3D view,
-// undo and redo. The scan is synthetic, so the answers are known: three shrinkage cavities and
+// it: opening the scan (a project next to it, the import, the 3D view and the suggested
+// analyses), the porosity analysis, the report, the slice and the 3D view, a raw file without a
+// sidecar, undo and redo. The scan is synthetic, so the answers are known: three shrinkage cavities and
 // one zone of loosened microstructure. Nothing else clicks through resources/ui.
 //
 //   node smoke_test.cjs <vs-gui> <vs-synth> <inspection_order.json> <work dir>
@@ -92,28 +93,30 @@ async function walk(page, address, work) {
   };
 
   await page.goto(address);
-  await page.locator('#welcome-new').click();
-  // The file browser opens in the directory the server was given; the project gets a name there.
-  await page.locator('#browser-list > li').first().waitFor();
-  await page.locator('#browser-name').fill('smoke');
-  await page.locator('#browser-ok').click();
-  await page.locator('#wizard').waitFor();
-  expect((await page.locator('#project-name').textContent()).startsWith('smoke'),
-    'the new project is open');
-
-  // 1. Dataset: the raw file of the sample, imported with the values of its sidecar.
-  await stage.getByRole('button', { name: 'Choose a dataset' }).click();
+  // 1. Open a scan (ADR 0039): the sample with its sidecar opens at once, in a project next to it,
+  // and shows the part in 3D with the analyses that suit it.
+  await page.locator('#welcome-scan').click();
   await page.locator('#browser-list > li', { hasText: 'housing.raw' }).dblclick();
-  await stage.getByRole('button', { name: 'Import', exact: true }).click();
-  await finished(stage.getByText('Current dataset'));
+  await finished(stage.locator('.next-step').first());
+  expect((await page.locator('#project-name').textContent()).startsWith('housing'),
+    'the project of the scan is open');
   expect(await steps.count() === 1, 'the import is the first step of the protocol');
+  await finished(stage.getByText('drag rotates'));
+  await expectPicture(page, stage.locator('canvas:not(.transfer)').first(), 'the first 3D view');
+  const suggested = await stage.locator('.next-steps').innerText();
+  expect(/Porosity analysis/.test(suggested), 'porosity is suggested, in: ' + suggested);
+  expect(/Nominal-actual comparison/.test(suggested),
+    'the comparison with the CAD model next to the scan is suggested, in: ' + suggested);
 
-  // 2. Analysis: the porosity of the part, known from how the scan was made.
+  // 2. Analysis: the porosity of the part, run from its suggestion; the scan is synthetic, so the
+  // answer is known.
+  await stage.locator('.next-step', { hasText: 'Porosity analysis' })
+    .getByRole('button', { name: 'Run', exact: true }).click();
+  await finished(stage.locator('.next-step.done', { hasText: 'Porosity analysis' }));
   await page.locator('.stages button[data-stage="analysis"]').click();
   const porosity = stage.locator('.card', {
     has: page.getByRole('heading', { name: 'Porosity analysis', exact: true }) });
-  await porosity.getByRole('button', { name: 'Run', exact: true }).click();
-  await finished(porosity.getByText('Result (step'));
+  await porosity.getByText('Result (step').waitFor();
   const figures = await porosity.locator('table').last().innerText();
   expect(/pores\s+3\b/i.test(figures), 'three pores, in: ' + figures);
   expect(/zones\s+1\b/i.test(figures), 'one loosened zone, in: ' + figures);
@@ -134,12 +137,28 @@ async function walk(page, address, work) {
 
   // 5. View: a slice, then the volume in 3D.
   await page.locator('.stages button[data-stage="view"]').click();
+  await stage.locator('.view-modes').getByRole('button', { name: 'Slice', exact: true }).click();
   const slice = stage.locator('canvas').first();
   await slice.waitFor();
   await expectPicture(page, slice, 'the slice view');
   await stage.locator('.view-modes').getByRole('button', { name: '3D', exact: true }).click();
   await finished(stage.getByText('drag rotates'));
+  // The porosity result showed the part translucent, for the pores inside; as a solid again.
+  await stage.locator('select[title="Rendering"]').selectOption('0');
   await expectPicture(page, stage.locator('canvas:not(.transfer)').first(), 'the 3D view');
+
+  // 6. A raw file without a sidecar: its layout is detected and shown for a check.
+  await page.locator('.stages button[data-stage="dataset"]').click();
+  await stage.getByRole('button', { name: 'Open another scan' }).click();
+  await page.locator('#browser-list > li', { hasText: 'nosidecar' }).click();
+  await page.locator('#browser-list > li', { hasText: 'casting.raw' }).dblclick();
+  const check = stage.locator('.scan-check');
+  await check.waitFor();
+  const size = await check.locator('input[type=number]').evaluateAll(
+    (inputs) => inputs.slice(0, 3).map((input) => input.value).join(' x '));
+  expect(size === '208 x 160 x 88', 'the size is detected in the grey values: ' + size);
+  await check.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await check.waitFor({ state: 'detached' });
 
   // Undo takes the report back, redo brings it again.
   const done = await steps.count();
@@ -175,6 +194,9 @@ async function main() {
   expect(made.status === 0, 'vs-synth makes the sample');
   // The server reads only below its directory, so the order goes there too.
   fs.copyFileSync(order, path.join(work, 'inspection_order.json'));
+  // The scan once more without its sidecar, as many scanners write it.
+  fs.mkdirSync(path.join(work, 'nosidecar'));
+  fs.copyFileSync(path.join(work, 'housing.raw'), path.join(work, 'nosidecar', 'casting.raw'));
 
   const { chromium } = loadPlaywright();
   const { server, address } = await startServer(gui, work);

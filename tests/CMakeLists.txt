@@ -15,6 +15,7 @@ add_executable(voxelsieve_tests
   test_materials.cpp
   test_model.cpp
   test_phantom.cpp
+  test_raw_detect.cpp
   test_orientation.cpp
   test_battery.cpp
   test_porosity.cpp

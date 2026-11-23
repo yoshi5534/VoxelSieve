@@ -82,6 +82,10 @@ class TiffStackSource final : public VolumeSource {
 /// Whether `path` looks like a TIFF stack: a .tif/.tiff file, a .zip archive or a directory.
 [[nodiscard]] bool isTiffStackPath(const std::filesystem::path& path);
 
+/// Whether a directory holds TIFF slices, directly or one folder down (data/, target/). Looks at a
+/// bounded number of entries, so that browsing stays fast on huge directories.
+[[nodiscard]] bool containsTiff(const std::filesystem::path& dir, int depth = 1);
+
 /// Natural order of names: digit runs compare by value.
 [[nodiscard]] bool naturalLess(const std::string& a, const std::string& b);
 

@@ -17,7 +17,9 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     (an interrupted import resumes from the journal it leaves in the output directory) and
     `Dataset`, the cached read access to it; algorithms on large scans read through `Dataset`;
     `preview.hpp` the first look at a volume that every import shows before its passes, from
-    slices the staging copy reads first (ADR 0020)
+    slices the staging copy reads first (ADR 0020); `first_look.hpp` what a scan is and how it
+    opens without questions (`inspectScan`, raw files without sidecar by `detectRawLayout` in
+    `source.hpp`) and the analyses that suit it (`suggestAnalyses`, ADR 0039)
   - `src/detail/` internals shared by both sieves (threshold, block map, flood fill)
   - `mesh.hpp` STL input; `synthetic.hpp` synthetic scans of meshes with defects and artefacts;
     `parts.hpp` sample castings (housing, bracket, hub) with an analytic surface

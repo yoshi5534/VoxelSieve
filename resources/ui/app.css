@@ -216,3 +216,27 @@ table.objects tr.active td { color: var(--accent); }
 .scene-tools .card select { max-width: 200px; }
 .scene-tools button.on { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1000px) { .viewer.scene { grid-template-columns: 1fr; } }
+
+/* Opening a scan (ADR 0039) */
+.welcome { max-width: 760px; }
+.welcome p { line-height: 1.5; }
+button.big { font-size: 16px; padding: 10px 22px; }
+button.link { border: none; background: none; padding: 0; color: var(--accent); cursor: pointer; }
+button.link:hover { text-decoration: underline; }
+.scan-check .found td:nth-child(3) { color: var(--muted); font-size: 12px; }
+.scan-check .found input[type=number] { width: 90px; }
+.scan-check .found td { padding: 3px 10px 3px 0; }
+.scan-check .note { color: var(--muted); }
+.scan-check .note.guess { color: #9a6700; }
+.next-steps { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; margin: 0 0 10px; }
+.next-steps > .label { align-self: center; font-weight: 600; margin-right: 4px; }
+.next-step { flex: 1 1 0; min-width: 200px; max-width: 320px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; background: var(--panel); display: flex; flex-direction: column;
+  gap: 4px; font-size: 12px; }
+.next-step b { font-size: 13px; }
+.next-step p { margin: 0; color: var(--muted); line-height: 1.35; display: -webkit-box;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.next-step .row { margin-top: auto; padding-top: 2px; }
+.next-step button { padding: 2px 10px; font-size: 12px; }
+.next-step.done { opacity: 0.7; }
+.next-step .done-mark { color: var(--good); font-weight: 600; }

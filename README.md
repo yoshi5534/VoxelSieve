@@ -607,9 +607,15 @@ Install with `pip install .` from a checkout (with `VCPKG_ROOT` set as for the b
 
 ## GUI
 
-`vs-gui` starts the GUI and prints its address, by default http://localhost:8410. The browser
-UI leads through three steps: choose a dataset (or import a raw file), run operations such as the
-porosity analysis, create the inspection report. Every step appears in the protocol with its
+`vs-gui` starts the GUI and prints its address, by default http://localhost:8410. "Open a
+scan …" is all a first look takes: VoxelSieve finds out what the file is (raw, TIFF, DICOM or a
+dataset; a raw file without a sidecar is read from its name or its grey values), creates a
+project next to the scan, imports it and shows the part in 3D, with the analyses that suit it
+above the view (porosity, wall thickness, materials, comparison with a CAD model next to the
+scan, battery cells, fibre composites, beam hardening), each started with one click (ADR 0039).
+Detected or assumed values, such as a missing voxel size, are shown for a check first. The
+browser UI then leads through the steps: run operations such as the porosity analysis, look at
+the results, create the inspection report. Every step appears in the protocol with its
 parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
 step. Plugins appear next to the built-in operations.
 

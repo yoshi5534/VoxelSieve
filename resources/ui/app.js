@@ -8,12 +8,10 @@ const state = {
   status: { open: false },
   operations: [],
   stage: 'dataset',
-  rawPath: null,
-  rawOperation: null,
   busy: false,
   viewer: null,
   volume: null,
-  viewMode: 'slice',
+  viewMode: '3d',
   pores: { step: null, list: [] },
   projectDir: null,     // directory of the open project, to notice when another one is opened
   transfer: null,       // transfer function of the 3D view
@@ -24,6 +22,8 @@ const state = {
   scene: null,          // 3D view of all objects (scene.js)
   align: null,          // alignment form of the scene: moving, target, picking, picked points
   shownResults: {},     // result step shown in the views, by result type (ADR 0023)
+  pendingScan: null,    // a scan whose detected values are shown for a check (inspect_scan)
+  nextSteps: null,      // analyses suggested for the shown dataset: {key, list, error}
 };
 
 // Labels of known parameters; forms show them in this order.
@@ -284,7 +284,7 @@ async function refresh() {
 /// Stage for a project without a saved view state.
 function defaultStage() {
   if (latestOutput('report')) return 'report';
-  return latestOutput('dataset') ? 'analysis' : 'dataset';
+  return latestOutput('dataset') ? 'view' : 'dataset';
 }
 
 function projectOpened() {
@@ -638,7 +638,7 @@ async function browserLoad(path) {
 
 function kindLabel(kind) {
   return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
-    tiff: 'TIFF', dicom: 'DICOM', gzipped_xml: 'Gzipped XML', file: 'File' }[kind] ?? kind;
+    tiff: 'TIFF', dicom: 'DICOM', gzipped_xml: 'Gzipped XML', mesh: 'CAD model', file: 'File' }[kind] ?? kind;
 }
 
 function browserFinish(entry) {
@@ -690,6 +690,226 @@ function setupBrowser() {
   $('browser').addEventListener('close', () => {
     if (browserResolve) browserFinish(null);
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Opening a scan in one go (ADR 0039): what it is, a project next to it, the import, the 3D view
+// and the analyses that suit it.
+
+/// Entry kinds the scan browser offers.
+const SCAN_KINDS = ['dataset', 'raw', 'tiff', 'dicom', 'gzipped_xml', 'project', 'mesh', 'file'];
+
+const FROM_LABELS = {
+  sidecar: 'from the sidecar file',
+  files: 'from the files',
+  dataset: 'from the dataset',
+  'file name': 'from the file name',
+  'grey values': 'detected in the grey values',
+  parameters: 'given',
+  assumed: 'not known: 1 mm assumed',
+};
+
+/// Asks for a scan and opens it. `settings`: always show the values and all import settings.
+async function chooseScan(settings = false) {
+  const chosen = await browse({ title: 'Choose a CT scan', kinds: SCAN_KINDS });
+  if (!chosen) return;
+  await inspectAndOpen(chosen.path, settings);
+}
+
+/// Opens the scan at `path` at once when everything about it is known; otherwise shows what was
+/// detected, for a check, first.
+async function inspectAndOpen(path, settings = false) {
+  clearError();
+  let inspected;
+  try {
+    inspected = await api('inspect_scan', { path });
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  if (inspected.kind === 'project') {
+    await action(() => api('project_open', { path }));
+    return;
+  }
+  if (settings || inspected.check || !inspected.ready) {
+    state.pendingScan = { ...inspected, settings };
+    render();
+    return;
+  }
+  await openScan(inspected, {});
+}
+
+/// Imports the scan (into a new project next to it when none is open), then shows it in 3D.
+async function openScan(inspected, params) {
+  clearError();
+  state.pendingScan = null;
+  const title = inspected.kind === 'mesh' ? 'Adding ' + inspected.name
+    : 'Import of ' + inspected.name;
+  showBusy(title);
+  let opened = null;
+  try {
+    opened = await api('open_scan', { path: inspected.path, params, background: true });
+    if (opened.run) await followRun(opened.run.run_id);
+  } catch (error) {
+    showError(title + ': ' + error.message);
+    opened = null;
+  } finally {
+    hideBusy();
+  }
+  await refresh();
+  if (opened && inspected.kind !== 'mesh') {
+    // The first look: the part in 3D, with the analyses that suit it above.
+    state.stage = 'view';
+    state.viewMode = '3d';
+    render();
+  }
+}
+
+/// The values found for a scan, for a check before it is imported: size, grey values and voxel
+/// size with where each comes from, editable where they were guessed, and all import settings.
+function scanCheckCard(inspected) {
+  const found = inspected.found ?? {};
+  const from = inspected.from ?? {};
+  const raw = inspected.kind === 'raw';
+  const fromLabel = (key) => FROM_LABELS[from[key]] ?? '';
+  const dims = [0, 1, 2].map((axis) => el('input', { type: 'number', min: 1, step: 1,
+    value: found.dims?.[axis] ?? '', title: 'xyz'[axis] + ' in voxels', disabled: !raw }));
+  const pitchValue = Array.isArray(found.voxel_size_mm) ? found.voxel_size_mm[0]
+    : found.voxel_size_mm;
+  const pitch = el('input', { type: 'number', min: 0, step: 'any', placeholder: '1',
+    value: from.voxel_size === 'assumed' ? '' : (pitchValue ?? '') });
+  const bits = found.sample_type ? (found.sample_type === 'uint8' ? '8 bit' : '16 bit') +
+    (found.sample_type === 'uint16' ? ', ' + found.byte_order + ' endian' : '') +
+    (found.header_bytes ? ', header of ' + formatNumber(found.header_bytes) + ' bytes' : '')
+    : found.bits ? found.bits + ' bit' + (found.float ? ' float' : '') : null;
+  const rows = [
+    el('tr', {}, el('td', {}, 'Size'), el('td', {}, dims[0], ' × ', dims[1], ' × ', dims[2],
+      ' voxels'), el('td', {}, fromLabel('dims'))),
+    bits ? el('tr', {}, el('td', {}, 'Grey values'), el('td', {}, bits),
+      el('td', {}, fromLabel('sample_type'))) : null,
+    el('tr', {}, el('td', {}, 'Voxel size'), el('td', {}, pitch, ' mm'),
+      el('td', {}, fromLabel('voxel_size'))),
+  ];
+  const info = inspected.operation ? operationInfo(inspected.operation) : null;
+  const form = info ? buildForm(info.parameters, inspected.params ?? { path: inspected.path })
+    : null;
+  const advanced = form ? el('details', { open: Boolean(inspected.settings) },
+    el('summary', {}, 'All import settings'), form.element) : null;
+  const readQuick = () => {
+    const params = {};
+    if (raw) {
+      const values = dims.map((input) => Number(input.value));
+      if (values.some((value) => !Number.isInteger(value) || value < 1)) {
+        throw new Error('Enter the size in voxels along x, y and z');
+      }
+      params.dims = values;
+    }
+    if (pitch.value !== '') {
+      const value = Number(pitch.value);
+      if (!(value > 0)) throw new Error('The voxel size must be above 0 mm');
+      params.voxel_size_mm = value;
+    }
+    return params;
+  };
+  return el('div', { className: 'card scan-check' },
+    el('h3', {}, inspected.name),
+    el('p', {}, inspected.path),
+    el('table', { className: 'found' }, el('tbody', {}, rows)),
+    (inspected.notes ?? []).map((note) => el('p', {
+      className: 'note' + (/assumed|grey values|Enter/.test(note) ? ' guess' : '') }, note)),
+    inspected.project_dir && !state.status.open
+      ? el('p', { className: 'hint' }, 'The project is saved in ' + inspected.project_dir + '.')
+      : null,
+    advanced,
+    el('div', { className: 'row' },
+      el('button', { className: 'primary', disabled: state.busy || !inspected.operation,
+        onclick: () => {
+          let params;
+          try {
+            params = advanced?.open ? form.values() : readQuick();
+          } catch (error) {
+            showError(error);
+            return;
+          }
+          if (advanced?.open) delete params.path;
+          openScan(inspected, params);
+        } }, 'Open'),
+      el('button', { onclick: () => { state.pendingScan = null; render(); } }, 'Cancel')));
+}
+
+/// The analyses suggested for the shown dataset, loaded once per dataset and state of the
+/// protocol; each runs with one click and shows its result.
+function nextStepsRow(dataset) {
+  const key = dataset.step.id + ':' + state.status.cursor + ':' + (state.status.steps ?? []).length;
+  const row = el('div', { className: 'next-steps' });
+  if (state.nextSteps?.key !== key) {
+    state.nextSteps = { key, list: null, row: null };
+    api('suggest_analyses', { step: dataset.step.id, output: dataset.output }).then((answer) => {
+      if (state.nextSteps?.key !== key) return;
+      state.nextSteps.list = answer.suggestions;
+      // The row of the latest rendering.
+      if (state.nextSteps.row) fillNextSteps(state.nextSteps.row);
+    }).catch(() => {
+      if (state.nextSteps?.key === key) state.nextSteps.list = [];
+    });
+  }
+  state.nextSteps.row = row;
+  fillNextSteps(row);
+  return row;
+}
+
+function fillNextSteps(row) {
+  const list = state.nextSteps?.list;
+  if (!list?.length) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  row.replaceChildren(el('span', { className: 'label' }, 'Suggested analyses'),
+    ...list.slice(0, 5).map((suggestion) => el('div', {
+      className: 'next-step' + (suggestion.done ? ' done' : ''), title: suggestion.why },
+    el('b', {}, suggestion.title),
+    el('p', {}, suggestion.why),
+    el('div', { className: 'row' }, suggestion.done
+      ? [el('span', { className: 'done-mark' }, '✓ done'), el('button', {
+        onclick: () => showSuggestionResult(suggestion.operation) }, 'Show')]
+      : el('button', { className: 'primary', disabled: state.busy, onclick: async () => {
+        const step = await runStep(suggestion.operation, suggestion.params);
+        if (step) showSuggestionResult(suggestion.operation);
+      } }, 'Run')))));
+}
+
+/// Shows the result of an analysis in the view that suits it: pores and materials in the volume,
+/// deviations and wall thickness on the surface, the rest in the results.
+function showSuggestionResult(operation) {
+  const mode = { compare_cad: 4, compare_objects: 4, wall_thickness: 5 }[operation];
+  const flags = { porosity: { pores: true }, segment_materials: { materials: true } }[operation];
+  if (mode === undefined && !flags) {
+    const step = latestStepOf(operation);
+    if (step) state.focusResult = step.id;
+    state.stage = 'results';
+    render();
+    return;
+  }
+  state.stage = 'view';
+  state.viewMode = '3d';
+  const volume = state.volume;
+  if (volume && operation === 'porosity' && state.transfer && volume.volume) {
+    // Pores lie inside the part: it is shown translucent, so that they show through. The view
+    // loads the volume with its pores anew unless it has them already; that volume starts with
+    // this preset.
+    const pores = latestStepOf('porosity');
+    if (pores && volume.volume.key.split('/')[1] === String(pores.id)) {
+      Object.assign(state.transfer, { preset: 'durchsicht', colorMap: 'stahl',
+        points: transferPreset('durchsicht', volume.threshold) });
+    } else {
+      state.transfer.next = { preset: 'durchsicht', after: volume.volume.key };
+    }
+    volume.set({ mode: 1, pores: true });
+  } else if (volume) {
+    volume.set(mode === undefined ? flags : { mode });
+  }
+  render();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -789,7 +1009,8 @@ function buildForm(schema, initial = {}, skip = ['inputs']) {
         field.append(el('button', {
           type: 'button',
           onclick: async () => {
-            const chosen = await browse({ title: LABELS[name] ?? name, kinds: ['file', 'raw'] });
+            const chosen = await browse({ title: LABELS[name] ?? name,
+              kinds: ['file', 'raw', 'mesh', 'tiff', 'dicom', 'gzipped_xml'] });
             if (chosen) input.value = chosen.path;
           },
         }, '…'));
@@ -999,54 +1220,19 @@ function renderDatasetStage(panel) {
       el('div', { className: 'row' }, nextButton('On to the analysis', 'analysis'))));
   } else {
     panel.append(el('p', { className: 'hint' },
-      'Choose a sieved dataset (.vsieve), a raw file, a TIFF stack (folder, multi-page TIFF ' +
-      'or ZIP), a folder of DICOM slices or a gzipped XML project. On import, raw data is freed from the air around the part and stored as a ' +
-      'dataset with resolution levels; the original stays unchanged.'));
+      'Open a raw file, a TIFF stack (folder, multi-page TIFF or ZIP), a folder of DICOM ' +
+      'slices, a gzipped XML project or a sieved dataset (.vsieve). Size, grey values and voxel ' +
+      'size are found in the files, or in the name and grey values of a raw file without a ' +
+      'sidecar. On import the air around the part is removed and the volume stored with ' +
+      'resolution levels; the original stays unchanged.'));
   }
-  panel.append(el('div', { className: 'row' }, el('button', {
-    disabled: state.busy,
-    onclick: async () => {
-      const chosen = await browse({ title: 'Choose a dataset or raw data',
-        kinds: ['dataset', 'raw', 'tiff', 'dicom', 'gzipped_xml', 'file'] });
-      if (!chosen) return;
-      if (chosen.kind === 'dataset') {
-        state.rawPath = null;
-        await runStep('open_dataset', { path: chosen.path });
-      } else {
-        state.rawPath = chosen.path;
-        state.rawOperation = { tiff: 'import_tiff', dicom: 'import_dicom', gzipped_xml: 'import_gzipped_xml' }[
-          chosen.kind] ?? 'import_raw';
-        render();
-      }
-    },
-  }, dataset ? 'Choose another dataset …' : 'Choose a dataset …')));
-
-  const importOperation = state.rawOperation ?? 'import_raw';
-  const importInfo = operationInfo(importOperation);
-  if (state.rawPath && importInfo) {
-    const form = buildForm(importInfo.parameters, { path: state.rawPath });
-    panel.append(el('div', { className: 'card' },
-      el('h3', {}, importInfo.title),
-      el('p', {}, importOperation === 'import_tiff'
-        ? 'The slices are sorted by name (numbers by value) and read directly from the folder or ' +
-          'ZIP. With several folders, the grey values are chosen over label or mask folders. ' +
-          'Without a voxel size in the files, 1 mm is assumed.'
-        : importOperation === 'import_dicom'
-        ? 'The slices are sorted by their position; voxel size and placement come from the ' +
-          'files. Signed values and the rescale slope and intercept are kept.'
-        : importOperation === 'import_gzipped_xml'
-        ? 'The volume is read from the files the project was made from, found where the project ' +
-          'names them or next to it, and placed as in the project. DICOM stacks are supported.'
-        : 'Dimensions and voxel size come from the JSON file next to the raw data when they are ' +
-          'not given. Without a threshold, it is found automatically (valley after the air peak).'),
-      form.element,
-      el('div', { className: 'row' },
-        runButton('Import', importOperation, () => form.values(), () => {
-          state.rawPath = null;
-          render();
-        }),
-        el('button', { onclick: () => { state.rawPath = null; render(); } }, 'Cancel'))));
-  }
+  if (state.pendingScan) panel.append(scanCheckCard(state.pendingScan));
+  panel.append(el('div', { className: 'row' },
+    el('button', { className: dataset ? null : 'primary', disabled: state.busy,
+      onclick: () => chooseScan() }, dataset ? 'Open another scan …' : 'Open a scan …'),
+    el('button', { disabled: state.busy, title: 'Shows the detected values and every setting of ' +
+      'the import (threshold, air margin, staging, value type) before it starts',
+    onclick: () => chooseScan(true) }, 'Import with settings …')));
 }
 
 function appendImages(container, step) {
@@ -1069,8 +1255,8 @@ function renderAnalysisStage(panel) {
       nextButton('To the dataset', 'dataset'));
     return;
   }
-  panel.append(el('p', { className: 'hint' },
-    'Operations work on the dataset of step ' + dataset.step.id +
+  panel.append(nextStepsRow(dataset), el('p', { className: 'hint' },
+    'All operations: they work on the dataset of step ' + dataset.step.id +
     ' and write their result as a new step. Plugins appear here as well.'));
   const operations = state.operations.filter((operation) =>
     operation.inputs.some((input) => input.type === 'dataset'));
@@ -1461,7 +1647,9 @@ function renderViewStage(panel) {
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
   renderViewBar(panel, modes);
-  if (dataset && state.viewMode !== 'scene') panel.append(shownResultsLine(dataset));
+  if (dataset && state.viewMode !== 'scene') {
+    panel.append(nextStepsRow(dataset), shownResultsLine(dataset));
+  }
   if (state.viewMode === 'scene') {
     renderSceneView(panel);
     return;
@@ -2213,7 +2401,10 @@ function renderVolumeView(panel, dataset) {
     }
     if (transfer.key !== v.key || !transfer.points) {
       // A new volume starts with the first suggestion, or a preset when there is none.
-      const first = state.suggestions.items[0];
+      // A preset asked for the next volume, such as the one with the pores of an analysis.
+      const asked = transfer.next && transfer.next.after !== v.key;
+      const first = asked ? null : state.suggestions.items[0];
+      if (asked) transfer.next = null;
       transfer.key = v.key;
       transfer.preset = first ? null : 'durchsicht';
       transfer.colorMap = first ? first.colorMap : 'stahl';
@@ -2380,7 +2571,7 @@ function renderObjectsCard(panel) {
   const add = el('button', {
     disabled: state.busy,
     onclick: async () => {
-      const chosen = await browse({ title: 'Choose a CAD model (STL)', kinds: ['file'] });
+      const chosen = await browse({ title: 'Choose a CAD model (STL)', kinds: ['mesh', 'file'] });
       if (chosen) await runStep('add_mesh', { path: chosen.path });
     },
   }, 'Add CAD model (STL) …');
@@ -2660,7 +2851,13 @@ function render() {
   const open = state.status.open;
   $('welcome').hidden = open;
   $('wizard').hidden = !open;
-  if (!open) return;
+  if (!open) {
+    const pending = state.pendingScan;
+    $('welcome-start').hidden = Boolean(pending);
+    $('welcome-check').hidden = !pending;
+    $('welcome-check').replaceChildren(...(pending ? [scanCheckCard(pending)] : []));
+    return;
+  }
   renderStages();
   const panel = $('stage');
   panel.replaceChildren();
@@ -2710,6 +2907,7 @@ async function start() {
   setupBrowser();
   $('btn-new').addEventListener('click', newProject);
   $('welcome-new').addEventListener('click', newProject);
+  $('welcome-scan').addEventListener('click', () => chooseScan());
   $('btn-open').addEventListener('click', openProject);
   $('welcome-open').addEventListener('click', openProject);
   $('btn-save-as').addEventListener('click', saveAs);
