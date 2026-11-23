@@ -93,7 +93,7 @@ std::string compressed(const std::string& bytes, bool gzip) {
   EXPECT_EQ(
       deflateInit2(&z, 6, Z_DEFLATED, gzip ? 16 + MAX_WBITS : MAX_WBITS, 8, Z_DEFAULT_STRATEGY),
       Z_OK);
-  std::string out(deflateBound(&z, bytes.size()), '\0');
+  std::string out(deflateBound(&z, static_cast<uLong>(bytes.size())), '\0');
   z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.data()));
   z.avail_in = static_cast<uInt>(bytes.size());
   z.next_out = reinterpret_cast<Bytef*>(out.data());
