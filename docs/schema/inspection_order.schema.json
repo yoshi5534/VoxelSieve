@@ -1,0 +1,538 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VoxelSieve inspection order",
+  "description": "What the report states and what the part is checked against. The sections acceptance, wall_thickness, fibres and battery hold limits and take only the keys listed here; all other sections describe the inspection, are shown by the report template and may hold anything.",
+  "type": "object",
+  "properties": {
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guideline": {
+          "type": "string",
+          "description": "Guideline the limits come from, as stated in the report"
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/zone"
+          }
+        }
+      },
+      "description": "Limits for pores, per inspection zone"
+    },
+    "wall_thickness": {
+      "$ref": "#/$defs/wall_thickness"
+    },
+    "fibres": {
+      "$ref": "#/$defs/fibres"
+    },
+    "battery": {
+      "$ref": "#/$defs/battery"
+    }
+  },
+  "$defs": {
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "box_mm": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Box from its minimum to its maximum corner, in mm in the coordinates of the volume"
+        },
+        "region": {
+          "$ref": "#/$defs/region"
+        },
+        "porosity_key": {
+          "type": "string",
+          "description": "BDG P 203 porosity key as on the drawing, for example \"BDG P203 - PROI2/ Øaq3/ da3/ UØaq1\"; limits given as fields win over the key"
+        },
+        "max_pore_size_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest extent of a single pore (longest edge of its bounding box)"
+        },
+        "max_pore_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of pores of at least count_min_size_mm"
+        },
+        "count_min_size_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Smallest extent of a pore that counts for max_pore_count"
+        },
+        "max_porosity_percent": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Porosity in the zone (PROI)"
+        },
+        "allow_loosening": {
+          "type": "boolean",
+          "description": "Whether zones of loosened microstructure are permitted (default true)"
+        },
+        "max_global_porosity_percent": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Porosity of the whole part (PG)"
+        },
+        "max_reference_porosity_percent": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Porosity in the reference volume where it is highest (PV); needs reference_volume"
+        },
+        "max_pore_volume_mm3": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Volume of the largest pore (Vp)"
+        },
+        "max_enclosing_diameter_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Diameter of the enclosing sphere of the largest pore (Øp)"
+        },
+        "max_equivalent_diameter_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Diameter of the sphere of equal volume of the largest pore (Øaq)"
+        },
+        "min_sphericity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Every pore is at least this round (Ψ)"
+        },
+        "min_compactness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Every pore is at least this compact (C)"
+        },
+        "min_pore_gap_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Material between neighbouring pores (Gap)"
+        },
+        "min_surface_distance_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Material between every pore and the outer surface (da)"
+        },
+        "reference_volume": {
+          "$ref": "#/$defs/reference_volume"
+        },
+        "disregard": {
+          "$ref": "#/$defs/disregard"
+        }
+      },
+      "description": "Inspection zone: a region of the part (the whole part without box_mm and region) with at least one limit"
+    },
+    "region": {
+      "description": "Region of the zone: a list of solids (their union), or solids to include and to exclude",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/solid"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "include": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/solid"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/solid"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "solid": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "box_mm": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Box from its minimum to its maximum corner, in mm in the coordinates of the volume"
+        },
+        "sphere": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "center_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "radius_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Radius in mm"
+            }
+          }
+        },
+        "cylinder": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "from_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "to_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "radius_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Radius in mm"
+            }
+          },
+          "description": "Cylinder between the two points on its axis"
+        },
+        "mesh": {
+          "type": "string",
+          "description": "Closed STL mesh; a relative path is taken from the directory of the order"
+        },
+        "mesh_object": {
+          "type": "string",
+          "description": "Mesh object of the project (only in a project)"
+        },
+        "pose": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 16,
+          "maxItems": 16,
+          "description": "Pose of the mesh as a 4 x 4 matrix, row by row"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the mesh in the report"
+        }
+      },
+      "description": "One solid: exactly one of box_mm, sphere, cylinder, mesh or mesh_object"
+    },
+    "reference_volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shape": {
+          "enum": [
+            "cube",
+            "cuboid",
+            "sphere",
+            "cylinder"
+          ],
+          "description": "Default cube"
+        },
+        "edge_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Edge of the cube"
+        },
+        "size_mm": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Edges of the cuboid"
+        },
+        "diameter_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Diameter of the sphere or cylinder"
+        },
+        "height_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Height of the cylinder"
+        },
+        "axis": {
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "description": "Axis of the cylinder (default z)"
+        }
+      },
+      "description": "Reference volume of BDG P 203 (PV)"
+    },
+    "disregard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enclosing_diameter_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Pores with a smaller enclosing diameter (UØp)"
+        },
+        "equivalent_diameter_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Pores with a smaller equivalent diameter (UØaq)"
+        },
+        "volume_mm3": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Pores with a smaller volume (UVp)"
+        },
+        "sphericity": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Pores that are rounder (UΨ)"
+        },
+        "compactness": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Pores that are more compact (UC)"
+        }
+      },
+      "description": "Pores that count for none of the limits (U)"
+    },
+    "wall_thickness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guideline": {
+          "type": "string"
+        },
+        "min_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Smallest permitted wall thickness"
+        },
+        "max_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest permitted wall thickness"
+        },
+        "max_area_below_min_mm2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Surface area that may lie below min_mm"
+        },
+        "nominal_tolerance_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Permitted deviation from the nominal thickness of the CAD model"
+        },
+        "max_area_outside_nominal_mm2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Surface area that may lie outside nominal_tolerance_mm"
+        }
+      }
+    },
+    "fibre_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Nominal direction of the family"
+        },
+        "tolerance_deg": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Permitted angle between the measured and the nominal direction"
+        },
+        "min_share_percent": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Smallest share of the family in the fibre volume"
+        },
+        "max_share_percent": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest share of the family in the fibre volume"
+        }
+      }
+    },
+    "fibres": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guideline": {
+          "type": "string"
+        },
+        "families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fibre_family"
+          }
+        }
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nominal": {
+          "type": "number"
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Permitted deviation from nominal to either side"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      },
+      "description": "A dimension as nominal with tolerance, or as min and max"
+    },
+    "battery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guideline": {
+          "type": "string"
+        },
+        "min_overhang_mm": {
+          "type": "number",
+          "description": "Smallest anode overhang"
+        },
+        "max_overhang_mm": {
+          "type": "number",
+          "description": "Largest anode overhang"
+        },
+        "max_edge_spread_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Spread of the electrode edges"
+        },
+        "cathode_layers": {
+          "description": "Number of cathode layers, or its range",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "$ref": "#/$defs/range"
+            }
+          ]
+        },
+        "diameter_mm": {
+          "$ref": "#/$defs/range"
+        },
+        "length_mm": {
+          "$ref": "#/$defs/range"
+        },
+        "thickness_mm": {
+          "$ref": "#/$defs/range"
+        },
+        "max_swelling_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Swelling of a pouch or prismatic cell"
+        },
+        "max_out_of_roundness_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Out-of-roundness of the housing"
+        },
+        "max_dent_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Depth of the deepest dent of the housing"
+        },
+        "min_wall_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Smallest wall thickness of the housing"
+        },
+        "max_core_out_of_roundness_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Out-of-roundness of the core of the winding"
+        },
+        "max_gaps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of gaps between the layers"
+        },
+        "max_particles": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of dense particles"
+        },
+        "max_particle_size_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Size of the largest dense particle"
+        },
+        "max_voids": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of voids"
+        },
+        "max_void_size_mm": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Size of the largest void"
+        }
+      }
+    }
+  }
+}

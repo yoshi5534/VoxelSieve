@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "voxelsieve/phantom.hpp"
@@ -23,6 +24,15 @@ struct Box {
   [[nodiscard]] std::int64_t size(std::size_t axis) const { return max[axis] - min[axis]; }
   [[nodiscard]] std::int64_t voxelCount() const { return size(0) * size(1) * size(2); }
 };
+
+/// The largest volume edge accepted, in voxels: 2^20. Its cube still counts in 64 bits, so no
+/// product of dimensions that passed checkVolumeDims overflows.
+inline constexpr std::int64_t kMaxVolumeEdge = std::int64_t{1} << 20;
+
+/// Throws std::invalid_argument unless every dimension is between 1 and kMaxVolumeEdge. `what`
+/// names the volume in the message. Dimensions from parameters and files go through this before
+/// anything is computed from them.
+void checkVolumeDims(const std::array<std::int64_t, 3>& dims, std::string_view what);
 
 /// Linear map from the stored 16-bit grey values to the values of the scan, for scans whose values
 /// are not 16-bit integers, such as float reconstructions (ADR 0015): value = offset + scale *

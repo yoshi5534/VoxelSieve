@@ -166,6 +166,12 @@ project; opening read-only is left out until something needs it.
 2. **C1:** checked multiplication for dimensions wherever they come from a parameter or a file.
 3. **C4:** `Dataset::open` checks `index.json` and names the file in its message.
 
+**Status (2026-11-22): done.** The schemas are `docs/schema/inspection_order.schema.json` and
+`docs/schema/inspection_plan.schema.json`. The check keeps its key lists in the code where the
+keys are read (a schema validator would be a new dependency); a test compares them with the
+schemas in both directions. The sections of an order that only describe the inspection stay free,
+because report templates show whatever they hold.
+
 ### Step 3: Projects are self-contained and imports resume (1–2 weeks)
 
 1. **A4:** an interrupted import keeps its directory; the step is offered as "resume" and runs

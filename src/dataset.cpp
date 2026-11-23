@@ -1080,6 +1080,7 @@ GreyGrid readBrick(const std::filesystem::path& file, bool delay_load) {
 
 DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path& dir,
                          const DatasetOptions& options) {
+  checkVolumeDims(input.dims(), "The volume to import");
   if (options.brick_size <= 0 || options.brick_size % kBlockSize != 0) {
     throw std::invalid_argument("brick_size must be a positive multiple of 8");
   }
@@ -1458,20 +1459,21 @@ DatasetInfo writeDerivedDataset(const Dataset& input, const std::filesystem::pat
   }
   return info;
 }
-DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
-  std::ifstream in(dir / "index.json");
-  if (!in) {
-    throw std::runtime_error("No index.json in " + dir.string());
-  }
-  const auto json = nlohmann::json::parse(in);
+namespace {
+
+DatasetInfo datasetInfoFromJson(const nlohmann::json& json, const std::filesystem::path& dir) {
   if (json.at("format") != "voxelsieve-dataset" || json.at("version") < 1 ||
       json.at("version") > kFormatVersion) {
     throw std::runtime_error("Unsupported dataset format in " + dir.string());
   }
   DatasetInfo info;
   info.dims = json.at("dims").get<Index3>();
+  checkVolumeDims(info.dims, "dims");
   info.voxel_size = readVoxelSize(json);
   info.brick_size = json.at("brick_size").get<std::int64_t>();
+  if (info.brick_size < 8 || info.brick_size % 8 != 0 || info.brick_size > kMaxVolumeEdge) {
+    throw std::invalid_argument("brick_size " + std::to_string(info.brick_size));
+  }
   info.value_type = parseValueType(json.value("value_type", "float"));
   info.threshold = json.at("threshold").get<float>();
   info.air_level = json.at("air_level").get<float>();
@@ -1489,8 +1491,41 @@ DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
     info.levels.push_back({level.at("level").get<int>(), level.at("dims").get<Index3>(),
                            level.at("voxel_size_mm").get<VoxelSize>(),
                            level.at("bricks").get<std::vector<Index3>>()});
+    const LevelInfo& read = info.levels.back();
+    checkVolumeDims(read.dims, "level " + std::to_string(read.level));
+    const Index3 bricks = ceilDiv3(read.dims, info.brick_size);
+    for (const Index3& brick : read.bricks) {
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (brick[axis] < 0 || brick[axis] >= bricks[axis]) {
+          throw std::invalid_argument("a brick outside level " + std::to_string(read.level));
+        }
+      }
+    }
+  }
+  if (info.levels.empty()) {
+    throw std::invalid_argument("no levels");
   }
   return info;
+}
+
+}  // namespace
+
+DatasetInfo readDatasetInfo(const std::filesystem::path& dir) {
+  std::ifstream in(dir / "index.json");
+  if (!in) {
+    throw std::runtime_error("No index.json in " + dir.string());
+  }
+  // Whatever is wrong with the file, the message names it: a key that is missing or a number out
+  // of range would otherwise surface as an error of the JSON library or of an allocation.
+  try {
+    return datasetInfoFromJson(nlohmann::json::parse(in), dir);
+  } catch (const nlohmann::json::exception& error) {
+    throw std::runtime_error("Damaged dataset: " + (dir / "index.json").string() + " (" +
+                             error.what() + ")");
+  } catch (const std::invalid_argument& error) {
+    throw std::runtime_error("Damaged dataset: " + (dir / "index.json").string() + " (" +
+                             error.what() + ")");
+  }
 }
 
 }  // namespace voxelsieve

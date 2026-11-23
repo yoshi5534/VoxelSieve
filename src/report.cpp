@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "detail/keys.hpp"
 #include "detail/png.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/render.hpp"
@@ -770,8 +771,62 @@ Evaluation evaluate(const PorosityResult& result, const std::vector<InspectionZo
   return evaluation;
 }
 
+void checkInspectionOrder(const nlohmann::json& order) {
+  if (!order.is_object()) {
+    return;
+  }
+  // The other sections describe the inspection for the report and may hold anything a template
+  // shows; these four hold what is checked. A section that is nearly one of them is a slip: with
+  // "acceptence" nothing would be evaluated at all.
+  for (const auto& [key, value] : order.items()) {
+    const std::string meant =
+        detail::nearestKey(key, {"acceptance", "wall_thickness", "fibres", "battery"}, false);
+    if (!meant.empty() && meant != key) {
+      std::string message = "Unknown section '";
+      message.append(key).append("' in the order; did you mean '").append(meant).append("'?");
+      throw std::invalid_argument(message);
+    }
+  }
+  const auto section = [&order](const char* name) {
+    const auto found = order.find(name);
+    if (found != order.end() && !found->is_object()) {
+      throw std::invalid_argument("The section '" + std::string(name) +
+                                  "' of the order must be an object");
+    }
+    return found == order.end() ? Json::object() : *found;
+  };
+  detail::requireKnownKeys(section("acceptance"), {"guideline", "zones"},
+                           "the section 'acceptance' of the order");
+  detail::requireKnownKeys(section("wall_thickness"),
+                           {"guideline", "min_mm", "max_mm", "max_area_below_min_mm2",
+                            "nominal_tolerance_mm", "max_area_outside_nominal_mm2"},
+                           "the section 'wall_thickness' of the order");
+  const Json fibres = section("fibres");
+  detail::requireKnownKeys(fibres, {"guideline", "families"}, "the section 'fibres' of the order");
+  for (const Json& family : fibres.value("families", Json::array())) {
+    detail::requireKnownKeys(
+        family, {"name", "direction", "tolerance_deg", "min_share_percent", "max_share_percent"},
+        "a fibre family of the order");
+  }
+  const Json battery = section("battery");
+  detail::requireKnownKeys(
+      battery,
+      {"guideline", "min_overhang_mm", "max_overhang_mm", "max_edge_spread_mm", "cathode_layers",
+       "diameter_mm", "length_mm", "thickness_mm", "max_swelling_mm", "max_out_of_roundness_mm",
+       "max_dent_mm", "min_wall_mm", "max_core_out_of_roundness_mm", "max_gaps", "max_particles",
+       "max_particle_size_mm", "max_voids", "max_void_size_mm"},
+      "the section 'battery' of the order");
+  for (const char* key : {"cathode_layers", "diameter_mm", "length_mm", "thickness_mm"}) {
+    if (const auto spec = battery.find(key); spec != battery.end()) {
+      detail::requireKnownKeys(*spec, {"nominal", "tolerance", "min", "max"},
+                               "'" + std::string(key) + "' of the section 'battery'");
+    }
+  }
+}
+
 std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
                                                     const std::filesystem::path& base_dir) {
+  checkInspectionOrder(order);
   std::vector<InspectionZone> zones;
   const auto acceptance = order.find("acceptance");
   if (acceptance == order.end() || !acceptance->contains("zones")) {
@@ -779,8 +834,34 @@ std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
   }
   for (const Json& item : acceptance->at("zones")) {
     InspectionZone zone;
-    zone.name = item.value("name", "Zone " + std::to_string(zones.size() + 1));
+    zone.name = item.is_object() ? item.value("name", "Zone " + std::to_string(zones.size() + 1))
+                                 : "Zone " + std::to_string(zones.size() + 1);
     try {
+      if (!item.is_object()) {
+        throw std::invalid_argument("must be an object");
+      }
+      detail::requireKnownKeys(item,
+                               {"name",
+                                "box_mm",
+                                "region",
+                                "porosity_key",
+                                "max_pore_size_mm",
+                                "max_pore_count",
+                                "count_min_size_mm",
+                                "max_porosity_percent",
+                                "allow_loosening",
+                                "max_global_porosity_percent",
+                                "max_reference_porosity_percent",
+                                "max_pore_volume_mm3",
+                                "max_enclosing_diameter_mm",
+                                "max_equivalent_diameter_mm",
+                                "min_sphericity",
+                                "min_compactness",
+                                "min_pore_gap_mm",
+                                "min_surface_distance_mm",
+                                "reference_volume",
+                                "disregard"},
+                               "the zone");
       zone.region = InspectionRegion::fromJson(item, base_dir);
       AcceptanceLimits& limits = zone.limits;
       if (item.contains("porosity_key")) {
@@ -814,6 +895,10 @@ std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
       }
       if (item.contains("disregard")) {
         const Json& u = item.at("disregard");
+        detail::requireKnownKeys(u,
+                                 {"enclosing_diameter_mm", "equivalent_diameter_mm", "volume_mm3",
+                                  "sphericity", "compactness"},
+                                 "'disregard'");
         DisregardedPores& d = limits.disregard;
         const auto set_u = [&](const char* key, std::optional<double>& limit) {
           if (const auto value = optionalNumber(u, key)) {
@@ -825,6 +910,17 @@ std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
         set_u("volume_mm3", d.volume_mm3);
         set_u("sphericity", d.sphericity);
         set_u("compactness", d.compactness);
+      }
+      const bool limited = limits.max_pore_size_mm || limits.max_pore_count ||
+                           limits.max_porosity_percent || !limits.allow_loosening ||
+                           limits.max_global_porosity_percent ||
+                           limits.max_reference_porosity_percent || limits.max_pore_volume_mm3 ||
+                           limits.max_enclosing_diameter_mm || limits.max_equivalent_diameter_mm ||
+                           limits.min_sphericity || limits.min_compactness ||
+                           limits.min_pore_gap_mm || limits.min_surface_distance_mm;
+      if (!limited) {
+        // The zone would pass whatever the part looks like.
+        throw std::invalid_argument("has no limit, so nothing would be checked in it");
       }
       if (limits.max_reference_porosity_percent && !limits.reference_volume) {
         throw std::invalid_argument(
@@ -1200,6 +1296,7 @@ void addMaterials(Json& data, const std::filesystem::path& dir, const Dataset* d
 }
 
 void addFibreOrientation(Json& data, const std::filesystem::path& dir, const Json& order) {
+  checkInspectionOrder(order);
   const Json o = readJsonFile(dir / "orientation.json");
   const auto direction_text = [](const std::array<double, 3>& d) {
     return formatSigned(d[0], 3) + ", " + formatSigned(d[1], 3) + ", " + formatSigned(d[2], 3);
@@ -1323,6 +1420,7 @@ void addFibreOrientation(Json& data, const std::filesystem::path& dir, const Jso
 }
 
 void addWallThickness(Json& data, const std::filesystem::path& dir, const Json& order) {
+  checkInspectionOrder(order);
   const Json w = readJsonFile(dir / "wall_thickness.json");
   const ThicknessMesh measured = readThicknessPly(dir / "thickness.ply");
   const Json required = order.is_object() && order.contains("wall_thickness")
@@ -1956,6 +2054,7 @@ Json findingRow(const Json& f, bool cylindrical) {
 nlohmann::json batteryReportData(const nlohmann::json& order,
                                  const std::filesystem::path& battery_dir,
                                  std::vector<std::string>* warnings) {
+  checkInspectionOrder(order);
   const Json b = readJsonFile(battery_dir / "battery.json");
   Json data = order.is_object() ? order : Json::object();
   completeMandatory(data, kMandatoryFields, warnings);

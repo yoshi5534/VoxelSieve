@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "detail/dimensional.hpp"
+#include "detail/keys.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -152,6 +153,8 @@ Measurement measure(const SurfaceMask& mask, const Mesh& cad, const RigidTransfo
   if (!plan.is_object()) {
     throw std::invalid_argument("The inspection plan must be a JSON object");
   }
+  detail::requireKnownKeys(plan, {"part", "elements", "alignment", "characteristics"},
+                           "the inspection plan");
   std::optional<TelemetryPhase> phase(std::in_place, "nominal elements");
   options.progress.check();
   const FeatureFinder finder(cad);
@@ -171,7 +174,9 @@ Measurement measure(const SurfaceMask& mask, const Mesh& cad, const RigidTransfo
   std::vector<DatumPlan> datums;
   const Json alignment = plan.value("alignment", Json("best_fit"));
   if (alignment.is_object() && alignment.contains("datums")) {
+    detail::requireKnownKeys(alignment, {"datums"}, "the alignment of the inspection plan");
     for (const Json& item : alignment.at("datums")) {
+      detail::requireKnownKeys(item, {"element", "directions"}, "a datum of the inspection plan");
       DatumPlan datum;
       const Json id = item.is_object() ? item.value("element", Json()) : item;
       datum.element = findElement(elements, id, "Datum");

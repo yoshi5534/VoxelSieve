@@ -8,6 +8,8 @@
 #include <nlohmann/json.hpp>
 #include <numbers>
 #include <random>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -360,6 +362,54 @@ TEST_F(MeasureTest, RejectsPlansThatAreNotWellFormed) {
   fails({{"elements", {plane}},
          {"characteristics", {{{"type", "coordinate"}, {"element", "A"}, {"axis", "w"}}}}},
         "axis must be");
+  // A misspelt key must not drop a tolerance: the characteristic would be reported without one.
+  fails({{"elements", {plane}},
+         {"characteristics", {{{"type", "flatness"}, {"element", "A"}, {"tolerence", 0.1}}}}},
+        "did you mean 'tolerance'");
+  fails({{"elements", {plane}}, {"characteristic", Json::array()}},
+        "did you mean 'characteristics'");
+  fails({{"elements", {{{"id", "A"}, {"type", "plane"}, {"at", {0.0, 9.5, -2.0}}, {"search", 2}}}}},
+        "did you mean 'search_mm'");
+
+  // docs/schema/inspection_plan.schema.json lists exactly the keys the plan may hold.
+  std::ifstream file(std::filesystem::path(VOXELSIEVE_SOURCE_DIR) /
+                     "docs/schema/inspection_plan.schema.json");
+  const Json schema = Json::parse(file);
+  const auto known = [&](const Json& plan) {
+    std::set<std::string> keys;
+    try {
+      (void)measure(mask, nominal, cad_to_scan, plan);
+    } catch (const std::invalid_argument& error) {
+      const std::string message = error.what();
+      const std::string marker = "known keys:";
+      if (const auto at = message.find(marker); at != std::string::npos) {
+        std::istringstream words(message.substr(at + marker.size()));
+        for (std::string word; words >> word;) {
+          keys.insert(word);
+        }
+      }
+    }
+    return keys;
+  };
+  const auto listed = [](const Json& object) {
+    std::set<std::string> keys;
+    for (const auto& [key, value] : object.at("properties").items()) {
+      keys.insert(key);
+    }
+    return keys;
+  };
+  const char* unknown = "qqqqqqqqqqqqqqqqqqqqqqqq";
+  Json element = plane;
+  element[unknown] = 1;
+  const Json& defs = schema.at("$defs");
+  EXPECT_EQ(known({{"elements", {plane}}, {unknown, 1}}), listed(schema));
+  EXPECT_EQ(known({{"elements", {element}}}), listed(defs.at("element")));
+  EXPECT_EQ(known({{"elements", {plane}},
+                   {"characteristics", {{{"type", "flatness"}, {"element", "A"}, {unknown, 1}}}}}),
+            listed(defs.at("characteristic")));
+  EXPECT_EQ(known({{"elements", {plane}},
+                   {"alignment", {{"datums", {{{"element", "A"}, {unknown, 1}}}}}}}),
+            listed(defs.at("datum")));
 }
 
 }  // namespace

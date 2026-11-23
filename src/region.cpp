@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "detail/keys.hpp"
 #include "detail/voxel_distance.hpp"
 #include "voxelsieve/vdb.hpp"
 
@@ -356,16 +357,22 @@ InspectionRegion InspectionRegion::fromJson(const Json& zone,
     if (!item.is_object()) {
       throw std::invalid_argument("A solid of an inspection region must be an object");
     }
+    detail::requireKnownKeys(
+        item, {"box_mm", "sphere", "cylinder", "mesh", "mesh_object", "pose", "name"},
+        "a solid of an inspection region");
     if (item.contains("box_mm")) {
       return RegionShape::box(boxFromJson(item.at("box_mm")));
     }
     if (item.contains("sphere")) {
       const Json& s = item.at("sphere");
+      detail::requireKnownKeys(s, {"center_mm", "radius_mm"}, "a sphere of an inspection region");
       return RegionShape::sphere(pointFromJson(s.value("center_mm", Json()), "sphere center_mm"),
                                  positive(s, "radius_mm", "A sphere"));
     }
     if (item.contains("cylinder")) {
       const Json& c = item.at("cylinder");
+      detail::requireKnownKeys(c, {"from_mm", "to_mm", "radius_mm"},
+                               "a cylinder of an inspection region");
       return RegionShape::cylinder(pointFromJson(c.value("from_mm", Json()), "cylinder from_mm"),
                                    pointFromJson(c.value("to_mm", Json()), "cylinder to_mm"),
                                    positive(c, "radius_mm", "A cylinder"));
@@ -402,6 +409,7 @@ InspectionRegion InspectionRegion::fromJson(const Json& zone,
       include.push_back(shape_from_json(item));
     }
     if (region.is_object()) {
+      detail::requireKnownKeys(region, {"include", "exclude"}, "an inspection region");
       for (const Json& item : region.value("exclude", Json::array())) {
         exclude.push_back(shape_from_json(item));
       }
@@ -570,6 +578,9 @@ ReferenceVolume ReferenceVolume::fromJson(const Json& json) {
   if (!json.is_object()) {
     throw std::invalid_argument("reference_volume must be an object");
   }
+  detail::requireKnownKeys(json,
+                           {"shape", "edge_mm", "size_mm", "diameter_mm", "height_mm", "axis"},
+                           "'reference_volume'");
   ReferenceVolume reference;
   const std::string shape = json.value("shape", "cube");
   if (shape == "cube") {
