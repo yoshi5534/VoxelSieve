@@ -128,7 +128,8 @@ Inputs not given are taken from the latest step with an output of the required t
 active object first, as in the GUI. `inputs={"dataset": step}` picks one explicitly. Projects
 with several volumes and meshes (ADR 0018) work the same: `object=` names the object a step
 works on, `name=` the object an import creates, and `project.objects` lists them with their
-poses. A failing operation raises an exception and stays in the protocol as a failed step.
+poses. A failing operation raises an exception and stays in the protocol as a failed step; a
+mistake found before it starts (a path that does not exist) raises without a step.
 `project.load_plugins(dir)` adds the operations of plugins.
 
 ## Tests
