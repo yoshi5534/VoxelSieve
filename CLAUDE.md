@@ -62,7 +62,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     objects (volumes, meshes) with poses in one global coordinate system (ADR 0018,
     `transform.hpp`); poses change only through steps. Analysis results per object
     (`Project::results`, ADR 0023) are derived from the steps; new result types need no registry. The
-    GUI (UI, MCP) drives everything through operations; new processing becomes an operation
+    GUI (UI, MCP) drives everything through operations; new processing becomes an operation,
+    in the file of `src/operations/` for what it works on
   - `gui.hpp` the GUI engine and its JSON API; `mcp.hpp` serves it as MCP tools and
     `http_server.hpp` to the browser UI in `resources/ui/` (plain JS, compiled in; the 3D view
     streams bricks of the finer levels into an atlas within a VRAM budget, `bricks.js`, ADR 0035);
