@@ -130,7 +130,7 @@ async function walk(page, address, work) {
   const report = page.frameLocator('iframe.report');
   await report.locator('h1').first().waitFor();
   expect((await report.locator('body').innerText()).length > 500, 'the report has its text');
-  expect((await report.locator('img').count()) > 0, 'the report has its pictures');
+  await report.locator('img').first().waitFor();  // the report has its pictures
 
   // 5. View: a slice, then the volume in 3D.
   await page.locator('.stages button[data-stage="view"]').click();
@@ -185,7 +185,11 @@ async function main() {
     const errors = [];
     page.on('pageerror', (error) => errors.push(String(error)));
     page.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text());
+      // A browser asks for an icon of the page, which the server does not have.
+      const url = message.location().url ?? '';
+      if (message.type() === 'error' && !url.endsWith('/favicon.ico')) {
+        errors.push(message.text() + (url ? ' (' + url + ')' : ''));
+      }
     });
     page.setDefaultTimeout(60000);
     try {
