@@ -77,15 +77,15 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--initial")) {
       options.compare.initial = voxelsieve::RigidTransform::fromMatrix(parseNumbers(args.value()));
     } else if (args.is("--tolerance")) {
-      options.compare.tolerance_mm = args.number();
+      options.compare.tolerance_mm = args.number("compare_cad", "tolerance_mm");
     } else if (args.is("--all-surfaces")) {
       options.compare.outer_surface_only = false;
     } else if (args.is("--non-rigid")) {
       options.compare.deformation.enabled = true;
     } else if (args.is("--non-rigid-spacing")) {
-      options.compare.deformation.spacing_mm = args.number();
+      options.compare.deformation.spacing_mm = args.number("compare_cad", "non_rigid_spacing_mm");
     } else if (args.is("--non-rigid-stiffness")) {
-      options.compare.deformation.stiffness = args.number();
+      options.compare.deformation.stiffness = args.number("compare_cad", "non_rigid_stiffness");
     } else if (args.is("--aligned-stl")) {
       options.aligned_stl = true;
     } else if (args.positional() && options.surface.empty()) {

@@ -49,10 +49,12 @@ target_include_directories(voxelsieve_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 # The example plugin is built with the tests and loaded by ProjectTest.PluginsAddOperations.
 add_subdirectory(${PROJECT_SOURCE_DIR}/examples/plugins/histogram
                  ${CMAKE_BINARY_DIR}/examples/plugins/histogram)
-add_dependencies(voxelsieve_tests voxelsieve_histogram)
+add_subdirectory(plugins/other_build)
+add_dependencies(voxelsieve_tests voxelsieve_histogram voxelsieve_other_build)
 target_compile_definitions(voxelsieve_tests PRIVATE
   VOXELSIEVE_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
-  VOXELSIEVE_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins")
+  VOXELSIEVE_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
+  VOXELSIEVE_TEST_OTHER_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins_other_build")
 
 include(GoogleTest)
 gtest_discover_tests(voxelsieve_tests)

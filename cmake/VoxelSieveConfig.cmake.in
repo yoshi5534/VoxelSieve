@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+# VoxelSieve's public headers use OpenVDB (with TBB) and nlohmann/json. A plugin must be built
+# with the versions this VoxelSieve was built with, and with the same standard library; the
+# plugin loader compares them (VOXELSIEVE_PLUGIN_BUILD) and refuses a plugin that differs.
+#   OpenVDB @OpenVDB_VERSION@, nlohmann/json @nlohmann_json_VERSION@,
+#   @CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@
+include(CMakeFindDependencyMacro)
+include("${CMAKE_CURRENT_LIST_DIR}/FindOpenVDBModule.cmake")
+find_dependency(OpenVDB)
+find_dependency(nlohmann_json)
+
+include("${CMAKE_CURRENT_LIST_DIR}/VoxelSieveTargets.cmake")
+check_required_components(VoxelSieve)

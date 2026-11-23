@@ -47,11 +47,11 @@ Options parse(voxelsieve::cli::Arguments& args) {
     if (args.is("--out")) {
       options.out = args.value();
     } else if (args.is("--min-pore")) {
-      options.porosity.min_pore_voxels = args.integer();
+      options.porosity.min_pore_voxels = args.integer("porosity", "min_pore_voxels");
     } else if (args.is("--zone-sigma")) {
-      options.porosity.zone_sigma = args.number();
+      options.porosity.zone_sigma = args.number("porosity", "zone_sigma");
     } else if (args.is("--zone-min")) {
-      options.porosity.min_zone_void_fraction = args.number();
+      options.porosity.min_zone_void_fraction = args.number("porosity", "min_zone_void_fraction");
     } else if (args.is("--materials")) {
       options.materials = args.value();
     } else if (args.positional() && options.dataset.empty()) {

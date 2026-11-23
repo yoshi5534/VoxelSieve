@@ -84,9 +84,9 @@ Options parse(voxelsieve::cli::Arguments& args) {
       }
       options.correction.rotation_axis = axis[0] - 'x';
     } else if (args.is("--order")) {
-      options.correction.order = static_cast<int>(args.integer());
+      options.correction.order = static_cast<int>(args.integer("beam_hardening", "order"));
     } else if (args.is("--resolution")) {
-      options.correction.resolution = args.integer();
+      options.correction.resolution = args.integer("beam_hardening", "resolution");
     } else if (args.is("--value-type")) {
       const std::string type = args.value();
       if (type != "native") {

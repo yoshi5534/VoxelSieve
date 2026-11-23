@@ -47,7 +47,8 @@ inline constexpr std::string_view kCommonOptions =
 /// The loop sees every argument but the options all tools take: --memory, --cache and --threads
 /// are applied as they come (`applyResourceOption`), --telemetry is kept, and -h or --help
 /// anywhere sets help() and ends the walk at once. Values that are missing or no numbers throw a
-/// UsageError naming the option.
+/// UsageError naming the option. An option that sets a parameter of an operation names it,
+/// `args.integer("porosity", "min_pore_voxels")`, and takes the limits from its schema.
 class Arguments {
  public:
   Arguments(int argc, char** argv);
@@ -66,6 +67,11 @@ class Arguments {
   /// The value as a number or a whole number.
   double number();
   std::int64_t integer();
+  /// The value of an option that sets a parameter of a built-in operation, checked against the
+  /// schema of that parameter: a value outside its limits is a UsageError naming the option and
+  /// the limit, the same one the operation gives in the GUI.
+  double number(const std::string& operation, const std::string& parameter);
+  std::int64_t integer(const std::string& operation, const std::string& parameter);
   /// Throws a UsageError for the current argument, an option the tool does not take.
   [[noreturn]] void unknown() const;
 

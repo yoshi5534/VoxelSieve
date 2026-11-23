@@ -73,7 +73,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   `vs-porosity`, `vs-segment`, `vs-denoise`, `vs-beam-hardening`, `vs-surface`, `vs-compare`, `vs-thickness`, `vs-diconde`, `vs-report`, `vs-battery`, `vs-gui`); `examples/` holds an example inspection order, a first article plan and order,
   a battery cell order and an example plugin (`examples/plugins/histogram`). Every tool parses with `voxelsieve/cli.hpp` (`cli::Arguments`, `cli::runTool`: the common
   options, usage, errors and telemetry); the options of the sieve come from the import operations'
-  schema (`sieveParameters`, `sieveOptions` in `operation.hpp`)
+  schema (`sieveParameters`, `sieveOptions` in `operation.hpp`); an option that sets a parameter of an
+  operation reads it with `args.number(operation, parameter)`, which takes the limits from the schema
 - `python/` the Python package `voxelsieve` (nanobind module `_core` in `core.cpp`, numpy access,
   projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
   (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest

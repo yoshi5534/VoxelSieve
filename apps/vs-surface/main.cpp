@@ -63,9 +63,9 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--json")) {
       options.json = args.value();
     } else if (args.is("--bits")) {
-      options.surface.bits = static_cast<int>(args.integer());
+      options.surface.bits = static_cast<int>(args.integer("surface", "bits"));
     } else if (args.is("--band")) {
-      options.surface.band_voxels = args.number();
+      options.surface.band_voxels = args.number("surface", "band_voxels");
     } else if (args.is("--iso")) {
       options.surface.iso_value = static_cast<float>(args.number());
     } else if (args.is("--level")) {

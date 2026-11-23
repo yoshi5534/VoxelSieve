@@ -156,13 +156,15 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--axis")) {
       options.battery.axis = axisOf(args.value());
     } else if (args.is("--angles")) {
-      options.battery.angles = static_cast<int>(args.integer());
+      options.battery.angles = static_cast<int>(args.integer("battery_inspection", "angles"));
     } else if (args.is("--sections")) {
-      options.battery.sections = static_cast<int>(args.integer());
+      options.battery.sections = static_cast<int>(args.integer("battery_inspection", "sections"));
     } else if (args.is("--overhang-sections")) {
-      options.battery.overhang_sections = static_cast<int>(args.integer());
+      options.battery.overhang_sections =
+          static_cast<int>(args.integer("battery_inspection", "overhang_sections"));
     } else if (args.is("--average")) {
-      options.battery.average_voxels = static_cast<int>(args.integer());
+      options.battery.average_voxels =
+          static_cast<int>(args.integer("battery_inspection", "average_voxels"));
     } else if (args.is("--anode-brighter")) {
       options.battery.cathode_brighter = false;
     } else if (args.is("--particle-threshold")) {
@@ -170,11 +172,13 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--void-threshold")) {
       options.battery.void_threshold = static_cast<float>(args.number());
     } else if (args.is("--min-particle")) {
-      options.battery.min_particle_voxels = args.integer();
+      options.battery.min_particle_voxels =
+          args.integer("battery_inspection", "min_particle_voxels");
     } else if (args.is("--max-end-deviation")) {
-      options.battery.max_end_deviation_mm = args.number();
+      options.battery.max_end_deviation_mm =
+          args.number("battery_inspection", "max_end_deviation_mm");
     } else if (args.is("--min-void")) {
-      options.battery.min_void_voxels = args.integer();
+      options.battery.min_void_voxels = args.integer("battery_inspection", "min_void_voxels");
     } else if (args.is("--images")) {
       options.images = args.value();
     } else if (args.is("--image-cell")) {

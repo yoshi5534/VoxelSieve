@@ -47,10 +47,12 @@ An operation declares an id, title, description, typed inputs and outputs (`raw`
 and MCP its tool schema. Built-in operations wrap the existing library: import of a raw volume
 into a dataset (sieve), porosity analysis, report.
 
-Plugins are shared libraries that export `voxelsieve_plugin_api_version()` and
-`voxelsieve_register_operations(OperationRegistry&)`, loaded from `--plugins <dir>` or
-`VOXELSIEVE_PLUGIN_PATH`. They link against `libvoxelsieve` and must be built with the same
-compiler and VoxelSieve version (checked through the API version); a C ABI for plugins in other
+Plugins are shared libraries that export `voxelsieve_plugin_api_version()`,
+`voxelsieve_plugin_build()` and `voxelsieve_register_operations(OperationRegistry&)`, loaded
+from `--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`. They link against `libvoxelsieve` and must be
+built with the same VoxelSieve version (checked through the API version) and the same standard
+library, OpenVDB and JSON library (checked through the build text, `VOXELSIEVE_PLUGIN_BUILD`);
+the release packages hold the headers and a CMake package for that. A C ABI for plugins in other
 languages can come later.
 
 ### Browser UI

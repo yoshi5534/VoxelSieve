@@ -86,11 +86,11 @@ Options parse(voxelsieve::cli::Arguments& args) {
     } else if (args.is("--print-first-article-template")) {
       options.print_first_article_template = true;
     } else if (args.is("--min-pore")) {
-      options.porosity.min_pore_voxels = args.integer();
+      options.porosity.min_pore_voxels = args.integer("porosity", "min_pore_voxels");
     } else if (args.is("--zone-sigma")) {
-      options.porosity.zone_sigma = args.number();
+      options.porosity.zone_sigma = args.number("porosity", "zone_sigma");
     } else if (args.is("--zone-min")) {
-      options.porosity.min_zone_void_fraction = args.number();
+      options.porosity.min_zone_void_fraction = args.number("porosity", "min_zone_void_fraction");
     } else if (args.positional() && options.dataset.empty()) {
       options.dataset = args.arg();
     } else {

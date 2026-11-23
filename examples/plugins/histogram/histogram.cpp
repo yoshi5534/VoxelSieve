@@ -66,6 +66,8 @@ VOXELSIEVE_PLUGIN_EXPORT int voxelsieve_plugin_api_version() {
   return voxelsieve::kPluginApiVersion;
 }
 
+VOXELSIEVE_PLUGIN_EXPORT const char* voxelsieve_plugin_build() { return VOXELSIEVE_PLUGIN_BUILD; }
+
 VOXELSIEVE_PLUGIN_EXPORT void voxelsieve_register_operations(
     voxelsieve::OperationRegistry& registry) {
   registry.add(std::make_shared<Histogram>());

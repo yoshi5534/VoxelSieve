@@ -213,6 +213,13 @@ of objects, not an input, and still asks for a surface step. The check before th
 3. **D5:** ship the headers and a CMake package file in the release packages; the plugin
    handshake also compares a build string (compiler, standard library, JSON version).
 
+**Status (2026-11-23): 1 and 3 done, 2 open.** The options that set a parameter of an operation
+read it with `cli::Arguments::number(operation, parameter)` and take its limits from the schema;
+the help texts stay written by hand. `exclusiveMinimum`, which the schemas used and nothing
+checked, is checked. The build text is `VOXELSIEVE_PLUGIN_BUILD` (standard library, JSON and
+OpenVDB version; plugin API 7). The split of `builtin_operations.cpp` follows on its own, so that
+it does not collide with the steps before it.
+
 ### Step 6: Tests that would have found this (about 1 week, any time)
 
 1. **F4:** the manual MCP walk of 2026-11-22 becomes a CTest on the sample part.

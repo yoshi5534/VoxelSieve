@@ -1,5 +1,7 @@
 #pragma once
 
+#include <openvdb/version.h>
+
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -9,6 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
+#include <version>
 
 namespace voxelsieve {
 
@@ -161,6 +164,13 @@ class OperationRegistry {
 /// Registers the operations that ship with VoxelSieve: import (sieve), porosity and report.
 void registerBuiltinOperations(OperationRegistry& registry);
 
+/// The schema of one parameter of a built-in operation: its type, limits and default. The tools
+/// check their options against it (`cli::Arguments::number(operation, parameter)`), so an option
+/// and the parameter of the operation behind it accept the same values. Throws for a name that
+/// does not exist.
+[[nodiscard]] nlohmann::json builtinParameter(const std::string& operation,
+                                              const std::string& parameter);
+
 /// The parameters of the sieve as JSON-schema properties (threshold, margin_voxels,
 /// min_material_voxels, outside_air_axes, brick_size, value_type, staging, staging_dir): every
 /// import operation takes them and vs-sieve makes its options from them, so they are defined
@@ -184,13 +194,42 @@ inline constexpr const char* kPluginExtension = ".so";
 #endif
 
 /// Plugin API version; plugins built against another version are rejected.
-inline constexpr int kPluginApiVersion = 6;
+inline constexpr int kPluginApiVersion = 7;
 
 }  // namespace voxelsieve
 
-/// Plugins define these two functions with extern "C" linkage:
+// The plugin interface is C++: operations, std::function and nlohmann::json cross it. A plugin
+// therefore needs the standard library and the versions of the libraries in the public headers
+// that VoxelSieve was built with. VOXELSIEVE_PLUGIN_BUILD names them; it is a macro so that a
+// plugin states what its own compiler saw, and a plugin whose text differs is not loaded.
+#define VOXELSIEVE_TEXT_OF_(value) #value
+#define VOXELSIEVE_TEXT_OF(value) VOXELSIEVE_TEXT_OF_(value)
+#if defined(_MSVC_STL_VERSION)
+#define VOXELSIEVE_STANDARD_LIBRARY                                                    \
+  "msvc " VOXELSIEVE_TEXT_OF(_MSVC_STL_VERSION) " iterator-debug " VOXELSIEVE_TEXT_OF( \
+      _ITERATOR_DEBUG_LEVEL)
+#elif defined(_LIBCPP_VERSION)
+#define VOXELSIEVE_STANDARD_LIBRARY "libc++ abi " VOXELSIEVE_TEXT_OF(_LIBCPP_ABI_VERSION)
+#elif defined(__GLIBCXX__)
+#define VOXELSIEVE_STANDARD_LIBRARY "libstdc++ abi " VOXELSIEVE_TEXT_OF(_GLIBCXX_USE_CXX11_ABI)
+#else
+#define VOXELSIEVE_STANDARD_LIBRARY "unknown standard library"
+#endif
+#define VOXELSIEVE_JSON_VERSION                   \
+  VOXELSIEVE_TEXT_OF(NLOHMANN_JSON_VERSION_MAJOR) \
+  "." VOXELSIEVE_TEXT_OF(NLOHMANN_JSON_VERSION_MINOR)
+#define VOXELSIEVE_OPENVDB_VERSION                                                         \
+  VOXELSIEVE_TEXT_OF(OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER)                                 \
+  "." VOXELSIEVE_TEXT_OF(OPENVDB_LIBRARY_MINOR_VERSION_NUMBER) " abi " VOXELSIEVE_TEXT_OF( \
+      OPENVDB_ABI_VERSION_NUMBER)
+#define VOXELSIEVE_PLUGIN_BUILD                                 \
+  VOXELSIEVE_STANDARD_LIBRARY ", json " VOXELSIEVE_JSON_VERSION \
+                              ", openvdb " VOXELSIEVE_OPENVDB_VERSION
+
+/// Plugins define these three functions with extern "C" linkage:
 ///
 ///   extern "C" int voxelsieve_plugin_api_version() { return voxelsieve::kPluginApiVersion; }
+///   extern "C" const char* voxelsieve_plugin_build() { return VOXELSIEVE_PLUGIN_BUILD; }
 ///   extern "C" void voxelsieve_register_operations(voxelsieve::OperationRegistry& registry) {
 ///     registry.add(std::make_shared<MyOperation>());
 ///   }
