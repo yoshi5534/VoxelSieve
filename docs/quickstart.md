@@ -109,7 +109,9 @@ undo/redo, slices and the 3D view:
 /opt/voxelsieve/bin/vs-gui ~/ct
 ```
 
-Then open <http://localhost:8410> and open the project directory the assistant named. The 3D view needs WebGL2; if your browser has it turned off, the
+Then open <http://localhost:8410> and open the project directory the assistant named, or
+choose "Open a scan …" and pick the scan itself: VoxelSieve finds out what it is, creates a
+project next to it, shows the part in 3D and suggests the analyses that suit it. The 3D view needs WebGL2; if your browser has it turned off, the
 view says how to turn it on.
 
 ## Docker

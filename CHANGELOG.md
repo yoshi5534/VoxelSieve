@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Open a scan in one step** (ADR 0039): the browser UI starts with "Open a scan …". It finds
+  out what the file is, creates a project next to the scan (or opens the one that has it), imports
+  it without a form and shows the part in 3D. Detected or assumed values (size from the grey
+  values, a missing voxel size) are shown for a check first; every import setting stays under
+  "Import with settings …". New API and MCP methods `inspect_scan` and `open_scan`; the MCP
+  prompt `first_look` uses them.
+
+- **Raw files without a sidecar**: their size, sample type, byte order and header are read from
+  the name ("part_512x512x400_16bit_0.05mm.raw") or detected in the grey values; without a voxel
+  size, 1 mm is assumed with a warning instead of an error. `import_raw` also takes the sample
+  type and byte order from the sidecar's `format` now, which it ignored before. The file browser
+  lists .raw, .vol, .rec, .img, .bin and .dat files as raw data, and STL files as CAD models.
+
+- **Suggested analyses**: above the 3D view and in the analysis stage, the analyses that suit
+  the scan, each with its reason and a Run button: porosity and wall thickness for a part,
+  material segmentation when the histogram shows several materials, the comparison with a CAD
+  model next to the scan, battery cell inspection for a round part of several materials, fibre
+  orientation for composites, beam hardening correction for cupping, the report after the
+  porosity analysis. Their results are shown right away. API and MCP method `suggest_analyses`.
+
 - **A test clicks through the browser UI**: the inspection of the sample part (new project,
   import, porosity, report, slice and 3D view, undo and redo) runs in a headless browser as the
   test `ui_smoke`, in CI with every pull request (ADR 0038). Playwright drives the browser; it is

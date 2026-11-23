@@ -493,6 +493,83 @@ TEST_F(GuiTest, SegmentsMaterialsAndShowsThemInSlices) {
   EXPECT_LT(material_pixels, static_cast<std::ptrdiff_t>(tile.overlay.size()));
 }
 
+// A raw file without a sidecar opens in one call (ADR 0039): its layout from the grey values, a
+// project next to it, and analyses that suit a single-material part with its CAD model beside it.
+TEST_F(GuiTest, OpensAScanWithoutSidecarInOneCallAndSuggestsAnalyses) {
+  const std::filesystem::path scans = dir_ / "scans";
+  std::filesystem::create_directories(scans);
+  std::filesystem::copy_file(dir_ / "scan.raw", scans / "casting.raw");
+  writeStl(scans / "casting.stl", boxMesh({6.0, 5.0, 4.0}));
+  const Json sidecar = Json::parse(std::ifstream(dir_ / "scan.json"));
+  const auto& dims = sidecar.at("dims");
+
+  Gui gui;
+  const Json inspected = gui.call("inspect_scan", {{"path", (scans / "casting.raw").string()}});
+  EXPECT_EQ(inspected.at("kind"), "raw");
+  EXPECT_EQ(inspected.at("operation"), "import_raw");
+  EXPECT_EQ(inspected.at("found").at("dims"), dims);
+  EXPECT_EQ(inspected.at("from").at("dims"), "grey values");
+  EXPECT_EQ(inspected.at("from").at("voxel_size"), "assumed");
+  EXPECT_TRUE(inspected.at("check"));
+  EXPECT_EQ(inspected.at("project_dir"), (scans / "casting.vsproj").string());
+  ASSERT_EQ(inspected.at("meshes").size(), 1U);
+  EXPECT_EQ(
+      gui.call("inspect_scan", {{"path", (dir_ / "scan.raw").string()}}).at("from").at("dims"),
+      "sidecar");
+
+  // No project open: one is made next to the scan; the voxel size given replaces the assumed one.
+  const Json opened = gui.call("open_scan", {{"path", (scans / "casting.raw").string()},
+                                             {"params", {{"voxel_size_mm", 0.1}}}});
+  EXPECT_TRUE(opened.at("created"));
+  // The open project names its directory canonically (macOS: /private/var for /var).
+  EXPECT_TRUE(std::filesystem::equivalent(opened.at("project_dir").get<std::string>(),
+                                          scans / "casting.vsproj"));
+  ASSERT_EQ(opened.at("run").at("status"), "done");
+  EXPECT_EQ(opened.at("run").at("summary").at("dims"), dims);
+  // The detected values are parameters of the step, so the protocol can repeat it.
+  EXPECT_EQ(opened.at("run").at("params").at("dims"), dims);
+  EXPECT_EQ(opened.at("run").at("summary").at("voxel_size_mm"), 0.1);
+
+  const Json suggested = gui.call("suggest_analyses", {});
+  std::vector<std::string> operations;
+  for (const Json& suggestion : suggested.at("suggestions")) {
+    operations.push_back(suggestion.at("operation"));
+    EXPECT_FALSE(suggestion.at("why").get<std::string>().empty());
+  }
+  EXPECT_EQ(suggested.at("facts").at("materials"), 1);
+  EXPECT_NE(std::ranges::find(operations, "porosity"), operations.end());
+  EXPECT_NE(std::ranges::find(operations, "wall_thickness"), operations.end());
+  EXPECT_NE(std::ranges::find(operations, "compare_cad"), operations.end());
+  EXPECT_EQ(std::ranges::find(operations, "segment_materials"), operations.end());
+  EXPECT_EQ(std::ranges::find(operations, "battery_inspection"), operations.end());
+  // A suggestion runs as it is given; then it is done and the report is suggested.
+  const auto porosity = std::ranges::find_if(
+      suggested.at("suggestions"), [](const Json& s) { return s.at("operation") == "porosity"; });
+  ASSERT_EQ(gui.call("run_porosity", porosity->at("params")).at("status"), "done");
+  bool porosity_done = false;
+  bool report = false;
+  const Json after = gui.call("suggest_analyses", {});
+  for (const Json& suggestion : after.at("suggestions")) {
+    porosity_done = porosity_done ||
+                    (suggestion.at("operation") == "porosity" && suggestion.at("done").get<bool>());
+    report = report || suggestion.at("operation") == "report";
+  }
+  EXPECT_TRUE(porosity_done);
+  EXPECT_TRUE(report);
+
+  // The CAD model joins the open project.
+  const Json mesh = gui.call("open_scan", {{"path", (scans / "casting.stl").string()}});
+  EXPECT_FALSE(mesh.at("created"));
+  EXPECT_EQ(mesh.at("run").at("operation"), "add_mesh");
+
+  // Opened again from a new start, the project is the one of the scan, with nothing imported.
+  Gui again;
+  const Json reopened = again.call("open_scan", {{"path", (scans / "casting.raw").string()}});
+  EXPECT_TRUE(reopened.at("reopened"));
+  EXPECT_EQ(reopened.at("imported_before"), opened.at("run").at("id"));
+  EXPECT_FALSE(reopened.contains("run"));
+}
+
 TEST_F(GuiTest, HistogramSuggestsTheNumberOfMaterials) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});

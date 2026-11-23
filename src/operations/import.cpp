@@ -270,7 +270,9 @@ class ImportRaw final : public Operation {
     info_.title = "Import raw volume";
     info_.description =
         "Removes the outside air from a raw CT volume and writes a bricked dataset. Dimensions "
-        "and voxel size come from the JSON sidecar unless given; a vendor header is skipped. "
+        "and voxel size come from the JSON sidecar unless given; without one, from the file "
+        "name (512x512x400, 16bit, 0.05mm) or the grey values, and 1 mm is assumed when "
+        "nothing gives the voxel size. A vendor header is skipped. "
         "gzip-compressed files (.raw.gz, sidecar <name>.json) are decompressed as they are "
         "read; give header_bytes when they have a header.";
     info_.outputs = {{"dataset", artifact::kDataset, "Sieved dataset"}};
@@ -288,15 +290,19 @@ class ImportRaw final : public Operation {
             {"description", "Raw volume file, plain or gzip-compressed"}}},
           {"dims", dims},
           {"sample_type",
-           {{"type", "string"}, {"enum", {"uint16", "uint8"}}, {"default", "uint16"}}},
-          {"big_endian", {{"type", "boolean"}, {"default", false}}},
+           {{"type", "string"},
+            {"enum", {"uint16", "uint8"}},
+            {"description", "Default: from the sidecar, else detected"}}},
+          {"big_endian",
+           {{"type", "boolean"}, {"description", "Default: from the sidecar, else detected"}}},
           {"header_bytes",
            {{"type", "integer"},
             {"minimum", 0},
             {"description",
              "Header size; default: file size minus voxel data (0 for gzip-compressed files)"}}}}},
         {"required", {"path"}}};
-    addVoxelSizeParameters(info_.parameters["properties"], "Default: from the sidecar");
+    addVoxelSizeParameters(info_.parameters["properties"],
+                           "Default: from the sidecar or the file name, else 1 mm");
     addSieveParameters(info_.parameters["properties"]);
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
@@ -304,32 +310,24 @@ class ImportRaw final : public Operation {
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
     const std::filesystem::path path = p.at("path").get<std::string>();
-    RawLayout layout;
-    Json sidecar;
-    if (const auto file = rawSidecarPath(path); std::filesystem::exists(file)) {
-      std::ifstream in(file);
-      sidecar = Json::parse(in);
+    // Parameters, then the sidecar, then the file name and grey values (ADR 0039).
+    RawInput input = resolveRawInput(path, p);
+    RawLayout& layout = input.layout;
+    if (input.from.at("dims") == "grey values" || input.from.at("dims") == "file name") {
+      std::ostringstream text;
+      text << "No sidecar: " << describeDims(layout.dims) << " voxels of "
+           << (layout.sample_type == SampleType::kUInt8 ? "8" : "16") << " bit"
+           << (layout.sample_type == SampleType::kUInt16
+                   ? layout.byte_order == std::endian::big ? ", big endian" : ", little endian"
+                   : "")
+           << " from the " << input.from.at("dims");
+      if (input.from.at("dims") == "grey values") {
+        text << " (" << std::lround(100.0 * input.confidence) << " % clear)";
+      }
+      context.log(text.str());
     }
-    if (p.contains("dims")) {
-      layout.dims = p.at("dims").get<std::array<std::int64_t, 3>>();
-    } else if (sidecar.contains("dims")) {
-      layout.dims = sidecar.at("dims").get<std::array<std::int64_t, 3>>();
-    } else {
-      throw std::invalid_argument("No dims given and no sidecar next to " + path.string());
-    }
-    const auto voxel_size = voxelSizeParameter(p, sidecar.contains("voxel_size_mm")
-                                                      ? std::optional(readVoxelSize(sidecar))
-                                                      : std::nullopt);
-    if (!voxel_size) {
-      throw std::invalid_argument("No voxel_size_mm given and no sidecar next to " + path.string());
-    }
-    layout.voxel_size = *voxel_size;
-    layout.sample_type = p.at("sample_type").get<std::string>() == "uint8" ? SampleType::kUInt8
-                                                                           : SampleType::kUInt16;
-    layout.byte_order = p.at("big_endian").get<bool>() ? std::endian::big : std::endian::little;
-    if (p.contains("header_bytes")) {
-      layout.header_bytes = p.at("header_bytes").get<std::uint64_t>();
-    }
+    // The slice thickness, and the check of the voxel size.
+    layout.voxel_size = voxelSizeParameter(p, layout.voxel_size).value_or(layout.voxel_size);
     std::uint64_t header_bytes = 0;
     const auto opened = openRawVolume(path, layout, &header_bytes);
     const InterpolatedSource source(*opened, p.at("interpolate_slices").get<int>());
@@ -345,8 +343,10 @@ class ImportRaw final : public Operation {
     result.outputs["dataset"] = "dataset.vsieve";
     result.summary = datasetSummary(info);
     result.summary["header_bytes"] = header_bytes;
-    result.summary["warnings"] = voxelSizeWarnings(
-        opened->voxelSize(), p.at("interpolate_slices").get<int>(), false, context);
+    result.summary["layout_from"] = input.from;
+    result.summary["warnings"] =
+        voxelSizeWarnings(opened->voxelSize(), p.at("interpolate_slices").get<int>(),
+                          !input.voxel_size_known, context);
     return result;
   }
 

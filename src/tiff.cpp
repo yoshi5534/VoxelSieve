@@ -108,6 +108,24 @@ bool naturalLess(const std::string& a, const std::string& b) {
   return a.size() - i < b.size() - j;
 }
 
+bool containsTiff(const std::filesystem::path& dir, int depth) {
+  constexpr int kLookedAt = 64;
+  int looked_at = 0;
+  std::error_code error;
+  for (auto it = std::filesystem::directory_iterator(
+           dir, std::filesystem::directory_options::skip_permission_denied, error);
+       !error && it != std::filesystem::directory_iterator() && looked_at < kLookedAt;
+       it.increment(error), ++looked_at) {
+    std::error_code ignored;
+    if (it->is_directory(ignored)
+            ? depth > 0 && containsTiff(it->path(), depth - 1)
+            : hasExtension(it->path().filename().string(), {".tif", ".tiff"})) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool isTiffStackPath(const std::filesystem::path& path) {
   return std::filesystem::is_directory(path) ||
          hasExtension(path.filename().string(), {".tif", ".tiff", ".zip"});

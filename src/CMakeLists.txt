@@ -90,6 +90,8 @@ add_library(voxelsieve SHARED
   detail/zip.cpp
   sieve.cpp
   source.cpp
+  raw_detect.cpp
+  first_look.cpp
   surface.cpp
   compare.cpp
   thickness.cpp

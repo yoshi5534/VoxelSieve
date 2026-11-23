@@ -19,12 +19,14 @@
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/dimensional.hpp"
+#include "voxelsieve/first_look.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/materials.hpp"
 #include "voxelsieve/mesh.hpp"
 #include "voxelsieve/render.hpp"
 #include "voxelsieve/resources.hpp"
 #include "voxelsieve/thickness.hpp"
+#include "voxelsieve/tiff.hpp"
 
 namespace voxelsieve {
 namespace {
@@ -363,28 +365,22 @@ std::string lowerExtension(const std::filesystem::path& path) {
   return extension;
 }
 
+/// Extensions of raw volume files that have no sidecar, which import_raw reads by detecting
+/// their layout (ADR 0039).
+bool isRawName(const std::filesystem::path& path) {
+  std::filesystem::path name = path;
+  if (lowerExtension(name) == ".gz") {
+    name = name.stem();
+  }
+  const std::string extension = lowerExtension(name);
+  return extension == ".raw" || extension == ".vol" || extension == ".rec" || extension == ".img" ||
+         extension == ".bin" || extension == ".dat" || extension == ".u16" ||
+         extension == ".uint16" || extension == ".u8";
+}
+
 bool isTiffFile(const std::filesystem::path& path) {
   const std::string extension = lowerExtension(path);
   return extension == ".tif" || extension == ".tiff";
-}
-
-/// Whether a directory holds TIFF slices, directly or one folder down (data/, target/). Looks at a
-/// bounded number of entries, so that browsing stays fast on huge directories.
-bool containsTiff(const std::filesystem::path& dir, int depth = 1) {
-  constexpr int kLookedAt = 64;
-  int looked_at = 0;
-  std::error_code error;
-  for (auto it = std::filesystem::directory_iterator(
-           dir, std::filesystem::directory_options::skip_permission_denied, error);
-       !error && it != std::filesystem::directory_iterator() && looked_at < kLookedAt;
-       it.increment(error), ++looked_at) {
-    std::error_code ignored;
-    if (it->is_directory(ignored) ? depth > 0 && containsTiff(it->path(), depth - 1)
-                                  : isTiffFile(it->path())) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /// The modification time of a file as text, for cache keys. (Its clock's count may be a 128-bit
@@ -427,7 +423,9 @@ Json browse(const std::filesystem::path& requested) {
                       : isDicomFile(path)                                  ? "dicom"
                       : path.extension() != ".json" && std::filesystem::exists(sidecar, ignored)
                           ? "raw"
-                          : "file";
+                      : isRawName(path)                ? "raw"
+                      : lowerExtension(path) == ".stl" ? "mesh"
+                                                       : "file";
       entry["size_bytes"] = it->file_size(ignored);
     }
     entries.push_back(std::move(entry));
@@ -773,6 +771,50 @@ std::vector<GuiMethod> Gui::methods() const {
        "Stops the running operation at its next progress report; its step is kept as failed. "
        "Gives the operation that was asked to stop, or null when none was running.",
        objectSchema(Json::object())},
+      {"inspect_scan",
+       "What a file or directory is and how VoxelSieve opens it, without opening it (ADR 0039): "
+       "kind (raw, tiff, dicom, dataset, gzipped_xml, mesh, project), the operation and its "
+       "parameters, what was found (dimensions, sample type, voxel size) and where each value "
+       "comes from (sidecar, files, file name, grey values, assumed), notes, check (true when a "
+       "value was guessed or assumed and is worth a look), CAD models (STL) next to it and the "
+       "project directory open_scan would use. Raw files without a sidecar are read from their "
+       "name (512x512x400, 16bit, 0.05mm) or their grey values.",
+       objectSchema(
+           {{"path",
+             {{"type", "string"}, {"format", "path"}, {"description", "Scan file or directory"}}}},
+           {"path"})},
+      {"open_scan",
+       "Opens a scan in one call (ADR 0039): finds what it is (inspect_scan), creates a project "
+       "next to it (<name>.vsproj) when none is open, or opens that project again when it holds "
+       "this scan already, and imports the scan with the detected parameters. With a project "
+       "open, the scan becomes another object of it; an STL file becomes a CAD model. params "
+       "replace detected values (for example voxel_size_mm). With background: true it returns "
+       "at once; wait gives the step. Then suggest_analyses tells which analyses fit.",
+       objectSchema(
+           {{"path",
+             {{"type", "string"}, {"format", "path"}, {"description", "Scan file or directory"}}},
+            {"project",
+             {{"type", "string"},
+              {"format", "path"},
+              {"description",
+               "Project directory to create or open for the scan; default: the open project, "
+               "else next to the scan"}}},
+            {"params",
+             {{"type", "object"},
+              {"default", Json::object()},
+              {"description", "Parameters of the import that replace the detected ones"}}},
+            {"background", {{"type", "boolean"}, {"default", false}}}},
+           {"path"})},
+      {"suggest_analyses",
+       "Analyses that suit a dataset, most useful first, each with the reason from what was "
+       "measured and the parameters to run it with (run_<operation>): porosity and wall thickness "
+       "for a part, material segmentation when the histogram shows several materials, the "
+       "nominal-actual comparison when a CAD model is in the project or next to the scan, "
+       "battery cell inspection for a round part of several materials or a name like 18650, "
+       "fibre orientation for composites by name, beam hardening correction for cupping, "
+       "denoising when materials overlap, the report after a porosity analysis. Measures a "
+       "coarse level only, so it is quick for any size; also gives these facts.",
+       objectSchema(artifactProperties())},
       {"browse",
        "Lists a directory on the machine running VoxelSieve, to choose raw volumes, TIFF stacks, "
        "DICOM stacks, gzipped XML projects, datasets (.vsieve), projects and inspection orders. "
@@ -780,7 +822,9 @@ std::vector<GuiMethod> Gui::methods() const {
        "name.raw.gz with name.json), tiff (a "
        "TIFF file, a ZIP archive or a directory with TIFF slices, for import_tiff), dicom (a "
        "DICOM file or a directory with DICOM slices, for import_dicom), gzipped_xml (a gzipped XML "
-       "project, for import_gzipped_xml) or file; directories carry directory: true.",
+       "project, for import_gzipped_xml), mesh (an STL file) or file; raw also stands for files "
+       "named like raw volumes (.raw, .vol, .rec, .img, .bin, .dat) without a sidecar, whose "
+       "layout open_scan detects; directories carry directory: true.",
        objectSchema({{"path",
                       {{"type", "string"},
                        {"format", "path"},
@@ -2325,6 +2369,129 @@ void Gui::checkAllowedPath(const std::filesystem::path& path) const {
                               "): " + resolved.string());
 }
 
+Json Gui::openScan(const Json& params, const std::function<void(double)>& progress) {
+  const std::filesystem::path path = std::filesystem::weakly_canonical(
+      std::filesystem::absolute(params.at("path").get<std::string>()));
+  const Json inspected = inspectScan(path);
+  const std::string kind = inspected.at("kind").get<std::string>();
+  Json result = {{"inspected", inspected}, {"created", false}, {"reopened", false}};
+  std::string operation;
+  Json run_params;
+  {
+    const std::scoped_lock lock(mutex_);
+    if (running_) {
+      throw std::invalid_argument("Operation '" + running_operation_ + "' is still running");
+    }
+    if (kind == "project") {
+      project_ = Project::open(path);
+      rememberProject();
+      result["reopened"] = true;
+      result["project_dir"] = project_->dir().string();
+      return result;
+    }
+    const Json& given = params.at("params");
+    if (inspected.at("operation").is_null() ||
+        (!inspected.at("ready").get<bool>() && !given.contains("dims"))) {
+      std::string notes;
+      for (const Json& note : inspected.at("notes")) {
+        notes += (notes.empty() ? "" : " ") + note.get<std::string>();
+      }
+      throw std::invalid_argument("Cannot open " + path.string() + ": " + notes);
+    }
+    if (kind == "mesh" && !project_) {
+      throw std::invalid_argument(
+          "A CAD model is compared with a scan: open the scan first, then add the model");
+    }
+    if (!project_ || params.contains("project")) {
+      const std::filesystem::path dir =
+          params.contains("project")
+              ? std::filesystem::path(params.at("project").get<std::string>())
+              : std::filesystem::path(inspected.at("project_dir").get<std::string>());
+      checkAllowedPath(dir);
+      if (std::filesystem::exists(dir / "project.json")) {
+        project_ = Project::open(dir);
+        result["reopened"] = true;
+      } else {
+        project_ = Project::create(dir, inspected.at("name").get<std::string>());
+        result["created"] = true;
+      }
+      rememberProject();
+    }
+    result["project_dir"] = project_->dir().string();
+    if (result.at("reopened").get<bool>()) {
+      // Imported before: the project shows it as it was left.
+      const auto& steps = project_->steps();
+      for (std::size_t i = 0; i < project_->cursor(); ++i) {
+        const Step& step = steps[i];
+        if (step.status == "done" && step.params.contains("path") &&
+            step.params.at("path").is_string() &&
+            std::filesystem::path(step.params.at("path").get<std::string>()) == path) {
+          result["imported_before"] = step.id;
+          return result;
+        }
+      }
+    }
+    operation = inspected.at("operation").get<std::string>();
+    run_params = inspected.value("params", Json::object());
+    run_params.update(given);
+    run_params["background"] = params.at("background");
+  }
+  checkAllowedPaths(std::string(kRunPrefix) + operation, run_params);
+  result["run"] = runOperation(operation, run_params, progress);
+  return result;
+}
+
+Json Gui::suggestAnalysesOf(const Json& params) const {
+  std::filesystem::path dir;
+  AnalysisContext context;
+  {
+    const std::scoped_lock lock(mutex_);
+    const ArtifactRef ref = artifactRef(params, artifact::kDataset);
+    dir = project().resolve(ref);
+    const auto& steps = project().steps();
+    const auto step_of = [&](int id) -> const Step* {
+      const auto it = std::ranges::find(steps, id, &Step::id);
+      return it == steps.end() ? nullptr : &*it;
+    };
+    const Step* made = step_of(ref.step);
+    const std::string object = made != nullptr ? made->object : std::string();
+    const std::vector<ProjectObject> objects = project().objects();
+    for (const ProjectObject& candidate : objects) {
+      if (candidate.kind == kMeshObject) {
+        context.meshes.emplace_back(candidate.id, candidate.name);
+      } else if (candidate.id == object) {
+        context.name = candidate.name;
+        // The scan the object was imported from: its name, and CAD models next to it.
+        if (const Step* created = step_of(candidate.created_by);
+            created != nullptr && created->params.contains("path") &&
+            created->params.at("path").is_string()) {
+          const std::filesystem::path scan = created->params.at("path").get<std::string>();
+          context.name += " " + scan.filename().string();
+          std::error_code error;
+          if (std::filesystem::is_regular_file(scan, error)) {
+            context.nearby_meshes = cadModelsNextTo(scan);
+          }
+        }
+      }
+    }
+    for (std::size_t i = 0; i < project().cursor(); ++i) {
+      const Step& step = steps[i];
+      const bool on_it = (!object.empty() && step.object == object) ||
+                         std::ranges::any_of(step.inputs, [&](const auto& input) {
+                           return input.second.step == ref.step;
+                         });
+      if (on_it && step.status == "done") {
+        context.done.push_back(step.operation);
+      }
+    }
+    for (const auto& operation : registry_.all()) {
+      context.available.push_back(operation->info().id);
+    }
+  }
+  const auto dataset = openDataset(dir);
+  return suggestAnalyses(*dataset, context);
+}
+
 Json Gui::call(const std::string& method, const Json& arguments,
                const std::function<void(double)>& progress) {
   const Json params = arguments.is_null() ? Json::object() : arguments;  // `{}` in C++ is null
@@ -2373,6 +2540,19 @@ Json Gui::call(const std::string& method, const Json& arguments,
                                 "; import raw volumes, TIFF stacks, DICOM stacks and gzipped XML "
                                 "projects with run_import_raw, run_import_tiff, run_import_dicom "
                                 "and run_import_gzipped_xml");
+  }
+  if (method == "open_scan" || method == "inspect_scan" || method == "suggest_analyses") {
+    // Not under the lock: reading a scan's files and measuring a dataset take a while.
+    const std::vector<GuiMethod> known = methods();
+    const Json checked =
+        validateParameters(std::ranges::find(known, method, &GuiMethod::name)->parameters, params);
+    if (method == "inspect_scan") {
+      return inspectScan(checked.at("path").get<std::string>());
+    }
+    if (method == "suggest_analyses") {
+      return suggestAnalysesOf(checked);
+    }
+    return openScan(checked, progress);
   }
   if (method == "view_objects" || method == "wait" || method == "histogram" ||
       method == "cad_features") {

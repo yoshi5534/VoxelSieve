@@ -57,12 +57,12 @@ constexpr std::array<std::string_view, 8> kHiddenAnalysisMethods = {
     "view_rename", "view_delete", "list_operations", "object_add"};
 
 /// Methods that change nothing: no project, no file, no state of the GUI.
-constexpr std::array<std::string_view, 18> kReadOnlyMethods = {
+constexpr std::array<std::string_view, 20> kReadOnlyMethods = {
     "step",           "project_status",  "objects",      "results",
     "step_telemetry", "list_operations", "dataset_info", "histogram",
     "list_files",     "view_slice",      "view_objects", "view_list",
     "view_image",     "browse",          "read_file",    "import_preview",
-    "wait",           "cad_features"};
+    "wait",           "cad_features",    "inspect_scan", "suggest_analyses"};
 
 /// Methods that remove something for good. Everything else adds steps, which undo takes back.
 constexpr std::array<std::string_view, 1> kDestructiveMethods = {"view_delete"};
@@ -306,18 +306,20 @@ const std::vector<Prompt>& prompts() {
        "and state whether the limits are met, quoting the values of the steps, not estimates."},
       {"first_look", "A first look at a CT scan: size, voxel size, grey values and three slices.",
        Json::array({{{"name", "scan"},
-                     {"description", "Raw volume with JSON sidecar, TIFF stack or .vsieve dataset"},
+                     {"description", "Raw volume, TIFF or DICOM stack or .vsieve dataset"},
                      {"required", true}},
                     {{"name", "project"},
                      {"description", "Project directory; default: next to the scan"},
                      {"required", false}}}),
        "Take a first look at the CT scan {scan} with VoxelSieve.\n"
-       "1. Open or create the project {project} (next to the scan if none is given) and import "
-       "the scan.\n"
-       "2. Report dimensions, voxel size and memory use from dataset_info.\n"
-       "3. Show the middle slices along z, y and x with view_slice and describe the part, "
+       "1. Call inspect_scan on it and say what it is and where its size and voxel size come "
+       "from; when a value was guessed (check: true), say so.\n"
+       "2. Open it with open_scan (background: true, then wait), in the project {project} if one "
+       "is given, else next to the scan.\n"
+       "3. Report dimensions, voxel size and memory use from dataset_info.\n"
+       "4. Show the middle slices along z, y and x with view_slice and describe the part, "
        "visible voids and artefacts such as rings or streaks.\n"
-       "4. Suggest which analysis fits next (porosity, comparison with CAD, materials)."},
+       "5. Call suggest_analyses and recommend the analyses that fit, with their reasons."},
   };
   return all;
 }
@@ -536,7 +538,8 @@ Json McpServer::callTool(const Json& id, const Json& params) {
   // the background, and not for other tools such as wait.
   const bool background = arguments.is_object() && arguments.contains("background") &&
                           arguments.at("background") == true;
-  const bool runs_operation = (name.starts_with("run_") || name == "object_add") && !background;
+  const bool runs_operation =
+      (name.starts_with("run_") || name == "object_add" || name == "open_scan") && !background;
   {
     const std::scoped_lock lock(mutex_);
     running_[id.dump()] = runs_operation;

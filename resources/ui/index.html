@@ -37,11 +37,18 @@
     <ol id="protocol"></ol>
   </aside>
   <section id="workspace">
-    <div id="welcome" class="panel">
-      <h1>From CT scan to test report</h1>
-      <p>A project records every step and is always saved.</p>
-      <p><button class="primary" id="welcome-new">New project</button>
-        <button id="welcome-open">Open project</button></p>
+    <div id="welcome" class="panel welcome">
+      <div id="welcome-start">
+        <h1>Open a CT scan</h1>
+        <p>Choose a raw file, a TIFF stack (folder, multi-page TIFF or ZIP), a folder of DICOM
+          slices or a VoxelSieve dataset. VoxelSieve finds out what it is, shows the part in 3D
+          and suggests the analyses that suit it. Your files stay as they are; the project is
+          saved next to the scan and records every step.</p>
+        <p><button class="primary big" id="welcome-scan">Open a scan …</button></p>
+        <p class="hint">Or <button class="link" id="welcome-open">open a project</button> ·
+          <button class="link" id="welcome-new">start an empty project</button></p>
+      </div>
+      <div id="welcome-check" hidden></div>
     </div>
     <div id="wizard" hidden>
       <ol class="stages">

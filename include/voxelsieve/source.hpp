@@ -207,6 +207,32 @@ class GzipRawSource final : public VolumeSource {
 /// The JSON sidecar of a raw volume: `scan.json` for `scan.raw` and for `scan.raw.gz`.
 [[nodiscard]] std::filesystem::path rawSidecarPath(const std::filesystem::path& raw);
 
+/// The layout of a raw volume file without a sidecar, as detectRawLayout found it (ADR 0039).
+struct RawLayoutGuess {
+  /// Dimensions, sample type, byte order and header size; the voxel size when the name gives it.
+  RawLayout layout;
+  bool voxel_size_known = false;
+  /// Where the dimensions come from: "file name" or "grey values".
+  std::string dims_from;
+  /// How clearly the grey values show the rows and slices: 1 - (difference of neighbours along
+  /// y and z) / (difference of voxels far apart), the worse of the two; 1 for dimensions from the
+  /// file name that the grey values do not contradict.
+  double confidence = 0.0;
+};
+
+/// Finds the layout of a raw volume file that has no sidecar (ADR 0039). The name (of the file,
+/// else of its directory) may give the dimensions ("512x512x400"), the sample type ("16bit",
+/// "uint8"), the byte order ("bigendian") and the voxel size ("0.05mm", "50um"). What it does
+/// not give is read from the grey values: the sample type and byte order from which bytes vary
+/// smoothly, the row length and the slice size as the offsets at which voxels are most alike
+/// (neighbours along y and z), and the number of slices from the file size; what is left over,
+/// less than a slice and at most 1 MiB, is a header at the start. Gives nothing when the grey
+/// values show no rows and slices, such as noise or a compressed file whose name says nothing.
+[[nodiscard]] std::optional<RawLayoutGuess> detectRawLayout(const std::filesystem::path& path);
+
+/// The voxel size a file name (or its directory's) gives, as detectRawLayout reads it.
+[[nodiscard]] std::optional<VoxelSize> voxelSizeFromName(const std::filesystem::path& path);
+
 /// A raw volume file: gzip-compressed (GzipRawSource) or plain (MappedRawSource). `header_bytes`
 /// receives the header size skipped.
 [[nodiscard]] std::unique_ptr<VolumeSource> openRawVolume(const std::filesystem::path& path,

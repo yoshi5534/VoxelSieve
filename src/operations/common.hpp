@@ -26,6 +26,7 @@
 #include "voxelsieve/dicom.hpp"
 #include "voxelsieve/diconde.hpp"
 #include "voxelsieve/dimensional.hpp"
+#include "voxelsieve/first_look.hpp"
 #include "voxelsieve/gzipped_xml.hpp"
 #include "voxelsieve/io.hpp"
 #include "voxelsieve/isolate.hpp"
