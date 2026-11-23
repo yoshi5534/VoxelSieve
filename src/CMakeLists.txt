@@ -30,6 +30,13 @@ configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp 
 
 add_library(voxelsieve SHARED
   builtin_operations.cpp
+  operations/battery.cpp
+  operations/common.cpp
+  operations/import.cpp
+  operations/inspection.cpp
+  operations/materials.cpp
+  operations/objects.cpp
+  operations/surface.cpp
   operation.cpp
   project.cpp
   slice.cpp
