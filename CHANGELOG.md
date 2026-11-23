@@ -59,6 +59,30 @@
   import are flushed to the disk before they replace the old file, and a resumed import writes
   again the bricks whose files did not reach the disk.
 
+- **Shorter answers over MCP**: `project_status`, `project_open`, `project_create`,
+  `project_save_as`, `undo` and `redo` list each step with its id, operation, status, outputs
+  and summary instead of all parameters and the telemetry, and every tool result comes without
+  indentation. A project of six steps answered with 34 kB on each of these calls. The new
+  method `step` returns one step in full.
+
+- **Missing prerequisites run as steps of their own**: `compare_cad`, `compare_objects`,
+  `measure_dimensions` and `wall_thickness` extract the surface first when the object has none,
+  as a `surface` step in the protocol that later steps use; the answer names it under
+  `preceded_by`. Before, the first three failed with "No surface available" and the wall
+  thickness extracted a surface of its own on every run. Plugins declare such an input with
+  `PortInfo::made_by`.
+
+- **Reports without a porosity analysis**: `report` writes a report of the nominal-actual
+  comparison, the wall thickness, the fibre orientation or the materials alone. An order with
+  limits for pores still needs the porosity result.
+
+- **Mistakes found before a step runs**: a path that does not exist and an inspection order
+  with an unknown key are rejected before the step is made, so they leave no failed step in the
+  protocol (`Operation::check`). A step that failed is no longer listed as active.
+
+- **`--version`** in every tool. A build from a checkout calls itself by what git says, such as
+  `0.7.0-12-g21fd9a5`, also as the MCP server and in reports, instead of 0.3.1.
+
 - **Battery inspection of a part without an electrode stack**: a volume whose sections show at
   most one layer, such as a casting given by mistake, made the inspection fail with "Region
   outside dataset level 0"; it now finishes with the warning that no electrode stack was found

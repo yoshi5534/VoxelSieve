@@ -1260,7 +1260,7 @@ class CompareCad final : public Operation {
         "the signed deviation of every surface point from it: positive where the part has more "
         "material than nominal. Writes compare.json, deviation.ply (coloured mesh), views "
         "along the axes and optionally the CAD model in scan coordinates (cad_aligned.stl).";
-    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan"}};
+    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan", false, "surface"}};
     info_.outputs = {{"comparison", artifact::kComparison, "Deviations from the CAD model"}};
     info_.parameters = {
         {"type", "object"},
@@ -1403,14 +1403,14 @@ class WallThickness final : public Operation {
         "of the largest sphere inside the material that touches the point, also in corners and "
         "at ribs. Pores thin the wall. Surface regions thinner than min_wall_mm or thicker than "
         "max_wall_mm are listed. Writes wall_thickness.json, thickness.ply (coloured mesh) and "
-        "views; without a surface step, the surface is extracted first. With volume_map, also "
+        "views; a missing surface is extracted first, as a step of its own. With volume_map, also "
         "the local thickness of every material voxel (largest sphere containing it): the "
         "dataset thickness_map, thickness_map.json and slices through the thickest spot; it "
         "shows walls inside the part and material accumulations, and colours the slice view. "
         "With a nominal-actual comparison, also the nominal thickness of the CAD model at "
         "every point, by the same method, and the deviation of the actual thickness from it.";
     info_.inputs = {{"dataset", artifact::kDataset, "Dataset"},
-                    {"surface", artifact::kSurface, "Surface of the dataset", true},
+                    {"surface", artifact::kSurface, "Surface of the dataset", false, "surface"},
                     {"comparison", artifact::kComparison,
                      "Nominal-actual comparison: its CAD model where it lies on the scan, for the "
                      "nominal thickness",
@@ -1509,18 +1509,10 @@ class WallThickness final : public Operation {
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const auto dir = context.output_dir / "wall_thickness";
     std::filesystem::create_directories(dir);
-    std::filesystem::path surface_file;
-    if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
-      surface_file = surface->second / "surface.vss";
-    } else {
-      context.log("No surface step given: extracted the surface from the dataset");
-      const TelemetryPhase phase("surface mask");
-      surface_file = dir / "surface.vss";
-      (void)writeSurface(dataset, surface_file);
-    }
+    const std::filesystem::path surface_file = context.inputs.at("surface") / "surface.vss";
     // The thickness map takes longer than the surface.
     const bool volume_map = p.at("volume_map").get<bool>();
-    const double start = context.inputs.contains("surface") ? 0.0 : (volume_map ? 0.1 : 0.2);
+    const double start = 0.0;
     const double surface_end = volume_map ? 0.4 : 0.85;
     context.progress(start);
     options.progress = [&](double fraction) {
@@ -1723,6 +1715,11 @@ class InspectionRegions final : public Operation {
             {"description", "Add each region as a mesh object of the project"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  void check(const Json& params) const override {
+    Operation::check(params);
+    // A misspelt limit is found before the step runs, not after the analysis.
+    checkInspectionOrder(readOrder(params));
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const auto zones = orderZones(readOrder(context.params), context);
@@ -1787,9 +1784,10 @@ class Report final : public Operation {
         "coloured slices, and a fibre orientation the fibre families, evaluated against the "
         "\"fibres\" requirements of the order (direction tolerance, share). A wall thickness "
         "analysis adds its statistics, views and thin regions, evaluated against the "
-        "\"wall_thickness\" limits of the order (min_mm, max_mm).";
+        "\"wall_thickness\" limits of the order (min_mm, max_mm). Without a porosity result the "
+        "report covers the other analyses alone; the order then holds no limits for pores.";
     info_.inputs = {
-        {"porosity", artifact::kPorosity, "Porosity result"},
+        {"porosity", artifact::kPorosity, "Porosity result", true},
         {"surface", artifact::kSurface, "Surface for the 3D views of the part", true},
         {"comparison", artifact::kComparison, "Nominal-actual comparison", true},
         {"dataset", artifact::kDataset, "Dataset for the slices through the materials", true},
@@ -1811,6 +1809,11 @@ class Report final : public Operation {
            {{"type", "string"}, {"format", "path"}, {"description", "Report template file"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  void check(const Json& params) const override {
+    Operation::check(params);
+    // A misspelt limit is found before the step runs, not after the analysis.
+    checkInspectionOrder(readOrder(params));
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -1818,24 +1821,41 @@ class Report final : public Operation {
     const std::string report_template = p.contains("template_path")
                                             ? readTextFile(p.at("template_path").get<std::string>())
                                             : std::string(defaultReportTemplate());
-    const auto porosity_dir = context.inputs.at("porosity");
-    const PorosityResult porosity = loadPorosityResult(porosity_dir);
-    const PorosityOptions options = usedPorosityOptions(porosity_dir);
     std::optional<TelemetryPhase> phase(std::in_place, "evaluation");
-    const auto zones = orderZones(order, context);
-    // The dataset measures the part volume where a region ends at the part's surface.
-    std::optional<Dataset> analysed;
-    if (const auto it = context.inputs.find("dataset"); it != context.inputs.end()) {
-      analysed = Dataset::open(it->second);
-    }
-    const Evaluation evaluation = evaluate(porosity, zones, analysed ? &*analysed : nullptr);
     std::vector<std::string> warnings;
-    Json data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
-    if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
-      context.log("Rendering the part and its pores");
-      phase.reset();
-      phase.emplace("images");
-      addPartImages(data, SurfaceMask::open(surface->second / "surface.vss"), porosity);
+    Json data;
+    std::size_t evaluated_zones = 0;
+    if (const auto found = context.inputs.find("porosity"); found != context.inputs.end()) {
+      const auto& porosity_dir = found->second;
+      const PorosityResult porosity = loadPorosityResult(porosity_dir);
+      const PorosityOptions options = usedPorosityOptions(porosity_dir);
+      const auto zones = orderZones(order, context);
+      // The dataset measures the part volume where a region ends at the part's surface.
+      std::optional<Dataset> analysed;
+      if (const auto it = context.inputs.find("dataset"); it != context.inputs.end()) {
+        analysed = Dataset::open(it->second);
+      }
+      const Evaluation evaluation = evaluate(porosity, zones, analysed ? &*analysed : nullptr);
+      evaluated_zones = evaluation.zones.size();
+      data = reportData(order, porosity, options, evaluation, porosity_dir, &warnings);
+      if (const auto surface = context.inputs.find("surface"); surface != context.inputs.end()) {
+        context.log("Rendering the part and its pores");
+        phase.reset();
+        phase.emplace("images");
+        addPartImages(data, SurfaceMask::open(surface->second / "surface.vss"), porosity);
+      }
+    } else {
+      // A report of the deviations, the wall thickness, the fibres or the materials alone.
+      const bool any = std::ranges::any_of(
+          std::array{"comparison", "materials", "orientation", "wall_thickness"},
+          [&](const char* name) { return context.inputs.contains(name); });
+      if (!any) {
+        throw std::invalid_argument(
+            "Nothing to report: the project has no result of a porosity analysis, a "
+            "nominal-actual comparison, a wall thickness analysis, a fibre orientation analysis "
+            "or a material segmentation");
+      }
+      data = reportData(order, &warnings);
     }
     if (const auto comparison = context.inputs.find("comparison");
         comparison != context.inputs.end()) {
@@ -1869,8 +1889,7 @@ class Report final : public Operation {
     }
     OperationResult result;
     result.outputs["report"] = "report";
-    result.summary = {{"evaluated_zones", evaluation.zones.size()},
-                      {"missing_fields", warnings.size()}};
+    result.summary = {{"evaluated_zones", evaluated_zones}, {"missing_fields", warnings.size()}};
     if (data.contains("evaluation")) {
       result.summary["passed"] = data["evaluation"].value("passed", true);
     }
@@ -2984,7 +3003,8 @@ class CompareObjects final : public Operation {
         "volume's surface), where the objects lie now. Positive where the part has more material "
         "than nominal. Place the objects first with move or the align operations; refine=true "
         "fits once more for the measurement only, without moving them.";
-    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scanned object"}};
+    info_.inputs = {
+        {"surface", artifact::kSurface, "Surface of the scanned object", false, "surface"}};
     info_.outputs = {{"comparison", artifact::kComparison, "Deviations from the nominal object"}};
     info_.parameters = {
         {"type", "object"},
@@ -3097,7 +3117,7 @@ class MeasureDimensions final : public Operation {
         "(see examples/first_article_plan.json). Elements are found on the CAD model by a point "
         "on them ('at'); cad_features lists the ones it has. Writes measurement.json, "
         "characteristics.csv and views with the characteristic numbers as balloons.";
-    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan"},
+    info_.inputs = {{"surface", artifact::kSurface, "Surface of the scan", false, "surface"},
                     {"comparison", artifact::kComparison,
                      "Nominal-actual comparison that placed the CAD model"}};
     info_.outputs = {
@@ -3227,6 +3247,11 @@ class FirstArticleReport final : public Operation {
             {"description", "Include the porosity result when there is one"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  void check(const Json& params) const override {
+    Operation::check(params);
+    // A misspelt limit is found before the step runs, not after the analysis.
+    checkInspectionOrder(readOrder(params));
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -3327,6 +3352,11 @@ class BatteryReport final : public Operation {
            {{"type", "string"}, {"format", "path"}, {"description", "Report template file"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  void check(const Json& params) const override {
+    Operation::check(params);
+    // A misspelt limit is found before the step runs, not after the analysis.
+    checkInspectionOrder(readOrder(params));
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;
@@ -3416,6 +3446,12 @@ class ExportDiconde final : public Operation {
             {"description", "Write the material segmentation as a series of labels"}}}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
+  void check(const Json& params) const override {
+    // "path" is where the export goes: it need not exist yet.
+    Json read = params;
+    read.erase("path");
+    Operation::check(read);
+  }
 
   [[nodiscard]] OperationResult run(const OperationContext& context) const override {
     const Json& p = context.params;

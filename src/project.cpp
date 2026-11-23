@@ -509,6 +509,8 @@ const Step& Project::run(
   step.operation = info.id;
   step.title = info.title;
   step.params = validateParameters(info.parameters, params);
+  // Before the step exists: a mistyped path or order leaves the protocol as it was.
+  operation->check(step.params);
   const std::vector<ProjectObject> known = objects();
   if (!target.object.empty() &&
       std::ranges::find(known, target.object, &ProjectObject::id) == known.end()) {
@@ -540,6 +542,20 @@ const Step& Project::run(
       step.inputs[port.name] = given->second;
     } else if (const auto found = default_input(port.type)) {
       step.inputs[port.name] = *found;
+    } else if (!port.made_by.empty() && port.made_by != info.id) {
+      // The prerequisite runs first, as a step of its own in the protocol.
+      StepTarget made_for;
+      made_for.object = preferred;
+      const Step& made =
+          run(registry, port.made_by, Json::object(), {}, progress, cancel, made_for);
+      for (const auto& [name, type] : made.output_types) {
+        if (type == port.type) {
+          step.inputs[port.name] = {made.id, name};
+        }
+      }
+      if (!step.inputs.contains(port.name)) {
+        throw std::logic_error(port.made_by + " makes no " + port.type);
+      }
     } else if (!port.optional) {
       throw std::invalid_argument(
           "No " + port.type + " available for input '" + port.name + "' of " + info.id +

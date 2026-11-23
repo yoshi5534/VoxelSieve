@@ -148,6 +148,12 @@ void checkInspectionOrder(const nlohmann::json& order);
 [[nodiscard]] std::vector<InspectionZone> inspectionZonesFromJson(
     const nlohmann::json& order, const std::filesystem::path& base_dir = {});
 
+/// The data of a report without a porosity analysis: the order with its mandatory fields, to
+/// which addComparison, addWallThickness, addMaterials and addFibreOrientation add their results.
+/// Throws when the order holds limits for pores, which nothing would check.
+[[nodiscard]] nlohmann::json reportData(const nlohmann::json& order,
+                                        std::vector<std::string>* warnings = nullptr);
+
 /// Everything a report template can use: the inspection order as given, completed with
 /// "not given" for missing mandatory fields, the analysis settings and results formatted
 /// for print, the evaluation and the projection images as data URIs. `warnings` receives one

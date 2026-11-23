@@ -934,12 +934,28 @@ std::vector<InspectionZone> inspectionZonesFromJson(const nlohmann::json& order,
   return zones;
 }
 
+nlohmann::json reportData(const nlohmann::json& order, std::vector<std::string>* warnings) {
+  checkInspectionOrder(order);
+  if (order.is_object() && order.contains("acceptance") &&
+      !order.at("acceptance").value("zones", Json::array()).empty()) {
+    // The limits would not be checked and the report would still say that the part passes.
+    throw std::invalid_argument(
+        "The order has acceptance limits for pores, but there is no porosity result");
+  }
+  Json data = order.is_object() ? order : Json::object();
+  completeMandatory(data, kMandatoryFields, warnings);
+  data["software"] = {{"name", "VoxelSieve"}, {"version", VOXELSIEVE_VERSION}};
+  numberSections(data);
+  return data;
+}
+
 nlohmann::json reportData(const nlohmann::json& order, const PorosityResult& result,
                           const PorosityOptions& options, const Evaluation& evaluation,
                           const std::filesystem::path& image_dir,
                           std::vector<std::string>* warnings) {
   Json data = order.is_object() ? order : Json::object();
   completeMandatory(data, kMandatoryFields, warnings);
+  data["has_porosity"] = true;
   const VoxelSize& v = result.voxel_size;
   const double voxel_volume = v.volumeMm3();
 

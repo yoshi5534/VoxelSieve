@@ -240,8 +240,14 @@ class ProjectTest(TempDir):
 
     def test_failing_operation_raises_and_stays_in_the_protocol(self):
         project = vs.Project.create(self.tmp / "project")
+        # A path that does not exist is refused before a step starts.
         with self.assertRaises(Exception):
             project.run("open_dataset", path=self.tmp / "missing.vsieve")
+        self.assertEqual(len(project.steps), 0)
+        # A directory that is no dataset fails in the step, which stays in the protocol.
+        (self.tmp / "empty.vsieve").mkdir()
+        with self.assertRaises(Exception):
+            project.run("open_dataset", path=self.tmp / "empty.vsieve")
         self.assertEqual(project.steps[-1].status, "failed")
         with self.assertRaises(Exception):
             project.run("no_such_operation")

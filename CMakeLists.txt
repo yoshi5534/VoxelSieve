@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 # The release packages pass the version of their tag (-DVOXELSIEVE_VERSION=x.y.z), so programs,
 # file names and the MCP bundle all carry it; builds from a branch use the version below.
-if(NOT VOXELSIEVE_VERSION)
-  set(VOXELSIEVE_VERSION 0.3.1)
+# The line below holds the latest release; the release workflows read and rewrite it.
+if(VOXELSIEVE_VERSION)
+  set(VOXELSIEVE_VERSION_TEXT "${VOXELSIEVE_VERSION}")
+else()
+  set(VOXELSIEVE_VERSION 0.7.0)
 endif()
 # `pip install .` (pyproject.toml, ADR 0031) takes the dependencies from vcpkg like the presets do
 # when VCPKG_ROOT is set, with the same triplets and installed tree; otherwise from the system.
@@ -20,6 +23,35 @@ if(SKBUILD AND DEFINED ENV{VCPKG_ROOT} AND NOT CMAKE_TOOLCHAIN_FILE)
   set(VCPKG_HOST_TRIPLET ${VCPKG_TARGET_TRIPLET})
 endif()
 project(VoxelSieve VERSION ${VOXELSIEVE_VERSION} LANGUAGES CXX)
+
+# What the programs call themselves (--version, reports, the MCP server): the version of the
+# release, or for a build from a checkout what git says about it, such as 0.7.0-12-g21fd9a5
+# (twelve commits after v0.7.0), found when the build directory is configured.
+if(NOT VOXELSIEVE_VERSION_TEXT)
+  set(VOXELSIEVE_VERSION_TEXT "${VOXELSIEVE_VERSION}")
+  find_package(Git QUIET)
+  if(Git_FOUND)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*" --dirty
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      OUTPUT_VARIABLE described OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
+      RESULT_VARIABLE describe_failed)
+    if(NOT describe_failed AND described MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+.*)$")
+      set(VOXELSIEVE_VERSION_TEXT "${CMAKE_MATCH_1}")
+    else()
+      # No tags, as in a shallow clone: the latest release this source knows, and the commit.
+      execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
+        RESULT_VARIABLE no_commit)
+      if(NOT no_commit AND commit)
+        set(VOXELSIEVE_VERSION_TEXT "${VOXELSIEVE_VERSION}+g${commit}")
+      endif()
+    endif()
+  endif()
+endif()
+message(STATUS "VoxelSieve ${VOXELSIEVE_VERSION_TEXT}")
 
 # The presets set VCPKG_TARGET_TRIPLET. CMake only loads a toolchain on the first configure of a
 # build directory, so a directory configured before the switch to vcpkg silently keeps finding the

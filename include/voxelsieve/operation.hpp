@@ -47,6 +47,11 @@ struct PortInfo {
   /// An optional input is wired to the latest active output of its type when there is one, and
   /// left out otherwise.
   bool optional = false;
+  /// The operation that makes this input from the other data of the object, with its default
+  /// parameters: when the project has no output of the type, it runs that operation first, as a
+  /// step of its own that later steps use too (the surface a comparison needs). Empty: a
+  /// missing input is an error.
+  std::string made_by = {};
 };
 
 struct OperationInfo {
@@ -126,6 +131,12 @@ class Operation {
   /// checks the free disk space of the output directory against it, and admits the run only when
   /// its memory fits beside the runs of other operations (`admitOperation`). Default: unknown.
   [[nodiscard]] virtual OperationEstimate estimate(const OperationContext& context) const;
+  /// Checks the validated parameters before a project makes a step of the run, cheaply: what
+  /// throws here leaves no failed step in the protocol and no undone steps removed. Default:
+  /// every parameter that is a path (format "path") names something that exists. Operations
+  /// override it to check more (the keys of an inspection order), or less when a path of theirs
+  /// is one to write to.
+  virtual void check(const nlohmann::json& params) const;
 };
 
 class OperationRegistry {

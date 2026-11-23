@@ -79,7 +79,7 @@
 <h2>3 Test method</h2>
 <table class="fields">
   <tr><th>Method</th><td>Industrial computed tomography according to ISO 15708</td></tr>
-  <tr><th>Evaluation</th><td>Porosity analysis{{#materials}}, material segmentation{{/materials}}{{#fibres}}, fibre orientation{{/fibres}}{{#comparison}}, nominal-actual comparison{{/comparison}}{{#wall_thickness}}, wall thickness analysis{{/wall_thickness}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
+  <tr><th>Evaluation</th><td>{{#has_porosity}}Porosity analysis{{/has_porosity}}{{^has_porosity}}CT evaluation{{/has_porosity}}{{#materials}}, material segmentation{{/materials}}{{#fibres}}, fibre orientation{{/fibres}}{{#comparison}}, nominal-actual comparison{{/comparison}}{{#wall_thickness}}, wall thickness analysis{{/wall_thickness}} with {{software.name}} {{software.version}}{{#evaluation}}, assessment according to {{evaluation.guideline}}{{/evaluation}}</td></tr>
   <tr><th>Deviations from the method</th><td>{{#method.deviations}}{{method.deviations}}{{/method.deviations}}{{^method.deviations}}none{{/method.deviations}}</td></tr>
 </table>
 </section>
@@ -95,22 +95,28 @@
   <tr><th>Number of projections</th><td>{{scan.projections}}</td></tr>
   <tr><th>Exposure time</th><td>{{scan.exposure_ms}} ms</td></tr>
   <tr><th>Reconstruction</th><td>{{scan.reconstruction}}</td></tr>
-  <tr><th>Voxel size</th><td>{{analysis.voxel_size}}</td></tr>
+  {{#analysis.voxel_size}}<tr><th>Voxel size</th><td>{{analysis.voxel_size}}</td></tr>{{/analysis.voxel_size}}
 </table>
 </section>
 
 <section>
 <h2>5 Evaluation parameters and detection limits</h2>
 <table class="fields">
+  {{#has_porosity}}
   <tr><th>Grey value air / material</th><td>{{analysis.air_level}} / {{analysis.material_level}} (noise σ = {{analysis.noise_sigma}})</td></tr>
   <tr><th>Smallest evaluated pore</th><td>{{analysis.min_pore_voxels}} voxels ({{analysis.min_pore_volume}}, sphere diameter {{analysis.min_pore_diameter}})</td></tr>
   <tr><th>Loosened microstructure</th><td>Blocks of {{analysis.zone_block}} edge length, from {{analysis.zone_min_porosity}} porosity and {{analysis.zone_sigma}} σ above the noise, material reference at the same depth below the surface{{#analysis.material_levels}}, each material compared with its own grey value{{/analysis.material_levels}}</td></tr>
+  {{/has_porosity}}
   <tr><th>Measurement uncertainty</th><td>{{uncertainty}}</td></tr>
 </table>
 </section>
 
 <section>
 <h2>6 Results</h2>
+{{^has_porosity}}
+<p>The results of the analyses follow in the next sections; the porosity was not analysed.</p>
+{{/has_porosity}}
+{{#has_porosity}}
 <table class="fields">
   <tr><th>Part volume</th><td>{{results.part_volume}}</td></tr>
   <tr><th>Pores</th><td>{{results.pore_count}}, in total {{results.pore_volume}}</td></tr>
@@ -130,6 +136,7 @@
   <figure><img src="{{{images.x}}}" alt="Projection along x"><figcaption>Projection along x</figcaption></figure>
 </div>
 <p class="note">Grey: wall thickness along the ray. Red: pores. Yellow: loosened microstructure.</p>
+{{/has_porosity}}
 
 {{#has_pores}}
 <h2>Pores by size{{#pores_more}} (the {{pores_listed}} largest of {{results.pore_count}}){{/pores_more}}</h2>

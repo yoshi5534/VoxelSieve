@@ -503,10 +503,18 @@ std::vector<GuiMethod> Gui::methods() const {
        objectSchema({{"path", path}, {"name", {{"type", "string"}}}}, {"path"})},
       {"project_open", "Opens an existing project.", objectSchema({{"path", path}}, {"path"})},
       {"project_status",
-       "The open project: name, directory, cursor and the step protocol with parameters, inputs, "
-       "outputs, messages and summaries, the objects and the analysis results (see results, "
-       "without files). Steps with active=false are undone.",
+       "The open project: name, directory, cursor and the step protocol, the objects and the "
+       "analysis results (see results, without files). Steps with active=false are undone. "
+       "Over MCP this and the other answers that show the project list each step briefly (id, "
+       "operation, status, outputs, summary, the messages of a step that failed); step returns "
+       "one step in full.",
        objectSchema(Json::object())},
+      {"step",
+       "One step of the protocol in full: parameters, inputs, outputs, messages, summary, the "
+       "time and resources it used and the size of its files.",
+       objectSchema(
+           {{"step",
+             {{"type", "integer"}, {"description", "Step id; default: the latest step"}}}})},
       {"project_save_as", "Copies the project to a new directory and continues there.",
        objectSchema({{"path", path}}, {"path"})},
       {"undo", "Undoes the latest active step. Instant; outputs stay until a new step runs.",
@@ -901,13 +909,7 @@ Json Gui::status() const {
     json["save_error"] = save_error_;
   }
   for (std::size_t i = 0; i < project_->steps().size(); ++i) {
-    const Step& step = project_->steps()[i];
-    json["steps"][i]["active"] = i < project_->cursor();
-    json["steps"][i]["size_bytes"] = directorySize(project_->stepDir(step));
-    // Older projects stored German titles; show the operation's current one.
-    if (const auto operation = registry_.find(step.operation)) {
-      json["steps"][i]["title"] = operation->info().title;
-    }
+    completeStep(json["steps"][i], i);
   }
   json["objects"] = Json::array();
   for (const ProjectObject& object : project_->objects()) {
@@ -924,6 +926,18 @@ Json Gui::status() const {
   json["can_redo"] = project_->canRedo();
   json["running"] = running;
   return json;
+}
+
+void Gui::completeStep(Json& json, std::size_t index) const {
+  const Project& project = this->project();
+  const Step& step = project.steps()[index];
+  // A step that failed gave nothing later steps use: it is in the protocol, but not active.
+  json["active"] = index < project.cursor() && step.status != "failed";
+  json["size_bytes"] = directorySize(project.stepDir(step));
+  // Older projects stored German titles; show the operation's current one.
+  if (const auto operation = registry_.find(step.operation)) {
+    json["title"] = operation->info().title;
+  }
 }
 
 ArtifactRef Gui::artifactRef(const Json& params, const std::string& type) const {
@@ -2216,11 +2230,25 @@ Json Gui::executeRun(PreparedRun& run, const std::function<void(double)>& progre
   };
   try {
     working.setPathCheck([this](const std::filesystem::path& path) { checkAllowedPath(path); });
+    int last_id = 0;
+    for (const Step& before : working.steps()) {
+      last_id = std::max(last_id, before.id);
+    }
     const Step& step = working.run(registry_, run.operation, run.params, run.inputs, report,
                                    run.cancel.get(), run.target, preview);
     Json json = working.toJson().at("steps").back();
     json["active"] = true;
     json["size_bytes"] = directorySize(working.stepDir(step));
+    // Steps the project ran first because an input was missing (PortInfo::made_by).
+    for (const Step& other : working.steps()) {
+      if (other.id > last_id && other.id != step.id) {
+        json["preceded_by"].push_back({{"id", other.id},
+                                       {"operation", other.operation},
+                                       {"title", other.title},
+                                       {"status", other.status},
+                                       {"summary", other.summary}});
+      }
+    }
     install();
     run.working.reset();
     return json;
@@ -2390,6 +2418,21 @@ Json Gui::call(const std::string& method, const Json& arguments,
     }
     if (method == "project_status") {
       return status();
+    }
+    if (method == "step") {
+      const auto& steps = project().steps();
+      if (steps.empty()) {
+        throw std::invalid_argument("The project has no steps");
+      }
+      const int id = checked.value("step", steps.back().id);
+      for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (steps[i].id == id) {
+          Json json = project().toJson().at("steps").at(i);
+          completeStep(json, i);
+          return json;
+        }
+      }
+      throw std::invalid_argument("No step " + std::to_string(id));
     }
     if (method == "cancel") {
       if (running_ && cancel_) {
