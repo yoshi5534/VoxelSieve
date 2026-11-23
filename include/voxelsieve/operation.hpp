@@ -51,7 +51,7 @@ struct PortInfo {
   /// parameters: when the project has no output of the type, it runs that operation first, as a
   /// step of its own that later steps use too (the surface a comparison needs). Empty: a
   /// missing input is an error.
-  std::string made_by;
+  std::string made_by = {};
 };
 
 struct OperationInfo {
