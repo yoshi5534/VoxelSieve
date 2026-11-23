@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -365,7 +366,10 @@ std::string ConcatSource::identity() const {
 std::string inputIdentity(const std::filesystem::path& path) {
   std::error_code error;
   const auto ticks = [](const std::filesystem::file_time_type& time) {
-    return std::to_string(time.time_since_epoch().count());
+    // Microseconds in 64 bits: the count of the clock itself has 128 bits on macOS.
+    using Microseconds = std::chrono::duration<std::int64_t, std::micro>;
+    return std::to_string(
+        std::chrono::duration_cast<Microseconds>(time.time_since_epoch()).count());
   };
   const std::string identity = std::filesystem::absolute(path, error).generic_string();
   if (std::filesystem::is_directory(path, error)) {
