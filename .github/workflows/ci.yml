@@ -122,6 +122,13 @@ jobs:
       - name: Install nanobind and numpy
         if: matrix.preset == 'release'
         run: python -m pip install nanobind numpy
+      # The release build also clicks through the browser UI (ADR 0038), in the Chrome of the
+      # runner; CMake adds the test when node finds the package.
+      - name: Install Playwright
+        if: matrix.preset == 'release'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/node" playwright-core@1.63.0
+          echo "NODE_PATH=$RUNNER_TEMP/node/node_modules" >> "$GITHUB_ENV"
       - name: Configure
         run: >-
           cmake --preset ${{ matrix.preset }}
@@ -134,6 +141,13 @@ jobs:
         run: >-
           ctest --preset ${{ matrix.preset }} --parallel "$(nproc)"
           --timeout ${{ matrix.preset == 'asan' && 1200 || 600 }}
+      - name: Upload the picture of a failed browser test
+        if: failure() && matrix.preset == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-failure
+          path: build/release/tests/ui_smoke/failure.png
+          if-no-files-found: ignore
 
   lint:
     name: Format and clang-tidy

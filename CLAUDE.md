@@ -80,7 +80,8 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
   projects running any operation; ADR 0031, `docs/python.md`), built by `pip install .`
   (`pyproject.toml`) or `-DVOXELSIEVE_BUILD_PYTHON=ON`; its unittest tests run as CTest
   `python_package`
-- `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`; a reader of
+- `tests/` GoogleTest unit tests plus CLI smoke tests registered in `tests/CMakeLists.txt`; `tests/ui/`
+  node tests of the UI modules and one walk through the UI in a browser (`ui_smoke`, ADR 0038); a reader of
   an own format gets a test with damaged copies of a valid file (`tests/damaged_files.hpp`)
 - `docs/adr/` architecture decision records; read them before changing data types or formats
 

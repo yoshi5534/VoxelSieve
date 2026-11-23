@@ -227,12 +227,13 @@ materials, objects, battery; `common.hpp` holds what they share), moved without 
 3. **F5:** one browser smoke test of the wizard. Needs a yes for the development dependency.
 4. **F6:** skip the build jobs for pull requests that touch only documents.
 
-**Status (2026-11-23): 1, 2 and 4 done, 3 open.** The walk is `tests/mcp_walk.py` (CTest
+**Status (2026-11-23): all done.** The walk is `tests/mcp_walk.py` (CTest
 `mcp_walk`): the program over standard input and output, one request after the answer to the one
 before. For F2 the readers of the own formats (STL, surface mask, model, dataset index, sidecar,
 project file, gzipped XML project) read some hundred damaged copies of a valid file in every test
 run (`tests/damaged_files.hpp`), also under ASan; that needs no second compiler, which fuzz
-targets with libFuzzer would. The browser test (F5) waits for the yes to its dependency.
+targets with libFuzzer would. The browser test (F5) is `tests/ui/smoke_test.cjs` (CTest
+`ui_smoke`, ADR 0038), driven by Playwright in the release job of CI.
 
 ### Small things for any pull request
 
