@@ -623,6 +623,61 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
   EXPECT_FALSE(PhantomSource(half).slowRandomAccess());
 }
 
+TEST_F(DatasetTest, StagesInMemoryWhenTheCopyFitsAndInAFileOtherwise) {
+  const PhantomSpec phantom = spec();
+  DatasetOptions options;
+  options.brick_size = 32;
+  options.staging_dir = dir_ / "scratch";
+  // Whether the staging copy is a file while the slices are copied.
+  bool file_seen = false;
+  options.progress = [&](std::string_view stage, double) {
+    if (stage != "staging" || !std::filesystem::exists(options.staging_dir)) {
+      return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(options.staging_dir)) {
+      file_seen = file_seen || entry.path().extension() == ".raw";
+    }
+  };
+  const SlowPhantomSource in_memory(phantom);
+  (void)writeDataset(in_memory, dir_ / "memory", options);
+  EXPECT_FALSE(file_seen);
+  EXPECT_EQ(in_memory.voxelsRead(), phantom.dims[0] * phantom.dims[1] * phantom.dims[2]);
+
+  options.stage_in_memory = false;
+  const SlowPhantomSource in_file(phantom);
+  (void)writeDataset(in_file, dir_ / "file", options);
+  EXPECT_TRUE(file_seen);
+  EXPECT_EQ(in_file.voxelsRead(), in_memory.voxelsRead());
+  expectSameDataset(dir_ / "memory", dir_ / "file");
+  EXPECT_TRUE(std::filesystem::is_empty(options.staging_dir));
+
+  // A memory budget too small for the copy: the file again.
+  file_seen = false;
+  options.stage_in_memory = true;
+  setMemoryBudget(std::uint64_t{1} << 20U);
+  (void)writeDataset(SlowPhantomSource(phantom), dir_ / "small_budget", options);
+  setMemoryBudget(0);
+  EXPECT_TRUE(file_seen);
+  expectSameDataset(dir_ / "memory", dir_ / "small_budget");
+}
+
+TEST_F(DatasetTest, LevelsBuiltWithTheBricksMatchLevelsBuiltFromLevelZero) {
+  // The import builds level 1 from the bricks while they are in memory; a derived dataset with
+  // the same values builds every coarse level from level 0 read back from disk.
+  PhantomSpec phantom = spec();
+  phantom.dims = {100, 70, 140};  // bricks of 16: level 1 has partial bricks at every edge
+  DatasetOptions options;
+  options.brick_size = 16;
+  const DatasetInfo imported = writeDataset(PhantomSource(phantom), dir_ / "imported", options);
+  ASSERT_GE(imported.levels.size(), 4U);
+  const Dataset input = Dataset::open(dir_ / "imported");
+  const auto same = [&](const Index3& /*brick*/, const Box& box, std::vector<float>& values) {
+    input.readRegion(0, box, values);
+  };
+  (void)writeDerivedDataset(input, dir_ / "derived", same);
+  expectSameDataset(dir_ / "imported", dir_ / "derived");
+}
+
 TEST_F(DatasetTest, StagesEightBitInputInEightBit) {
   // Grey values of at most 255: an 8-bit scan, staged in 8 bit and stored as UInt8 grids.
   PhantomSpec phantom = spec();

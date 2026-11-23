@@ -55,6 +55,10 @@ struct DatasetOptions {
   /// `min_material_voxels` 1, pass 1 (histogram, block maxima) is taken while the slices pass, so
   /// the copy is read once, by pass 2. Off: they are read directly.
   bool stage_slow_sources = true;
+  /// The copy is held in memory instead of the file when it fits into the work memory
+  /// (`workMemoryBytes`, ADR 0034) next to the bricks pass 2 builds at once: then it costs no disk
+  /// writes and no reads back. Off: always the file.
+  bool stage_in_memory = true;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.
   std::filesystem::path staging_dir;
   /// Type of the stored grey values; unset: the input's sample width (`VolumeSource::sampleType`),

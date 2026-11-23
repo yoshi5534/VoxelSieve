@@ -39,10 +39,10 @@ Json sieveParameters() {
       {"type", "boolean"},
       {"default", true},
       {"description",
-       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) to a temporary "
-       "raw file first, so that every slice is decoded once; it needs 1 or 2 bytes per voxel (as "
-       "the input) of free space. Off: read the slices directly, with no temporary file but more "
-       "decoding"}};
+       "Copy a slow input (TIFF or DICOM stack, compressed file, network share) first, so that "
+       "every slice is decoded once: into memory when the copy fits into the memory budget, else "
+       "to a temporary raw file, which needs 1 or 2 bytes per voxel (as the input) of free space. "
+       "Off: read the slices directly, with no copy but more decoding"}};
   properties["staging_dir"] = {
       {"type", "string"},
       {"format", "path"},
