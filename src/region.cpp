@@ -1013,7 +1013,7 @@ void restrictToRegion(PorosityResult& result, const InspectionRegion& region,
       });
     };
     // Voxel centres are at their indices, so a block's centre is half a voxel before its middle.
-    const auto blockCenter = [](const Coord& block) {
+    const auto block_center = [](const Coord& block) {
       std::array<double, 3> center{};
       for (std::size_t a = 0; a < 3; ++a) {
         center[a] = (block[a] + 0.5) * kBlock - 0.5;
@@ -1023,7 +1023,7 @@ void restrictToRegion(PorosityResult& result, const InspectionRegion& region,
     for (auto it = result.zone_blocks->tree().beginValueOn(); it; ++it) {
       const Coord block = it.getCoord();
       const bool keep =
-          within(kept, block) || (!within(removed, block) && inside(blockCenter(block)));
+          within(kept, block) || (!within(removed, block) && inside(block_center(block)));
       if (!keep) {
         it.setValueOff();
       }

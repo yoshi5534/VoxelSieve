@@ -371,13 +371,14 @@ class DefineRegion final : public Operation {
                       {"description", resolved->description()},
                       {"region", region},
                       {"meshes", meshes}};
-    if (const auto bounds = resolved->bounds()) {
-      result.summary["bounds_mm"] = *bounds;
+    if (const std::optional<BoxMm> found = resolved->bounds()) {
+      const BoxMm& bounds = *found;
+      result.summary["bounds_mm"] = bounds;
       // A region beside the scan is most likely a typo in a coordinate.
       bool apart = false;
       for (std::size_t a = 0; a < 3; ++a) {
         const double extent = info.voxel_size[a] * static_cast<double>(info.dims[a]);
-        apart = apart || (*bounds)[1][a] < 0.0 || (*bounds)[0][a] > extent;
+        apart = apart || bounds[1][a] < 0.0 || bounds[0][a] > extent;
       }
       if (apart) {
         context.log("The region '" + name + "' lies outside the scan");
