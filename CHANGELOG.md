@@ -2,24 +2,44 @@
 
 ## Unreleased
 
-- **HDF5 and NeXus volumes** (ADR 0041): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
+- **HDF5 and NeXus volumes** (ADR 0043): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
   are imported with the HDF5 library, the largest volume or the one named by `dataset`, with the
   voxel size from the dataset's attributes where it has them (operation `import_hdf5`,
   `vs-sieve --dataset`). New dependency: `hdf5` (C library, deflate filter).
 
-- **More scan formats** (ADR 0040): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
+- **More scan formats** (ADR 0042): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
   with their spacing and position, raw and gzip/zlib data in one or many files (operation
   `import_header_volume`); PNG slice stacks from a directory or ZIP archive (`import_png`); raw
   files of signed, 32-bit and float samples (`import_raw` `sample_type`, sidecar `format.dtype`,
   or the file name), kept with a value mapping as float TIFF stacks are. All of them open with
   one click through `open_scan`, and `vs-sieve` reads them.
 
+- **Regions of a scan** (ADR 0041): draw a box, sphere or cylinder in the slice view, or take
+  the inside of a CAD model, add or cut out solids and save the result as a named region of the
+  scan (operation `define_region`). Regions show in the slice and 3D views and in the layer tree;
+  the porosity analysis and the wall thickness take a `region` parameter and report only what
+  lies in it (pores and zones by their centre, the porosity against the part volume inside the
+  region; wall thickness only on the surface inside). The analyses column has one "Where" choice.
+  An inspection zone of an order can name such a region (`"region": "Flange"`).
+
+- **The analysis is one workspace** (ADR 0040): the stages Analysis, Results and View of the
+  browser UI are one workspace with objects and layers on the left, the view in the middle and
+  the analyses on the right. The analyses come in groups in the order of the work (prepare,
+  segment, defects, geometry, reports and export, plugins) with their main settings on the card
+  and their latest result in it; all results are under "History". What the views show is one
+  model of layers for slice and 3D: the style of the grey values, one colouring (grey value,
+  materials, nominal-actual deviation, wall thickness) and overlays (pores and loosened zones,
+  now separately, other objects), each with its properties such as the pore list. The protocol
+  column can be hidden.
+
 - **Imports of TIFF stacks and other slow inputs touch the disk less**: the staging copy is held
-  in memory when it fits into the memory budget instead of being written to a file and read back,
+  in memory as far as it fits into the memory budget and the free memory, and only the rest is
+  written to a file and read back (all of it before),
   and level 1 is built from the bricks while pass 2 has them in memory instead of reading level 0
   back from disk. On a float TIFF ZIP of 768 x 768 x 1536 voxels the import wrote 2.3 GB instead
   of 4.0 GB and read no bricks back (2.0 GB before); the levels took 0.6 s instead of 4.7 s.
-  Larger copies, or a smaller `--memory`, still go to the staging file (ADR 0011).
+  With less memory, more of the copy goes to the file: 3.3 GB written with `--memory 2500`,
+  4.0 GB with `--memory 800`. vs-sieve prints how much of the copy was in memory (ADR 0011).
 
 - **Open a scan in one step** (ADR 0039): the browser UI starts with "Open a scan …". It finds
   out what the file is, creates a project next to the scan (or opens the one that has it), imports

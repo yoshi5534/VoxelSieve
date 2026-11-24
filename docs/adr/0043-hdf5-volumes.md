@@ -1,4 +1,4 @@
-# 0041: HDF5 volumes
+# 0043: HDF5 volumes
 
 Status: accepted (2026-11-23)
 
@@ -24,7 +24,7 @@ the same `find_package(HDF5 COMPONENTS C)`.
   integers or 32/64-bit floats. Without a choice the largest whose path does not look like labels
   (`gt`, `label`, `mask`, `seg`, as for TIFF folders) is read; the others are reported.
 - C order as numpy writes it: the file's last dimension is x.
-- Samples become grey values as in raw files (ADR 0040): signed shifted, 32-bit and float mapped
+- Samples become grey values as in raw files (ADR 0042): signed shifted, 32-bit and float mapped
   over a given or estimated value range with clipped values counted. The library converts to the
   machine's byte order.
 - The voxel size comes from the parameters, an attribute of the dataset (`element_size_um` as z,

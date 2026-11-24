@@ -771,6 +771,10 @@ void runDataset(const Options& options) {
             << "size               " << raw_mb << " MB raw -> "
             << megabytes(directorySize(options.out)) << " MB dataset\n"
             << "time               " << seconds(start, done) << " s\n";
+  if (info.staged_memory_bytes + info.staged_file_bytes > 0) {
+    std::cout << "staging copy       " << megabytes(info.staged_memory_bytes) << " MB in memory, "
+              << megabytes(info.staged_file_bytes) << " MB in a file\n";
+  }
   reportClipped(floats);
 }
 

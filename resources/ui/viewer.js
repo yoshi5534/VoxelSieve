@@ -109,7 +109,8 @@ class SliceViewer {
     this.zoom = 1;              // screen pixels per level-0 voxel along the finer in-plane axis
     this.center = [0, 0];       // level-0 voxel coordinates of the view centre (u, v)
     this.window = null;         // [low, high]
-    this.showOverlay = true;
+    // Which layers colour the slice: pores, zones, materials and the thickness map.
+    this.show = { pores: true, zones: true, materials: true, thickness: true };
     this.hiddenMaterials = [];  // ids of the material classes left out of the overlay
     this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
     // Other objects: {id, number, kind, color, version, show, mode, opacity, window}; `version`
@@ -118,6 +119,14 @@ class SliceViewer {
     this.layerSettings = {};    // object id -> {show, mode, opacity}, saved with the view
     this.cuts = new Map();      // object id -> {key, segments} of the cut lines shown
     this.cutLoading = new Map();  // object id -> {key, controller}
+    // Regions of the scan (ADR 0041): {name, color, triangles, excluded, draft} with triangles in
+    // mm of the dataset's coordinates, drawn as the lines where they cut the slice.
+    this.regions = [];
+    this.regionCuts = new Map();  // name -> {key, included, excluded}
+    // Drawing a region: {kind: 'box' | 'sphere' | 'cylinder', onDrawn(solid)}; a drag then draws
+    // the solid instead of moving the view.
+    this.tool = null;
+    this.toolDrag = null;
     this.canvas = null;
     this.drawPending = false;
     this.onChange = () => {};
@@ -146,7 +155,7 @@ class SliceViewer {
   /// Slice, zoom and window, for saving them with the project or as a named view.
   getState() {
     const saved = { step: this.step, axis: this.axis, index: [...this.index], window: this.window,
-      showOverlay: this.showOverlay, layers: structuredClone(this.layerSettings) };
+      show: { ...this.show }, layers: structuredClone(this.layerSettings) };
     // Before the first picture the zoom is not fitted yet; leave it to the next fit then.
     if (!this.fitPending) Object.assign(saved, { zoom: this.zoom, center: [...this.center] });
     return saved;
@@ -158,7 +167,12 @@ class SliceViewer {
     this.axis = saved.axis;
     this.index = saved.index.map((i, a) => Math.min(Math.max(i, 0), this.info.dims[a] - 1));
     this.window = saved.window;
-    this.showOverlay = saved.showOverlay;
+    if (saved.show) {
+      this.show = { ...this.show, ...saved.show };
+    } else if (saved.showOverlay === false) {
+      // Views saved before the layers had one switch for all of them.
+      this.show = { pores: false, zones: false, materials: false, thickness: false };
+    }
     if (saved.layers) {
       this.layerSettings = structuredClone(saved.layers);
       for (const layer of this.layers) Object.assign(layer, this.layerSettings[layer.id] ?? {});
@@ -224,12 +238,23 @@ class SliceViewer {
   attach(canvas) {
     this.canvas = canvas;
     let drag = null;
+    const inPlane = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      return this.screenToVoxel(event.clientX - rect.left, event.clientY - rect.top);
+    };
     canvas.addEventListener('pointerdown', (event) => {
-      drag = { x: event.clientX, y: event.clientY, center: [...this.center] };
       canvas.setPointerCapture(event.pointerId);
+      if (this.tool) {
+        this.toolDrag = { start: inPlane(event), end: inPlane(event) };
+        return;
+      }
+      drag = { x: event.clientX, y: event.clientY, center: [...this.center] };
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (drag) {
+      if (this.toolDrag) {
+        this.toolDrag.end = inPlane(event);
+        this.requestDraw();
+      } else if (drag) {
         const [su, sv] = this.stretch();
         this.center = [drag.center[0] - (event.clientX - drag.x) / (this.zoom * su),
           drag.center[1] - (event.clientY - drag.y) / (this.zoom * sv)];
@@ -238,7 +263,16 @@ class SliceViewer {
       this.hover = this.voxelAt(event);
       this.onChange();
     });
-    canvas.addEventListener('pointerup', () => { drag = null; });
+    canvas.addEventListener('pointerup', () => {
+      drag = null;
+      const drawn = this.toolDrag;
+      this.toolDrag = null;
+      if (drawn && this.tool) {
+        const solid = this.drawnSolid(drawn);
+        this.requestDraw();
+        if (solid) this.tool.onDrawn(solid);
+      }
+    });
     canvas.addEventListener('pointerleave', () => {
       this.hover = null;
       this.onChange();
@@ -263,6 +297,94 @@ class SliceViewer {
 
   planeAxes() {
     return IN_PLANE[this.axis];
+  }
+
+  /// The solid of a drag of the region tool, or null when it is too small.
+  drawnSolid(drawn) {
+    const regions = globalThis.solidFromDrag ? globalThis : require('./regions.js');
+    return regions.solidFromDrag(this.tool.kind, this.axis, this.index[this.axis], drawn.start,
+      drawn.end, { pitch: voxelPitch(this.info.voxel_size_mm), dims: this.info.dims });
+  }
+
+  /// Starts drawing regions of `kind` ('box', 'sphere', 'cylinder'), or stops with null.
+  setTool(tool) {
+    this.tool = tool;
+    this.toolDrag = null;
+    if (this.canvas) this.canvas.style.cursor = tool ? 'crosshair' : '';
+    this.requestDraw();
+  }
+
+  setRegions(regions) {
+    this.regions = regions;
+    this.regionCuts.clear();
+    this.requestDraw();
+  }
+
+  /// The cut lines of a region at the current slice, computed once per slice.
+  regionCut(region) {
+    const pitch = voxelPitch(this.info.voxel_size_mm);
+    const index = this.index[this.axis];
+    const key = this.axis + '/' + index;
+    const cached = this.regionCuts.get(region.name);
+    if (cached?.key === key && cached.region === region) return cached;
+    const regions = globalThis.cutTriangles ? globalThis : require('./regions.js');
+    const cut = (triangles) => (triangles ? regions.cutTriangles(triangles, this.axis,
+      index * pitch[this.axis], pitch, this.planeAxes()) : new Float32Array(0));
+    const result = { key, region, included: cut(region.triangles), excluded: cut(region.excluded) };
+    this.regionCuts.set(region.name, result);
+    return result;
+  }
+
+  drawRegions(context, width, height) {
+    const view = { center: this.center, zoom: this.zoom, stretch: this.stretch(), width, height };
+    context.save();
+    context.lineCap = 'round';
+    for (const region of this.regions) {
+      const cut = this.regionCut(region);
+      for (const [segments, dash] of [[cut.included, region.draft ? [6, 4] : []],
+        [cut.excluded, [2, 4]]]) {
+        if (!segments.length) continue;
+        const screen = cutsToScreen(segments, view);
+        context.strokeStyle = region.color;
+        context.lineWidth = region.draft ? 2.5 : 2;
+        context.setLineDash(dash);
+        context.beginPath();
+        for (let i = 0; i + 3 < screen.length; i += 4) {
+          context.moveTo(screen[i], screen[i + 1]);
+          context.lineTo(screen[i + 2], screen[i + 3]);
+        }
+        context.stroke();
+      }
+      if (cut.included.length && region.name) {
+        // The name at the topmost point of its line.
+        const screen = cutsToScreen(cut.included, view);
+        let best = 0;
+        for (let i = 1; i < screen.length; i += 2) if (screen[i] < screen[best + 1]) best = i - 1;
+        context.setLineDash([]);
+        context.font = '12px system-ui, sans-serif';
+        context.fillStyle = region.color;
+        context.fillText(region.name, screen[best] + 4, screen[best + 1] - 4);
+      }
+    }
+    if (this.toolDrag && this.tool) {
+      // What the drag draws, until it is let go.
+      const { start, end } = this.toolDrag;
+      const [su, sv] = this.stretch();
+      const x = (p) => (p - this.center[0]) * this.zoom * su + width / 2;
+      const y = (p) => (p - this.center[1]) * this.zoom * sv + height / 2;
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 1.5;
+      context.setLineDash([5, 4]);
+      context.beginPath();
+      if (this.tool.kind === 'box') {
+        context.rect(x(start[0]), y(start[1]), x(end[0]) - x(start[0]), y(end[1]) - y(start[1]));
+      } else {
+        const radius = Math.hypot(x(end[0]) - x(start[0]), y(end[1]) - y(start[1]));
+        context.arc(x(start[0]), y(start[1]), radius, 0, 2 * Math.PI);
+      }
+      context.stroke();
+    }
+    context.restore();
   }
 
   planeDims() {
@@ -513,6 +635,7 @@ class SliceViewer {
     context.imageSmoothingEnabled = false;
     context.restore();
     this.drawCuts(context, width, height);
+    this.drawRegions(context, width, height);
     // Outline of the volume.
     context.strokeStyle = 'rgba(255,255,255,0.25)';
     context.strokeRect(...outline);
@@ -700,8 +823,9 @@ class SliceViewer {
     this.onChange();
   }
 
-  setOverlay(show) {
-    this.showOverlay = show;
+  /// Switches layers of the slice on or off: {pores, zones, materials, thickness}.
+  setShow(layers) {
+    this.show = { ...this.show, ...layers };
     this.requestDraw();
   }
 
@@ -735,8 +859,9 @@ class SliceViewer {
   }
 
   renderTile(tile) {
-    const state = [this.window?.[0], this.window?.[1], this.showOverlay,
-      this.hiddenMaterials.join(','), this.materialColors.flat().join(',')].join('/');
+    const show = this.show;
+    const state = [this.window?.[0], this.window?.[1], show.pores, show.zones, show.materials,
+      show.thickness, this.hiddenMaterials.join(','), this.materialColors.flat().join(',')].join('/');
     if (tile.rendered === state) return tile.canvas;
     if (!tile.canvas) {
       tile.canvas = document.createElement('canvas');
@@ -746,8 +871,9 @@ class SliceViewer {
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
     slicePixels(tile.data, tile.overlay, this.window ?? [0, 1],
-      this.showOverlay ? this.hiddenMaterials : null, image.data, this.materialColors,
-      tile.thickness ? { values: tile.thickness, scale: tile.thicknessScale } : null);
+      { pores: show.pores, zones: show.zones, materials: show.materials ? this.hiddenMaterials : null },
+      image.data, this.materialColors, tile.thickness && show.thickness
+        ? { values: tile.thickness, scale: tile.thicknessScale } : null);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;
@@ -769,24 +895,30 @@ function thicknessRgb(t, minWall, maxWall, range) {
   return stops[i].map((c, k) => c + f * (stops[i + 1][k] - c));
 }
 
-/// Grey values with the overlay: pores, zones and materials, or with `thickness` ({values,
-/// scale: [minWall, maxWall, range]}) the material coloured by its wall thickness.
-function slicePixels(data, overlay, [low, high], hiddenMaterials, out,
+/// Grey values with the layers of `show`: {pores, zones, materials}, where `materials` lists the
+/// ids of the material classes left out, or is null for no materials; an array alone is all
+/// three with those materials left out, and null shows none. With `thickness` ({values, scale:
+/// [minWall, maxWall, range]}) the material is coloured by its wall thickness.
+function slicePixels(data, overlay, [low, high], show, out,
   materialColors = MATERIAL_COLORS, thickness = null) {
   const scale = 255 / (high - low);
+  const layers = Array.isArray(show) ? { pores: true, zones: true, materials: show }
+    : show ?? { pores: false, zones: false, materials: null };
+  const hiddenMaterials = layers.materials;
   for (let i = 0; i < data.length; i += 1) {
     const grey = Math.min(Math.max((data[i] - low) * scale, 0), 255);
     let r = grey;
     let g = grey;
     let b = grey;
-    if (hiddenMaterials) {
-      const kind = overlay[i];
-      // Tinted, so the grey values stay readable: pores red, zones yellow.
-      if (kind === 1) {
-        r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
-      } else if (kind === 2) {
-        r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
-      } else if (kind > MATERIAL_OVERLAY && !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
+    const kind = overlay[i];
+    // Tinted, so the grey values stay readable: pores red, zones yellow.
+    if (kind === 1 && layers.pores) {
+      r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
+    } else if (kind === 2 && layers.zones) {
+      r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
+    } else {
+      if (hiddenMaterials && kind > MATERIAL_OVERLAY &&
+          !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
         // Materials in their colour, half covering the grey value.
         const id = kind - MATERIAL_OVERLAY;
         const [mr, mg, mb] = materialColors[id - 1] ?? MATERIAL_COLORS[(id - 1) % 8];

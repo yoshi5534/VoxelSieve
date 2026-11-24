@@ -428,7 +428,7 @@ TEST(ParameterTest, DefaultsTypesAndRanges) {
 TEST_F(ProjectTest, BuiltinOperationsRunThePipeline) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
-  EXPECT_EQ(registry.all().size(), 33U);
+  EXPECT_EQ(registry.all().size(), 34U);
   EXPECT_NE(registry.find("import_hdf5"), nullptr);
   EXPECT_NE(registry.find("import_header_volume"), nullptr);
   EXPECT_NE(registry.find("import_png"), nullptr);

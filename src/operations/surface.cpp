@@ -388,7 +388,8 @@ class WallThickness final : public Operation {
             {"default", 0},
             {"description",
              "Permitted deviation from the nominal thickness; 0: twice the tolerance of the "
-             "comparison (each face may deviate by it)"}}}}}};
+             "comparison (each face may deviate by it)"}}},
+          {"region", regionParameterSchema()}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
   [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
@@ -407,6 +408,8 @@ class WallThickness final : public Operation {
     options.search_angle_deg = p.at("search_angle_deg").get<double>();
     options.outer_surface_only = p.at("outer_surface_only").get<bool>();
     options.max_triangles = p.at("max_triangles").get<std::size_t>();
+    const std::optional<InspectionRegion> region = regionParameter(context);
+    options.region = region ? &*region : nullptr;
     const auto dataset = Dataset::open(context.inputs.at("dataset"));
     const auto dir = context.output_dir / "wall_thickness";
     std::filesystem::create_directories(dir);
@@ -450,6 +453,9 @@ class WallThickness final : public Operation {
         {"thickness_max_mm", s.max_mm},
         {"measured_percent", s.area_mm2 > 0.0 ? 100.0 * s.measured_area_mm2 / s.area_mm2 : 0.0},
         {"max_thickness_mm", thickness.max_thickness_mm}};
+    if (region) {
+      result.summary["region"] = regionName(p, *region);
+    }
     if (options.min_wall_mm > 0.0) {
       result.summary["min_wall_mm"] = options.min_wall_mm;
       result.summary["below_min_percent"] = 100.0 * s.below_min;

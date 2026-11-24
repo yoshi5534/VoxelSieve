@@ -1,4 +1,4 @@
-// MetaImage and NRRD volumes (ADR 0040): the text header is read here, the voxels by the raw
+// MetaImage and NRRD volumes (ADR 0042): the text header is read here, the voxels by the raw
 // sources of source.cpp.
 
 #include "voxelsieve/header_volume.hpp"

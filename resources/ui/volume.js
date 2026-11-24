@@ -72,6 +72,7 @@ uniform float tolerance;
 uniform float range;
 uniform float minWall;  // 0: no limit
 uniform float maxWall;
+uniform float alpha;    // below 1 for the translucent regions (ADR 0041)
 vec3 deviationColor(float d) {
   float a = abs(d);
   if (a > 1e29) return vec3(150.0) / 255.0;  // no value
@@ -101,7 +102,7 @@ void main() {
   float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
   vec3 base = valueColors == 1 ? deviationColor(dev)
              : valueColors == 2 ? thicknessColor(dev) : surfaceColor;
-  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), 1.0);
+  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), alpha);
 }`;
 
 /// The ray caster. Each sample takes the finest level loaded where it lies, down to the level a
@@ -156,7 +157,8 @@ uniform float threshold; // material threshold on the 0..1 grey scale
 uniform int mode;        // 0 surface, 1 transfer function, 2 maximum intensity projection,
                          // 3 and up background only (the mesh is drawn on top)
 uniform bool shading;
-uniform bool pores;
+uniform bool pores;        // pores of a porosity analysis
+uniform bool zones;        // its zones of loosened microstructure
 uniform bool materials;    // colour the material classes of a segmentation
 uniform int hiddenMaterials; // bit m - 1 set: material class m is left out
 uniform vec3 materialColors[8];
@@ -328,7 +330,7 @@ float stepOpacity(float opacity, float stepSize) {
 // Whether nothing in the brick or cell can show in the current mode (review step 6.3).
 bool skippable(Where w, float highest) {
   if (w.state == 2) return true;
-  if (pores && w.porous) return false;
+  if ((pores || zones) && w.porous) return false;
   if (mode == 0) return w.maxGrey < threshold;
   if (mode == 1) return w.maxGrey < firstOpaque;
   return w.maxGrey <= highest;
@@ -472,7 +474,7 @@ void main() {
           kind = classAt(locate((eye + direction * behind) / (2.0 * box) + 0.5, behind));
           material = materialOf(kind);
         }
-        vec3 base = (pores && kind == 2) ? zoneColor
+        vec3 base = (zones && kind == 2) ? zoneColor
             : materialShown(material) ? materialColors[(material - 1) % 8] : surfaceColor;
         color = vec4(shade(base, n, direction), 1.0);
 #endif
@@ -490,7 +492,7 @@ void main() {
       vec4 sample_;
       if (pores && kind == 1) {
         sample_ = vec4(poreColor, 0.6);
-      } else if (pores && kind == 2) {
+      } else if (zones && kind == 2) {
         sample_ = vec4(zoneColor, 0.1);
       } else {
         sample_ = texture(transfer, vec2(value, 0.5));
@@ -559,6 +561,7 @@ class VolumeViewer {
     this.volume = null;       // {dims, level, voxelSize, window, key}
     this.mode = 0;
     this.pores = true;
+    this.zones = true;
     this.materials = true;      // colour the classes of a material segmentation, if loaded
     this.hiddenMaterials = [];  // ids of the material classes left out
     this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
@@ -566,6 +569,10 @@ class VolumeViewer {
     this.threshold = 0.5;
     this.shading = true;
     this.surfaceColor = [209, 214, 219];
+    // Regions of the scan, drawn translucent over it: {key, color [r, g, b], triangles} with the
+    // triangles in level-0 voxel coordinates.
+    this.regions = [];
+    this.regionBuffers = new Map();  // key -> {buffer, vao, count}
     this.poreColor = [230, 38, 31];
     this.zoneColor = [242, 204, 77];
     this.background = { preset: 'softDark', ...BACKGROUNDS.softDark };
@@ -596,7 +603,8 @@ class VolumeViewer {
   getState() {
     return {
       key: this.volume?.key ?? null,
-      mode: this.mode, shading: this.shading, pores: this.pores, materials: this.materials,
+      mode: this.mode, shading: this.shading, pores: this.pores, zones: this.zones,
+      materials: this.materials,
       cut: this.cut,
       threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
       target: this.target, surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
@@ -605,7 +613,7 @@ class VolumeViewer {
   }
 
   setState(saved) {
-    const keys = ['mode', 'shading', 'pores', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
+    const keys = ['mode', 'shading', 'pores', 'zones', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
       'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background'];
     for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
     this.requestDraw();
@@ -715,6 +723,7 @@ class VolumeViewer {
     this.pageTexture = null;
     this.feedbackTarget = null;
     this.meshBuffers = null;
+    this.regionBuffers = new Map();
     this.locations = new Map();
     this.program = compileProgram(gl, VOLUME_VERTEX, volumeFragment(false));
     this.feedbackProgram = compileProgram(gl, VOLUME_VERTEX, volumeFragment(true));
@@ -884,12 +893,75 @@ class VolumeViewer {
     gl.uniform1f(uniform('range'), this.surface.range);
     gl.uniform1f(uniform('minWall'), this.surface.minWall);
     gl.uniform1f(uniform('maxWall'), this.surface.maxWall);
+    gl.uniform1f(uniform('alpha'), 1);
     gl.enable(gl.DEPTH_TEST);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.bindVertexArray(this.meshVao);
     gl.drawElements(gl.TRIANGLES, this.surface.triangles * 3, gl.UNSIGNED_INT, 0);
     gl.bindVertexArray(null);
     gl.disable(gl.DEPTH_TEST);
+  }
+
+  setRegions(regions) {
+    this.regions = regions;
+    if (this.gl) {
+      for (const [key, entry] of this.regionBuffers) {
+        if (regions.some((region) => region.key === key)) continue;
+        this.gl.deleteBuffer(entry.buffer);
+        this.gl.deleteVertexArray(entry.vao);
+        this.regionBuffers.delete(key);
+      }
+    }
+    this.requestDraw();
+  }
+
+  /// The regions as translucent solids over the picture, without depth: a region shows where it
+  /// lies around the part, also inside it.
+  drawRegions(eye, right, up, forward, aspect, box) {
+    const gl = this.gl;
+    if (!this.regions.length) return;
+    const { dims, level } = this.volume;
+    const scale = 2 ** level;
+    gl.useProgram(this.meshProgram);
+    const uniform = (name) => this.uniform(this.meshProgram, name);
+    gl.uniform3fv(uniform('extent'), dims.map((d) => d * scale));
+    gl.uniform3fv(uniform('box'), box);
+    gl.uniform3fv(uniform('eye'), eye);
+    gl.uniform3fv(uniform('right'), right);
+    gl.uniform3fv(uniform('up'), up);
+    gl.uniform3fv(uniform('forward'), forward);
+    gl.uniform1f(uniform('aspect'), aspect);
+    gl.uniform1f(uniform('cut'), 2);
+    gl.uniform1i(uniform('valueColors'), 0);
+    gl.uniform1f(uniform('alpha'), 0.22);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    const position = gl.getAttribLocation(this.meshProgram, 'position');
+    const deviation = gl.getAttribLocation(this.meshProgram, 'deviation');
+    for (const region of this.regions) {
+      let entry = this.regionBuffers.get(region.key);
+      if (!entry) {
+        const buffer = gl.createBuffer();
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, region.triangles, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 3, gl.FLOAT, false, 0, 0);
+        if (deviation >= 0) {
+          gl.disableVertexAttribArray(deviation);
+          gl.vertexAttrib1f(deviation, 0);
+        }
+        gl.bindVertexArray(null);
+        entry = { buffer, vao, count: region.triangles.length / 3 };
+        this.regionBuffers.set(region.key, entry);
+      }
+      gl.uniform3fv(uniform('surfaceColor'), region.color.map((c) => c / 255));
+      gl.bindVertexArray(entry.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, entry.count);
+    }
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
   }
 
   uniform(program, name) {
@@ -1186,6 +1258,7 @@ class VolumeViewer {
     gl.uniform1f(uniform('threshold'), this.threshold);
     gl.uniform1i(uniform('mode'), this.mode);
     gl.uniform1i(uniform('pores'), this.pores ? 1 : 0);
+    gl.uniform1i(uniform('zones'), this.zones ? 1 : 0);
     gl.uniform1i(uniform('materials'), this.materials && this.source?.materials != null ? 1 : 0);
     gl.uniform1i(uniform('hiddenMaterials'),
       this.hiddenMaterials.reduce((mask, id) => mask | (1 << (id - 1)), 0));
@@ -1284,6 +1357,7 @@ class VolumeViewer {
     if (meshKind && this.surface?.kind === meshKind) {
       this.drawMesh(eye, right, up, forward, width / height, box);
     }
+    this.drawRegions(eye, right, up, forward, width / height, box);
     // Feedback after the picture, so a capture still finds it in the canvas; at most every
     // 50 ms, while something changed or bricks are on their way.
     const now = performance.now();

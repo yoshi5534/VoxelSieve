@@ -647,13 +647,30 @@ const Step& Project::run(
   if (path_check_) {
     context.check_path = path_check_;
   }
-  // The objects with their latest output of every type, so operations can work on several.
+  // The objects with their latest output of every type, so operations can work on several, and
+  // their regions (ADR 0041): the latest of every name, unless it was removed.
   std::map<std::string, Json> outputs;
+  std::map<std::string, Json> regions;
   for (std::size_t i = 0; i < cursor_; ++i) {
     const Step& done = steps_[i];
     if (done.status == "done" && !done.object.empty()) {
       for (const auto& [name, type] : done.output_types) {
         outputs[done.object][type] = resolve({done.id, name}).string();
+        if (type == artifact::kRegion) {
+          std::ifstream in(resolve({done.id, name}) / "region.json");
+          const Json region = in ? Json::parse(in, nullptr, false) : Json();
+          if (!region.is_object() || !region.contains("name")) {
+            continue;
+          }
+          Json& named = regions[done.object];
+          if (region.value("remove", false)) {
+            named.erase(region.at("name").get<std::string>());
+          } else {
+            named[region.at("name").get<std::string>()] = {
+                {"include", region.value("include", Json::array())},
+                {"exclude", region.value("exclude", Json::array())}};
+          }
+        }
       }
     }
   }
@@ -663,7 +680,10 @@ const Step& Project::run(
          {"name", object.name},
          {"kind", object.kind},
          {"pose", object.pose.matrix()},
-         {"outputs", outputs.contains(object.id) ? outputs.at(object.id) : Json::object()}});
+         {"outputs", outputs.contains(object.id) ? outputs.at(object.id) : Json::object()},
+         {"regions", regions.contains(object.id) && regions.at(object.id).is_object()
+                         ? regions.at(object.id)
+                         : Json::object()}});
   }
   context.object = step.object;
   Telemetry telemetry(info.id);

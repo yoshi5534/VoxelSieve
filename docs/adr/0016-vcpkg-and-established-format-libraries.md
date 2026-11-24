@@ -44,7 +44,7 @@ the triplet or the runner's compiler changes.
 | VDB | OpenVDB | (already used) |
 | JSON | nlohmann/json | (already used) |
 | DICOM, XML, gzip (ADR 0019) | DCMTK, pugixml, zlib | (new formats) |
-| HDF5 (ADR 0041) | hdf5 (C API, deflate filter) | (new format) |
+| HDF5 (ADR 0043) | hdf5 (C API, deflate filter) | (new format) |
 
 Adding a dependency still needs a reason; the question for format and codec code is only *which*
 established library, not whether to write our own. A new library is added to `vcpkg.json` and to
@@ -59,7 +59,7 @@ Outside the rule, deliberately:
   needed (OBJ, 3MF), Assimp is the candidate and STL moves with it.
 - Base64 for data URLs and JSON transport is a text encoding, not a file format.
 - Vendor raw headers are skipped by size (ADR 0004), not parsed.
-- The text headers of MetaImage and NRRD files are read by our own code (ADR 0040, agreed by the
+- The text headers of MetaImage and NRRD files are read by our own code (ADR 0042, agreed by the
   maintainer): the only library in vcpkg that reads them is ITK. Their voxel data goes through
   the raw sources and zlib, and PNG stacks through libpng and libzip.
 

@@ -42,6 +42,8 @@
 
 namespace voxelsieve {
 
+class InspectionRegion;
+
 struct WallThicknessOptions {
   enum class Method : std::uint8_t { kRay, kSphere };
   Method method = Method::kRay;
@@ -58,6 +60,9 @@ struct WallThicknessOptions {
   /// Measures only the largest connected surface, the outer skin; the surfaces of closed internal
   /// voids (pores) still limit the walls but get no values of their own.
   bool outer_surface_only = true;
+  /// Measures only the surface inside this region (ADR 0041), not owned; null: all of it. The
+  /// walls are still found through all of the part.
+  const InspectionRegion* region = nullptr;
   /// Triangle budget of the surface mesh whose vertices are measured (surfaceDisplayMesh).
   std::size_t max_triangles = 2000000;
   /// Called with the fraction of the measurement done, 0 to 1, from one thread at a time.

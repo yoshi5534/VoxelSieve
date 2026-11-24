@@ -12,6 +12,7 @@
 
 #include "voxelsieve/dataset.hpp"
 #include "voxelsieve/phantom.hpp"
+#include "voxelsieve/region.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
@@ -139,6 +140,32 @@ TEST_F(ThicknessTest, RaysMeasureTheWallsOfTheHollowBox) {
   const auto [share, known] = matchesHollowBox(spec, result, false, 0.05);
   EXPECT_GT(known, 10000U);
   EXPECT_GT(share, 0.97);
+}
+
+TEST_F(ThicknessTest, MeasuresOnlyTheSurfaceInsideARegion) {
+  const PhantomSpec spec = hollowBox(VoxelSize{0.1});
+  scan(PhantomSource(spec));
+  // A box over the top face of the hollow box (z = 4 mm above the centre) and the upper 0.5 mm
+  // of its side faces. The rays still run through all of the part.
+  const double center = (static_cast<double>(spec.dims[2]) / 2.0 - 0.5) * 0.1;
+  const double bottom = center + 3.5;
+  const InspectionRegion region(
+      {RegionShape::box({PointMm{-1.0, -1.0, bottom}, {11.0, 11.0, 11.0}})});
+  WallThicknessOptions options;
+  options.max_thickness_mm = 10.0;
+  options.region = &region;
+  const WallThicknessResult result = measure(options);
+  const ThicknessStats& s = result.stats;
+  EXPECT_NEAR(s.area_mm2, 8.0 * 8.0 + 4.0 * 8.0 * 0.5, 6.0);
+  EXPECT_NEAR(s.percentiles_mm[0], 1.5, 0.05);
+  for (std::size_t i = 0; i < result.mesh.points.size(); ++i) {
+    if (std::isfinite(result.thickness_mm[i])) {
+      EXPECT_GT(result.mesh.points[i][2], bottom - 0.01);
+    }
+  }
+  const auto [share, known] = matchesHollowBox(spec, result, false, 0.05);
+  EXPECT_GT(known, 1000U);
+  EXPECT_GT(share, 0.95);
 }
 
 TEST_F(ThicknessTest, RaysFollowThePitchOfLongVoxels) {

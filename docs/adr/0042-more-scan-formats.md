@@ -1,4 +1,4 @@
-# 0040: More scan formats: wide raw samples, MetaImage, NRRD and PNG stacks
+# 0042: More scan formats: wide raw samples, MetaImage, NRRD and PNG stacks
 
 Status: accepted (2026-11-23)
 

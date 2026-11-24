@@ -164,16 +164,28 @@ struct BlockStatistics {
   Index3 block_dims{};
 };
 
-/// The staging copy in memory: the slices one after another, as in the raw file.
-class StagedMemorySource final : public VolumeSource {
+/// The staging copy: its first `memory_slices` slices in memory, one after another as in a raw
+/// file, the others in the file `rest` (none when all are in memory).
+class StagedCopySource final : public VolumeSource {
  public:
-  StagedMemorySource(const std::uint8_t* data, const Index3& dims, const VoxelSize& voxel_size,
-                     bool narrow)
-      : data_(data), dims_(dims), voxel_size_(voxel_size), narrow_(narrow) {}
+  StagedCopySource(const std::uint8_t* data, std::int64_t memory_slices, const Index3& dims,
+                   const VoxelSize& voxel_size, bool narrow, std::unique_ptr<VolumeSource> rest)
+      : data_(data),
+        memory_slices_(memory_slices),
+        dims_(dims),
+        voxel_size_(voxel_size),
+        narrow_(narrow),
+        rest_(std::move(rest)) {}
   [[nodiscard]] Index3 dims() const override { return dims_; }
   [[nodiscard]] VoxelSize voxelSize() const override { return voxel_size_; }
   [[nodiscard]] SampleType sampleType() const override {
     return narrow_ ? SampleType::kUInt8 : SampleType::kUInt16;
+  }
+  /// The pages of the file go; the slices in memory stay, they are what memory was spent on.
+  void releaseMemory() const override {
+    if (rest_) {
+      rest_->releaseMemory();
+    }
   }
   void readRegion(const Box& box, std::span<std::uint16_t> out) const override {
     if (box.voxelCount() != static_cast<std::int64_t>(out.size())) {
@@ -181,7 +193,8 @@ class StagedMemorySource final : public VolumeSource {
     }
     const auto row = static_cast<std::size_t>(box.size(0));
     std::size_t offset = 0;
-    for (std::int64_t z = box.min[2]; z < box.max[2]; ++z) {
+    const std::int64_t split = std::clamp(memory_slices_, box.min[2], box.max[2]);
+    for (std::int64_t z = box.min[2]; z < split; ++z) {
       for (std::int64_t y = box.min[1]; y < box.max[1]; ++y) {
         const auto first = static_cast<std::size_t>(box.min[0] + dims_[0] * (y + dims_[1] * z));
         if (narrow_) {
@@ -193,28 +206,48 @@ class StagedMemorySource final : public VolumeSource {
         offset += row;
       }
     }
+    if (split < box.max[2]) {
+      // The file holds the slices from `memory_slices_` on.
+      const Box rest{{box.min[0], box.min[1], split - memory_slices_},
+                     {box.max[0], box.max[1], box.max[2] - memory_slices_}};
+      rest_->readRegion(rest, out.subspan(offset));
+    }
   }
 
  private:
   const std::uint8_t* data_;
+  std::int64_t memory_slices_;
   Index3 dims_;
   VoxelSize voxel_size_;
   bool narrow_;
+  std::unique_ptr<VolumeSource> rest_;
 };
 
-/// Whether a staging copy of `bytes` goes into memory: when it leaves room in the work memory for
-/// the bricks that pass 2 builds at once (ADR 0034).
-bool stageInMemory(std::uint64_t bytes, const DatasetOptions& options) {
-  if (!options.stage_in_memory) {
-    return false;
-  }
+/// How many slices of `slice_bytes` of a staging copy go into memory (ADR 0011, 0034): as many as
+/// fit into the work memory and into the memory the system has available now, both less what
+/// pass 2 needs for the bricks it builds at once. The others go to the file. Much memory: little
+/// disk traffic; little memory: the file takes the rest.
+std::int64_t stagedSlicesInMemory(std::uint64_t slice_bytes, std::int64_t slices,
+                                  const DatasetOptions& options) {
   const auto brick = static_cast<std::uint64_t>(options.brick_size);
   // Per thread: the brick's values with their margin, its grid and its downsampled part.
   const std::uint64_t per_task = 4 * brick * brick * brick * sizeof(std::uint16_t);
   const auto threads = static_cast<std::uint64_t>(
       std::max(1, std::min(tbb::this_task_arena::max_concurrency(), threadLimit())));
-  const std::uint64_t work = workMemoryBytes();
-  return bytes + threads * per_task <= work;
+  const std::uint64_t reserve = threads * per_task;
+  std::uint64_t room = options.staging_memory_bytes.value_or(0);
+  if (!options.staging_memory_bytes) {
+    const std::uint64_t work = workMemoryBytes();
+    room = work > reserve ? work - reserve : 0;
+    // Memory other programs use now is not ours to take: the system keeps a quarter of what is
+    // available for them and its file cache.
+    if (const std::uint64_t available = availableMemoryBytes(); available > 0) {
+      const std::uint64_t usable = available / 4 * 3;
+      room = std::min(room, usable > reserve ? usable - reserve : 0);
+    }
+  }
+  return static_cast<std::int64_t>(
+      std::min<std::uint64_t>(room / slice_bytes, static_cast<std::uint64_t>(slices)));
 }
 
 /// A temporary raw copy of a source, removed on destruction. The slices of the preview are copied
@@ -229,24 +262,24 @@ class StagedSource {
         copied_(static_cast<std::size_t>(dims_[2]), 0),
         progress_(options.progress, "staging", static_cast<std::size_t>(dims_[2])) {
     // In the input's width: 8-bit input takes half the space.
-    const std::uint64_t bytes = product(dims_) * (narrow_ ? 1U : 2U);
+    slice_bytes_ = static_cast<std::size_t>(dims_[0] * dims_[1]) * (narrow_ ? 1U : 2U);
     std::filesystem::create_directories(dir);
     removeStaleCopies(dir);
-    // In memory when it fits: then the copy is neither written to the disk nor read back from it
-    // (twice the input's voxels in bytes of disk traffic, and the system may write the pages back
-    // while pass 2 waits for them).
-    if (stageInMemory(bytes, options)) {
+    // The slices that fit go into memory: they are neither written to the disk nor read back
+    // from it (twice their bytes of disk traffic, and the system may write the pages back while
+    // pass 2 waits for them). The others go to the file.
+    memory_slices_ = stagedSlicesInMemory(slice_bytes_, dims_[2], options);
+    if (memory_slices_ > 0) {
       try {
         // Not initialised: each page is first touched by the slice copied into it.
-        memory_.resize(static_cast<std::size_t>(bytes));
+        memory_.resize(static_cast<std::size_t>(memory_slices_) * slice_bytes_);
       } catch (const std::bad_alloc&) {
         UninitializedVector<std::uint8_t>().swap(memory_);
+        memory_slices_ = 0;
       }
     }
-    if (!memory_.empty()) {
-      slice_bytes_ = static_cast<std::size_t>(dims_[0] * dims_[1]) * (narrow_ ? 1U : 2U);
-    } else {
-      createFile(dir, bytes);
+    if (memory_slices_ < dims_[2]) {
+      createFile(dir, static_cast<std::uint64_t>(dims_[2] - memory_slices_) * slice_bytes_);
     }
     // Pass 1 on the way (the block maxima need k = 1): every slice passes through memory once.
     if (options.min_material_voxels == 1) {
@@ -329,19 +362,27 @@ class StagedSource {
         });
     wide_.clear();  // the slice buffers of the threads
     narrow_buffers_.clear();
-    if (!memory_.empty()) {
-      raw_ =
-          std::make_unique<StagedMemorySource>(memory_.data(), dims_, input_.voxelSize(), narrow_);
-      return;
+    std::unique_ptr<VolumeSource> rest;
+    if (memory_slices_ < dims_[2]) {
+      out_.close();
+      if (out_.fail()) {
+        throwWriteError(path_);
+      }
+      rest = std::make_unique<MappedRawSource>(
+          path_, RawLayout{{dims_[0], dims_[1], dims_[2] - memory_slices_},
+                           input_.voxelSize(),
+                           narrow_ ? SampleType::kUInt8 : SampleType::kUInt16,
+                           std::endian::native,
+                           std::uint64_t{0}});
     }
-    out_.close();
-    if (out_.fail()) {
-      throwWriteError(path_);
-    }
-    raw_ = std::make_unique<MappedRawSource>(
-        path_,
-        RawLayout{dims_, input_.voxelSize(), narrow_ ? SampleType::kUInt8 : SampleType::kUInt16,
-                  std::endian::native, std::uint64_t{0}});
+    raw_ = std::make_unique<StagedCopySource>(memory_.data(), memory_slices_, dims_,
+                                              input_.voxelSize(), narrow_, std::move(rest));
+  }
+
+  /// Bytes of the copy held in memory and in the file.
+  [[nodiscard]] std::uint64_t memoryBytes() const { return memory_.size(); }
+  [[nodiscard]] std::uint64_t fileBytes() const {
+    return static_cast<std::uint64_t>(dims_[2] - memory_slices_) * slice_bytes_;
   }
 
   [[nodiscard]] const VolumeSource& source() const { return *raw_; }
@@ -394,11 +435,12 @@ class StagedSource {
         data = reinterpret_cast<const char*>(narrow.data());
         bytes = slice_voxels;
       }
-      if (!memory_.empty()) {
+      if (z < memory_slices_) {
         std::memcpy(memory_.data() + static_cast<std::size_t>(z) * slice_bytes_, data, bytes);
       } else {
         const std::scoped_lock lock(write_mutex_);
-        out_.seekp(static_cast<std::streamoff>(static_cast<std::uint64_t>(z) * bytes));
+        out_.seekp(
+            static_cast<std::streamoff>(static_cast<std::uint64_t>(z - memory_slices_) * bytes));
         out_.write(data, static_cast<std::streamsize>(bytes));
         if (!out_) {
           throwWriteError(path_);
@@ -479,6 +521,7 @@ class StagedSource {
   tbb::enumerable_thread_specific<std::vector<std::uint16_t>> row_max_;
   UninitializedVector<std::uint8_t> memory_;  // the copy, when held in memory
   std::size_t slice_bytes_ = 0;
+  std::int64_t memory_slices_ = 0;  // the first slices, held in memory_
   std::unique_ptr<VolumeSource> raw_;
 };
 
@@ -1451,6 +1494,10 @@ DatasetInfo writeDataset(const VolumeSource& input, const std::filesystem::path&
         options.preview(builder->snapshot());
       }
     }
+  }
+  if (staged) {
+    info.staged_memory_bytes = staged->memoryBytes();
+    info.staged_file_bytes = staged->fileBytes();
   }
   const VolumeSource& source = staged ? staged->source() : input;
 
