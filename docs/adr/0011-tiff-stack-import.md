@@ -97,11 +97,13 @@ A float stack of 1250 x 1250 x 4000 voxels (15 GB as a ZIP) read 44.5 GB and wro
 import: the ZIP, the 12.5 GB staging copy written and read back, and level 0 (13 GB) read back
 again to build the coarser levels. Two changes take both extra rounds off the disk:
 
-- The staging copy is held in memory instead of a file when it fits into the work memory
-  (`workMemoryBytes`, ADR 0034) next to the bricks pass 2 builds at once
-  (`DatasetOptions::stage_in_memory`, on by default). Larger copies, or a smaller `--memory`,
-  still go to the file. The process then holds the copy until pass 2 ends: its peak memory grows
-  by the copy, within the budget.
+- The staging copy is held in memory as far as it fits, and only the rest goes to a file: the
+  first slices that fit into the work memory (`workMemoryBytes`, ADR 0034) and into three
+  quarters of the memory the system has available at the start (`availableMemoryBytes`), both
+  less what pass 2 needs for the bricks it builds at once. Much memory: no file at all; little
+  memory: more slices in the file, down to the whole copy as before. `--memory` moves the split;
+  `DatasetOptions::staging_memory_bytes` sets it. The process holds the slices in memory until
+  pass 2 ends, so its peak memory grows by them, within the budget. vs-sieve prints the split.
 - Pass 2 downsamples each level-0 brick while it is still in memory and writes the level-1 brick
   above as soon as the up to eight bricks below it are in; for that, it builds the bricks in the
   order of their level-1 brick, so only the level-1 bricks the threads work on hold parts. The

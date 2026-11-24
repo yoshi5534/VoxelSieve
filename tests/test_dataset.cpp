@@ -623,42 +623,64 @@ TEST_F(DatasetTest, StagesSlowSourcesOnceAndWritesTheSameDataset) {
   EXPECT_FALSE(PhantomSource(half).slowRandomAccess());
 }
 
-TEST_F(DatasetTest, StagesInMemoryWhenTheCopyFitsAndInAFileOtherwise) {
+TEST_F(DatasetTest, StagesAsManySlicesInMemoryAsFitAndTheRestInAFile) {
   const PhantomSpec phantom = spec();
+  const auto slice_bytes = static_cast<std::uint64_t>(phantom.dims[0] * phantom.dims[1]) * 2;
+  const auto copy_bytes = slice_bytes * static_cast<std::uint64_t>(phantom.dims[2]);
   DatasetOptions options;
   options.brick_size = 32;
   options.staging_dir = dir_ / "scratch";
-  // Whether the staging copy is a file while the slices are copied.
-  bool file_seen = false;
+  // The size of the staging file while the slices are copied.
+  std::uintmax_t file_bytes = 0;
   options.progress = [&](std::string_view stage, double) {
     if (stage != "staging" || !std::filesystem::exists(options.staging_dir)) {
       return;
     }
     for (const auto& entry : std::filesystem::directory_iterator(options.staging_dir)) {
-      file_seen = file_seen || entry.path().extension() == ".raw";
+      if (entry.path().extension() == ".raw") {
+        file_bytes = std::filesystem::file_size(entry.path());
+      }
     }
   };
+
+  // Memory enough (the default budget of the test machine): no file at all.
   const SlowPhantomSource in_memory(phantom);
-  (void)writeDataset(in_memory, dir_ / "memory", options);
-  EXPECT_FALSE(file_seen);
+  const DatasetInfo all = writeDataset(in_memory, dir_ / "memory", options);
+  EXPECT_EQ(file_bytes, 0U);
+  EXPECT_EQ(all.staged_memory_bytes, copy_bytes);
+  EXPECT_EQ(all.staged_file_bytes, 0U);
   EXPECT_EQ(in_memory.voxelsRead(), phantom.dims[0] * phantom.dims[1] * phantom.dims[2]);
 
-  options.stage_in_memory = false;
-  const SlowPhantomSource in_file(phantom);
-  (void)writeDataset(in_file, dir_ / "file", options);
-  EXPECT_TRUE(file_seen);
-  EXPECT_EQ(in_file.voxelsRead(), in_memory.voxelsRead());
+  // Memory for 10 slices and a half: those 10 in memory, the others in the file.
+  options.staging_memory_bytes = slice_bytes * 21 / 2;
+  const SlowPhantomSource split_source(phantom);
+  const DatasetInfo split = writeDataset(split_source, dir_ / "split", options);
+  EXPECT_EQ(split.staged_memory_bytes, slice_bytes * 10);
+  EXPECT_EQ(split.staged_file_bytes, copy_bytes - slice_bytes * 10);
+  EXPECT_EQ(file_bytes, split.staged_file_bytes);
+  EXPECT_EQ(split_source.voxelsRead(), in_memory.voxelsRead());
+  expectSameDataset(dir_ / "memory", dir_ / "split");
+
+  // None: all in the file.
+  options.staging_memory_bytes = 0;
+  const DatasetInfo none = writeDataset(SlowPhantomSource(phantom), dir_ / "file", options);
+  EXPECT_EQ(none.staged_memory_bytes, 0U);
+  EXPECT_EQ(file_bytes, copy_bytes);
   expectSameDataset(dir_ / "memory", dir_ / "file");
   EXPECT_TRUE(std::filesystem::is_empty(options.staging_dir));
 
-  // A memory budget too small for the copy: the file again.
-  file_seen = false;
-  options.stage_in_memory = true;
+  // A memory budget too small for one slice: the file again.
+  options.staging_memory_bytes.reset();
   setMemoryBudget(std::uint64_t{1} << 20U);
-  (void)writeDataset(SlowPhantomSource(phantom), dir_ / "small_budget", options);
+  const DatasetInfo small =
+      writeDataset(SlowPhantomSource(phantom), dir_ / "small_budget", options);
   setMemoryBudget(0);
-  EXPECT_TRUE(file_seen);
+  EXPECT_EQ(small.staged_memory_bytes, 0U);
   expectSameDataset(dir_ / "memory", dir_ / "small_budget");
+
+  // What the system has available now: some, and below the installed memory.
+  EXPECT_GT(availableMemoryBytes(), 0U);
+  EXPECT_LE(availableMemoryBytes(), usableMemoryBytes());
 }
 
 TEST_F(DatasetTest, LevelsBuiltWithTheBricksMatchLevelsBuiltFromLevelZero) {
