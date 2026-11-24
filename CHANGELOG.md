@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Icons in the browser UI** (ADR 0042): stages, header, view modes, layers, analysis groups and
+  cards, region tools and the file browser have icons from Lucide (ISC licence, the used icons
+  copied into `resources/ui/icons.js`, no new dependency). Descriptions of analyses and groups
+  are tooltips, and the key figures of a result are large numbers instead of a table.
+
 - **Regions of a scan** (ADR 0041): draw a box, sphere or cylinder in the slice view, or take
   the inside of a CAD model, add or cut out solids and save the result as a named region of the
   scan (operation `define_region`). Regions show in the slice and 3D views and in the layer tree;

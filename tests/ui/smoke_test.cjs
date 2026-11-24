@@ -117,7 +117,7 @@ async function walk(page, address, work) {
   const porosity = stage.locator('details.analysis', { hasText: 'Porosity analysis' });
   await porosity.locator('> summary').click();
   await porosity.getByText('Result of step').waitFor();
-  const figures = await porosity.locator('.analysis-result table').innerText();
+  const figures = await porosity.locator('.analysis-result .figures').innerText();
   expect(/pores\s+3\b/i.test(figures), 'three pores, in: ' + figures);
   expect(/zones\s+1\b/i.test(figures), 'one loosened zone, in: ' + figures);
   await stage.locator('.layer', { hasText: 'Pores' }).locator('.layer-name').click();
@@ -142,7 +142,7 @@ async function walk(page, address, work) {
   // voxels x 175 and 179, y 32 and 73; the third at x 141, y 126 lies outside), then the porosity
   // in it.
   await page.locator('.stages button[data-stage="workspace"]').click();
-  await stage.getByRole('button', { name: '+ New region' }).click();
+  await stage.getByRole('button', { name: 'New region' }).click();
   const sliceCanvas = stage.locator('.viewer canvas');
   await sliceCanvas.waitFor();
   await page.waitForFunction(() => state.viewer?.info && state.viewer.canvas?.clientWidth > 0);
@@ -168,7 +168,7 @@ async function walk(page, address, work) {
   await inRegion.getByText('Runs in the region Region 1').waitFor();
   await inRegion.getByRole('button', { name: 'Run', exact: true }).click();
   await finished(inRegion.locator('.analysis-result', { hasText: 'Region 1' }));
-  const regionFigures = await inRegion.locator('.analysis-result table').innerText();
+  const regionFigures = await inRegion.locator('.analysis-result .figures').innerText();
   expect(/pores\s+2\b/i.test(regionFigures), 'two pores in the region, in: ' + regionFigures);
 
   // 5. View: a slice, then the volume in 3D.
