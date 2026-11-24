@@ -109,7 +109,8 @@ class SliceViewer {
     this.zoom = 1;              // screen pixels per level-0 voxel along the finer in-plane axis
     this.center = [0, 0];       // level-0 voxel coordinates of the view centre (u, v)
     this.window = null;         // [low, high]
-    this.showOverlay = true;
+    // Which layers colour the slice: pores, zones, materials and the thickness map.
+    this.show = { pores: true, zones: true, materials: true, thickness: true };
     this.hiddenMaterials = [];  // ids of the material classes left out of the overlay
     this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
     // Other objects: {id, number, kind, color, version, show, mode, opacity, window}; `version`
@@ -146,7 +147,7 @@ class SliceViewer {
   /// Slice, zoom and window, for saving them with the project or as a named view.
   getState() {
     const saved = { step: this.step, axis: this.axis, index: [...this.index], window: this.window,
-      showOverlay: this.showOverlay, layers: structuredClone(this.layerSettings) };
+      show: { ...this.show }, layers: structuredClone(this.layerSettings) };
     // Before the first picture the zoom is not fitted yet; leave it to the next fit then.
     if (!this.fitPending) Object.assign(saved, { zoom: this.zoom, center: [...this.center] });
     return saved;
@@ -158,7 +159,12 @@ class SliceViewer {
     this.axis = saved.axis;
     this.index = saved.index.map((i, a) => Math.min(Math.max(i, 0), this.info.dims[a] - 1));
     this.window = saved.window;
-    this.showOverlay = saved.showOverlay;
+    if (saved.show) {
+      this.show = { ...this.show, ...saved.show };
+    } else if (saved.showOverlay === false) {
+      // Views saved before the layers had one switch for all of them.
+      this.show = { pores: false, zones: false, materials: false, thickness: false };
+    }
     if (saved.layers) {
       this.layerSettings = structuredClone(saved.layers);
       for (const layer of this.layers) Object.assign(layer, this.layerSettings[layer.id] ?? {});
@@ -700,8 +706,9 @@ class SliceViewer {
     this.onChange();
   }
 
-  setOverlay(show) {
-    this.showOverlay = show;
+  /// Switches layers of the slice on or off: {pores, zones, materials, thickness}.
+  setShow(layers) {
+    this.show = { ...this.show, ...layers };
     this.requestDraw();
   }
 
@@ -735,8 +742,9 @@ class SliceViewer {
   }
 
   renderTile(tile) {
-    const state = [this.window?.[0], this.window?.[1], this.showOverlay,
-      this.hiddenMaterials.join(','), this.materialColors.flat().join(',')].join('/');
+    const show = this.show;
+    const state = [this.window?.[0], this.window?.[1], show.pores, show.zones, show.materials,
+      show.thickness, this.hiddenMaterials.join(','), this.materialColors.flat().join(',')].join('/');
     if (tile.rendered === state) return tile.canvas;
     if (!tile.canvas) {
       tile.canvas = document.createElement('canvas');
@@ -746,8 +754,9 @@ class SliceViewer {
     const context = tile.canvas.getContext('2d');
     const image = context.createImageData(TILE, TILE);
     slicePixels(tile.data, tile.overlay, this.window ?? [0, 1],
-      this.showOverlay ? this.hiddenMaterials : null, image.data, this.materialColors,
-      tile.thickness ? { values: tile.thickness, scale: tile.thicknessScale } : null);
+      { pores: show.pores, zones: show.zones, materials: show.materials ? this.hiddenMaterials : null },
+      image.data, this.materialColors, tile.thickness && show.thickness
+        ? { values: tile.thickness, scale: tile.thicknessScale } : null);
     context.putImageData(image, 0, 0);
     tile.rendered = state;
     return tile.canvas;
@@ -769,24 +778,30 @@ function thicknessRgb(t, minWall, maxWall, range) {
   return stops[i].map((c, k) => c + f * (stops[i + 1][k] - c));
 }
 
-/// Grey values with the overlay: pores, zones and materials, or with `thickness` ({values,
-/// scale: [minWall, maxWall, range]}) the material coloured by its wall thickness.
-function slicePixels(data, overlay, [low, high], hiddenMaterials, out,
+/// Grey values with the layers of `show`: {pores, zones, materials}, where `materials` lists the
+/// ids of the material classes left out, or is null for no materials; an array alone is all
+/// three with those materials left out, and null shows none. With `thickness` ({values, scale:
+/// [minWall, maxWall, range]}) the material is coloured by its wall thickness.
+function slicePixels(data, overlay, [low, high], show, out,
   materialColors = MATERIAL_COLORS, thickness = null) {
   const scale = 255 / (high - low);
+  const layers = Array.isArray(show) ? { pores: true, zones: true, materials: show }
+    : show ?? { pores: false, zones: false, materials: null };
+  const hiddenMaterials = layers.materials;
   for (let i = 0; i < data.length; i += 1) {
     const grey = Math.min(Math.max((data[i] - low) * scale, 0), 255);
     let r = grey;
     let g = grey;
     let b = grey;
-    if (hiddenMaterials) {
-      const kind = overlay[i];
-      // Tinted, so the grey values stay readable: pores red, zones yellow.
-      if (kind === 1) {
-        r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
-      } else if (kind === 2) {
-        r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
-      } else if (kind > MATERIAL_OVERLAY && !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
+    const kind = overlay[i];
+    // Tinted, so the grey values stay readable: pores red, zones yellow.
+    if (kind === 1 && layers.pores) {
+      r = 0.35 * grey + 165; g = 0.35 * grey + 25; b = 0.35 * grey + 25;
+    } else if (kind === 2 && layers.zones) {
+      r = 0.5 * grey + 125; g = 0.5 * grey + 100; b = 0.4 * grey;
+    } else {
+      if (hiddenMaterials && kind > MATERIAL_OVERLAY &&
+          !hiddenMaterials.includes(kind - MATERIAL_OVERLAY)) {
         // Materials in their colour, half covering the grey value.
         const id = kind - MATERIAL_OVERLAY;
         const [mr, mg, mb] = materialColors[id - 1] ?? MATERIAL_COLORS[(id - 1) % 8];

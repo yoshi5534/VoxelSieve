@@ -37,7 +37,7 @@ assistant, using sample data. The tools:
 | `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
 | `vs-battery` | battery cell → housing, electrode layers, anode overhang, particles, voids, report |
-| `vs-gui` | browser UI with wizard, undo, slice and 3D view; `--mcp` serves it to AI systems |
+| `vs-gui` | browser UI: open a scan, analyses beside slice and 3D view with layers, undo; `--mcp` serves it to AI systems |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
 | `vs-phantom` | simple box phantom with analytic ground truth |
 
@@ -613,11 +613,16 @@ Install with `pip install .` from a checkout (with `VCPKG_ROOT` set as for the b
 scan …" is all a first look takes: VoxelSieve finds out what the file is (raw, TIFF, DICOM or a
 dataset; a raw file without a sidecar is read from its name or its grey values), creates a
 project next to the scan, imports it and shows the part in 3D, with the analyses that suit it
-above the view (porosity, wall thickness, materials, comparison with a CAD model next to the
+beside the view (porosity, wall thickness, materials, comparison with a CAD model next to the
 scan, battery cells, fibre composites, beam hardening), each started with one click (ADR 0039).
-Detected or assumed values, such as a missing voxel size, are shown for a check first. The
-browser UI then leads through the steps: run operations such as the porosity analysis, look at
-the results, create the inspection report. Every step appears in the protocol with its
+Detected or assumed values, such as a missing voxel size, are shown for a check first.
+
+The analysis is one workspace (ADR 0040): objects and layers on the left, the view in the
+middle, the analyses in groups (prepare, segment, defects, geometry, reports and export) and the
+history of all results on the right. Every result becomes a layer: the grey values are drawn as
+a solid surface, translucent or as maximum intensity projection; one colouring at a time
+(materials, nominal-actual deviation, wall thickness) colours the part; pores, loosened zones
+and other objects are overlays to switch on and off. The report is the last stage. Every step appears in the protocol with its
 parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
 step. Plugins appear next to the built-in operations.
 

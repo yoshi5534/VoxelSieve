@@ -109,20 +109,22 @@ async function walk(page, address, work) {
     'the comparison with the CAD model next to the scan is suggested, in: ' + suggested);
 
   // 2. Analysis: the porosity of the part, run from its suggestion; the scan is synthetic, so the
-  // answer is known.
+  // answer is known. Its pores become layers of the workspace (ADR 0040).
   await stage.locator('.next-step', { hasText: 'Porosity analysis' })
     .getByRole('button', { name: 'Run', exact: true }).click();
-  await finished(stage.locator('.next-step.done', { hasText: 'Porosity analysis' }));
-  await page.locator('.stages button[data-stage="analysis"]').click();
-  const porosity = stage.locator('.card', {
-    has: page.getByRole('heading', { name: 'Porosity analysis', exact: true }) });
-  await porosity.getByText('Result (step').waitFor();
-  const figures = await porosity.locator('table').last().innerText();
+  await finished(stage.locator('.layer', { hasText: 'Pores' }));
+  const porosity = stage.locator('details.analysis', { hasText: 'Porosity analysis' });
+  await porosity.locator('> summary').click();
+  await porosity.getByText('Result of step').waitFor();
+  const figures = await porosity.locator('.analysis-result table').innerText();
   expect(/pores\s+3\b/i.test(figures), 'three pores, in: ' + figures);
   expect(/zones\s+1\b/i.test(figures), 'one loosened zone, in: ' + figures);
+  await stage.locator('.layer', { hasText: 'Pores' }).locator('.layer-name').click();
+  expect(await stage.locator('.layer-properties tbody tr').count() === 3,
+    'the properties of the pores list three of them');
 
-  // 3. Results: the analysis is listed.
-  await page.locator('.stages button[data-stage="results"]').click();
+  // 3. History: the analysis is listed.
+  await stage.locator('.side-tabs').getByRole('button', { name: 'History', exact: true }).click();
   await stage.getByText('Pores and loosened zones').first().waitFor();
 
   // 4. Report: with the order of the examples, the part passes.
@@ -136,7 +138,7 @@ async function walk(page, address, work) {
   await report.locator('img').first().waitFor();  // the report has its pictures
 
   // 5. View: a slice, then the volume in 3D.
-  await page.locator('.stages button[data-stage="view"]').click();
+  await page.locator('.stages button[data-stage="workspace"]').click();
   await stage.locator('.view-modes').getByRole('button', { name: 'Slice', exact: true }).click();
   const slice = stage.locator('canvas').first();
   await slice.waitFor();
@@ -144,7 +146,8 @@ async function walk(page, address, work) {
   await stage.locator('.view-modes').getByRole('button', { name: '3D', exact: true }).click();
   await finished(stage.getByText('drag rotates'));
   // The porosity result showed the part translucent, for the pores inside; as a solid again.
-  await stage.locator('select[title="Rendering"]').selectOption('0');
+  await stage.locator('.layer', { hasText: 'Grey values' }).click();
+  await stage.locator('select[title="How the grey values are drawn"]').selectOption('0');
   await expectPicture(page, stage.locator('canvas:not(.transfer)').first(), 'the 3D view');
 
   // 6. A raw file without a sidecar: its layout is detected and shown for a check.
@@ -163,6 +166,8 @@ async function walk(page, address, work) {
   // Undo takes the report back, redo brings it again.
   const done = await steps.count();
   await page.locator('#btn-undo').click();
+  // The protocol starts hidden on screens narrower than 1600 pixels; show it.
+  if (await page.locator('body.protocol-hidden').count()) await page.locator('#btn-protocol').click();
   await page.locator('#protocol > li.undone').first().waitFor();
   await page.locator('#btn-redo').click();
   await page.locator('#protocol > li.undone').first().waitFor({ state: 'detached' });

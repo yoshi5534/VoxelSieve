@@ -97,7 +97,22 @@ const { cutsToScreen, insideWindow, layerPixels, slicePixels, thicknessRgb } = r
   assert.deepEqual(thicknessRgb(4, 0, 0, 4), [40, 70, 210]);
   assert.ok(pixel(2)[0] > pixel(2)[2]);  // 1.5 of 4 mm: between yellow and green
   assert.deepEqual(pixel(3), [0, 0, 0, 255]);
-  slicePixels(data, overlay, [0, 100], null, out, undefined, {
-    values, scale: [1, 3, 4] });
-  assert.deepEqual(pixel(0), [255, 255, 255, 255]);  // overlay switched off
+  slicePixels(data, overlay, [0, 100], null, out);
+  assert.deepEqual(pixel(0), [255, 255, 255, 255]);  // no thickness map: the grey value
+}
+
+// Each layer on its own: pores off leave their grey value, zones and materials stay coloured.
+{
+  const data = new Float32Array([100, 100, 100]);
+  const overlay = new Uint8Array([1, 2, 17]);
+  const out = new Uint8ClampedArray(3 * 4);
+  const pixel = (i) => [...out.slice(i * 4, i * 4 + 4)];
+  slicePixels(data, overlay, [0, 100], { pores: false, zones: true, materials: [] }, out);
+  assert.deepEqual(pixel(0), [255, 255, 255, 255]);
+  assert.ok(pixel(1)[2] < pixel(1)[0]);  // zone tinted yellow
+  assert.deepEqual(pixel(2), [160, 200, 226, 255]);
+  slicePixels(data, overlay, [0, 100], { pores: true, zones: false, materials: null }, out);
+  assert.ok(pixel(0)[0] > pixel(0)[1]);  // pore tinted red
+  assert.deepEqual(pixel(1), [255, 255, 255, 255]);
+  assert.deepEqual(pixel(2), [255, 255, 255, 255]);
 }
