@@ -92,6 +92,7 @@ const SUMMARY_LABELS = {
   materials: 'Materials',
   header_bytes: 'Header (bytes)',
   pores: 'Pores',
+  region: 'Region',
   pore_volume_mm3: 'Pore volume (mm³)',
   zones: 'Loosened zones',
   zone_void_volume_mm3: 'Void volume in zones (mm³)',
@@ -1281,7 +1282,7 @@ function renderReportStage(panel) {
 /// results have none.
 const RESULT_TYPES = {
   porosity: { label: 'Pores and loosened zones', view: 'slice',
-    keys: ['pores', 'porosity', 'pore_volume_mm3', 'zones'] },
+    keys: ['region', 'pores', 'porosity', 'pore_volume_mm3', 'zones'] },
   materials: { label: 'Materials', view: 'slice', keys: ['materials'] },
   surface: { label: 'Surface', view: '3d',
     keys: ['surface_volume_mm3', 'compression_vs_raw'] },
@@ -1289,10 +1290,11 @@ const RESULT_TYPES = {
     keys: ['deviation_rms_mm', 'within_tolerance_percent', 'tolerance_mm',
       'displacement_max_mm'] },
   wall_thickness: { label: 'Wall thickness', view: '3d',
-    keys: ['thickness_min_mm', 'thickness_median_mm', 'below_min_percent', 'thin_regions',
+    keys: ['region', 'thickness_min_mm', 'thickness_median_mm', 'below_min_percent', 'thin_regions',
       'measured_percent', 'thinner_than_nominal_percent', 'map_max_mm', 'map_thick_regions'] },
   report: { label: 'Test report', opens: true, keys: ['passed', 'evaluated_zones'] },
   inspection_regions: { label: 'Inspection regions', keys: ['zones'] },
+  region: { label: 'Region', keys: ['name', 'description', 'removed'] },
   diconde: { label: 'DICONDE export', keys: ['slices', 'indications', 'series', 'path'] },
 };
 
@@ -1557,6 +1559,17 @@ function materialLegend(materials, onChange, onColors) {
       'view.')];
 }
 
+/// dataset_info of a dataset step, asked once.
+function datasetInfo(step) {
+  state.datasetInfos ??= new Map();
+  if (!state.datasetInfos.has(step)) {
+    const request = api('dataset_info', { step });
+    request.catch(() => state.datasetInfos.delete(step));
+    state.datasetInfos.set(step, request);
+  }
+  return state.datasetInfos.get(step);
+}
+
 async function loadPores(step) {
   if (state.pores.step === step) return;
   state.pores = { step, list: [] };
@@ -1785,11 +1798,39 @@ function renderLayers(container, dataset, sources, properties) {
         overlays.push(row(key, box, label, sources.porosity, title));
       }
     }
+    const regions = scanRegions(dataset);
+    const hidden = layers.hiddenRegions ?? [];
+    const regionRows = regions.map((region, i) => {
+      const box = el('input', { type: 'checkbox', checked: !hidden.includes(region.name),
+        title: 'Show this region in the views' });
+      box.addEventListener('change', () => {
+        layers.hiddenRegions = (layers.hiddenRegions ?? []).filter((n) => n !== region.name);
+        if (!box.checked) layers.hiddenRegions.push(region.name);
+        changed();
+      });
+      const swatch = el('span', { className: 'region-swatch' });
+      swatch.style.background = regionColor(region, i);
+      return row('region:' + region.name, box, el('span', {}, swatch, region.name), region.step,
+        region.description);
+    });
+    const drawing = regionDraft(dataset);
+    const regionGroup = [el('div', { className: 'layer-group' }, 'Regions'), ...regionRows,
+      drawing ? row('new-region', el('span', { className: 'layer-icon' }, '✎'),
+        (drawing.editing ? 'Editing ' : 'Drawing ') + drawing.name, null,
+        'The region being drawn')
+        : el('button', { className: 'link add-region', title: 'Draw a region in the slice view ' +
+          'or take a CAD model, to run analyses in it only',
+        onclick: () => startRegionDraft(dataset) }, '+ New region')];
+    for (const region of regions) {
+      properties['region:' + region.name] = regionProperties(dataset, region);
+    }
+    if (drawing) properties['new-region'] = draftProperties(dataset);
     if (objects.some((candidate) => candidate.id !== dataset.step.object)) {
       overlays.push(row('objects', el('span', { className: 'layer-icon' }, '◇'), 'Other objects',
         null, 'Other volumes and CAD models of the project'));
     }
     if (overlays.length) container.append(el('div', { className: 'layer-group' }, 'Overlays'), ...overlays);
+    container.append(...regionGroup);
     if (colorings.length === 1 && sources.porosity === null) {
       container.append(el('p', { className: 'hint' }, 'Run an analysis on the right: its result ' +
         'appears here as a layer to switch on and off.'));
@@ -1798,11 +1839,244 @@ function renderLayers(container, dataset, sources, properties) {
   const selected = state.layerSelected ?? 'grey';
   const content = properties[selected];
   const names = { ...Object.fromEntries(COLORINGS.map((c) => [c.key, c.label])),
-    grey: 'Grey values', pores: 'Pores', zones: 'Loosened zones', objects: 'Other objects' };
+    grey: 'Grey values', pores: 'Pores', zones: 'Loosened zones', objects: 'Other objects',
+    'new-region': 'New region' };
+  if (selected.startsWith('region:')) names[selected] = 'Region ' + selected.slice(7);
   if (content?.length) {
     container.append(el('div', { className: 'layer-properties' },
       el('h4', {}, names[selected] ?? selected), ...content));
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Regions of a scan (ADR 0041): solids drawn in the slice view or taken from a CAD model, saved
+// as define_region steps; analyses that take a region report only what lies in it.
+
+/// The regions of the scan object of `dataset`.
+function scanRegions(dataset) {
+  return dataset ? regionsOf(activeSteps(), dataset.step.object) : [];
+}
+
+/// Analyses that take a `region` parameter.
+function takesRegion(operation) {
+  return Boolean(operation?.parameters?.properties?.region);
+}
+
+function regionColor(region, index) {
+  return region.color ?? REGION_COLORS[index % REGION_COLORS.length];
+}
+
+/// The region being drawn, for the scan of `dataset`.
+function regionDraft(dataset) {
+  const draft = state.regionDraft;
+  return draft && draft.object === (dataset?.step.object ?? '') ? draft : null;
+}
+
+function startRegionDraft(dataset, from = null) {
+  const regions = scanRegions(dataset);
+  let name = from?.name;
+  for (let n = regions.length + 1; !name; n += 1) {
+    if (!regions.some((region) => region.name === 'Region ' + n)) name = 'Region ' + n;
+  }
+  state.regionDraft = { object: dataset.step.object ?? '', name, editing: from?.name ?? null,
+    color: from ? regionColor(from, regions.indexOf(from)) : REGION_COLORS[regions.length %
+      REGION_COLORS.length], include: structuredClone(from?.include ?? []),
+    exclude: structuredClone(from?.exclude ?? []), mode: 'include' };
+  state.regionTool = from ? null : 'box';
+  state.layerSelected = 'new-region';
+  if (state.viewMode !== 'slice' && !from) state.viewMode = 'slice';
+  render();
+}
+
+function stopRegionDraft() {
+  state.regionDraft = null;
+  state.regionTool = null;
+  state.viewer?.setTool(null);
+}
+
+/// Triangles of the regions to show (mm), loaded from the steps where a region holds a mesh.
+/// Calls `done` once missing meshes have arrived.
+function regionTriangles(region, done) {
+  const included = solidsTriangles(region.include);
+  const excluded = solidsTriangles(region.exclude);
+  if (included !== null && excluded !== null) return { included, excluded };
+  if (!region.step) return { included: included ?? new Float32Array(0), excluded };
+  state.regionMeshes ??= new Map();
+  const cached = state.regionMeshes.get(region.step);
+  if (cached?.included) return cached;
+  if (!cached) {
+    state.regionMeshes.set(region.step, {});
+    const load = (file) => (file ? fetch(fileUrl(region.step, 'region', file))
+      .then((response) => (response.ok ? response.arrayBuffer() : null))
+      .then((buffer) => (buffer ? parseStl(buffer) : null)) : Promise.resolve(null));
+    Promise.all([load(region.meshes.included), load(region.meshes.excluded)])
+      .then(([inside, outside]) => {
+        state.regionMeshes.set(region.step, { included: inside ?? new Float32Array(0),
+          excluded: outside });
+        done();
+      }).catch(showError);
+  }
+  return { included: new Float32Array(0), excluded: null };
+}
+
+/// The regions the views draw: the shown saved ones and the one being drawn.
+function shownRegions(dataset, done) {
+  const layers = layerState();
+  const regions = scanRegions(dataset);
+  const shown = [];
+  regions.forEach((region, i) => {
+    if ((layers.hiddenRegions ?? []).includes(region.name)) return;
+    if (regionDraft(dataset)?.editing === region.name) return;
+    const triangles = regionTriangles(region, done);
+    shown.push({ name: region.name, color: regionColor(region, i), triangles: triangles.included,
+      excluded: triangles.excluded, key: region.step + ':' + region.name });
+  });
+  const draft = regionDraft(dataset);
+  if (draft) {
+    // Meshes of a draft (a CAD model) show through their objects' own cut lines.
+    const plain = (solids) => solids.filter((solid) => solidTriangles(solid) !== null);
+    shown.push({ name: draft.name, color: draft.color, draft: true,
+      triangles: solidsTriangles(plain(draft.include)),
+      excluded: solidsTriangles(plain(draft.exclude)), key: 'draft:' + JSON.stringify(draft) });
+  }
+  return shown;
+}
+
+/// The shown regions for the 3D view: triangles in level-0 voxel coordinates.
+function regionsInVoxels(regions, pitch) {
+  return regions.filter((region) => region.triangles?.length).map((region) => {
+    const triangles = new Float32Array(region.triangles.length);
+    for (let i = 0; i < triangles.length; i += 1) {
+      triangles[i] = region.triangles[i] / pitch[i % 3];
+    }
+    return { key: region.key, color: parseHexColor(region.color), triangles };
+  });
+}
+
+/// The properties of a saved region in the layer tree.
+function regionProperties(dataset, region) {
+  const solids = (list, label) => (list.length ? [el('div', { className: 'hint' }, label),
+    el('ul', { className: 'solids' }, list.map((solid) => el('li', {},
+      describeSolid(solid, objectName))))] : []);
+  return [
+    el('p', { className: 'hint' }, region.description),
+    ...solids(region.include, 'Inside'), ...solids(region.exclude, 'Cut out'),
+    el('div', { className: 'row' },
+      el('button', { className: 'primary', title: 'Choose this region for the analyses on the ' +
+        'right', onclick: () => {
+        state.analysisRegion = region.name;
+        state.sideTab = 'analyses';
+        render();
+      } }, 'Analyse here'),
+      el('button', { onclick: () => startRegionDraft(dataset, region) }, 'Edit'),
+      el('button', { title: 'Delete the region; a step of the protocol, so it can be undone',
+        onclick: async () => {
+          if (state.analysisRegion === region.name) state.analysisRegion = null;
+          await runStep('define_region', { name: region.name, remove: true });
+          state.layerSelected = 'grey';
+          render();
+        } }, 'Delete')),
+    el('p', { className: 'hint' }, 'Step ' + region.step + '. Analyses in a region report only ' +
+      'the pores and wall thickness in it; the regions follow their scan when it is moved.')];
+}
+
+/// The properties of the region being drawn: its name and colour, the tools that draw solids
+/// in the slice view, a CAD model as a solid, the solids so far and Save.
+function draftProperties(dataset) {
+  const draft = regionDraft(dataset);
+  if (!draft) return [];
+  const name = el('input', { value: draft.name, spellcheck: false });
+  name.addEventListener('input', () => { draft.name = name.value; });
+  const color = el('input', { type: 'color', value: draft.color, title: 'Colour of the region' });
+  color.addEventListener('input', () => {
+    draft.color = color.value;
+    render();
+  });
+  const tool = (kind, label, title) => el('button', {
+    className: state.regionTool === kind ? 'on' : null, title,
+    onclick: () => {
+      state.regionTool = state.regionTool === kind ? null : kind;
+      if (state.regionTool) state.viewMode = 'slice';
+      render();
+    },
+  }, label);
+  const mode = (key, label, title) => el('button', {
+    className: draft.mode === key ? 'on' : null, title,
+    onclick: () => { draft.mode = key; render(); },
+  }, label);
+  const meshes = (state.status.objects ?? []).filter((object) => object.kind === 'mesh');
+  const cad = el('select', { title: 'The inside of a CAD model or another mesh object' },
+    el('option', { value: '' }, 'Inside a CAD model …'),
+    meshes.map((object) => el('option', { value: object.id }, object.name)));
+  cad.addEventListener('change', () => {
+    if (!cad.value) return;
+    draft[draft.mode].push({ mesh_object: cad.value });
+    render();
+  });
+  const list = (solids, key, label) => (solids.length ? [el('div', { className: 'hint' }, label),
+    el('ul', { className: 'solids' }, solids.map((solid, i) => el('li', {},
+      describeSolid(solid, objectName), ' ', el('button', { className: 'link',
+        title: 'Remove this solid', onclick: () => { draft[key].splice(i, 1); render(); } },
+      '×'))))] : []);
+  const save = el('button', { className: 'primary', disabled: !draft.include.length &&
+    !draft.exclude.length || state.busy, onclick: async () => {
+    const params = { name: draft.name.trim(), color: draft.color, include: draft.include,
+      exclude: draft.exclude };
+    if (!params.name) {
+      showError('The region needs a name');
+      return;
+    }
+    const renamed = draft.editing && draft.editing !== params.name ? draft.editing : null;
+    const step = await runStep('define_region', params);
+    if (!step) return;
+    if (renamed) await runStep('define_region', { name: renamed, remove: true });
+    if (state.analysisRegion === renamed) state.analysisRegion = params.name;
+    stopRegionDraft();
+    state.layerSelected = 'region:' + params.name;
+    render();
+  } }, 'Save region');
+  return [
+    el('div', { className: 'form' }, el('label', {}, 'Name', name), el('label', {}, 'Colour', color)),
+    el('div', { className: 'group' }, mode('include', 'Add', 'Drawn solids add to the region'),
+      mode('exclude', 'Cut out', 'Drawn solids are cut out of the region')),
+    el('div', { className: 'group' },
+      tool('box', 'Box', 'Drag a rectangle in the slice: a box through the whole scan along the ' +
+        'slice normal'),
+      tool('sphere', 'Sphere', 'Drag from the centre in the slice: a sphere'),
+      tool('cylinder', 'Cylinder', 'Drag from the centre in the slice: a cylinder along the ' +
+        'slice normal through the whole scan')),
+    meshes.length ? cad : null,
+    el('p', { className: 'hint' }, state.regionTool
+      ? 'Drag in the slice view to draw. Other slices and axes show where the solid lies.'
+      : 'Choose a tool, then drag in the slice view.'),
+    ...list(draft.include, 'include', 'Inside'), ...list(draft.exclude, 'exclude', 'Cut out'),
+    el('div', { className: 'row' }, save,
+      el('button', { onclick: () => { stopRegionDraft(); state.layerSelected = 'grey'; render(); } },
+        'Cancel'))];
+}
+
+/// The region an analysis runs in: a select of the whole part and the regions of the scan.
+function regionChooser(dataset) {
+  const regions = scanRegions(dataset);
+  if (!regions.some((region) => region.name === state.analysisRegion)) state.analysisRegion = null;
+  const select = el('select', { title: 'Where the analyses that take a region look' },
+    el('option', { value: '' }, 'Whole part'),
+    regions.map((region) => el('option', { value: region.name,
+      selected: region.name === state.analysisRegion }, region.name)));
+  select.addEventListener('change', () => {
+    state.analysisRegion = select.value || null;
+    render();
+  });
+  return el('div', { className: 'region-chooser' }, el('label', {}, 'Where', select),
+    el('button', { title: 'Draw a new region in the slice view',
+      onclick: () => startRegionDraft(dataset) }, '+ Region'));
+}
+
+/// The `region` parameter of a run of an analysis that takes one, or nothing.
+function analysisRegionParams(operation, dataset) {
+  if (!takesRegion(operation) || !state.analysisRegion) return {};
+  const region = scanRegions(dataset).find((candidate) => candidate.name === state.analysisRegion);
+  return region ? { region: regionParameter(region) } : {};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1825,7 +2099,7 @@ const ANALYSIS_GROUPS = [
 /// report (its stage).
 const NOT_ANALYSES = ['open_dataset', 'import_raw', 'import_tiff', 'import_dicom',
   'import_gzipped_xml', 'add_mesh', 'move', 'align_points', 'align_surfaces', 'compare_objects',
-  'report', 'battery_images'];
+  'report', 'battery_images', 'define_region'];
 
 /// The settings shown on the card of an analysis; the others are under "More settings".
 const MAIN_PARAMETERS = {
@@ -1867,7 +2141,7 @@ function firstSentence(text) {
 
 /// The card of an analysis: title and what it does; opened, its main settings, the others
 /// folded, Run and the latest result.
-function analysisCard(operation) {
+function analysisCard(operation, dataset) {
   const last = latestStepOf(operation.id);
   const card = el('details', { className: 'analysis', open: state.openAnalysis === operation.id },
     el('summary', {}, el('span', { className: 'analysis-title' }, operation.title),
@@ -1879,10 +2153,10 @@ function analysisCard(operation) {
     const main = MAIN_PARAMETERS[operation.id] ??
       (operation.parameters.required ?? []).filter((name) => name !== 'inputs');
     const initial = last ? last.params : {};
-    const primary = buildForm(operation.parameters, initial, ['inputs'], main);
+    const primary = buildForm(operation.parameters, initial, ['inputs', 'region'], main);
     const others = Object.keys(operation.parameters.properties ?? {})
-      .filter((name) => !main.includes(name) && name !== 'inputs');
-    const secondary = buildForm(operation.parameters, initial, ['inputs', ...main]);
+      .filter((name) => !main.includes(name) && !['inputs', 'region'].includes(name));
+    const secondary = buildForm(operation.parameters, initial, ['inputs', 'region', ...main]);
     const missing = missingInputs(operation);
     card.append(el('details', { className: 'about' }, el('summary', {}, 'What it does'),
       el('p', {}, operation.description)), primary.element);
@@ -1890,8 +2164,14 @@ function analysisCard(operation) {
       card.append(el('details', { className: 'more' },
         el('summary', {}, 'More settings (' + others.length + ')'), secondary.element));
     }
+    if (takesRegion(operation)) {
+      card.append(el('p', { className: 'hint where' }, state.analysisRegion
+        ? 'Runs in the region ' + state.analysisRegion + ' (chosen above).'
+        : 'Runs on the whole part; choose a region above to look into part of it.'));
+    }
     const run = runButton('Run', operation.id, () => ({ ...primary.values(),
-      ...secondary.values() }), () => showResultOf(operation.id));
+      ...secondary.values(), ...analysisRegionParams(operation, dataset) }),
+    () => showResultOf(operation.id));
     if (missing.length) {
       run.disabled = true;
       run.title = 'Needs ' + missing.join(' and ') + ' first';
@@ -1928,6 +2208,7 @@ function renderAnalyses(container, dataset) {
     container.append(el('p', { className: 'hint' }, 'Open a scan first.'));
     return;
   }
+  container.append(regionChooser(dataset));
   const suggested = nextStepsRow(dataset);
   suggested.classList.add('open-only');
   fillNextSteps(suggested);
@@ -1945,7 +2226,7 @@ function renderAnalyses(container, dataset) {
       operations.some((operation) => operation.id === state.openAnalysis));
     const section = el('details', { className: 'analysis-group', open },
       el('summary', {}, el('b', {}, group.title), el('span', { className: 'hint' }, group.hint)),
-      operations.map(analysisCard));
+      operations.map((operation) => analysisCard(operation, dataset)));
     section.addEventListener('toggle', () => { state.openGroups[group.key] = section.open; });
     container.append(section);
   }
@@ -2101,6 +2382,12 @@ function renderSliceView(panel, dataset, ctx) {
   }
   panel.append(tools, el('div', { className: 'viewer' }, canvas), legend, status);
 
+  viewer.setRegions(shownRegions(dataset, () => render()));
+  const draft = regionDraft(dataset);
+  viewer.setTool(draft && state.regionTool ? { kind: state.regionTool, onDrawn: (solid) => {
+    draft[draft.mode].push(solid);
+    render();
+  } } : null);
   state.capture = () => viewer.capture();
   api('dataset_info', { step: dataset.step.id }).then((info) => {
     viewer.setDataset(info, dataset.step.id, porosity, materials?.id ?? null,
@@ -2849,6 +3136,10 @@ function renderVolumeView(panel, dataset, ctx) {
     status.textContent = error.message;
     return;
   }
+  const regions = shownRegions(dataset, () => render());
+  datasetInfo(dataset.step.id).then((info) => {
+    volume.setRegions(regionsInVoxels(regions, voxelPitch(info.voxel_size_mm)));
+  }).catch(showError);
   volume.load(dataset.step.id, porosity, materials?.id ?? null).then(() => {
     const key = volume.volume.key;
     const restore = state.restore;

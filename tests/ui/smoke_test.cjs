@@ -1,8 +1,9 @@
 // The inspection of the sample part (docs/quickstart.md) in a browser, as a user clicks through
 // it: opening the scan (a project next to it, the import, the 3D view and the suggested
-// analyses), the porosity analysis, the report, the slice and the 3D view, a raw file without a
-// sidecar, undo and redo. The scan is synthetic, so the answers are known: three shrinkage cavities and
-// one zone of loosened microstructure. Nothing else clicks through resources/ui.
+// analyses), the porosity analysis, the report, a region with the porosity in it, the slice and
+// the 3D view, a raw file without a sidecar, undo and redo. The scan is synthetic, so the answers
+// are known: three shrinkage cavities and one zone of loosened microstructure. Nothing else
+// clicks through resources/ui.
 //
 //   node smoke_test.cjs <vs-gui> <vs-synth> <inspection_order.json> <work dir>
 //
@@ -137,6 +138,39 @@ async function walk(page, address, work) {
   expect((await report.locator('body').innerText()).length > 500, 'the report has its text');
   await report.locator('img').first().waitFor();  // the report has its pictures
 
+  // 4b. A region (ADR 0041), after the report, which takes the latest porosity: a box drawn in the slice view around two of the pores (lunkers at
+  // voxels x 175 and 179, y 32 and 73; the third at x 141, y 126 lies outside), then the porosity
+  // in it.
+  await page.locator('.stages button[data-stage="workspace"]').click();
+  await stage.getByRole('button', { name: '+ New region' }).click();
+  const sliceCanvas = stage.locator('.viewer canvas');
+  await sliceCanvas.waitFor();
+  await page.waitForFunction(() => state.viewer?.info && state.viewer.canvas?.clientWidth > 0);
+  await page.waitForTimeout(500);  // the view fits the slice on its first frame
+  const frame = await sliceCanvas.boundingBox();
+  const toScreen = (u, v) => page.evaluate(([u, v]) => {
+    const viewer = state.viewer;
+    const [su, sv] = viewer.stretch();
+    return [(u - viewer.center[0]) * viewer.zoom * su + viewer.canvas.clientWidth / 2,
+      (v - viewer.center[1]) * viewer.zoom * sv + viewer.canvas.clientHeight / 2];
+  }, [u, v]);
+  const [x0, y0] = await toScreen(160, 18);
+  const [x1, y1] = await toScreen(200, 92);
+  await page.mouse.move(frame.x + x0, frame.y + y0);
+  await page.mouse.down();
+  await page.mouse.move(frame.x + x1, frame.y + y1, { steps: 8 });
+  await page.mouse.up();
+  await stage.locator('ul.solids li', { hasText: 'Box' }).waitFor();
+  await stage.getByRole('button', { name: 'Save region' }).click();
+  await finished(stage.locator('.layer', { hasText: 'Region 1' }));
+  await stage.getByRole('button', { name: 'Analyse here' }).click();
+  const inRegion = stage.locator('details.analysis', { hasText: 'Porosity analysis' });
+  await inRegion.getByText('Runs in the region Region 1').waitFor();
+  await inRegion.getByRole('button', { name: 'Run', exact: true }).click();
+  await finished(inRegion.locator('.analysis-result', { hasText: 'Region 1' }));
+  const regionFigures = await inRegion.locator('.analysis-result table').innerText();
+  expect(/pores\s+2\b/i.test(regionFigures), 'two pores in the region, in: ' + regionFigures);
+
   // 5. View: a slice, then the volume in 3D.
   await page.locator('.stages button[data-stage="workspace"]').click();
   await stage.locator('.view-modes').getByRole('button', { name: 'Slice', exact: true }).click();
@@ -163,7 +197,7 @@ async function walk(page, address, work) {
   await check.getByRole('button', { name: 'Cancel', exact: true }).click();
   await check.waitFor({ state: 'detached' });
 
-  // Undo takes the report back, redo brings it again.
+  // Undo takes the last step back, redo brings it again.
   const done = await steps.count();
   await page.locator('#btn-undo').click();
   // The protocol starts hidden on screens narrower than 1600 pixels; show it.

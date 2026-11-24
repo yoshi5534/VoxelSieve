@@ -130,6 +130,13 @@ struct ReferencePlacement {
                                          const InspectionRegion& region,
                                          const Dataset* dataset = nullptr);
 
+/// Limits a porosity result to `region` (ADR 0041): keeps the pores and zones whose centre lies
+/// in it (the rule of the report's zones), removes the others from the pore labels and the zone
+/// blocks, and sets the part volume to that inside the region (`regionPartVolumeMm3`). Telling a
+/// pore from the outside air needs the whole part, so the analysis runs on all of it first.
+void restrictToRegion(PorosityResult& result, const InspectionRegion& region,
+                      const Dataset* dataset = nullptr);
+
 /// The two pores closest to each other and the material between them (BDG P 203: Gap).
 struct PoreGap {
   double gap_mm = std::numeric_limits<double>::infinity();

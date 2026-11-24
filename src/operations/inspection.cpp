@@ -22,34 +22,11 @@ PorosityOptions usedPorosityOptions(const std::filesystem::path& porosity_dir) {
 /// volume of the step, and relative mesh paths are taken from the order file's directory.
 std::vector<InspectionZone> orderZones(const Json& order, const OperationContext& context) {
   Json resolved = order;
-  const RigidTransform to_volume = context.object.empty()
-                                       ? RigidTransform{}
-                                       : entryPose(objectEntry(context, context.object)).inverse();
   const std::filesystem::path base =
       context.params.contains("order_path")
           ? std::filesystem::path(context.params.at("order_path").get<std::string>()).parent_path()
           : std::filesystem::path();
-  const auto resolve = [&](Json& solids) {
-    for (Json& solid : solids) {
-      if (solid.is_object() && solid.contains("mesh") && solid.at("mesh").is_string()) {
-        // A file the order names is read with the rights of the caller, like the order itself.
-        const std::filesystem::path mesh = solid.at("mesh").get<std::string>();
-        context.check_path(mesh.is_relative() && !base.empty() ? base / mesh : mesh);
-      }
-      if (!solid.is_object() || !solid.contains("mesh_object")) {
-        continue;
-      }
-      const std::string id = solid.at("mesh_object").get<std::string>();
-      const Json& object = objectEntry(context, id);
-      if (object.at("kind") != kMeshObject) {
-        throw std::invalid_argument("The inspection region names '" + id +
-                                    "', which is no mesh object");
-      }
-      solid = {{"mesh", object.at("outputs").at(artifact::kMesh).get<std::string>()},
-               {"pose", to_volume.after(entryPose(object)).matrix()},
-               {"name", object.at("name")}};
-    }
-  };
+  const auto resolve = [&](Json& solids) { resolveRegionSolids(solids, context, base); };
   if (resolved.contains("acceptance") && resolved["acceptance"].contains("zones")) {
     for (Json& zone : resolved["acceptance"]["zones"]) {
       if (!zone.is_object() || !zone.contains("region")) {
@@ -96,7 +73,8 @@ class Porosity final : public Operation {
             {"description",
              "With a material segmentation of the dataset: compare each material with its own "
              "grey value, so a darker material (resin between fibre bundles, a light alloy) is "
-             "no zone of loosened microstructure"}}}}}};
+             "no zone of loosened microstructure"}}},
+          {"region", regionParameterSchema()}}}};
   }
   [[nodiscard]] const OperationInfo& info() const override { return info_; }
   [[nodiscard]] OperationEstimate estimate(const OperationContext& context) const override {
@@ -121,7 +99,13 @@ class Porosity final : public Operation {
       }
       options.materials = &*materials;
     }
-    const PorosityResult porosity = analyzePorosity(dataset, options);
+    const std::optional<InspectionRegion> region = regionParameter(context);
+    PorosityResult porosity = analyzePorosity(dataset, options);
+    if (region) {
+      // Pores are told from the outside air through all of the part; the region then keeps
+      // those whose centre lies in it.
+      restrictToRegion(porosity, *region, &dataset);
+    }
     context.progress(0.8);
     const TelemetryPhase phase("write results");
     const auto dir = context.output_dir / "porosity";
@@ -138,6 +122,9 @@ class Porosity final : public Operation {
                       {"part_volume_mm3", porosity.part_volume_mm3},
                       {"porosity", porosity.porosity()},
                       {"per_material", options.materials != nullptr}};
+    if (region) {
+      result.summary["region"] = regionName(p, *region);
+    }
     return result;
   }
 
@@ -313,6 +300,89 @@ class InspectionRegions final : public Operation {
     OperationResult result;
     result.outputs["regions"] = "regions";
     result.summary = {{"zones", zones.size()}, {"meshes", meshes}};
+    return result;
+  }
+
+ private:
+  OperationInfo info_;
+};
+
+class DefineRegion final : public Operation {
+ public:
+  DefineRegion() {
+    info_.id = "define_region";
+    info_.title = "Define region";
+    info_.description =
+        "Defines a region of a scan (ADR 0041): the union of the included solids (boxes, "
+        "spheres, cylinders, meshes, a mesh object of the project such as the CAD model) minus "
+        "the excluded ones, in mm in the coordinates of the dataset. Analyses that take a region "
+        "(porosity, wall thickness) report only what lies in it. A later step with the same name "
+        "replaces the region, one with remove deletes it. Writes region.json and the region as "
+        "closed STL meshes for the views.";
+    info_.inputs = {{"dataset", artifact::kDataset, "Scan whose coordinates the region is in"}};
+    info_.outputs = {{"region", artifact::kRegion, "The region and its meshes"}};
+    Json properties = regionParameterSchema().at("properties");
+    properties["name"] = {
+        {"type", "string"}, {"minLength", 1}, {"description", "Name of the region"}};
+    properties["remove"] = {
+        {"type", "boolean"}, {"default", false}, {"description", "Delete the region of this name"}};
+    info_.parameters = {
+        {"type", "object"}, {"required", {"name"}}, {"properties", std::move(properties)}};
+  }
+  [[nodiscard]] const OperationInfo& info() const override { return info_; }
+
+  [[nodiscard]] OperationResult run(const OperationContext& context) const override {
+    const Json& p = context.params;
+    const std::string name = p.at("name").get<std::string>();
+    const std::filesystem::path dir = context.output_dir / "region";
+    std::filesystem::create_directories(dir);
+    OperationResult result;
+    result.outputs["region"] = "region";
+    if (p.value("remove", false)) {
+      writeJson(dir / "region.json", {{"name", name}, {"remove", true}});
+      result.summary = {{"name", name}, {"removed", true}};
+      return result;
+    }
+    Json region = {{"name", name},
+                   {"include", p.value("include", Json::array())},
+                   {"exclude", p.value("exclude", Json::array())}};
+    if (p.contains("color")) {
+      region["color"] = p.at("color");
+    }
+    OperationContext resolved_context = context;
+    resolved_context.params = {{"region", region}};
+    const std::optional<InspectionRegion> resolved = regionParameter(resolved_context);
+    if (!resolved) {
+      throw std::invalid_argument("The region '" + name + "' has no solid");
+    }
+    const auto dataset = Dataset::open(context.inputs.at("dataset"));
+    const DatasetInfo& info = dataset.info();
+    writeJson(dir / "region.json", region);
+    Json meshes = Json::object();
+    for (const bool excluded : {false, true}) {
+      const Mesh mesh = resolved->mesh(excluded);
+      if (!mesh.triangles.empty()) {
+        const std::string file = excluded ? "excluded.stl" : "region.stl";
+        writeStl(dir / file, mesh);
+        meshes[excluded ? "excluded" : "included"] = file;
+      }
+    }
+    result.summary = {{"name", name},
+                      {"description", resolved->description()},
+                      {"region", region},
+                      {"meshes", meshes}};
+    if (const auto bounds = resolved->bounds()) {
+      result.summary["bounds_mm"] = *bounds;
+      // A region beside the scan is most likely a typo in a coordinate.
+      bool apart = false;
+      for (std::size_t a = 0; a < 3; ++a) {
+        const double extent = info.voxel_size[a] * static_cast<double>(info.dims[a]);
+        apart = apart || (*bounds)[1][a] < 0.0 || (*bounds)[0][a] > extent;
+      }
+      if (apart) {
+        context.log("The region '" + name + "' lies outside the scan");
+      }
+    }
     return result;
   }
 
@@ -713,6 +783,7 @@ void registerInspectionOperations(OperationRegistry& registry) {
   registry.add(std::make_shared<Porosity>());
   registry.add(std::make_shared<FibreOrientation>());
   registry.add(std::make_shared<InspectionRegions>());
+  registry.add(std::make_shared<DefineRegion>());
   registry.add(std::make_shared<Report>());
   registry.add(std::make_shared<FirstArticleReport>());
   registry.add(std::make_shared<ExportDiconde>());

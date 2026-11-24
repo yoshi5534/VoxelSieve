@@ -206,6 +206,36 @@ TEST_F(P203Test, RegionsOfSolidsSelectPoresAndPartVolume) {
   EXPECT_NEAR(evaluation.zones[0].porosity_percent, truth, 0.06 * truth);
 }
 
+TEST_F(P203Test, ResultRestrictedToARegionKeepsOnlyItsPores) {
+  // A cylinder along y through C1 and C2 keeps those two, removes A and B from the result and
+  // from the pore labels, and the part volume becomes that of the cylinder.
+  PorosityResult result = shared->result;
+  result.pore_labels = shared->result.pore_labels->deepCopy();
+  const InspectionRegion cylinder(
+      {RegionShape::cylinder(toDataset({0.0, 1.0, 0.0}), toDataset({0.0, 4.5, 0.0}), 1.0)});
+  const int removed = find(kPoreA).id;
+  const int kept = find(kPoreC1).id;
+  restrictToRegion(result, cylinder);
+  ASSERT_EQ(result.pores.size(), 2U);
+  for (const DetectedPore& pore : result.pores) {
+    EXPECT_TRUE(cylinder.contains(result.voxel_size.toMm(pore.center_voxels)));
+  }
+  const double volume = std::numbers::pi * 1.0 * 1.0 * 3.5;
+  EXPECT_NEAR(result.part_volume_mm3, volume, 0.05 * volume);
+  const double voids = 2.0 * sphereVolume(kPoreC1.radius_mm);
+  EXPECT_NEAR(result.porosity(), voids / volume, 0.1 * voids / volume);
+  bool removed_left = false;
+  bool kept_left = false;
+  for (auto it = result.pore_labels->cbeginValueOn(); it; ++it) {
+    removed_left = removed_left || *it == removed;
+    kept_left = kept_left || *it == kept;
+  }
+  EXPECT_FALSE(removed_left);
+  EXPECT_TRUE(kept_left);
+  // The shared result is untouched.
+  EXPECT_EQ(shared->result.pores.size(), 4U);
+}
+
 TEST_F(P203Test, RegionsAreReadFromTheOrder) {
   writeStl(shared->dir / "face.stl", boxMesh({1.0, 1.0, 1.0}));
   const Json order = Json::parse(R"({"acceptance": {"zones": [

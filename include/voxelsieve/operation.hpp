@@ -41,6 +41,8 @@ inline constexpr const char* kBattery =
     "battery";  // directory with battery.json and images of a cell inspection (ADR 0029)
 inline constexpr const char* kInspectionRegions =
     "inspection_regions";  // one STL per inspection region of an order (ADR 0032)
+inline constexpr const char* kRegion =
+    "region";  // directory with region.json and region.stl: a region of a scan (ADR 0041)
 }  // namespace artifact
 
 struct PortInfo {

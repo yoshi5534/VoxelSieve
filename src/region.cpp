@@ -967,6 +967,70 @@ ReferencePlacement maxReferencePorosity(const PorosityResult& result,
   return best;
 }
 
+void restrictToRegion(PorosityResult& result, const InspectionRegion& region,
+                      const Dataset* dataset) {
+  if (region.wholePart()) {
+    return;
+  }
+  result.part_volume_mm3 = regionPartVolumeMm3(result, region, dataset);
+  const auto inside = [&](const std::array<double, 3>& center_voxels) {
+    return region.contains(result.voxel_size.toMm(center_voxels));
+  };
+  std::set<int> removed_pores;
+  std::erase_if(result.pores, [&](const DetectedPore& pore) {
+    const bool out = !inside(pore.center_voxels);
+    if (out) {
+      removed_pores.insert(pore.id);
+    }
+    return out;
+  });
+  if (result.pore_labels && !removed_pores.empty()) {
+    // Value iterators visit tiles too: the inside of large pores is stored as tiles.
+    for (auto it = result.pore_labels->tree().beginValueOn(); it; ++it) {
+      if (removed_pores.contains(*it)) {
+        it.setValueOff();
+      }
+    }
+    result.pore_labels->tree().prune();
+  }
+  std::vector<Box> kept;
+  std::vector<Box> removed;
+  std::erase_if(result.zones, [&](const PorosityZone& zone) {
+    const bool out = !inside(zone.center_voxels);
+    (out ? removed : kept).push_back(zone.bounds);
+    return out;
+  });
+  if (result.zone_blocks) {
+    const auto within = [](const std::vector<Box>& boxes, const Coord& block) {
+      return std::ranges::any_of(boxes, [&](const Box& box) {
+        for (std::size_t a = 0; a < 3; ++a) {
+          const std::int64_t center = std::int64_t{block[a]} * kBlock + kBlock / 2;
+          if (center < box.min[a] || center >= box.max[a]) {
+            return false;
+          }
+        }
+        return true;
+      });
+    };
+    // Voxel centres are at their indices, so a block's centre is half a voxel before its middle.
+    const auto blockCenter = [](const Coord& block) {
+      std::array<double, 3> center{};
+      for (std::size_t a = 0; a < 3; ++a) {
+        center[a] = (block[a] + 0.5) * kBlock - 0.5;
+      }
+      return center;
+    };
+    for (auto it = result.zone_blocks->tree().beginValueOn(); it; ++it) {
+      const Coord block = it.getCoord();
+      const bool keep =
+          within(kept, block) || (!within(removed, block) && inside(blockCenter(block)));
+      if (!keep) {
+        it.setValueOff();
+      }
+    }
+  }
+}
+
 double regionPartVolumeMm3(const PorosityResult& result, const InspectionRegion& region,
                            const Dataset* dataset) {
   if (region.wholePart()) {
