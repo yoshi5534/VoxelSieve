@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <csignal>
 #if defined(__APPLE__)
+#include <mach/mach.h>
 #include <sys/sysctl.h>
 #else
 #include <fstream>
@@ -174,6 +175,45 @@ std::uint64_t usableMemoryBytes() {
     total = limit;
   }
   return total;
+#endif
+}
+
+std::uint64_t availableMemoryBytes() {
+#if defined(_WIN32)
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  return GlobalMemoryStatusEx(&status) != 0 ? status.ullAvailPhys : 0;
+#elif defined(__APPLE__)
+  vm_statistics64_data_t vm{};
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm),
+                        &count) != KERN_SUCCESS) {
+    return 0;
+  }
+  return (static_cast<std::uint64_t>(vm.free_count) + vm.inactive_count + vm.purgeable_count) *
+         static_cast<std::uint64_t>(sysconf(_SC_PAGESIZE));
+#else
+  std::uint64_t available = 0;
+  std::ifstream meminfo("/proc/meminfo");
+  std::string key;
+  std::uint64_t kb = 0;
+  std::string unit;
+  while (meminfo >> key >> kb >> unit) {
+    if (key == "MemAvailable:") {
+      available = kb * 1024;
+      break;
+    }
+  }
+  // In a control group with a limit, what is left below it.
+  if (const std::uint64_t limit = cgroupMemoryLimit(); limit > 0) {
+    std::ifstream in("/sys/fs/cgroup/memory.current");
+    std::uint64_t used = 0;
+    if (in >> used) {
+      const std::uint64_t left = used < limit ? limit - used : 0;
+      available = available == 0 ? left : std::min(available, left);
+    }
+  }
+  return available;
 #endif
 }
 

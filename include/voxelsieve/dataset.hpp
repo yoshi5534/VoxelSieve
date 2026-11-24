@@ -55,10 +55,11 @@ struct DatasetOptions {
   /// `min_material_voxels` 1, pass 1 (histogram, block maxima) is taken while the slices pass, so
   /// the copy is read once, by pass 2. Off: they are read directly.
   bool stage_slow_sources = true;
-  /// The copy is held in memory instead of the file when it fits into the work memory
-  /// (`workMemoryBytes`, ADR 0034) next to the bricks pass 2 builds at once: then it costs no disk
-  /// writes and no reads back. Off: always the file.
-  bool stage_in_memory = true;
+  /// Most bytes of that copy held in memory instead of the file: slices held there cost no disk
+  /// writes and no reads back. Unset: what fits into the work memory (`workMemoryBytes`, ADR 0034)
+  /// and into three quarters of the memory the system has available, next to the bricks pass 2
+  /// builds at once; the slices beyond go to the file. 0: all in the file.
+  std::optional<std::uint64_t> staging_memory_bytes;
   /// Directory of that temporary file; empty: the output directory. It is removed at the end.
   std::filesystem::path staging_dir;
   /// Type of the stored grey values; unset: the input's sample width (`VolumeSource::sampleType`),
@@ -112,6 +113,10 @@ struct DatasetInfo {
   /// How the grey values relate to the values of the scan (float scans, ADR 0015).
   ValueMapping value_mapping;
   std::vector<LevelInfo> levels;
+  /// Of this import's staging copy, the bytes held in memory and in the temporary file (both 0
+  /// without one). Not stored in the dataset.
+  std::uint64_t staged_memory_bytes = 0;
+  std::uint64_t staged_file_bytes = 0;
 };
 
 /// Sieves `source` in two streaming passes and writes the dataset to `dir`, which must not exist
