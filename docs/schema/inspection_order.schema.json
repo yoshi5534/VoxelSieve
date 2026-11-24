@@ -141,7 +141,7 @@
       "description": "Inspection zone: a region of the part (the whole part without box_mm and region) with at least one limit"
     },
     "region": {
-      "description": "Region of the zone: a list of solids (their union), or solids to include and to exclude",
+      "description": "Region of the zone: a list of solids (their union), solids to include and to exclude, or in a project the name of a region of the scan (define_region, ADR 0041)",
       "oneOf": [
         {
           "type": "array",
@@ -166,6 +166,10 @@
               }
             }
           }
+        },
+        {
+          "type": "string",
+          "minLength": 1
         }
       ]
     },

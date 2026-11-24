@@ -268,6 +268,17 @@ button.link:hover { text-decoration: underline; }
 .layer-properties table { font-size: 12px; border-collapse: collapse; width: 100%; }
 .layer-properties th { text-align: left; color: var(--muted); font-weight: normal; }
 .layer-properties td, .layer-properties th { padding: 2px 4px; }
+.region-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 6px; vertical-align: -1px; }
+button.link.add-region { display: block; margin: 4px 0 0 22px; font-size: 12px; }
+.layer-properties ul.solids { margin: 2px 0 8px; padding-left: 18px; font-size: 12px; }
+.layer-properties .group { margin: 6px 0; }
+.layer-properties .form label { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.layer-properties .form input:not([type=color]) { flex: 1; min-width: 0; }
+.region-chooser { display: flex; gap: 8px; align-items: center; margin: 4px 0 10px; }
+.region-chooser label { display: flex; gap: 6px; align-items: center; flex: 1; }
+.region-chooser select { flex: 1; min-width: 0; }
+.analysis .where { margin: 4px 0; }
 .layer-properties table.materials label { display: flex; gap: 4px; align-items: center; }
 .layer-properties .group { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .layer-properties select { max-width: 100%; }

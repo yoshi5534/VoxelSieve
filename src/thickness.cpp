@@ -29,6 +29,7 @@
 #include "detail/thickness.hpp"
 #include "voxelsieve/compare.hpp"
 #include "voxelsieve/io.hpp"
+#include "voxelsieve/region.hpp"
 #include "voxelsieve/render.hpp"
 #include "voxelsieve/resources.hpp"
 #include "voxelsieve/telemetry.hpp"
@@ -707,7 +708,9 @@ WallThicknessResult analyzeWallThickness(const Dataset& dataset, const SurfaceMa
     }
   }
   const auto reported = [&](std::uint32_t i) {
-    return !options.outer_surface_only || component[i] == outer;
+    const auto& p = mesh.points[i];
+    return (!options.outer_surface_only || component[i] == outer) &&
+           (options.region == nullptr || options.region->contains({p[0], p[1], p[2]}));
   };
   result.dropped_components = options.outer_surface_only ? result.components - 1 : 0;
 

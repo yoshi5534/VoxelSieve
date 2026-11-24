@@ -1,5 +1,7 @@
 #include "operations/common.hpp"
 
+#include "detail/keys.hpp"
+
 namespace voxelsieve::operations {
 
 Json valueTypeParameter() {
@@ -78,6 +80,77 @@ const Json& objectEntry(const OperationContext& context, const std::string& id) 
 
 RigidTransform entryPose(const Json& object) {
   return RigidTransform::fromMatrix(object.at("pose").get<std::vector<double>>());
+}
+
+void resolveRegionSolids(Json& solids, const OperationContext& context,
+                         const std::filesystem::path& base) {
+  if (!solids.is_array()) {
+    return;  // InspectionRegion::fromJson says what is wrong
+  }
+  const RigidTransform to_volume = context.object.empty()
+                                       ? RigidTransform{}
+                                       : entryPose(objectEntry(context, context.object)).inverse();
+  for (Json& solid : solids) {
+    if (solid.is_object() && solid.contains("mesh") && solid.at("mesh").is_string()) {
+      // A file the region names is read with the rights of the caller.
+      const std::filesystem::path mesh = solid.at("mesh").get<std::string>();
+      context.check_path(mesh.is_relative() && !base.empty() ? base / mesh : mesh);
+    }
+    if (!solid.is_object() || !solid.contains("mesh_object")) {
+      continue;
+    }
+    const std::string id = solid.at("mesh_object").get<std::string>();
+    const Json& object = objectEntry(context, id);
+    if (object.at("kind") != kMeshObject) {
+      throw std::invalid_argument("The region names '" + id + "', which is no mesh object");
+    }
+    solid = {{"mesh", object.at("outputs").at(artifact::kMesh).get<std::string>()},
+             {"pose", to_volume.after(entryPose(object)).matrix()},
+             {"name", object.at("name")}};
+  }
+}
+
+Json regionParameterSchema() {
+  const Json solids = {
+      {"type", "array"},
+      {"items", {{"type", "object"}}},
+      {"description",
+       "Solids in mm in the coordinates of the dataset (voxel index times voxel size): "
+       "{\"box_mm\": [[x0, y0, z0], [x1, y1, z1]]}, {\"sphere\": {\"center_mm\", "
+       "\"radius_mm\"}}, {\"cylinder\": {\"from_mm\", \"to_mm\", \"radius_mm\"}}, "
+       "{\"mesh\": \"file.stl\", \"pose\"} or {\"mesh_object\": id}"}};
+  return {{"type", "object"},
+          {"properties",
+           {{"name", {{"type", "string"}, {"description", "Name of the region, for the result"}}},
+            {"color", {{"type", "string"}, {"pattern", "^#[0-9a-fA-F]{6}$"}}},
+            {"include", solids},
+            {"exclude", solids}}},
+          {"description",
+           "Limits the analysis to a region of the scan (ADR 0041): the union of the included "
+           "solids minus the excluded ones, as made by define_region. Default: the whole part"}};
+}
+
+std::optional<InspectionRegion> regionParameter(const OperationContext& context) {
+  const auto it = context.params.find("region");
+  if (it == context.params.end() || it->is_null()) {
+    return std::nullopt;
+  }
+  detail::requireKnownKeys(*it, {"name", "color", "include", "exclude"}, "the region");
+  Json region = {{"include", it->value("include", Json::array())},
+                 {"exclude", it->value("exclude", Json::array())}};
+  resolveRegionSolids(region["include"], context);
+  resolveRegionSolids(region["exclude"], context);
+  InspectionRegion result = InspectionRegion::fromJson({{"region", region}});
+  if (result.wholePart()) {
+    return std::nullopt;
+  }
+  return result;
+}
+
+std::string regionName(const Json& params, const InspectionRegion& region) {
+  const Json& given = params.value("region", Json::object());
+  const std::string name = given.is_object() ? given.value("name", std::string()) : std::string();
+  return name.empty() ? region.description() : name;
 }
 
 IndexedMesh objectSurface(const Json& object, std::size_t max_triangles, bool outer_only,

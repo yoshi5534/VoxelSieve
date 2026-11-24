@@ -72,6 +72,7 @@ uniform float tolerance;
 uniform float range;
 uniform float minWall;  // 0: no limit
 uniform float maxWall;
+uniform float alpha;    // below 1 for the translucent regions (ADR 0041)
 vec3 deviationColor(float d) {
   float a = abs(d);
   if (a > 1e29) return vec3(150.0) / 255.0;  // no value
@@ -101,7 +102,7 @@ void main() {
   float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
   vec3 base = valueColors == 1 ? deviationColor(dev)
              : valueColors == 2 ? thicknessColor(dev) : surfaceColor;
-  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), 1.0);
+  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), alpha);
 }`;
 
 /// The ray caster. Each sample takes the finest level loaded where it lies, down to the level a
@@ -568,6 +569,10 @@ class VolumeViewer {
     this.threshold = 0.5;
     this.shading = true;
     this.surfaceColor = [209, 214, 219];
+    // Regions of the scan, drawn translucent over it: {key, color [r, g, b], triangles} with the
+    // triangles in level-0 voxel coordinates.
+    this.regions = [];
+    this.regionBuffers = new Map();  // key -> {buffer, vao, count}
     this.poreColor = [230, 38, 31];
     this.zoneColor = [242, 204, 77];
     this.background = { preset: 'softDark', ...BACKGROUNDS.softDark };
@@ -718,6 +723,7 @@ class VolumeViewer {
     this.pageTexture = null;
     this.feedbackTarget = null;
     this.meshBuffers = null;
+    this.regionBuffers = new Map();
     this.locations = new Map();
     this.program = compileProgram(gl, VOLUME_VERTEX, volumeFragment(false));
     this.feedbackProgram = compileProgram(gl, VOLUME_VERTEX, volumeFragment(true));
@@ -887,12 +893,75 @@ class VolumeViewer {
     gl.uniform1f(uniform('range'), this.surface.range);
     gl.uniform1f(uniform('minWall'), this.surface.minWall);
     gl.uniform1f(uniform('maxWall'), this.surface.maxWall);
+    gl.uniform1f(uniform('alpha'), 1);
     gl.enable(gl.DEPTH_TEST);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.bindVertexArray(this.meshVao);
     gl.drawElements(gl.TRIANGLES, this.surface.triangles * 3, gl.UNSIGNED_INT, 0);
     gl.bindVertexArray(null);
     gl.disable(gl.DEPTH_TEST);
+  }
+
+  setRegions(regions) {
+    this.regions = regions;
+    if (this.gl) {
+      for (const [key, entry] of this.regionBuffers) {
+        if (regions.some((region) => region.key === key)) continue;
+        this.gl.deleteBuffer(entry.buffer);
+        this.gl.deleteVertexArray(entry.vao);
+        this.regionBuffers.delete(key);
+      }
+    }
+    this.requestDraw();
+  }
+
+  /// The regions as translucent solids over the picture, without depth: a region shows where it
+  /// lies around the part, also inside it.
+  drawRegions(eye, right, up, forward, aspect, box) {
+    const gl = this.gl;
+    if (!this.regions.length) return;
+    const { dims, level } = this.volume;
+    const scale = 2 ** level;
+    gl.useProgram(this.meshProgram);
+    const uniform = (name) => this.uniform(this.meshProgram, name);
+    gl.uniform3fv(uniform('extent'), dims.map((d) => d * scale));
+    gl.uniform3fv(uniform('box'), box);
+    gl.uniform3fv(uniform('eye'), eye);
+    gl.uniform3fv(uniform('right'), right);
+    gl.uniform3fv(uniform('up'), up);
+    gl.uniform3fv(uniform('forward'), forward);
+    gl.uniform1f(uniform('aspect'), aspect);
+    gl.uniform1f(uniform('cut'), 2);
+    gl.uniform1i(uniform('valueColors'), 0);
+    gl.uniform1f(uniform('alpha'), 0.22);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    const position = gl.getAttribLocation(this.meshProgram, 'position');
+    const deviation = gl.getAttribLocation(this.meshProgram, 'deviation');
+    for (const region of this.regions) {
+      let entry = this.regionBuffers.get(region.key);
+      if (!entry) {
+        const buffer = gl.createBuffer();
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, region.triangles, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 3, gl.FLOAT, false, 0, 0);
+        if (deviation >= 0) {
+          gl.disableVertexAttribArray(deviation);
+          gl.vertexAttrib1f(deviation, 0);
+        }
+        gl.bindVertexArray(null);
+        entry = { buffer, vao, count: region.triangles.length / 3 };
+        this.regionBuffers.set(region.key, entry);
+      }
+      gl.uniform3fv(uniform('surfaceColor'), region.color.map((c) => c / 255));
+      gl.bindVertexArray(entry.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, entry.count);
+    }
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
   }
 
   uniform(program, name) {
@@ -1288,6 +1357,7 @@ class VolumeViewer {
     if (meshKind && this.surface?.kind === meshKind) {
       this.drawMesh(eye, right, up, forward, width / height, box);
     }
+    this.drawRegions(eye, right, up, forward, width / height, box);
     // Feedback after the picture, so a capture still finds it in the canvas; at most every
     // 50 ms, while something changed or bricks are on their way.
     const now = performance.now();

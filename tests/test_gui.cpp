@@ -696,6 +696,61 @@ TEST_F(GuiTest, InspectionRegionsFromMeshObjectsFollowTheirPoses) {
   EXPECT_EQ(data.at("evaluation").at("guideline"), "BDG P 203");
 }
 
+TEST_F(GuiTest, AnalysesInARegionReportOnlyWhatLiesInIt) {
+  Gui gui;
+  (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});
+  (void)gui.call("run_import_raw", {{"path", (dir_ / "scan.raw").string()}, {"brick_size", 32}});
+  const Json whole = gui.call("run_porosity", {});
+  ASSERT_EQ(whole.at("summary").at("pores"), 2);
+  const Json pores = Json::parse(
+      gui.call("read_file", {{"file", "porosity.json"}}).at("text").get<std::string>())["pores"];
+  const Json center = pores.at(0).at("center_mm");
+
+  // A sphere around the first lunker, as the UI draws it.
+  const Json region = {
+      {"name", "Lunker"},
+      {"include", Json::array({{{"sphere", {{"center_mm", center}, {"radius_mm", 0.8}}}}})}};
+  Json defined = region;
+  defined["color"] = "#27ae60";
+  const Json step = gui.call("run_define_region", defined);
+  ASSERT_EQ(step.at("status"), "done");
+  EXPECT_EQ(step.at("summary").at("name"), "Lunker");
+  EXPECT_EQ(step.at("summary").at("meshes").at("included"), "region.stl");
+  EXPECT_NE(step.at("summary").at("description").get<std::string>().find("sphere"),
+            std::string::npos);
+  EXPECT_THROW(gui.call("run_define_region", {{"name", "Empty"}}), std::invalid_argument);
+
+  const Json inside = gui.call("run_porosity", {{"region", region}});
+  ASSERT_EQ(inside.at("status"), "done");
+  EXPECT_EQ(inside.at("summary").at("pores"), 1);
+  EXPECT_EQ(inside.at("summary").at("region"), "Lunker");
+  const double sphere = 4.0 / 3.0 * std::numbers::pi * std::pow(0.8, 3);
+  EXPECT_NEAR(inside.at("summary").at("part_volume_mm3").get<double>(), sphere, 0.1 * sphere);
+  // The rest of the part holds the other one.
+  const Json rest = gui.call("run_porosity", {{"region", {{"exclude", region.at("include")}}}});
+  EXPECT_EQ(rest.at("summary").at("pores"), 1);
+
+  // The report's inspection zones name the region; the analysis it evaluates is of the whole
+  // part.
+  (void)gui.call("run_porosity", {});
+  const Json order = {{"acceptance",
+                       {{"zones", Json::array({{{"region", "Lunker"}, {"max_pore_count", 0}},
+                                               {{"name", "Rest"}, {"max_pore_count", 5}}})}}}};
+  const Json reported = gui.call("run_report", {{"order", order}});
+  ASSERT_EQ(reported.at("status"), "done");
+  const Json report = gui.call("read_file", {{"step", reported.at("id")}, {"file", "report.json"}});
+  const Json zones = Json::parse(report.at("text").get<std::string>()).at("evaluation").at("zones");
+  EXPECT_EQ(zones.at(0).at("name"), "Lunker");
+  EXPECT_EQ(zones.at(0).at("criteria").at(0).at("measured"), "1");
+  EXPECT_EQ(zones.at(0).at("passed"), false);
+  EXPECT_EQ(zones.at(1).at("criteria").at(0).at("measured"), "2");
+
+  const Json removed = gui.call("run_define_region", {{"name", "Lunker"}, {"remove", true}});
+  EXPECT_EQ(removed.at("summary").at("removed"), true);
+  // A removed region is no longer there for an order.
+  EXPECT_THROW(gui.call("run_report", {{"order", order}}), std::invalid_argument);
+}
+
 TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {
   Gui gui;
   (void)gui.call("project_create", {{"path", (dir_ / "p").string()}});

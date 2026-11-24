@@ -119,6 +119,14 @@ class SliceViewer {
     this.layerSettings = {};    // object id -> {show, mode, opacity}, saved with the view
     this.cuts = new Map();      // object id -> {key, segments} of the cut lines shown
     this.cutLoading = new Map();  // object id -> {key, controller}
+    // Regions of the scan (ADR 0041): {name, color, triangles, excluded, draft} with triangles in
+    // mm of the dataset's coordinates, drawn as the lines where they cut the slice.
+    this.regions = [];
+    this.regionCuts = new Map();  // name -> {key, included, excluded}
+    // Drawing a region: {kind: 'box' | 'sphere' | 'cylinder', onDrawn(solid)}; a drag then draws
+    // the solid instead of moving the view.
+    this.tool = null;
+    this.toolDrag = null;
     this.canvas = null;
     this.drawPending = false;
     this.onChange = () => {};
@@ -230,12 +238,23 @@ class SliceViewer {
   attach(canvas) {
     this.canvas = canvas;
     let drag = null;
+    const inPlane = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      return this.screenToVoxel(event.clientX - rect.left, event.clientY - rect.top);
+    };
     canvas.addEventListener('pointerdown', (event) => {
-      drag = { x: event.clientX, y: event.clientY, center: [...this.center] };
       canvas.setPointerCapture(event.pointerId);
+      if (this.tool) {
+        this.toolDrag = { start: inPlane(event), end: inPlane(event) };
+        return;
+      }
+      drag = { x: event.clientX, y: event.clientY, center: [...this.center] };
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (drag) {
+      if (this.toolDrag) {
+        this.toolDrag.end = inPlane(event);
+        this.requestDraw();
+      } else if (drag) {
         const [su, sv] = this.stretch();
         this.center = [drag.center[0] - (event.clientX - drag.x) / (this.zoom * su),
           drag.center[1] - (event.clientY - drag.y) / (this.zoom * sv)];
@@ -244,7 +263,16 @@ class SliceViewer {
       this.hover = this.voxelAt(event);
       this.onChange();
     });
-    canvas.addEventListener('pointerup', () => { drag = null; });
+    canvas.addEventListener('pointerup', () => {
+      drag = null;
+      const drawn = this.toolDrag;
+      this.toolDrag = null;
+      if (drawn && this.tool) {
+        const solid = this.drawnSolid(drawn);
+        this.requestDraw();
+        if (solid) this.tool.onDrawn(solid);
+      }
+    });
     canvas.addEventListener('pointerleave', () => {
       this.hover = null;
       this.onChange();
@@ -269,6 +297,94 @@ class SliceViewer {
 
   planeAxes() {
     return IN_PLANE[this.axis];
+  }
+
+  /// The solid of a drag of the region tool, or null when it is too small.
+  drawnSolid(drawn) {
+    const regions = globalThis.solidFromDrag ? globalThis : require('./regions.js');
+    return regions.solidFromDrag(this.tool.kind, this.axis, this.index[this.axis], drawn.start,
+      drawn.end, { pitch: voxelPitch(this.info.voxel_size_mm), dims: this.info.dims });
+  }
+
+  /// Starts drawing regions of `kind` ('box', 'sphere', 'cylinder'), or stops with null.
+  setTool(tool) {
+    this.tool = tool;
+    this.toolDrag = null;
+    if (this.canvas) this.canvas.style.cursor = tool ? 'crosshair' : '';
+    this.requestDraw();
+  }
+
+  setRegions(regions) {
+    this.regions = regions;
+    this.regionCuts.clear();
+    this.requestDraw();
+  }
+
+  /// The cut lines of a region at the current slice, computed once per slice.
+  regionCut(region) {
+    const pitch = voxelPitch(this.info.voxel_size_mm);
+    const index = this.index[this.axis];
+    const key = this.axis + '/' + index;
+    const cached = this.regionCuts.get(region.name);
+    if (cached?.key === key && cached.region === region) return cached;
+    const regions = globalThis.cutTriangles ? globalThis : require('./regions.js');
+    const cut = (triangles) => (triangles ? regions.cutTriangles(triangles, this.axis,
+      index * pitch[this.axis], pitch, this.planeAxes()) : new Float32Array(0));
+    const result = { key, region, included: cut(region.triangles), excluded: cut(region.excluded) };
+    this.regionCuts.set(region.name, result);
+    return result;
+  }
+
+  drawRegions(context, width, height) {
+    const view = { center: this.center, zoom: this.zoom, stretch: this.stretch(), width, height };
+    context.save();
+    context.lineCap = 'round';
+    for (const region of this.regions) {
+      const cut = this.regionCut(region);
+      for (const [segments, dash] of [[cut.included, region.draft ? [6, 4] : []],
+        [cut.excluded, [2, 4]]]) {
+        if (!segments.length) continue;
+        const screen = cutsToScreen(segments, view);
+        context.strokeStyle = region.color;
+        context.lineWidth = region.draft ? 2.5 : 2;
+        context.setLineDash(dash);
+        context.beginPath();
+        for (let i = 0; i + 3 < screen.length; i += 4) {
+          context.moveTo(screen[i], screen[i + 1]);
+          context.lineTo(screen[i + 2], screen[i + 3]);
+        }
+        context.stroke();
+      }
+      if (cut.included.length && region.name) {
+        // The name at the topmost point of its line.
+        const screen = cutsToScreen(cut.included, view);
+        let best = 0;
+        for (let i = 1; i < screen.length; i += 2) if (screen[i] < screen[best + 1]) best = i - 1;
+        context.setLineDash([]);
+        context.font = '12px system-ui, sans-serif';
+        context.fillStyle = region.color;
+        context.fillText(region.name, screen[best] + 4, screen[best + 1] - 4);
+      }
+    }
+    if (this.toolDrag && this.tool) {
+      // What the drag draws, until it is let go.
+      const { start, end } = this.toolDrag;
+      const [su, sv] = this.stretch();
+      const x = (p) => (p - this.center[0]) * this.zoom * su + width / 2;
+      const y = (p) => (p - this.center[1]) * this.zoom * sv + height / 2;
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 1.5;
+      context.setLineDash([5, 4]);
+      context.beginPath();
+      if (this.tool.kind === 'box') {
+        context.rect(x(start[0]), y(start[1]), x(end[0]) - x(start[0]), y(end[1]) - y(start[1]));
+      } else {
+        const radius = Math.hypot(x(end[0]) - x(start[0]), y(end[1]) - y(start[1]));
+        context.arc(x(start[0]), y(start[1]), radius, 0, 2 * Math.PI);
+      }
+      context.stroke();
+    }
+    context.restore();
   }
 
   planeDims() {
@@ -519,6 +635,7 @@ class SliceViewer {
     context.imageSmoothingEnabled = false;
     context.restore();
     this.drawCuts(context, width, height);
+    this.drawRegions(context, width, height);
     // Outline of the volume.
     context.strokeStyle = 'rgba(255,255,255,0.25)';
     context.strokeRect(...outline);

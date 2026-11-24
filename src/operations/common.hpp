@@ -39,6 +39,7 @@
 #include "voxelsieve/porosity.hpp"
 #include "voxelsieve/preview.hpp"
 #include "voxelsieve/project.hpp"
+#include "voxelsieve/region.hpp"
 #include "voxelsieve/report.hpp"
 #include "voxelsieve/source.hpp"
 #include "voxelsieve/surface.hpp"
@@ -80,6 +81,23 @@ using Json = nlohmann::json;
 /// smallest voxel pitch of a volume and left alone for a mesh.
 [[nodiscard]] IndexedMesh objectSurface(const Json& object, std::size_t max_triangles,
                                         bool outer_only, double& resolution_mm);
+
+/// Solids of an inspection region (an array) that name a mesh object of the project
+/// ("mesh_object") get its STL and the pose from its coordinates to those of the object the step
+/// works on; a mesh file a solid names is checked with `check_path`, relative ones taken from
+/// `base`.
+void resolveRegionSolids(Json& solids, const OperationContext& context,
+                         const std::filesystem::path& base = {});
+
+/// The `region` parameter of the analyses that can be limited to a region of the scan (ADR 0041):
+/// {"name", "include": [solids], "exclude": [solids]} in mm in the dataset's coordinates.
+[[nodiscard]] Json regionParameterSchema();
+
+/// The region the `region` parameter gives; nothing when there is none or it is the whole part.
+[[nodiscard]] std::optional<InspectionRegion> regionParameter(const OperationContext& context);
+
+/// "name" of the `region` parameter, else the description of the region.
+[[nodiscard]] std::string regionName(const Json& params, const InspectionRegion& region);
 
 /// Each file of this directory registers its operations.
 void registerImportOperations(OperationRegistry& registry);
