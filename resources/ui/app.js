@@ -1236,6 +1236,17 @@ function appendImages(container, step) {
   }).catch(() => {});
 }
 
+/// The regions of the shown scan that an inspection zone can name, or nothing.
+function regionsOfOrderHint() {
+  const regions = scanRegions(shownDataset());
+  if (!regions.length) return null;
+  const example = JSON.stringify({ name: regions[0].name, region: regions[0].name,
+    max_pore_count: 0 });
+  return el('p', { className: 'hint' }, 'A zone of the order can name a region of the scan (' +
+    regions.map((region) => region.name).join(', ') + '), for instance ', el('code', {}, example),
+    '. The report then evaluates the pores in it, also those of an analysis of the whole part.');
+}
+
 function renderReportStage(panel) {
   panel.append(el('h1', {}, 'Test report'));
   const porosity = latestOutput('porosity');
@@ -1253,6 +1264,7 @@ function renderReportStage(panel) {
       'of the drawing, in a region of boxes, spheres, cylinders or meshes of the project. ' +
       'Entries in the JSON field add to or override the file. Examples are in ' +
       'examples/inspection_order.json and examples/inspection_order_p203.json.'),
+    regionsOfOrderHint(),
     form.element,
     el('div', { className: 'row' },
       runButton('Show inspection regions', 'inspection_regions', () => {

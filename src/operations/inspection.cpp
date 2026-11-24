@@ -33,6 +33,21 @@ std::vector<InspectionZone> orderZones(const Json& order, const OperationContext
         continue;
       }
       Json& region = zone["region"];
+      if (region.is_string()) {
+        // A region of the project (ADR 0041), by its name.
+        const std::string name = region.get<std::string>();
+        const Json regions = context.object.empty()
+                                 ? Json::object()
+                                 : objectEntry(context, context.object).value("regions", Json());
+        if (!regions.is_object() || !regions.contains(name)) {
+          throw std::invalid_argument("The inspection zone names the region '" + name +
+                                      "', which the scan has not");
+        }
+        region = regions.at(name);
+        if (!zone.contains("name")) {
+          zone["name"] = name;
+        }
+      }
       if (region.is_array()) {
         resolve(region);
       } else if (region.is_object()) {

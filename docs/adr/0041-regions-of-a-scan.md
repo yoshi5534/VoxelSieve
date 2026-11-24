@@ -50,7 +50,10 @@ one.
 - A porosity analysis in a region costs as much as one of the whole part. Restricting the
   computation to the bricks of the region would need the outside air to be known first, which is
   the connectivity pass over all bricks; that is not worth it for the sizes seen so far.
-- The inspection zones of an order still define their own regions; naming a project region from
-  an order follows separately.
+- **An inspection zone of an order can name a region of the scan** (`"region": "Flange"`): the
+  operations resolve the name through the regions the project hands them with its objects
+  (`OperationContext::objects[].regions`), and the zone takes the region's name unless it has
+  one. Outside a project such a zone is an error. The report evaluates the pores of the analysis
+  it is given in the zone, also when the analysis ran on the whole part.
 - Drawn solids are axis-aligned boxes and cylinders along a slice normal; other orientations are
   possible through the API or a mesh.

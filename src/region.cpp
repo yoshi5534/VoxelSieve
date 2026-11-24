@@ -404,6 +404,11 @@ InspectionRegion InspectionRegion::fromJson(const Json& zone,
   }
   if (zone.contains("region")) {
     const Json& region = zone.at("region");
+    if (region.is_string()) {
+      throw std::invalid_argument("The inspection region '" + region.get<std::string>() +
+                                  "' names a region of a project; such regions can only be used "
+                                  "in a project (define_region)");
+    }
     const Json included = region.is_array() ? region : region.value("include", Json::array());
     for (const Json& item : included) {
       include.push_back(shape_from_json(item));

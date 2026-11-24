@@ -730,8 +730,25 @@ TEST_F(GuiTest, AnalysesInARegionReportOnlyWhatLiesInIt) {
   const Json rest = gui.call("run_porosity", {{"region", {{"exclude", region.at("include")}}}});
   EXPECT_EQ(rest.at("summary").at("pores"), 1);
 
+  // The report's inspection zones name the region; the analysis it evaluates is of the whole
+  // part.
+  (void)gui.call("run_porosity", {});
+  const Json order = {{"acceptance",
+                       {{"zones", Json::array({{{"region", "Lunker"}, {"max_pore_count", 0}},
+                                               {{"name", "Rest"}, {"max_pore_count", 5}}})}}}};
+  const Json reported = gui.call("run_report", {{"order", order}});
+  ASSERT_EQ(reported.at("status"), "done");
+  const Json report = gui.call("read_file", {{"step", reported.at("id")}, {"file", "report.json"}});
+  const Json zones = Json::parse(report.at("text").get<std::string>()).at("evaluation").at("zones");
+  EXPECT_EQ(zones.at(0).at("name"), "Lunker");
+  EXPECT_EQ(zones.at(0).at("criteria").at(0).at("measured"), "1");
+  EXPECT_EQ(zones.at(0).at("passed"), false);
+  EXPECT_EQ(zones.at(1).at("criteria").at(0).at("measured"), "2");
+
   const Json removed = gui.call("run_define_region", {{"name", "Lunker"}, {"remove", true}});
   EXPECT_EQ(removed.at("summary").at("removed"), true);
+  // A removed region is no longer there for an order.
+  EXPECT_THROW(gui.call("run_report", {{"order", order}}), std::invalid_argument);
 }
 
 TEST_F(GuiTest, ShowsAndExportsTheMaterialsIn3D) {

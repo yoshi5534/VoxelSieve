@@ -8,6 +8,7 @@
   the porosity analysis and the wall thickness take a `region` parameter and report only what
   lies in it (pores and zones by their centre, the porosity against the part volume inside the
   region; wall thickness only on the surface inside). The analyses column has one "Where" choice.
+  An inspection zone of an order can name such a region (`"region": "Flange"`).
 
 - **The analysis is one workspace** (ADR 0040): the stages Analysis, Results and View of the
   browser UI are one workspace with objects and layers on the left, the view in the middle and

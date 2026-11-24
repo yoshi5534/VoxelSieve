@@ -87,8 +87,9 @@ struct OperationContext {
   /// reports progress stops without looking at it.
   const std::atomic<bool>* cancel = nullptr;
   /// The objects of the project before this step (ADR 0018): an array of {id, name, kind, pose,
-  /// outputs}, the pose as a row-major 4x4 matrix from object to global coordinates in mm and
-  /// outputs as {type: absolute path} of the object's latest output of each type.
+  /// outputs, regions}, the pose as a row-major 4x4 matrix from object to global coordinates in
+  /// mm, outputs as {type: absolute path} of the object's latest output of each type and regions
+  /// as {name: {include, exclude}} of the regions defined on it (ADR 0041).
   nlohmann::json objects = nlohmann::json::array();
   /// The object the step belongs to; empty for steps of no object.
   std::string object;
