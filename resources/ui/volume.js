@@ -156,7 +156,8 @@ uniform float threshold; // material threshold on the 0..1 grey scale
 uniform int mode;        // 0 surface, 1 transfer function, 2 maximum intensity projection,
                          // 3 and up background only (the mesh is drawn on top)
 uniform bool shading;
-uniform bool pores;
+uniform bool pores;        // pores of a porosity analysis
+uniform bool zones;        // its zones of loosened microstructure
 uniform bool materials;    // colour the material classes of a segmentation
 uniform int hiddenMaterials; // bit m - 1 set: material class m is left out
 uniform vec3 materialColors[8];
@@ -328,7 +329,7 @@ float stepOpacity(float opacity, float stepSize) {
 // Whether nothing in the brick or cell can show in the current mode (review step 6.3).
 bool skippable(Where w, float highest) {
   if (w.state == 2) return true;
-  if (pores && w.porous) return false;
+  if ((pores || zones) && w.porous) return false;
   if (mode == 0) return w.maxGrey < threshold;
   if (mode == 1) return w.maxGrey < firstOpaque;
   return w.maxGrey <= highest;
@@ -472,7 +473,7 @@ void main() {
           kind = classAt(locate((eye + direction * behind) / (2.0 * box) + 0.5, behind));
           material = materialOf(kind);
         }
-        vec3 base = (pores && kind == 2) ? zoneColor
+        vec3 base = (zones && kind == 2) ? zoneColor
             : materialShown(material) ? materialColors[(material - 1) % 8] : surfaceColor;
         color = vec4(shade(base, n, direction), 1.0);
 #endif
@@ -490,7 +491,7 @@ void main() {
       vec4 sample_;
       if (pores && kind == 1) {
         sample_ = vec4(poreColor, 0.6);
-      } else if (pores && kind == 2) {
+      } else if (zones && kind == 2) {
         sample_ = vec4(zoneColor, 0.1);
       } else {
         sample_ = texture(transfer, vec2(value, 0.5));
@@ -559,6 +560,7 @@ class VolumeViewer {
     this.volume = null;       // {dims, level, voxelSize, window, key}
     this.mode = 0;
     this.pores = true;
+    this.zones = true;
     this.materials = true;      // colour the classes of a material segmentation, if loaded
     this.hiddenMaterials = [];  // ids of the material classes left out
     this.materialColors = MATERIAL_COLORS;  // colour of material m at m - 1
@@ -596,7 +598,8 @@ class VolumeViewer {
   getState() {
     return {
       key: this.volume?.key ?? null,
-      mode: this.mode, shading: this.shading, pores: this.pores, materials: this.materials,
+      mode: this.mode, shading: this.shading, pores: this.pores, zones: this.zones,
+      materials: this.materials,
       cut: this.cut,
       threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
       target: this.target, surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
@@ -605,7 +608,7 @@ class VolumeViewer {
   }
 
   setState(saved) {
-    const keys = ['mode', 'shading', 'pores', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
+    const keys = ['mode', 'shading', 'pores', 'zones', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
       'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background'];
     for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
     this.requestDraw();
@@ -1186,6 +1189,7 @@ class VolumeViewer {
     gl.uniform1f(uniform('threshold'), this.threshold);
     gl.uniform1i(uniform('mode'), this.mode);
     gl.uniform1i(uniform('pores'), this.pores ? 1 : 0);
+    gl.uniform1i(uniform('zones'), this.zones ? 1 : 0);
     gl.uniform1i(uniform('materials'), this.materials && this.source?.materials != null ? 1 : 0);
     gl.uniform1i(uniform('hiddenMaterials'),
       this.hiddenMaterials.reduce((mask, id) => mask | (1 << (id - 1)), 0));

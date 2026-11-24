@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The analysis is one workspace** (ADR 0040): the stages Analysis, Results and View of the
+  browser UI are one workspace with objects and layers on the left, the view in the middle and
+  the analyses on the right. The analyses come in groups in the order of the work (prepare,
+  segment, defects, geometry, reports and export, plugins) with their main settings on the card
+  and their latest result in it; all results are under "History". What the views show is one
+  model of layers for slice and 3D: the style of the grey values, one colouring (grey value,
+  materials, nominal-actual deviation, wall thickness) and overlays (pores and loosened zones,
+  now separately, other objects), each with its properties such as the pore list. The protocol
+  column can be hidden.
+
 - **Imports of TIFF stacks and other slow inputs touch the disk less**: the staging copy is held
   in memory when it fits into the memory budget instead of being written to a file and read back,
   and level 1 is built from the bricks while pass 2 has them in memory instead of reading level 0

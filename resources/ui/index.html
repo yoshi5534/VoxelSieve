@@ -11,6 +11,8 @@
   <span class="brand">VoxelSieve</span>
   <span id="project-name" class="project-name">No project</span>
   <nav class="actions">
+    <button id="btn-protocol" title="Show or hide the protocol of all steps">Protocol</button>
+    <span class="sep"></span>
     <button id="btn-new" title="New project">New</button>
     <button id="btn-open" title="Open project">Open</button>
     <button id="btn-save-as" title="Copy the project to a new directory" disabled>Save as</button>
@@ -52,11 +54,9 @@
     </div>
     <div id="wizard" hidden>
       <ol class="stages">
-        <li><button data-stage="dataset"><b>1</b> Dataset</button></li>
-        <li><button data-stage="analysis"><b>2</b> Analysis</button></li>
-        <li><button data-stage="results"><b>3</b> Results</button></li>
-        <li><button data-stage="report"><b>4</b> Report</button></li>
-        <li class="view-stage"><button data-stage="view">View</button></li>
+        <li><button data-stage="dataset"><b>1</b> Scan</button></li>
+        <li><button data-stage="workspace"><b>2</b> Analysis</button></li>
+        <li><button data-stage="report"><b>3</b> Report</button></li>
       </ol>
       <div class="panel" id="stage"></div>
     </div>
