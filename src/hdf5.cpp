@@ -1,4 +1,4 @@
-// HDF5 volumes (ADR 0043), read with the HDF5 library through its C API.
+// HDF5 volumes (ADR 0044), read with the HDF5 library through its C API.
 
 #include "voxelsieve/hdf5.hpp"
 

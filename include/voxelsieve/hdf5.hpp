@@ -1,6 +1,6 @@
 #pragma once
 
-// Volumes in HDF5 files (ADR 0043), as synchrotron beamlines, tomography pipelines and NeXus
+// Volumes in HDF5 files (ADR 0044), as synchrotron beamlines, tomography pipelines and NeXus
 // files store them, read with the HDF5 library.
 
 #include <array>
@@ -39,12 +39,12 @@ struct Hdf5Options {
   /// Overrides the voxel size of the file.
   std::optional<VoxelSize> voxel_size;
   /// 32-bit and float samples: the values mapped to grey 0 and 65535; unset: estimated as for
-  /// raw files (ADR 0042).
+  /// raw files (ADR 0043).
   std::optional<std::array<double, 2>> value_range;
 };
 
 /// One dataset of an HDF5 file as volume source. Signed, 32-bit and float samples become grey
-/// values as in raw files (ADR 0042). The voxel size comes from the options, else an attribute
+/// values as in raw files (ADR 0043). The voxel size comes from the options, else an attribute
 /// of the dataset (`element_size_um` z, y, x in µm; `voxel_size`, `pixel_size` or `spacing` in
 /// mm, one or three values x, y, z), else the file name, else 1 mm. Reads go through one lock,
 /// since the HDF5 library is not built thread-safe; chunks are decompressed by the library.

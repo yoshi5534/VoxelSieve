@@ -1,4 +1,4 @@
-// PNG image stacks (ADR 0042), decoded with libpng slice by slice.
+// PNG image stacks (ADR 0043), decoded with libpng slice by slice.
 
 #include "voxelsieve/png_stack.hpp"
 

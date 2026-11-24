@@ -166,17 +166,28 @@ const SUMMARY_LABELS = {
 // ---------------------------------------------------------------------------------------------
 // Helpers
 
+/// An element with attributes and children. `icon` names an icon of icons.js drawn before the
+/// children; a button that has only the icon needs a `title`, which also names it for screen
+/// readers.
 function el(tag, attributes = {}, ...children) {
   const element = document.createElement(tag);
   for (const [key, value] of Object.entries(attributes)) {
     if (value === undefined || value === null || value === false) continue;
     if (key.startsWith('on')) element.addEventListener(key.slice(2), value);
     else if (key === 'className') element.className = value;
+    else if (key === 'icon') element.append(icon(value));
     else element.setAttribute(key, value === true ? '' : value);
   }
-  for (const child of children.flat()) {
-    if (child === undefined || child === null || child === false) continue;
+  const shown = children.flat().filter((child) => child !== undefined && child !== null &&
+    child !== false && child !== '');
+  for (const child of shown) {
     element.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  if (attributes.icon && !shown.length) {
+    element.classList.add('icon-only');
+    if (attributes.title && !attributes['aria-label']) {
+      element.setAttribute('aria-label', attributes.title);
+    }
   }
   return element;
 }
@@ -416,12 +427,12 @@ function renderViewBar(panel, modes) {
   });
   panel.append(el('div', { className: 'viewer-tools view-bar' }, modes,
     el('span', { className: 'sep' }), name,
-    el('button', { onclick: save, title: 'Save the current view with a picture in the project' },
-      'Save view'),
+    el('button', { onclick: save, icon: 'image',
+      title: 'Save the current view with a picture in the project' }, 'Save view'),
     el('button', {
       onclick: () => state.capture &&
         downloadDataUrl(state.capture(), fileName(name.value.trim() || 'view')),
-      title: 'Download the current view as PNG',
+      title: 'Download the current view as PNG', icon: 'download',
     }, 'Export image')));
   if (!views.length) return;
   panel.append(el('div', { className: 'saved-views' }, views.map((view) => el('div', {
@@ -433,11 +444,11 @@ function renderViewBar(panel, modes) {
   el('div', { className: 'saved-view-row' },
     el('span', { className: 'saved-view-name' }, view.name),
     view.has_image ? el('a', { href: 'views/' + view.id + '.png', download: fileName(view.name),
-      title: 'Download image' }, '⤓') : null,
-    el('button', { className: 'icon', title: 'Rename', onclick: () => renameSavedView(view) },
-      '✎'),
-    el('button', { className: 'icon', title: 'Delete', onclick: () => deleteSavedView(view) },
-      '×'))))));
+      title: 'Download image', icon: 'download' }) : null,
+    el('button', { className: 'icon', title: 'Rename', icon: 'edit',
+      onclick: () => renameSavedView(view) }),
+    el('button', { className: 'icon', title: 'Delete', icon: 'delete',
+      onclick: () => deleteSavedView(view) }))))));
 }
 
 async function action(work) {
@@ -620,7 +631,8 @@ async function browserLoad(path) {
       const selectable = browserOptions.kinds.includes(entry.kind);
       const navigable = entry.kind === 'dir' || (entry.directory && !selectable);
       const item = el('li', { className: selectable || navigable ? '' : 'disabled' },
-        el('span', { className: 'kind' }, kindLabel(entry.kind)),
+        el('span', { className: 'kind', icon: KIND_ICONS[entry.kind] ?? 'file' },
+          kindLabel(entry.kind)),
         el('span', {}, entry.name),
         entry.size_bytes !== undefined ? el('span', { className: 'size' },
           formatBytes(entry.size_bytes)) : null);
@@ -647,6 +659,9 @@ async function browserLoad(path) {
     showError(error);
   }
 }
+
+const KIND_ICONS = { dir: 'folder', project: 'open', dataset: 'scan', raw: 'scan', tiff: 'scan',
+  dicom: 'scan', gzipped_xml: 'scan', mesh: 'cad' };
 
 function kindLabel(kind) {
   return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
@@ -892,12 +907,12 @@ function fillNextSteps(row) {
   row.replaceChildren(el('span', { className: 'label' }, 'Suggested analyses'),
     ...shown.slice(0, 5).map((suggestion) => el('div', {
       className: 'next-step' + (suggestion.done ? ' done' : ''), title: suggestion.why },
-    el('b', {}, suggestion.title),
+    el('b', { icon: OPERATION_ICONS[suggestion.operation] ?? 'analysis' }, suggestion.title),
     el('p', {}, suggestion.why),
     el('div', { className: 'row' }, suggestion.done
-      ? [el('span', { className: 'done-mark' }, '✓ done'), el('button', {
-        onclick: () => showSuggestionResult(suggestion.operation) }, 'Show')]
-      : el('button', { className: 'primary', disabled: state.busy, onclick: async () => {
+      ? [el('span', { className: 'done-mark', icon: 'check' }, 'done'), el('button', {
+        icon: 'show', onclick: () => showSuggestionResult(suggestion.operation) }, 'Show')]
+      : el('button', { className: 'primary', icon: 'run', disabled: state.busy, onclick: async () => {
         const step = await runStep(suggestion.operation, suggestion.params);
         if (step) showSuggestionResult(suggestion.operation);
       } }, 'Run')))));
@@ -1034,6 +1049,16 @@ function buildForm(schema, initial = {}, skip = ['inputs'], only = null) {
 
 // ---------------------------------------------------------------------------------------------
 // Rendering
+
+/// Key figures as tiles of large numbers, which read faster than a table.
+function figureTiles(figures) {
+  const tiles = Object.entries(figures ?? {}).filter(([key]) => key !== 'motion')
+    .map(([key, value]) => el('div', { className: 'figure' },
+      el('div', { className: 'figure-label' }, SUMMARY_LABELS[key] ?? key),
+      el('div', { className: 'figure-value' + (key === 'passed' ? (value ? ' passed' : ' not-passed')
+        : '') }, formatValue(key, value))));
+  return tiles.length ? el('div', { className: 'figures' }, tiles) : null;
+}
 
 function summaryTable(summary) {
   // The motion matrix of an alignment is shown as its rotation and translation.
@@ -1186,6 +1211,7 @@ function renderStages() {
 function runButton(label, operation, readParams, onDone) {
   return el('button', {
     className: 'primary',
+    icon: 'run',
     disabled: state.busy,
     onclick: async () => {
       let params;
@@ -1768,12 +1794,18 @@ function renderLayers(container, dataset, sources, properties) {
     state.layerSelected = key;
     render();
   };
+  // Each kind of layer has its icon, so the tree reads at a glance.
+  const kinds = { grey: 'grey', 'grey-coloring': 'palette', materials: 'materials',
+    deviation: 'deviation', wall_thickness: 'thickness', pores: 'pores', zones: 'zones',
+    objects: 'shapes', 'new-region': 'edit' };
   const row = (key, control, label, step, title) => el('div', {
     className: 'layer' + (state.layerSelected === key ? ' selected' : ''), title,
     onclick: (event) => {
       if (!['INPUT', 'SELECT', 'BUTTON'].includes(event.target.tagName)) select(key);
     },
-  }, control, el('span', { className: 'layer-name' }, label),
+  }, control, el('span', { className: 'layer-icon',
+    icon: key.startsWith('region:') ? 'region' : kinds[key] ?? 'palette' }),
+  el('span', { className: 'layer-name' }, label),
   step !== null && step !== undefined
     ? el('span', { className: 'step-badge', title: 'Result of step ' + step }, '#' + step) : null);
   const changed = () => {
@@ -1789,7 +1821,7 @@ function renderLayers(container, dataset, sources, properties) {
     container.append(
       el('div', { className: 'layer-object' }, 'Scan: ', el('b', {}, object?.name ?? 'dataset'),
         el('span', { className: 'hint' }, ' · step ' + dataset.step.id)),
-      row('grey', el('span', { className: 'layer-icon' }, '▦'), 'Grey values',
+      row('grey', null, 'Grey values',
         null, 'How the grey values are drawn: ' + (style ?? 'coloured surface')));
     const colorings = COLORINGS.filter((candidate) => candidate.step(sources) !== null);
     container.append(el('div', { className: 'layer-group' }, 'Colour by'),
@@ -1835,18 +1867,18 @@ function renderLayers(container, dataset, sources, properties) {
     });
     const drawing = regionDraft(dataset);
     const regionGroup = [el('div', { className: 'layer-group' }, 'Regions'), ...regionRows,
-      drawing ? row('new-region', el('span', { className: 'layer-icon' }, '✎'),
+      drawing ? row('new-region', null,
         (drawing.editing ? 'Editing ' : 'Drawing ') + drawing.name, null,
         'The region being drawn')
         : el('button', { className: 'link add-region', title: 'Draw a region in the slice view ' +
           'or take a CAD model, to run analyses in it only',
-        onclick: () => startRegionDraft(dataset) }, '+ New region')];
+        icon: 'plus', onclick: () => startRegionDraft(dataset) }, 'New region')];
     for (const region of regions) {
       properties['region:' + region.name] = regionProperties(dataset, region);
     }
     if (drawing) properties['new-region'] = draftProperties(dataset);
     if (objects.some((candidate) => candidate.id !== dataset.step.object)) {
-      overlays.push(row('objects', el('span', { className: 'layer-icon' }, '◇'), 'Other objects',
+      overlays.push(row('objects', null, 'Other objects',
         null, 'Other volumes and CAD models of the project'));
     }
     if (overlays.length) container.append(el('div', { className: 'layer-group' }, 'Overlays'), ...overlays);
@@ -1987,9 +2019,10 @@ function regionProperties(dataset, region) {
         state.analysisRegion = region.name;
         state.sideTab = 'analyses';
         render();
-      } }, 'Analyse here'),
-      el('button', { onclick: () => startRegionDraft(dataset, region) }, 'Edit'),
-      el('button', { title: 'Delete the region; a step of the protocol, so it can be undone',
+      }, icon: 'analysis' }, 'Analyse here'),
+      el('button', { icon: 'edit', onclick: () => startRegionDraft(dataset, region) }, 'Edit'),
+      el('button', { icon: 'delete',
+        title: 'Delete the region; a step of the protocol, so it can be undone',
         onclick: async () => {
           if (state.analysisRegion === region.name) state.analysisRegion = null;
           await runStep('define_region', { name: region.name, remove: true });
@@ -2013,7 +2046,7 @@ function draftProperties(dataset) {
     render();
   });
   const tool = (kind, label, title) => el('button', {
-    className: state.regionTool === kind ? 'on' : null, title,
+    className: state.regionTool === kind ? 'on' : null, title, icon: kind,
     onclick: () => {
       state.regionTool = state.regionTool === kind ? null : kind;
       if (state.regionTool) state.viewMode = 'slice';
@@ -2021,7 +2054,7 @@ function draftProperties(dataset) {
     },
   }, label);
   const mode = (key, label, title) => el('button', {
-    className: draft.mode === key ? 'on' : null, title,
+    className: draft.mode === key ? 'on' : null, title, icon: key === 'include' ? 'plus' : 'isolate',
     onclick: () => { draft.mode = key; render(); },
   }, label);
   const meshes = (state.status.objects ?? []).filter((object) => object.kind === 'mesh');
@@ -2036,8 +2069,8 @@ function draftProperties(dataset) {
   const list = (solids, key, label) => (solids.length ? [el('div', { className: 'hint' }, label),
     el('ul', { className: 'solids' }, solids.map((solid, i) => el('li', {},
       describeSolid(solid, objectName), ' ', el('button', { className: 'link',
-        title: 'Remove this solid', onclick: () => { draft[key].splice(i, 1); render(); } },
-      '×'))))] : []);
+        title: 'Remove this solid', icon: 'delete',
+        onclick: () => { draft[key].splice(i, 1); render(); } }))))] : []);
   const save = el('button', { className: 'primary', disabled: !draft.include.length &&
     !draft.exclude.length || state.busy, onclick: async () => {
     const params = { name: draft.name.trim(), color: draft.color, include: draft.include,
@@ -2054,9 +2087,10 @@ function draftProperties(dataset) {
     stopRegionDraft();
     state.layerSelected = 'region:' + params.name;
     render();
-  } }, 'Save region');
+  }, icon: 'save' }, 'Save region');
   return [
-    el('div', { className: 'form' }, el('label', {}, 'Name', name), el('label', {}, 'Colour', color)),
+    el('div', { className: 'form region-form' }, el('label', {}, 'Name', name),
+      el('label', {}, 'Colour', color)),
     el('div', { className: 'group' }, mode('include', 'Add', 'Drawn solids add to the region'),
       mode('exclude', 'Cut out', 'Drawn solids are cut out of the region')),
     el('div', { className: 'group' },
@@ -2088,8 +2122,8 @@ function regionChooser(dataset) {
     render();
   });
   return el('div', { className: 'region-chooser' }, el('label', {}, 'Where', select),
-    el('button', { title: 'Draw a new region in the slice view',
-      onclick: () => startRegionDraft(dataset) }, '+ Region'));
+    el('button', { title: 'Draw a new region in the slice view', icon: 'plus',
+      onclick: () => startRegionDraft(dataset) }, 'Region'));
 }
 
 /// The `region` parameter of a run of an analysis that takes one, or nothing.
@@ -2103,17 +2137,28 @@ function analysisRegionParams(operation, dataset) {
 // Analyses in groups, in the order of the work
 
 const ANALYSIS_GROUPS = [
-  { key: 'prepare', title: 'Prepare', hint: 'Writes a new dataset; later steps use it',
+  { key: 'prepare', icon: 'prepare', title: 'Prepare', hint: 'Writes a new dataset; later steps use it',
     ids: ['isolate_part', 'denoise', 'beam_hardening'] },
-  { key: 'segment', title: 'Segment', hint: 'Materials and objects',
+  { key: 'segment', icon: 'materials', title: 'Segment', hint: 'Materials and objects',
     ids: ['segment_materials', 'segment_model', 'measure_objects', 'material_meshes'] },
-  { key: 'defects', title: 'Defects', hint: 'Pores, fibres, battery cells',
+  { key: 'defects', icon: 'pores', title: 'Defects', hint: 'Pores, fibres, battery cells',
     ids: ['porosity', 'fibre_orientation', 'battery_inspection'] },
-  { key: 'geometry', title: 'Geometry', hint: 'Surface, nominal-actual, wall thickness, dimensions',
+  { key: 'geometry', icon: 'surface', title: 'Geometry', hint: 'Surface, nominal-actual, wall thickness, dimensions',
     ids: ['surface', 'compare_cad', 'wall_thickness', 'measure_dimensions'] },
-  { key: 'output', title: 'Reports and export', hint: 'The test report has its own stage',
+  { key: 'output', icon: 'export', title: 'Reports and export', hint: 'The test report has its own stage',
     ids: ['first_article_report', 'battery_report', 'export_diconde', 'inspection_regions'] },
 ];
+
+/// The icon of each analysis on its card.
+const OPERATION_ICONS = {
+  isolate_part: 'isolate', denoise: 'denoise', beam_hardening: 'beam',
+  segment_materials: 'materials', segment_model: 'model', measure_objects: 'list',
+  material_meshes: 'shapes', porosity: 'pores', fibre_orientation: 'fibres',
+  battery_inspection: 'battery', surface: 'surface', compare_cad: 'deviation',
+  wall_thickness: 'thickness', measure_dimensions: 'target', first_article_report: 'checklist',
+  battery_report: 'battery-full', export_diconde: 'export', inspection_regions: 'zones',
+  report: 'report',
+};
 
 /// Operations that are no analysis of a scan: imports, objects (the Objects view) and the test
 /// report (its stage).
@@ -2164,10 +2209,11 @@ function firstSentence(text) {
 function analysisCard(operation, dataset) {
   const last = latestStepOf(operation.id);
   const card = el('details', { className: 'analysis', open: state.openAnalysis === operation.id },
-    el('summary', {}, el('span', { className: 'analysis-title' }, operation.title),
-      last ? el('span', { className: 'done-mark', title: 'Result of step ' + last.id },
-        '✓ #' + last.id) : null,
-      el('div', { className: 'hint' }, firstSentence(operation.description))));
+    el('summary', { title: firstSentence(operation.description) },
+      el('span', { className: 'analysis-icon', icon: OPERATION_ICONS[operation.id] ?? 'plugins' }),
+      el('span', { className: 'analysis-title' }, operation.title),
+      last ? el('span', { className: 'done-mark', title: 'Result of step ' + last.id,
+        icon: 'check' }, '#' + last.id) : null));
   const fill = () => {
     if (card.childElementCount > 1) return;
     const main = MAIN_PARAMETERS[operation.id] ??
@@ -2200,11 +2246,11 @@ function analysisCard(operation, dataset) {
       missing.length ? el('span', { className: 'hint' }, 'Needs ' + missing.join(' and ')) : null));
     if (last) {
       card.append(el('div', { className: 'analysis-result' },
-        el('b', {}, 'Result of step ' + last.id),
-        summaryTable(keyFigures(last.summary, Object.values(last.outputs)[0]?.type)),
+        el('div', { className: 'hint' }, 'Result of step ' + last.id),
+        figureTiles(keyFigures(last.summary, Object.values(last.outputs)[0]?.type)),
         el('div', { className: 'row' },
-          el('button', { onclick: () => showResultOf(operation.id) }, 'Show'),
-          el('button', { onclick: () => {
+          el('button', { icon: 'show', onclick: () => showResultOf(operation.id) }, 'Show'),
+          el('button', { icon: 'info', onclick: () => {
             state.focusResult = last.id;
             state.sideTab = 'history';
             render();
@@ -2235,6 +2281,7 @@ function renderAnalyses(container, dataset) {
   container.append(suggested);
   const known = ANALYSIS_GROUPS.flatMap((group) => group.ids).concat(NOT_ANALYSES);
   const groups = [...ANALYSIS_GROUPS, { key: 'plugins', title: 'Plugins', hint: 'Operations of plugins',
+    icon: 'plugins',
     ids: state.operations.filter((operation) => !known.includes(operation.id))
       .map((operation) => operation.id) }];
   state.openGroups ??= {};
@@ -2245,7 +2292,8 @@ function renderAnalyses(container, dataset) {
     const open = state.openGroups[group.key] ?? (used ||
       operations.some((operation) => operation.id === state.openAnalysis));
     const section = el('details', { className: 'analysis-group', open },
-      el('summary', {}, el('b', {}, group.title), el('span', { className: 'hint' }, group.hint)),
+      el('summary', { title: group.hint }, el('span', { className: 'group-icon', icon: group.icon }),
+        el('b', {}, group.title), el('span', { className: 'count' }, String(operations.length))),
       operations.map((operation) => analysisCard(operation, dataset)));
     section.addEventListener('toggle', () => { state.openGroups[group.key] = section.open; });
     container.append(section);
@@ -2256,8 +2304,9 @@ function renderAnalyses(container, dataset) {
 function renderSidePanel(container, dataset) {
   const tab = state.sideTab ?? 'analyses';
   container.append(el('div', { className: 'group side-tabs' },
-    [['analyses', 'Analyses'], ['history', 'History']].map(([key, label]) => el('button', {
-      className: tab === key ? 'on' : null,
+    [['analyses', 'Analyses', 'analysis'], ['history', 'History', 'history']]
+      .map(([key, label, name]) => el('button', {
+      className: tab === key ? 'on' : null, icon: name,
       title: key === 'history' ? 'All results of the project, also earlier ones' : null,
       onclick: () => { state.sideTab = key; render(); },
     }, label))));
@@ -2298,6 +2347,7 @@ function renderViewArea(panel, dataset, ctx) {
   const modes = el('div', { className: 'group view-modes' },
     available.map(([mode, label]) => el('button', {
       className: state.viewMode === mode ? 'on' : null,
+      icon: { slice: 'slice', '3d': '3d', scene: 'objects' }[mode],
       title: mode === 'scene' ? 'All objects where they lie, for aligning and comparing them' : null,
       onclick: () => { state.viewMode = mode; render(); },
     }, label)));
@@ -3578,6 +3628,9 @@ function redo() {
 }
 
 async function start() {
+  for (const element of document.querySelectorAll('[data-icon]')) {
+    element.prepend(icon(element.dataset.icon));
+  }
   setupBrowser();
   $('btn-new').addEventListener('click', newProject);
   $('welcome-new').addEventListener('click', newProject);

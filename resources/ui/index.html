@@ -11,21 +11,21 @@
   <span class="brand">VoxelSieve</span>
   <span id="project-name" class="project-name">No project</span>
   <nav class="actions">
-    <button id="btn-protocol" title="Show or hide the protocol of all steps">Protocol</button>
+    <button id="btn-protocol" data-icon="protocol" title="Show or hide the protocol of all steps">Protocol</button>
     <span class="sep"></span>
-    <button id="btn-new" title="New project">New</button>
-    <button id="btn-open" title="Open project">Open</button>
-    <button id="btn-save-as" title="Copy the project to a new directory" disabled>Save as</button>
+    <button id="btn-new" data-icon="new" title="New project">New</button>
+    <button id="btn-open" data-icon="open" title="Open project">Open</button>
+    <button id="btn-save-as" data-icon="save" title="Copy the project to a new directory" disabled>Save as</button>
     <span class="sep"></span>
-    <button id="btn-undo" title="Undo the last step" disabled>↶ Undo</button>
-    <button id="btn-redo" title="Redo the step" disabled>↷ Redo</button>
+    <button id="btn-undo" data-icon="undo" class="icon-only" title="Undo the last step" aria-label="Undo" disabled></button>
+    <button id="btn-redo" data-icon="redo" class="icon-only" title="Redo the step" aria-label="Redo" disabled></button>
   </nav>
 </header>
 <div id="error" class="error" hidden></div>
 <div id="busy" class="busy" hidden>
   <span id="busy-text"></span>
   <progress id="busy-progress" max="1"></progress>
-  <button id="busy-cancel" type="button" title="Stop the operation; its step is kept as failed">Cancel</button>
+  <button id="busy-cancel" type="button" data-icon="close" title="Stop the operation; its step is kept as failed">Cancel</button>
   <figure id="busy-preview" class="busy-preview" hidden>
     <img id="busy-preview-image" alt="First look at the volume being imported">
     <figcaption id="busy-preview-text"></figcaption>
@@ -46,7 +46,7 @@
           slices or a VoxelSieve dataset. VoxelSieve finds out what it is, shows the part in 3D
           and suggests the analyses that suit it. Your files stay as they are; the project is
           saved next to the scan and records every step.</p>
-        <p><button class="primary big" id="welcome-scan">Open a scan …</button></p>
+        <p><button class="primary big" id="welcome-scan" data-icon="open">Open a scan …</button></p>
         <p class="hint">Or <button class="link" id="welcome-open">open a project</button> ·
           <button class="link" id="welcome-new">start an empty project</button></p>
       </div>
@@ -54,9 +54,9 @@
     </div>
     <div id="wizard" hidden>
       <ol class="stages">
-        <li><button data-stage="dataset"><b>1</b> Scan</button></li>
-        <li><button data-stage="workspace"><b>2</b> Analysis</button></li>
-        <li><button data-stage="report"><b>3</b> Report</button></li>
+        <li><button data-stage="dataset" data-icon="scan">Scan</button></li>
+        <li><button data-stage="workspace" data-icon="analysis">Analysis</button></li>
+        <li><button data-stage="report" data-icon="report">Report</button></li>
       </ol>
       <div class="panel" id="stage"></div>
     </div>
@@ -65,7 +65,7 @@
 <dialog id="browser">
   <form method="dialog">
     <h2 id="browser-title">Choose a file</h2>
-    <div class="path-row"><button type="button" id="browser-up" title="Parent directory">↑</button>
+    <div class="path-row"><button type="button" id="browser-up" data-icon="up" class="icon-only" title="Parent directory" aria-label="Parent directory"></button>
       <input id="browser-path" spellcheck="false"></div>
     <ul id="browser-list"></ul>
     <div id="browser-name-row" class="name-row" hidden><label>Name <input id="browser-name"
@@ -76,6 +76,7 @@
     </div>
   </form>
 </dialog>
+<script src="icons.js"></script>
 <script src="regions.js"></script>
 <script src="viewer.js"></script>
 <script src="transfer.js"></script>

@@ -1,4 +1,4 @@
-// More import formats (ADR 0042): raw files of signed, 32-bit and float samples, MetaImage and
+// More import formats (ADR 0043): raw files of signed, 32-bit and float samples, MetaImage and
 // NRRD headers, PNG stacks, checked against the phantom whose grey values are known.
 
 #include <gtest/gtest.h>

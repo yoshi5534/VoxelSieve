@@ -2,17 +2,22 @@
 
 ## Unreleased
 
-- **HDF5 and NeXus volumes** (ADR 0043): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
+- **HDF5 and NeXus volumes** (ADR 0044): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
   are imported with the HDF5 library, the largest volume or the one named by `dataset`, with the
   voxel size from the dataset's attributes where it has them (operation `import_hdf5`,
   `vs-sieve --dataset`). New dependency: `hdf5` (C library, deflate filter).
 
-- **More scan formats** (ADR 0042): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
+- **More scan formats** (ADR 0043): MetaImage (`.mhd`, `.mha`) and NRRD (`.nhdr`, `.nrrd`) files
   with their spacing and position, raw and gzip/zlib data in one or many files (operation
   `import_header_volume`); PNG slice stacks from a directory or ZIP archive (`import_png`); raw
   files of signed, 32-bit and float samples (`import_raw` `sample_type`, sidecar `format.dtype`,
   or the file name), kept with a value mapping as float TIFF stacks are. All of them open with
   one click through `open_scan`, and `vs-sieve` reads them.
+
+- **Icons in the browser UI** (ADR 0042): stages, header, view modes, layers, analysis groups and
+  cards, region tools and the file browser have icons from Lucide (ISC licence, the used icons
+  copied into `resources/ui/icons.js`, no new dependency). Descriptions of analyses and groups
+  are tooltips, and the key figures of a result are large numbers instead of a table.
 
 - **Regions of a scan** (ADR 0041): draw a box, sphere or cylinder in the slice view, or take
   the inside of a CAD model, add or cut out solids and save the result as a named region of the

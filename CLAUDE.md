@@ -12,7 +12,7 @@ and store the result as a sparse VDB grid for fast rendering and analysis.
     and `tiff.hpp` TIFF stacks, also inside ZIP archives (`TiffStackSource`, ADR 0011); float
     input is mapped onto 16 bit with a recorded `ValueMapping` (ADR 0015), also for signed, 32-bit
     and float raw samples (`RawSampleType`); `header_volume.hpp` MetaImage and NRRD files and
-    `png_stack.hpp` PNG stacks (ADR 0042); `hdf5.hpp` HDF5/NeXus volumes (ADR 0043);
+    `png_stack.hpp` PNG stacks (ADR 0043); `hdf5.hpp` HDF5/NeXus volumes (ADR 0044);
     `dicom.hpp` DICOM
     stacks (`DicomStackSource`, DCMTK, ADR 0019); `diconde.hpp` DICONDE metadata and
     export of volumes, material labels and pores as indications (ADR 0024)

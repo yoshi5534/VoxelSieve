@@ -92,7 +92,7 @@ or `format.dtype` in the sidecar, or a name such as `engine_256x256x128_float32.
 samples are shifted into the unsigned range without loss; 32-bit integers that fit stay as they
 are; wider ones and floats are mapped onto 16-bit grey values over `--value-range`, estimated
 from 33 slices when not given. The mapping is recorded in the dataset and clipped values are
-counted, as for float TIFF stacks (ADR 0042, ADR 0015).
+counted, as for float TIFF stacks (ADR 0043, ADR 0015).
 
 | Input | Raw size | Dataset | Time | Peak memory |
 |---|---|---|---|---|
@@ -158,7 +158,7 @@ memory, the others go to a temporary raw file in the output directory (elsewhere
 MetaImage and NRRD files describe the volume in a short text header: dimensions, sample type,
 byte order, spacing, position and axis directions, and the data, attached or in other files (one,
 a list, or a numbered pattern), raw or gzip/zlib-compressed (`voxelsieve::readHeaderVolume`,
-ADR 0042). Signed, 32-bit and float samples are kept with a value mapping as above, and the
+ADR 0043). Signed, 32-bit and float samples are kept with a value mapping as above, and the
 object is placed where the header says it lies. Choosing the raw data file of an `.mhd` or
 `.nhdr` opens it through its header. In the GUI this is the operation `import_header_volume`.
 
@@ -176,7 +176,7 @@ is the operation `import_png`.
 ```
 
 Volumes in HDF5 files, as synchrotron beamlines and tomography pipelines write them, are read
-with the HDF5 library (`voxelsieve::Hdf5Source`, ADR 0043): any dataset of three dimensions (C
+with the HDF5 library (`voxelsieve::Hdf5Source`, ADR 0044): any dataset of three dimensions (C
 order, the last is x) of 8-, 16- or 32-bit integers or floats, chunked and deflated or not.
 Without `--dataset` the largest that does not look like labels is read and the others are
 printed. Samples become grey values as for raw files; the voxel size comes from

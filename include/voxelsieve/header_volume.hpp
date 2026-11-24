@@ -1,6 +1,6 @@
 #pragma once
 
-// Volumes described by a text header (ADR 0042): MetaImage (.mhd with a separate data file, .mha
+// Volumes described by a text header (ADR 0043): MetaImage (.mhd with a separate data file, .mha
 // with the data attached) and NRRD (.nhdr detached, .nrrd attached). The header gives the
 // dimensions, the sample type and byte order, the voxel spacing, the position and the data file;
 // the voxels are read by the raw sources, plain or decompressed with zlib.
