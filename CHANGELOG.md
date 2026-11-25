@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Colours, light and video in the 3D view** (ADR 0043): sixteen colour maps in groups
+  (perceptual maps such as inferno and cividis, material looks such as gold and jade, turbo, a
+  diverging map and an own three-colour gradient), reversible, that colour every grey value
+  between two markers dragged under the histogram; edge emphasis; per-material opacity and
+  material palettes. Lighting with presets (studio, top light, dramatic, back light, flat) or by
+  hand: key light direction (following the camera or fixed in the scene), fill and rim light,
+  ambient light, highlights, soft shadows and ambient occlusion. Looks set curve, colours, light
+  and background in one click. "Record video" makes a turntable, swing, orbit, cut sweep, zoom or
+  flight through the saved views as MP4 (or WebM) up to 3840 × 2160, encoded by the browser.
+
 - **Icons in the browser UI** (ADR 0042): stages, header, view modes, layers, analysis groups and
   cards, region tools and the file browser have icons from Lucide (ISC licence, the used icons
   copied into `resources/ui/icons.js`, no new dependency). Descriptions of analyses and groups

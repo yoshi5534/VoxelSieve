@@ -342,7 +342,10 @@ function collectViewState() {
   const pending = state.restore ?? {};
   const transfer = state.transfer?.points
     ? { key: state.transfer.key, preset: state.transfer.preset,
-      colorMap: state.transfer.colorMap, points: state.transfer.points }
+      colorMap: state.transfer.colorMap, points: state.transfer.points,
+      colorSource: state.transfer.colorSource ?? 'points', reverse: state.transfer.reverse ?? false,
+      colorRange: state.transfer.colorRange ?? null,
+      customStops: state.transfer.customStops ?? null }
     : pending.transfer ?? previous.transfer ?? null;
   return {
     stage: state.stage,
@@ -1558,11 +1561,24 @@ function materialColorsOf(materials) {
 /// Legend of a material segmentation: per class its colour (to change for the views), name,
 /// the grey value it starts at, its volume and share of all material, and a box that shows or
 /// hides it in the slice and 3D views.
-function materialLegend(materials, onChange, onColors) {
+function materialLegend(materials, onChange, onColors, opacity = null) {
   const list = materials.summary?.materials ?? [];
   const total = list.reduce((sum, material) => sum + material.volume_mm3, 0);
   const hidden = hiddenMaterials(materials.id);
   const colors = materialColorsOf(materials);
+  // A palette recolours every material at once.
+  const palette = el('select', { title: 'Colour all materials from a palette' },
+    el('option', { value: '' }, 'Palette …'),
+    Object.entries(MATERIAL_PALETTES).map(([key, p]) => el('option', { value: key }, p.name)));
+  palette.addEventListener('change', () => {
+    const chosen = MATERIAL_PALETTES[palette.value];
+    if (!chosen) return;
+    const next = MATERIAL_COLORS.map((_, m) => [...chosen.colors[m % chosen.colors.length]]);
+    state.materialColors = { step: materials.id, colors: next };
+    onColors(next);
+    scheduleViewSave();
+    render();
+  });
   const rows = list.map((material) => {
     const color = el('input', { type: 'color', className: 'swatch-input',
       value: hexColor(colors[material.id - 1]), title: 'Colour of this material in the views' });
@@ -1581,16 +1597,30 @@ function materialLegend(materials, onChange, onColors) {
       state.hiddenMaterials.ids = ids.sort((a, b) => a - b);
       onChange(state.hiddenMaterials.ids);
     });
+    let shown = null;
+    if (opacity) {
+      shown = el('input', { type: 'number', min: 0, max: 100, step: 5, className: 'opacity-input',
+        value: Math.round(100 * (opacity.get()[material.id - 1] ?? 1)),
+        title: 'Opacity of this material in the translucent 3D view, in percent' });
+      shown.addEventListener('change', () => {
+        const values = [...opacity.get()];
+        values[material.id - 1] = Math.min(Math.max(Number(shown.value) / 100, 0), 1);
+        opacity.set(values);
+      });
+    }
     return el('tr', {},
       el('td', {}, el('label', {}, show, color, ' ' + (material.name ?? material.id))),
       el('td', {}, material.from_grey_value === undefined ? '–'
         : formatNumber(Math.round(material.from_grey_value))),
       el('td', {}, formatNumber(material.volume_mm3)),
-      el('td', {}, total > 0 ? (100 * material.volume_mm3 / total).toFixed(1) : '–'));
+      el('td', {}, total > 0 ? (100 * material.volume_mm3 / total).toFixed(1) : '–'),
+      opacity ? el('td', {}, shown) : null);
   });
   return [el('h3', {}, 'Materials (step ' + materials.id + ')'),
+    el('div', { className: 'field-row' }, palette),
     el('table', { className: 'materials' }, el('thead', {}, el('tr', {}, el('th', {}, 'Material'),
-      el('th', { title: 'Grey value the material starts at' }, 'from'), el('th', {}, 'mm³'), el('th', { title: 'Share of all material' }, '%'))),
+      el('th', { title: 'Grey value the material starts at' }, 'from'), el('th', {}, 'mm³'), el('th', { title: 'Share of all material' }, '%'),
+      opacity ? el('th', { title: 'Opacity in the translucent 3D view' }, 'Opacity %') : null)),
     el('tbody', {}, rows)),
     el('p', { className: 'hint' }, 'Untick a material to look past it, for instance the base ' +
       'material to see the inclusions in it. Materials are defined in the histogram of the 3D ' +
@@ -2639,6 +2669,171 @@ function thicknessLegend(minWall, maxWall, range, measured = null) {
       (measured ? ' · on ' + measured : ' · grey: not measured')));
 }
 
+// ---------------------------------------------------------------------------------------------
+// Lighting, looks and video of the 3D view (ADR 0043)
+
+/// A labelled slider of the properties column: its value from get(), each move to set(value).
+function sliderRow(label, title, { min, max, step }, get, set) {
+  const output = el('span', { className: 'slider-value' });
+  const input = el('input', { type: 'range', min, max, step, value: get(), title });
+  const show = () => { output.textContent = formatNumber(Number(Number(input.value).toFixed(2))); };
+  input.addEventListener('input', () => {
+    show();
+    set(Number(input.value));
+  });
+  show();
+  return el('label', { className: 'slider-row', title }, el('span', {}, label), input, output);
+}
+
+/// Lighting of the 3D view (lighting.js): a preset and, opened, every part of it. A change of a
+/// part makes the lighting the user's own.
+function lightingControls(volume, update) {
+  const lighting = () => normalizeLighting(volume.lighting);
+  const preset = el('select', { title: 'Lighting' },
+    Object.entries(LIGHTING_PRESETS).map(([key, p]) => el('option', {
+      value: key, selected: key === lighting().preset, title: p.description }, p.name)),
+    el('option', { value: 'eigen', selected: !(lighting().preset in LIGHTING_PRESETS) }, 'Own'));
+  const details = el('details', { className: 'lighting-details' },
+    el('summary', {}, 'Light, shadows and highlights'));
+  const fill = () => {
+    const change = (key) => (value) => {
+      update({ lighting: { ...lighting(), [key]: value, preset: 'eigen' } });
+      preset.value = 'eigen';
+    };
+    const follow = el('input', { type: 'checkbox', checked: lighting().follow });
+    follow.addEventListener('change', () => change('follow')(follow.checked));
+    const row = (label, title, key, range) => sliderRow(label, title, range,
+      () => lighting()[key], change(key));
+    details.replaceChildren(details.firstChild,
+      el('label', { className: 'group', title: 'The light turns with the camera; else it stays ' +
+        'in the scene and the part turns under it' }, follow, 'Light follows the camera'),
+      row('Direction', 'Azimuth of the key light in degrees', 'azimuth',
+        { min: -180, max: 180, step: 1 }),
+      row('Height', 'Elevation of the key light in degrees', 'elevation',
+        { min: -90, max: 90, step: 1 }),
+      row('Key light', 'Strength of the key light', 'intensity', { min: 0, max: 2, step: 0.01 }),
+      row('Fill light', 'A weaker light from the other side', 'fill',
+        { min: 0, max: 1, step: 0.01 }),
+      row('Ambient', 'Light from everywhere', 'ambient', { min: 0, max: 1, step: 0.01 }),
+      row('Rim light', 'Light on the outline, where the surface turns away', 'rim',
+        { min: 0, max: 1, step: 0.01 }),
+      row('Highlights', 'Strength of the specular highlights', 'specular',
+        { min: 0, max: 1, step: 0.01 }),
+      row('Gloss', 'Size of the highlights: higher is smaller and glossier', 'shininess',
+        { min: 1, max: 120, step: 1 }),
+      row('Shadows', 'How dark the shadows of the key light are', 'shadows',
+        { min: 0, max: 1, step: 0.01 }),
+      row('Occlusion', 'How much creases, corners and pores darken', 'occlusion',
+        { min: 0, max: 1, step: 0.01 }));
+  };
+  preset.addEventListener('change', () => {
+    if (!(preset.value in LIGHTING_PRESETS)) return;
+    update({ lighting: lightingPreset(preset.value) });
+    fill();
+  });
+  fill();
+  return [el('div', { className: 'field-row' }, icon('sun'), preset), details];
+}
+
+/// The video of the 3D view in one click (video.js), with its motion, length, frame rate and
+/// size remembered per browser. `keyframes` gives the saved views of the volume for the flight.
+function videoControls(volume, keyframes, baseName) {
+  const saved = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('voxelsieve.video') ?? '{}') ?? {};
+    } catch {
+      return {};
+    }
+  })();
+  const settings = { motion: 'turntable', seconds: 8, fps: 30, size: 'fullhd', ...saved };
+  const remember = () => {
+    try {
+      localStorage.setItem('voxelsieve.video', JSON.stringify(settings));
+    } catch {
+      // Private window: the settings hold for this page only.
+    }
+  };
+  const motion = el('select', { title: 'Camera motion of the video' },
+    Object.entries(VIDEO_MOTIONS).map(([key, m]) => el('option', {
+      value: key, selected: key === settings.motion, title: m.description }, m.name)));
+  const seconds = el('input', { type: 'number', min: 2, max: 120, step: 1, value: settings.seconds,
+    title: 'Length in seconds' });
+  const fps = el('select', { title: 'Frames per second' },
+    [24, 30, 60].map((n) => el('option', { value: n, selected: n === settings.fps }, n + ' fps')));
+  const size = el('select', { title: 'Size of the video in pixels' },
+    Object.entries(VIDEO_SIZES).map(([key, s]) => el('option', {
+      value: key, selected: key === settings.size }, s.name)));
+  for (const input of [motion, seconds, fps, size]) {
+    input.addEventListener('change', () => {
+      Object.assign(settings, { motion: motion.value, size: size.value,
+        seconds: Math.min(Math.max(Number(seconds.value) || 8, 2), 120), fps: Number(fps.value) });
+      remember();
+    });
+  }
+  const button = el('button', { icon: 'video', title: 'Record a video of the view with the ' +
+    'motion set under "Video settings" and download it' }, 'Record video');
+  const progress = el('div', { className: 'video-progress', hidden: true });
+  let controller = null;
+  button.addEventListener('click', async () => {
+    if (controller) {
+      controller.abort();
+      return;
+    }
+    const frames = settings.motion === 'views' ? keyframes() : [];
+    if (settings.motion === 'views' && frames.length < 2) {
+      showError(new Error('The flight through saved views needs at least two saved views of ' +
+        'this volume; save them with "Save view"'));
+      return;
+    }
+    controller = new AbortController();
+    let result = '';
+    button.replaceChildren(icon('stop'), 'Stop');
+    button.classList.add('on');
+    progress.hidden = false;
+    try {
+      const video = await recordVideo(volume, { ...settings, keyframes: frames,
+        signal: controller.signal,
+        onProgress: ({ phase, done }) => {
+          progress.textContent = { prepare: 'Loading the detail along the motion … ',
+            render: 'Drawing the frames … ', encode: 'Encoding … ' }[phase] +
+            Math.round(100 * done) + ' %';
+          progress.style.setProperty('--done', (100 * done).toFixed(1) + '%');
+        } });
+      const url = URL.createObjectURL(video.blob);
+      downloadDataUrl(url, fileName(baseName() + '-' + settings.motion).replace(/\.png$/,
+        '.' + video.extension));
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      result = 'Video of ' + video.seconds.toFixed(1) + ' s (' + video.frames + ' frames, ' +
+        video.extension.toUpperCase() + ', ' + formatNumber(Math.round(video.blob.size / 1024)) +
+        ' kB) downloaded';
+    } catch (error) {
+      showError(error);
+    } finally {
+      controller = null;
+      button.replaceChildren(icon('video'), 'Record video');
+      button.classList.remove('on');
+      progress.textContent = result;
+      progress.style.setProperty('--done', '100%');
+      progress.hidden = !result;
+      if (result) setTimeout(() => { progress.hidden = true; }, 8000);
+    }
+  });
+  const options = el('details', { className: 'view-settings' }, el('summary', {}, 'Video settings'),
+    el('div', { className: 'viewer-tools' }, motion, el('label', { className: 'group' }, seconds,
+      's'), fps, size));
+  return { controls: [button, options], progress };
+}
+
+/// Colour maps as options of a select, in their groups.
+function colorMapOptions(selected) {
+  const groups = new Map();
+  for (const [key, map] of Object.entries(COLOR_MAPS)) {
+    if (!groups.has(map.group)) groups.set(map.group, []);
+    groups.get(map.group).push(el('option', { value: key, selected: key === selected }, map.name));
+  }
+  return [...groups].map(([group, options]) => el('optgroup', { label: group }, options));
+}
+
 function renderVolumeView(panel, dataset, ctx) {
   const volume = state.volume ?? (state.volume = new VolumeViewer());
   // The transfer function outlives re-rendering; it is reset when another volume is loaded.
@@ -2661,6 +2856,7 @@ function renderVolumeView(panel, dataset, ctx) {
   const hint = el('div', { className: 'viewer-status' });
   const legend = el('div', { hidden: true });
   const suggestionRow = el('div', { className: 'suggestions' });
+  const looksRow = el('div', { className: 'suggestions looks' });
   // Every change of the picture is also kept in the project.
   const update = (settings) => {
     volume.set(settings);
@@ -2695,7 +2891,9 @@ function renderVolumeView(panel, dataset, ctx) {
   if (materials !== null) {
     ctx.properties.materials = materialLegend(materials,
       (ids) => update({ hiddenMaterials: [...ids] }),
-      (colors) => update({ materialColors: colors })).slice(1);
+      (colors) => update({ materialColors: colors }),
+      { get: () => volume.materialOpacity, set: (values) => update({ materialOpacity: values }) })
+      .slice(1);
   }
   const poreColor = colorInput('Pore colour', () => volume.poreColor,
     (rgb) => update({ poreColor: rgb }));
@@ -2728,15 +2926,40 @@ function renderVolumeView(panel, dataset, ctx) {
   const preset = el('select', { title: 'Transfer function preset' },
     el('option', { value: '' }, 'Preset …'),
     Object.entries(TRANSFER_PRESETS).map(([key, name]) => el('option', { value: key }, name)));
-  const colorMap = el('select', { title: 'Lay a colour map over the points' },
-    Object.entries(COLOR_MAPS).map(([key, map]) => el('option', {
-      value: key, selected: key === transfer.colorMap }, map.name)));
+  const colorMap = el('select', { title: 'Colour map of the grey values' },
+    colorMapOptions(transfer.colorMap));
+  const colorSwatch = el('span', { className: 'colormap-swatch', title: 'The colour map' });
+  const reverse = el('input', { type: 'checkbox', checked: Boolean(transfer.reverse) });
+  const colorSource = el('select', { title: 'Where the colours come from: every grey value from ' +
+    'the colour map, spread between the two markers under the histogram, or the colours of the ' +
+    'points' },
+  el('option', { value: 'map', selected: transfer.colorSource === 'map' }, 'Colours from the map'),
+  el('option', { value: 'points', selected: transfer.colorSource !== 'map' },
+    'Colours of the points'));
+  const fitRange = el('button', { title: 'Spread the colour map over the grey values that are ' +
+    'seen again' }, 'Fit');
+  // The own gradient: three colours, low to high.
+  const customStops = () => transfer.customStops ?? COLOR_MAPS.eigen.stops;
+  const customColors = [0, 1, 2].map((i) => {
+    const input = el('input', { type: 'color', title: ['Low', 'Middle', 'High'][i] +
+      ' colour of the own gradient', value: hexColor(customStops()[i]?.slice(1) ?? [0, 0, 0]) });
+    input.addEventListener('input', () => {
+      const stops = customStops().map((stop) => [...stop]);
+      stops[i] = [[0, 0.5, 1][i], ...parseHexColor(input.value)];
+      transfer.customStops = stops;
+      colorsChanged();
+    });
+    return input;
+  });
+  const customRow = el('span', { className: 'group' }, customColors);
   const pointColor = el('input', { type: 'color', title: 'Colour of the selected point' });
   const pointOpacity = el('input', { type: 'number', min: 0, max: 100, step: 1,
     title: 'Opacity of the selected point in percent' });
   const removePoint = el('button', { onclick: () => editor.removeSelected(),
     title: 'Delete the selected point' }, 'Delete');
-  const curveTools = el('div', { className: 'group' }, preset, colorMap,
+  const curveTools = el('div', { className: 'group' }, preset, colorMap, colorSwatch, customRow,
+    el('label', { className: 'group', title: 'Run the colour map the other way' }, reverse,
+      'Reverse'), colorSource, fitRange,
     el('span', { className: 'sep' }), 'Point', pointColor, pointOpacity, '%', removePoint);
   const surfaceTools = el('label', { className: 'group' }, 'Colour', surface);
 
@@ -2878,9 +3101,43 @@ function renderVolumeView(panel, dataset, ctx) {
       'segmentation with these materials; the shares are estimated from the overview.'));
   };
   /// The transfer function: the materials' colours in the preview, else the curve.
+  const curveTable = () => transferTable({ ...transfer, points: editor.points });
+  editor.tableOf = curveTable;
   const applyTransfer = () => {
     volume.setTransfer(draft.editing && draft.preview && editor.materials.length
-      ? materialTable(editor.materials) : lookupTable(editor.points));
+      ? materialTable(editor.materials) : curveTable());
+  };
+  /// The colour controls and the editor's colour range as the transfer function says.
+  const syncColors = () => {
+    const map = transfer.colorSource === 'map';
+    editor.colorRange = map ? (transfer.colorRange ?? visibleRange(editor.points)) : null;
+    colorSwatch.style.background = colorMapGradient(transfer.colorMap,
+      { reverse: Boolean(transfer.reverse), custom: transfer.customStops ?? null });
+    customRow.hidden = transfer.colorMap !== 'eigen';
+    fitRange.hidden = !map;
+    colorMap.value = transfer.colorMap;
+    colorSource.value = map ? 'map' : 'points';
+    reverse.checked = Boolean(transfer.reverse);
+  };
+  /// The colours changed: on the points too when they carry them.
+  const colorsChanged = () => {
+    if (transfer.colorSource !== 'map') {
+      const selected = editor.selected;
+      editor.setPoints(applyColorMap(editor.points, transfer.colorMap,
+        { reverse: Boolean(transfer.reverse), custom: transfer.customStops ?? null }));
+      editor.selected = selected;
+    }
+    volume.look = null;
+    syncColors();
+    editor.draw();
+    editor.onSelect();
+    applyTransfer();
+    scheduleViewSave();
+  };
+  editor.onRange = (range) => {
+    transfer.colorRange = range;
+    applyTransfer();
+    scheduleViewSave();
   };
   const setEditing = (editing) => {
     draft.editing = editing;
@@ -2931,22 +3188,40 @@ function renderVolumeView(panel, dataset, ctx) {
   preset.addEventListener('change', () => {
     if (preset.value) {
       transfer.preset = preset.value;
-      transfer.colorMap = { dichte: 'viridis', rand: 'kupfer' }[preset.value] ?? 'stahl';
-      colorMap.value = transfer.colorMap;
+      transfer.colorMap = { dichte: 'viridis', rand: 'kupfer', glas: 'eis', innen: 'inferno' }[
+        preset.value] ?? 'stahl';
+      transfer.colorRange = null;
       editor.setPoints(transferPreset(preset.value, volume.threshold));
+      syncColors();
     }
     preset.value = '';
   });
   colorMap.addEventListener('change', () => {
     transfer.colorMap = colorMap.value;
-    const selected = editor.selected;
-    editor.setPoints(applyColorMap(editor.points, colorMap.value));
-    editor.selected = selected;
-    editor.onSelect();
+    // A colour map is seen whole when it colours every grey value.
+    transfer.colorSource = 'map';
+    colorsChanged();
+  });
+  reverse.addEventListener('change', () => {
+    transfer.reverse = reverse.checked;
+    colorsChanged();
+  });
+  colorSource.addEventListener('change', () => {
+    transfer.colorSource = colorSource.value;
+    colorsChanged();
+  });
+  fitRange.addEventListener('click', () => {
+    transfer.colorRange = null;
+    colorsChanged();
   });
   pointColor.addEventListener('input', () => {
     if (editor.selected < 0) return;
     editor.points[editor.selected].color = parseHexColor(pointColor.value);
+    // An own colour of a point holds only when the points carry the colours.
+    if (transfer.colorSource === 'map') {
+      transfer.colorSource = 'points';
+      syncColors();
+    }
     editor.changed();
   });
   pointOpacity.addEventListener('change', () => {
@@ -2961,6 +3236,9 @@ function renderVolumeView(panel, dataset, ctx) {
       return;
     }
     transfer.points = editor.points;
+    if (transfer.colorSource === 'map' && !transfer.colorRange) {
+      editor.colorRange = visibleRange(editor.points);
+    }
     volume.set({ threshold: editor.threshold });
     applyTransfer();
     scheduleViewSave();
@@ -3070,8 +3348,8 @@ function renderVolumeView(panel, dataset, ctx) {
 
   /// Uses a suggested rendering: transfer function mode with its curve and lighting.
   const useSuggestion = (suggestion) => {
-    transfer.preset = null;
-    transfer.colorMap = suggestion.colorMap;
+    Object.assign(transfer, { preset: null, colorMap: suggestion.colorMap, colorSource: 'points',
+      reverse: false, colorRange: null });
     transfer.points = suggestion.points.map((p) => ({ ...p, color: [...p.color] }));
     layers.greyStyle = 1;
     if (activeColoring(sources) !== 'materials') layers.colorBy = 'grey';
@@ -3079,6 +3357,33 @@ function renderVolumeView(panel, dataset, ctx) {
     scheduleViewSave();
     render();
   };
+  /// A look (lighting.js): curve, colours, lighting and background in one click.
+  const useLook = (name) => {
+    const look = lookSettings(name, volume.threshold);
+    Object.assign(transfer, look.transfer);
+    layers.greyStyle = look.volume.mode;
+    if (activeColoring(sources) !== 'materials') layers.colorBy = 'grey';
+    volume.set({ ...look.volume,
+      background: { preset: look.background, ...BACKGROUNDS[look.background] } });
+    scheduleViewSave();
+    render();
+  };
+  /// The settings of a look for a small picture of it.
+  const lookPreview = (name) => {
+    const look = lookSettings(name, volume.threshold);
+    return [{ ...look.volume, background: { preset: look.background,
+      ...BACKGROUNDS[look.background] } }, transferTable(look.transfer)];
+  };
+  const renderLooks = () => {
+    const images = state.lookImages?.key === volume.volume?.key ? state.lookImages.images : {};
+    looksRow.replaceChildren(el('b', { title: 'Curve, colours, light and background in one ' +
+      'click' }, 'Looks'),
+    ...Object.entries(LOOKS).map(([name, look]) => el('button', {
+      className: 'suggestion' + (volume.look === name ? ' on' : ''), 'data-look': name,
+      onclick: () => useLook(name), title: look.description,
+    }, images[name] ? el('img', { src: images[name], alt: '' }) : null, el('b', {}, look.name))));
+  };
+  state.renderLooks = renderLooks;
   const renderSuggestions = () => {
     const suggestions = state.suggestions;
     if (!suggestions?.items.length) {
@@ -3111,10 +3416,11 @@ function renderVolumeView(panel, dataset, ctx) {
       transfer.preset = first ? null : 'durchsicht';
       transfer.colorMap = first ? first.colorMap : 'stahl';
       transfer.points = first ? first.points : transferPreset('durchsicht', volume.threshold);
-      colorMap.value = transfer.colorMap;
+      Object.assign(transfer, { colorSource: 'points', reverse: false, colorRange: null });
     }
     editor.threshold = volume.threshold;
     editor.points = transfer.points;
+    syncColors();
     if (!draft.materials) {
       // The materials of the latest segmentation, else a split of the histogram.
       const segmented = (materials?.summary?.materials ?? [])
@@ -3139,6 +3445,7 @@ function renderVolumeView(panel, dataset, ctx) {
     applyTransfer();
     editor.onSelect();
     renderSuggestions();
+    renderLooks();
     showVolumeStatus();
   };
   /// Says which level is shown, and which finer one near the camera.
@@ -3167,8 +3474,14 @@ function renderVolumeView(panel, dataset, ctx) {
   vram.addEventListener('change', () => {
     if (Number(vram.value) >= 64) volume.setVramBudget(Number(vram.value));
   });
+  const edges = sliderRow('Edges only', 'Opacity only where the grey value changes: surfaces, ' +
+    'pore walls and boundaries between materials stand out, the inside clears',
+  { min: 0, max: 1, step: 0.01 }, () => volume.edges, (value) => update({ edges: value }));
   ctx.properties.grey = [el('div', { className: 'field-row' }, style),
     volume.mode === 1 ? el('label', { className: 'group' }, shading, 'Lighting') : null,
+    volume.mode === 1 ? edges : null,
+    volume.mode !== 2 ? el('h4', {}, 'Light') : null,
+    ...(volume.mode !== 2 ? lightingControls(volume, update) : []),
     el('p', { className: 'hint' }, volume.mode >= 4
       ? 'The coloured surface of the result replaces the grey values; choose "Grey value" ' +
         'under "Colour by" to see them again.'
@@ -3183,13 +3496,16 @@ function renderVolumeView(panel, dataset, ctx) {
   }
   ctx.properties.objects = [el('p', { className: 'hint' }, 'Other volumes and CAD models show ' +
     'in the slice view and in the Objects view.')];
+  const video = videoControls(volume, () => (state.status.saved_views ?? [])
+    .map((view) => view.state?.volume).filter((v) => v && v.key === volume.volume?.key),
+  () => state.status.name ?? 'voxelsieve');
   panel.append(el('div', { className: 'viewer-tools' },
-    el('label', { className: 'group' }, 'Cut x', cut),
+    el('label', { className: 'group' }, 'Cut x', cut), ...video.controls,
     el('details', { className: 'view-settings' }, el('summary', {}, 'View settings'),
       el('div', { className: 'viewer-tools' },
         el('div', { className: 'group' }, 'Background', backgroundStyle, backgroundColors),
         el('label', { className: 'group' }, 'VRAM', vram, 'MB')))),
-  canvas, legend, status, suggestionRow,
+  canvas, video.progress, legend, status, looksRow, suggestionRow,
   transferEditor);
   applyMode();
   try {
@@ -3222,6 +3538,21 @@ function renderVolumeView(panel, dataset, ctx) {
       state.suggestions.images = state.suggestions.items.map((suggestion) => volume.renderPreview(
         { mode: 1, shading: suggestion.shading }, lookupTable(suggestion.points)));
       renderSuggestions();
+    }
+    if (state.lookImages?.key !== key) {
+      // One picture per frame, so the page keeps answering meanwhile.
+      const images = {};
+      state.lookImages = { key, images };
+      (async () => {
+        for (const name of Object.keys(LOOKS)) {
+          await new Promise((resolve) => { requestAnimationFrame(resolve); });
+          if (state.lookImages?.key !== key || volume.volume?.key !== key || volume.recording) {
+            return;
+          }
+          images[name] = volume.renderPreview(...lookPreview(name));
+          state.renderLooks?.();
+        }
+      })();
     }
   }).catch((error) => {
     status.textContent = error.message;

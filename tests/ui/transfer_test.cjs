@@ -153,3 +153,65 @@ assert.deepEqual(suggestTransfers(new Array(256).fill(0)), []);
 }
 
 console.log('transfer.js ok');
+
+// ---------------------------------------------------------------------------------------------
+// Colour maps and transfer tables with a colour map (ADR 0043).
+{
+  const { COLOR_MAPS, colorStops, colorMapGradient, transferTable, visibleRange,
+    MATERIAL_PALETTES } = transfer;
+  // Every map runs from t = 0 to t = 1 in ascending stops with byte colours, and has a group.
+  for (const [key, map] of Object.entries(COLOR_MAPS)) {
+    const t = map.stops.map((stop) => stop[0]);
+    assert.equal(t[0], 0, key);
+    assert.equal(t[t.length - 1], 1, key);
+    assert.ok(t.every((x, i) => i === 0 || x > t[i - 1]), key + ' ascending');
+    assert.ok(map.stops.every((stop) => stop.length === 4 &&
+      stop.slice(1).every((c) => Number.isInteger(c) && c >= 0 && c <= 255)), key + ' colours');
+    assert.ok(typeof map.group === 'string' && map.name, key + ' named');
+  }
+  // The ends of a map are its first and last stop; reversed they swap.
+  assert.deepEqual(colorMapAt('inferno', 0), [0, 0, 4]);
+  assert.deepEqual(colorMapAt('inferno', 1), [252, 255, 164]);
+  assert.deepEqual(colorMapAt('inferno', 0, { reverse: true }), [252, 255, 164]);
+  assert.deepEqual(colorMapAt('inferno', 0.25, { reverse: true }), colorMapAt('inferno', 0.75));
+  // The own gradient takes the stops given, sorted.
+  const custom = [[1, 255, 0, 0], [0, 0, 0, 255]];
+  assert.deepEqual(colorMapAt('eigen', 0, { custom }), [0, 0, 255]);
+  assert.deepEqual(colorMapAt('eigen', 0.5, { custom }), [128, 0, 128]);
+  assert.deepEqual(colorStops('viridis', { custom }), COLOR_MAPS.viridis.stops, 'only own one');
+  assert.ok(colorMapGradient('grau').startsWith('linear-gradient(to right, rgb(40, 40, 40) 0.0%'));
+
+  // The visible range: from the last transparent point before to the first after the opaque ones.
+  const point = (x, a) => ({ x, a, color: [10, 20, 30] });
+  assert.deepEqual(visibleRange([point(0, 0), point(0.4, 0), point(0.5, 0.5), point(0.8, 0),
+    point(1, 0)]), [0.4, 0.8]);
+  assert.deepEqual(visibleRange([point(0, 0), point(1, 0)]), [0, 1], 'nothing seen: all');
+
+  // From the points the table is the plain lookup table; from the map every grey value gets the
+  // map's colour over the range, the opacity still from the points.
+  const points = [point(0, 0), point(0.2, 0), point(0.6, 1), point(1, 1)];
+  assert.deepEqual(transferTable({ points, colorSource: 'points', colorMap: 'turbo' }),
+    lookupTable(points));
+  const mapped = transferTable({ points, colorSource: 'map', colorMap: 'grau',
+    colorRange: [0.2, 1] });
+  const at = (i) => Array.from(mapped.slice(i * 4, i * 4 + 4));
+  assert.deepEqual(at(0).slice(0, 3), [40, 40, 40], 'below the range the first colour');
+  assert.deepEqual(at(255).slice(0, 3), [235, 235, 235], 'the end of the range the last');
+  const middle = Math.round(0.6 * 255);
+  assert.ok(Math.abs(at(middle)[0] - 138) <= 2, 'halfway through the range: ' + at(middle));
+  assert.deepEqual(mapped.filter((_, i) => i % 4 === 3), lookupTable(points)
+    .filter((_, i) => i % 4 === 3), 'opacity from the points');
+  // Without a range the visible range of the points: [0.2, 1] here as well.
+  assert.deepEqual(transferTable({ points, colorSource: 'map', colorMap: 'grau' }), mapped);
+
+  // The material palettes have eight colours each.
+  for (const [key, palette] of Object.entries(MATERIAL_PALETTES)) {
+    assert.equal(palette.colors.length, 8, key);
+  }
+  // The new presets are sorted and transparent in the air.
+  for (const name of ['glas', 'innen']) {
+    const p = transferPreset(name, 0.4);
+    assert.ok(p.every((q, i) => i === 0 || q.x >= p[i - 1].x), name + ' sorted');
+    assert.equal(p[0].a, 0, name + ' air transparent');
+  }
+}

@@ -28,6 +28,117 @@ const BACKGROUNDS = {
   weiss: { name: 'White', style: 0, colors: [[255, 255, 255], [255, 255, 255]] },
 };
 
+/// Lighting shared by the ray caster and the meshes (ADR 0043): key, fill and rim light, ambient
+/// light, highlights, and shadows and ambient occlusion from the coarse level (always complete,
+/// and coarse enough to march through quickly). The uniforms it declares are set by both.
+function lightingGlsl() {
+  return `
+uniform sampler3D grey;     // the coarse level
+uniform sampler2D transfer; // 256 x 1 RGBA: colour and opacity per grey value
+uniform sampler3D visibility;
+uniform vec3 coarseDims;
+uniform vec3 box;           // half extent of the volume, largest axis 0.5
+uniform float threshold;    // material threshold on the 0..1 grey scale
+uniform float cut;          // texture x beyond which the part is cut away
+uniform int mode;           // see the ray caster; 3 and up: a mesh
+uniform bool materials;
+uniform vec3 lightKey;      // towards the key light, world space
+uniform vec3 lightFill;     // towards the fill light
+uniform float lightIntensity;
+uniform float lightAmbient;
+uniform float lightSpecular;
+uniform float lightShininess;
+uniform float lightFillStrength;
+uniform float lightRim;
+uniform float shadowStrength;
+uniform float occlusionStrength;
+
+// How much of the light one step of length stepLength through the coarse level at world
+// position p takes away.
+float blocking(vec3 p, float stepLength) {
+  vec3 t = p / (2.0 * box) + 0.5;
+  if (any(lessThan(t, vec3(0.0))) || any(greaterThan(t, vec3(1.0))) || t.x > cut) return 0.0;
+  float v = textureLod(grey, t, 0.0).r;
+  vec2 shown = materials ? textureLod(visibility, t, 0.0).rg : vec2(1.0);
+  if (mode == 1) {
+    float a = texture(transfer, vec2(v, 0.5)).a;
+    a = min(a * a * shown.g, 0.999);
+    return 1.0 - pow(1.0 - a, stepLength * 128.0);
+  }
+  float solid = smoothstep(threshold - 0.03, threshold + 0.03, v) * step(0.5, shown.r);
+  return 0.6 * solid;
+}
+
+// One coarse voxel along its shortest axis, in world units.
+float coarseCell() {
+  vec3 c = 2.0 * box / coarseDims;
+  return min(min(c.x, c.y), c.z);
+}
+
+// Light of the key light that reaches world position p on a surface with normal n: 1 in full
+// light, less in the shadow of what lies between p and the light.
+float shadowAt(vec3 p, vec3 n) {
+  if (shadowStrength <= 0.0) return 1.0;
+  float cell = coarseCell();
+  // Off the surface, to the side the light comes from.
+  vec3 q = p + n * (dot(n, lightKey) >= 0.0 ? 2.0 : -2.0) * cell;
+  float stepLength = 1.5 * cell;
+  float travelled = stepLength;
+  float light = 1.0;
+  for (int i = 0; i < 96 && light > 0.03; ++i) {
+    vec3 x = q + lightKey * travelled;
+    if (any(greaterThan(abs(x), box + vec3(cell)))) break;
+    light *= 1.0 - blocking(x, stepLength);
+    // Longer steps further away: a softer shadow, and the far side of the part is reached.
+    stepLength *= 1.04;
+    travelled += stepLength;
+  }
+  return mix(1.0, light, shadowStrength);
+}
+
+// Ambient light that reaches p with the outward normal n: less in creases, pores and corners.
+float occlusionAt(vec3 p, vec3 n) {
+  if (occlusionStrength <= 0.0) return 1.0;
+  float cell = coarseCell();
+  vec3 a = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+  vec3 t1 = normalize(cross(n, a));
+  vec3 t2 = cross(n, t1);
+  float blocked = 0.0;
+  for (int i = 0; i < 8; ++i) {
+    float angle = float(i) * 0.7853982;
+    vec3 d = normalize(n + cos(angle) * t1 + sin(angle) * t2);
+    float r = (i % 2 == 0) ? 2.5 : 6.0;
+    blocked += min(blocking(p + n * cell + d * r * cell, 1.0 / 128.0) / 0.6, 1.0);
+  }
+  return 1.0 - occlusionStrength * clamp(blocked / 8.0 * 1.5, 0.0, 1.0);
+}
+
+// Colour of a surface of colour base with normal n seen along direction, in the share of the key
+// light that reaches it (shadow) and of the ambient light (occlusion). The normal is turned to
+// the viewer, as only the side seen is lit.
+vec3 light(vec3 base, vec3 n, vec3 direction, float shadow, float occlusion) {
+  if (dot(n, direction) > 0.0) n = -n;
+  float key = max(dot(n, lightKey), 0.0);
+  float fill = max(dot(n, lightFill), 0.0);
+  vec3 halfway = normalize(lightKey - direction);
+  float specular = key > 0.0 ? pow(max(dot(n, halfway), 0.0), lightShininess) * lightSpecular
+                             : 0.0;
+  float rim = pow(1.0 - max(dot(n, -direction), 0.0), 3.0) * lightRim;
+  return base * (lightAmbient * occlusion + lightIntensity * key * shadow +
+                 lightFillStrength * fill * occlusion) +
+         vec3(specular * shadow) + rim * occlusion * mix(base, vec3(1.0), 0.5);
+}
+
+// Share of the light at a point that its shadow and occlusion leave, for the colour of a
+// translucent rendering as a whole.
+float lightLeft(float shadow, float occlusion) {
+  float all_ = lightAmbient + lightIntensity + lightFillStrength;
+  return all_ > 0.0 ? (lightAmbient * occlusion + lightIntensity * shadow +
+                       lightFillStrength * occlusion) / all_ : 1.0;
+}
+`;
+}
+
 // The surface mesh in level-0 voxel coordinates, projected like the rays of VOLUME_FRAGMENT.
 const MESH_VERTEX = `#version 300 es
 in vec3 position;
@@ -56,6 +167,7 @@ void main() {
 
 const MESH_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler3D;
 in vec3 world;
 in vec3 tex;
 in float dev;
@@ -63,8 +175,8 @@ out vec4 color;
 uniform vec3 eye;
 uniform vec3 right;
 uniform vec3 up;
-uniform float cut;
 uniform vec3 surfaceColor;
+${lightingGlsl()}
 // 0: surface colour; 1: colour by the deviation, as deviationColor in compare.cpp; 2: by the wall
 // thickness, as thicknessColor in thickness.cpp
 uniform int valueColors;
@@ -96,13 +208,13 @@ void main() {
   if (tex.x > cut) discard;
   vec3 normal = normalize(cross(dFdx(world), dFdy(world)));
   vec3 direction = normalize(world - eye);
-  vec3 light = normalize(-direction + up * 0.4 + right * 0.3);
-  float diffuse = abs(dot(normal, light));
-  vec3 halfway = normalize(light - direction);
-  float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
+  // The side seen is the outside of the closed surface.
+  if (dot(normal, direction) > 0.0) normal = -normal;
   vec3 base = valueColors == 1 ? deviationColor(dev)
              : valueColors == 2 ? thicknessColor(dev) : surfaceColor;
-  color = vec4(base * (0.25 + 0.75 * diffuse) + vec3(specular), alpha);
+  float shadow = alpha < 1.0 ? 1.0 : shadowAt(world, normal);
+  float occlusion = alpha < 1.0 ? 1.0 : occlusionAt(world, normal);
+  color = vec4(light(base, normal, direction, shadow, occlusion), alpha);
 }`;
 
 /// The ray caster. Each sample takes the finest level loaded where it lies, down to the level a
@@ -125,13 +237,11 @@ layout(location = 1) out uvec4 further;
 #else
 out vec4 color;
 #endif
-uniform sampler3D grey;     // the coarse level
 uniform sampler3D overlay;
-uniform sampler2D transfer; // 256 x 1 RGBA: colour and opacity per grey value
 // What the material colouring lets be seen, filtered linearly so its edges are smooth surfaces
 // and not the faces of voxels: red 1 where the surface may lie (a material shown, or a pore),
-// green 1 where a material is not left out. Of the coarse level and of the bricks.
-uniform sampler3D visibility;
+// green 1 where a material is not left out. Of the coarse level (visibility, declared with the
+// lighting, as are grey, transfer and coarseDims) and of the bricks.
 uniform sampler3D atlasGrey;
 uniform sampler3D atlasOverlay;
 uniform sampler3D atlasVisibility;
@@ -140,7 +250,6 @@ uniform int coarseLevel;       // the level of the coarse textures; bricks are o
 uniform ivec3 pageOrigin[16];  // where each level starts in the page table
 uniform ivec3 pageGrid[16];    // its bricks (the coarse level: its cells) per axis
 uniform vec3 extent;           // level-0 voxels the volume spans in texture coordinates 0..1
-uniform vec3 coarseDims;
 uniform ivec3 atlasSlots;
 uniform vec3 atlasSize;
 uniform float pixelSize;       // a pixel at distance 1, in world units
@@ -152,23 +261,22 @@ uniform vec3 right;
 uniform vec3 up;
 uniform vec3 forward;
 uniform float aspect;
-uniform vec3 box;        // half extent of the volume, largest axis 0.5
-uniform float threshold; // material threshold on the 0..1 grey scale
-uniform int mode;        // 0 surface, 1 transfer function, 2 maximum intensity projection,
-                         // 3 and up background only (the mesh is drawn on top)
+// mode: 0 surface, 1 transfer function, 2 maximum intensity projection, 3 and up background
+// only (the mesh is drawn on top); materials: colour the material classes of a segmentation.
+uniform float edges;       // 0..1: opacity of the transfer function only at edges
+uniform float materialOpacity[8];  // of material m at m - 1, in the transfer function
 uniform bool shading;
 uniform bool pores;        // pores of a porosity analysis
 uniform bool zones;        // its zones of loosened microstructure
-uniform bool materials;    // colour the material classes of a segmentation
 uniform int hiddenMaterials; // bit m - 1 set: material class m is left out
 uniform vec3 materialColors[8];
-uniform float cut;       // texture x beyond which the part is cut away
 uniform vec3 surfaceColor;
 uniform vec3 poreColor;
 uniform vec3 zoneColor;
 uniform vec3 background;   // top or centre colour
 uniform vec3 background2;  // bottom or edge colour
 uniform int backgroundStyle; // 0 plain, 1 vertical gradient, 2 soft light
+${lightingGlsl()}
 
 // Opacities of the transfer function hold for this path length (1/128 of the largest axis), so
 // the picture does not depend on the level shown.
@@ -306,11 +414,7 @@ vec3 surfaceNormal(Where w, float value, float visible) {
 }
 
 vec3 shade(vec3 base, vec3 normal, vec3 direction) {
-  vec3 light = normalize(-direction + up * 0.4 + right * 0.3);
-  float diffuse = abs(dot(normal, light));
-  vec3 halfway = normalize(light - direction);
-  float specular = pow(abs(dot(normal, halfway)), 24.0) * 0.25;
-  return base * (0.25 + 0.75 * diffuse) + vec3(specular);
+  return light(base, normal, direction, 1.0, 1.0);
 }
 
 // Material class 1 to 8 of an overlay class (SliceOverlay::kMaterial + m), 0 for none.
@@ -411,6 +515,11 @@ void main() {
   ivec3 furtherBrick = ivec3(0);
   float missing = 0.0;
   float t = near;
+  // The sample that gives the most to the pixel of a translucent rendering, and its normal:
+  // shadow and occlusion are taken there once for the whole ray.
+  float strongest = 0.0;
+  vec3 strongestAt = vec3(0.0);
+  vec3 strongestNormal = vec3(0.0);
   for (int i = 0; i < 8192 && t < far; ++i) {
     vec3 tex = (eye + direction * t) / (2.0 * box) + 0.5;
     Where w = locate(tex, t);
@@ -457,7 +566,9 @@ void main() {
     if (mode == 0) {
       if (pores && kind == 1) {
 #ifndef FEEDBACK
-        color = vec4(shade(poreColor, normalAt(w), direction), 1.0);
+        vec3 n = normalAt(w);
+        vec3 p = eye + direction * t;
+        color = vec4(light(poreColor, n, direction, 1.0, occlusionAt(p, n)), 1.0);
 #endif
         done = true;
         break;
@@ -476,7 +587,8 @@ void main() {
         }
         vec3 base = (zones && kind == 2) ? zoneColor
             : materialShown(material) ? materialColors[(material - 1) % 8] : surfaceColor;
-        color = vec4(shade(base, n, direction), 1.0);
+        vec3 p = eye + direction * t;
+        color = vec4(light(base, n, direction, shadowAt(p, n), occlusionAt(p, n)), 1.0);
 #endif
         done = true;
         break;
@@ -498,16 +610,30 @@ void main() {
         sample_ = texture(transfer, vec2(value, 0.5));
         // Quadratic, so the low opacities that matter for looking through get room on the curve.
         sample_.a *= sample_.a;
-        if (material > 0) sample_.rgb = materialColors[(material - 1) % 8];
+        if (material > 0) {
+          sample_.rgb = materialColors[(material - 1) % 8];
+          sample_.a *= materialOpacity[(material - 1) % 8];
+        }
       }
       sample_.a *= visible.g;
+      vec3 g = vec3(0.0);
+      if ((shading || edges > 0.0) && sample_.a > 0.0) g = differences(w, 0, kRed);
+      // Edge emphasis: the opacity where the grey value changes, the interior clear.
+      if (edges > 0.0 && kind != 1 && kind != 2) {
+        sample_.a *= mix(1.0, smoothstep(0.01, 0.12, length(g)), edges);
+      }
       float a = stepOpacity(sample_.a, stepSize);
       if (a >= 0.0005) {
         vec3 rgb = sample_.rgb;
         if (shading) {
-          vec3 g = differences(w, 0, kRed);
           float strength = smoothstep(0.02, 0.12, length(g));
           if (strength > 0.0) rgb = mix(rgb, shade(rgb, -normalize(g), direction), strength);
+          float weight = (1.0 - alpha) * a;
+          if (weight > strongest && length(g) > 1e-5) {
+            strongest = weight;
+            strongestAt = eye + direction * t;
+            strongestNormal = -normalize(g);
+          }
         }
         accumulated += (1.0 - alpha) * a * rgb;
         alpha += (1.0 - alpha) * a;
@@ -531,6 +657,10 @@ void main() {
     vec3 mapped = mix(background, texture(transfer, vec2(highest, 0.5)).rgb, highest);
     color = vec4(porous ? mix(mapped, poreColor, 0.65) : mapped, 1.0);
     return;
+  }
+  if (strongest > 0.0 && (shadowStrength > 0.0 || occlusionStrength > 0.0)) {
+    accumulated *= lightLeft(shadowAt(strongestAt, strongestNormal),
+                             occlusionAt(strongestAt, strongestNormal));
   }
   color = vec4(accumulated + (1.0 - alpha) * background, 1.0);
 #endif
@@ -568,6 +698,11 @@ class VolumeViewer {
     this.cut = 1;
     this.threshold = 0.5;
     this.shading = true;
+    this.lighting = { ...DEFAULT_LIGHTING };  // lighting.js
+    this.edges = 0;             // edge emphasis of the transfer function, 0..1
+    this.materialOpacity = new Array(8).fill(1);  // of material m at m - 1, transfer function
+    this.look = null;           // the look last chosen (lighting.js), for the picker
+    this.renderSize = null;     // {width, height} in pixels while a video is recorded
     this.surfaceColor = [209, 214, 219];
     // Regions of the scan, drawn translucent over it: {key, color [r, g, b], triangles} with the
     // triangles in level-0 voxel coordinates.
@@ -608,14 +743,23 @@ class VolumeViewer {
       cut: this.cut,
       threshold: this.threshold, yaw: this.yaw, pitch: this.pitch, distance: this.distance,
       target: this.target, surfaceColor: this.surfaceColor, poreColor: this.poreColor, zoneColor: this.zoneColor,
-      background: this.background,
+      background: this.background, lighting: this.lighting, edges: this.edges,
+      materialOpacity: this.materialOpacity, look: this.look,
     };
   }
 
   setState(saved) {
     const keys = ['mode', 'shading', 'pores', 'zones', 'materials', 'cut', 'threshold', 'yaw', 'pitch', 'distance',
-      'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background'];
+      'target', 'surfaceColor', 'poreColor', 'zoneColor', 'background', 'edges', 'look'];
     for (const key of keys) if (saved[key] !== undefined) this[key] = saved[key];
+    // Views saved before ADR 0043 have no lighting: the headlight they were seen in.
+    if (saved.lighting !== undefined || saved.key !== undefined) {
+      this.lighting = normalizeLighting(saved.lighting);
+    }
+    if (Array.isArray(saved.materialOpacity)) {
+      this.materialOpacity = Array.from({ length: 8 },
+        (_, m) => Math.min(Math.max(Number(saved.materialOpacity[m] ?? 1), 0), 1));
+    }
     this.requestDraw();
   }
 
@@ -626,21 +770,27 @@ class VolumeViewer {
   }
 
   /// Renders with other settings and returns a small PNG data URL, leaving the view unchanged.
+  /// Drawn at twice the size of the picture only, so a few previews cost little.
   renderPreview(settings, table, width = 240) {
     const saved = this.getState();
     const savedTable = this.transfer;
+    const savedSize = this.renderSize;
+    const height = Math.round(width * this.canvas.clientHeight /
+      Math.max(this.canvas.clientWidth, 1));
     Object.assign(this, settings);
     this.transfer = table;
     this.transferUploaded = false;
+    this.renderSize = { width: 2 * width, height: 2 * height };
     this.draw();
     const scaled = document.createElement('canvas');
     scaled.width = width;
-    scaled.height = Math.round(width * this.canvas.height / Math.max(this.canvas.width, 1));
+    scaled.height = height;
     scaled.getContext('2d').drawImage(this.canvas, 0, 0, scaled.width, scaled.height);
-    this.setState(saved);
+    this.renderSize = savedSize;
     this.transfer = savedTable;
     this.transferUploaded = false;
-    this.draw();
+    // Drawn again on the next frame, once for several previews.
+    this.setState(saved);
     return scaled.toDataURL('image/png');
   }
 
@@ -894,6 +1044,7 @@ class VolumeViewer {
     gl.uniform1f(uniform('minWall'), this.surface.minWall);
     gl.uniform1f(uniform('maxWall'), this.surface.maxWall);
     gl.uniform1f(uniform('alpha'), 1);
+    this.setMeshLighting();
     gl.enable(gl.DEPTH_TEST);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.bindVertexArray(this.meshVao);
@@ -934,6 +1085,7 @@ class VolumeViewer {
     gl.uniform1f(uniform('cut'), 2);
     gl.uniform1i(uniform('valueColors'), 0);
     gl.uniform1f(uniform('alpha'), 0.22);
+    this.setMeshLighting();
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const position = gl.getAttribLocation(this.meshProgram, 'position');
@@ -962,6 +1114,21 @@ class VolumeViewer {
     }
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
+  }
+
+  /// What the lighting of the mesh program reads: the coarse level for shadows and occlusion.
+  setMeshLighting() {
+    const gl = this.gl;
+    const program = this.meshProgram;
+    const uniform = (name) => this.uniform(program, name);
+    gl.uniform1i(uniform('grey'), 0);
+    gl.uniform1i(uniform('transfer'), 2);
+    gl.uniform1i(uniform('visibility'), 5);
+    gl.uniform3fv(uniform('coarseDims'), this.volume.dims);
+    gl.uniform1f(uniform('threshold'), this.threshold);
+    gl.uniform1i(uniform('mode'), Math.max(this.mode, 3));
+    gl.uniform1i(uniform('materials'), 0);
+    this.setLightingUniforms(program);
   }
 
   uniform(program, name) {
@@ -1245,7 +1412,8 @@ class VolumeViewer {
     gl.uniform3fv(uniform('atlasSize'), this.atlas.size);
     // The level a sample needs follows from the pixels of the picture at full resolution, in
     // CSS pixels: one voxel per CSS pixel at most.
-    gl.uniform1f(uniform('pixelSize'), 0.7 / Math.max(this.canvas.clientHeight, 1));
+    gl.uniform1f(uniform('pixelSize'), 0.7 / Math.max(this.renderSize?.height ??
+      this.canvas.clientHeight, 1));
     gl.uniform1f(uniform('voxel0'), Math.min(...box.map((b, k) => 2 * b / extent[k])));
     gl.uniform1f(uniform('firstOpaque'), firstOpaque(this.transfer));
     gl.uniform1f(uniform('seed'), (this.lastFeedback % 1000) / 7);
@@ -1273,6 +1441,30 @@ class VolumeViewer {
     color('background', this.background.colors[0]);
     color('background2', this.background.colors[1]);
     gl.uniform1i(uniform('backgroundStyle'), this.background.style);
+    gl.uniform1f(uniform('edges'), this.mode === 1 ? this.edges : 0);
+    gl.uniform1fv(uniform('materialOpacity'), Float32Array.from({ length: 8 },
+      (_, m) => this.materialOpacity[m] ?? 1));
+    this.setLightingUniforms(program);
+  }
+
+  /// The lighting (lighting.js) of both programs. The maximum intensity projection is not lit.
+  setLightingUniforms(program) {
+    const gl = this.gl;
+    const uniform = (name) => this.uniform(program, name);
+    const l = normalizeLighting(this.lighting);
+    const { key, fill } = lightDirections(l, this.camera());
+    gl.uniform3fv(uniform('lightKey'), key);
+    gl.uniform3fv(uniform('lightFill'), fill);
+    gl.uniform1f(uniform('lightIntensity'), l.intensity);
+    gl.uniform1f(uniform('lightAmbient'), l.ambient);
+    gl.uniform1f(uniform('lightSpecular'), l.specular);
+    gl.uniform1f(uniform('lightShininess'), l.shininess);
+    gl.uniform1f(uniform('lightFillStrength'), l.fill);
+    gl.uniform1f(uniform('lightRim'), l.rim);
+    // Shadows in a translucent view need the lighting of its samples.
+    const lit = this.mode !== 2 && (this.mode !== 1 || this.shading);
+    gl.uniform1f(uniform('shadowStrength'), lit ? l.shadows : 0);
+    gl.uniform1f(uniform('occlusionStrength'), lit ? l.occlusion : 0);
   }
 
   /// The feedback pass at an eighth of the resolution: which bricks the picture wants, then
@@ -1324,10 +1516,11 @@ class VolumeViewer {
     const gl = this.gl;
     const canvas = this.canvas;
     if (!gl || this.lost) return;
-    // While the camera moves, half the resolution keeps the frames coming (review step 6.3).
+    // While the camera moves, half the resolution keeps the frames coming (review step 6.3); a
+    // video has its own size.
     const ratio = (window.devicePixelRatio || 1) * (this.moving ? 0.5 : 1);
-    const width = Math.round(canvas.clientWidth * ratio);
-    const height = Math.round(canvas.clientHeight * ratio);
+    const width = this.renderSize?.width ?? Math.round(canvas.clientWidth * ratio);
+    const height = this.renderSize?.height ?? Math.round(canvas.clientHeight * ratio);
     if (width === 0 || height === 0) return;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;

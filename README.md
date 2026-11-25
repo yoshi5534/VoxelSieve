@@ -639,10 +639,22 @@ The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis
 "Surface" shades the part surface at a threshold dragged in the histogram, "Transfer function"
 composites colour and opacity per grey value, and "Maximum intensity projection" shows the densest value
 along each ray. The transfer function is edited on the histogram: click adds a control point,
-drag moves it, double click removes it; each point has its own colour, colour maps (Steel,
-Viridis, Ember, Copper, Grey) recolour all points, and presets start from typical settings. Pores
-and zones have their own colours, lighting follows the grey gradient, and a cut along x opens the
-part. The background can be a soft light, a gradient or a plain colour. Drag turns the part,
+drag moves it, double click removes it; each point has its own colour, or a colour map colours
+every grey value between two markers dragged on the strip under the histogram. Sixteen maps
+(neutral, perceptual such as Viridis, Inferno and Cividis, material looks such as Gold, Jade and
+Ice, Turbo, a diverging map and an own gradient) can be reversed, and presets start from typical
+settings; "Edges only" leaves surfaces and pore walls and clears the inside. Pores, zones and the
+materials of a segmentation have their own colours (with palettes and, translucent, an opacity
+per material), and a cut along x opens the part. The background can be a soft light, a gradient
+or a plain colour.
+
+The light has presets (headlight, studio, top light, dramatic, back light, flat) or is set by
+hand: direction of the key light, which follows the camera or stays in the scene, fill and rim
+light, ambient light, highlights, soft shadows and ambient occlusion (ADR 0043). "Looks" set
+curve, colours, light and background in one click: studio, clay, glass, gold, X-ray and glow.
+"Record video" makes a video of the view as MP4 (WebM in Firefox) up to 3840 × 2160: a
+turntable, a swing, an orbit, a sweep of the cut into the part, a zoom or a flight through the
+saved views. The browser encodes it; nothing is installed for it. Drag turns the part,
 right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
 camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
 the coarse volume, so the resolution grows where you look.
