@@ -273,7 +273,9 @@ async function main() {
         errors.push(message.text() + (url ? ' (' + url + ')' : ''));
       }
     });
-    page.setDefaultTimeout(60000);
+    // The 3D view draws with software rendering here; on a slow runner one frame with shadows,
+    // or the pictures of the looks, keeps the page from taking a click for over a minute.
+    page.setDefaultTimeout(300000);
     try {
       await walk(page, address, work);
     } catch (error) {
