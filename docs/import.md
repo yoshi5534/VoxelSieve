@@ -23,8 +23,15 @@ the scan does not need to fit in RAM. `--phantom N` sieves a computed N³ phanto
 Raw files from CT systems usually start with a proprietary header. VoxelSieve skips it: given the
 dimensions, everything in the file beyond the voxel data is taken as the header, and the detected
 size is printed. Use `--header <bytes>` when the file also has a footer, `--type uint8` for 8-bit
-data and `--big-endian` for big-endian 16-bit samples. Check the printed header size: wrong
+data and `--big-endian` for big-endian samples. Check the printed header size: wrong
 dimensions that are too small also leave extra bytes and would be misread as a header.
+
+Signed, 32-bit and float samples are read too (`--type int8|int16|uint32|int32|float32|float64`,
+or `format.dtype` in the sidecar, or a name such as `engine_256x256x128_float32.raw`). Signed
+samples are shifted into the unsigned range without loss; 32-bit integers that fit stay as they
+are; wider ones and floats are mapped onto 16-bit grey values over `--value-range`, estimated
+from the samples when not given. The mapping is recorded in the dataset and clipped values are
+counted, as for float TIFF stacks (ADR 0044, ADR 0015).
 
 | Input | Raw size | Dataset | Time | Peak memory |
 |---|---|---|---|---|
@@ -82,6 +89,42 @@ voxel: as many slices as fit into the memory budget (`--memory`) and the free me
 memory, the others go to a temporary raw file in the output directory (elsewhere with
 `--staging-dir`), which is removed at the end;
 `--no-staging` reads the slices directly, which is much slower for large stacks.
+
+## MetaImage, NRRD and PNG stacks
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve part.mhd --out part.vsieve     # MetaImage, also .mha
+./build/release/apps/vs-sieve/vs-sieve part.nrrd --out part.vsieve    # NRRD, also .nhdr
+./build/release/apps/vs-sieve/vs-sieve slices_50um/ --out part.vsieve # PNG slices, also a ZIP
+```
+
+MetaImage and NRRD files describe the volume in a short text header: dimensions, sample type,
+byte order, spacing, position and axis directions, and the data, attached or in other files (one,
+a list, or a numbered pattern), raw or gzip/zlib-compressed (`voxelsieve::readHeaderVolume`,
+ADR 0044). Signed, 32-bit and float samples are kept with a value mapping as for raw files, and
+the object is placed where the header says it lies. Choosing the raw data file of an `.mhd` or
+`.nhdr` opens it through its header. In the GUI this is the operation `import_header_volume`.
+
+A directory or ZIP archive of PNG slices is read like a TIFF stack (`voxelsieve::PngStackSource`):
+sorted by name with numbers by value, the grey values kept in 8 or 16 bit, colour converted to
+grey, label folders skipped. PNG files give no reliable voxel size, so it comes from
+`--voxel-size` or the folder name (`scan_50um`), else 1 mm is assumed and printed. In the GUI this
+is the operation `import_png`.
+
+## HDF5 and NeXus
+
+```sh
+./build/release/apps/vs-sieve/vs-sieve recon.h5 --out recon.vsieve                    # the largest volume
+./build/release/apps/vs-sieve/vs-sieve scan.nxs --dataset /entry/data/data --out scan.vsieve
+```
+
+Volumes in HDF5 files, as synchrotron beamlines and tomography pipelines write them, are read
+with the HDF5 library (`voxelsieve::Hdf5Source`, ADR 0045): any dataset of three dimensions (C
+order, the last is x) of 8-, 16- or 32-bit integers or floats, chunked and deflated or not.
+Without `--dataset` the largest that does not look like labels is read and the others are
+printed. Samples become grey values as for raw files; the voxel size comes from
+`--voxel-size`, an attribute of the dataset (`element_size_um`, `voxel_size`, `pixel_size`,
+`spacing`) or the file name, else 1 mm is assumed. In the GUI this is the operation `import_hdf5`.
 
 ## DICOM stacks
 

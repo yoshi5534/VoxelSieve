@@ -10,6 +10,7 @@
     { "name": "boost-iostreams", "default-features": false, "features": ["zstd"] },
     { "name": "dcmtk", "default-features": false },
     "gtest",
+    { "name": "hdf5", "default-features": false, "features": ["zlib"] },
     { "name": "libpng", "default-features": false },
     { "name": "libzip", "default-features": false },
     "nlohmann-json",

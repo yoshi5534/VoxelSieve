@@ -649,8 +649,9 @@ async function browserLoad(path) {
         }
       });
       item.addEventListener('dblclick', () => {
-        // A directory of TIFF or DICOM slices is chosen by a click and the button; a double click opens it.
-        if (selectable && ['tiff', 'dicom'].includes(entry.kind) && entry.directory) {
+        // A directory of TIFF, PNG or DICOM slices is chosen by a click and the button; a double
+        // click opens it.
+        if (selectable && ['tiff', 'png', 'dicom'].includes(entry.kind) && entry.directory) {
           browserLoad(entry.path);
         } else if (selectable) browserFinish(entry);
       });
@@ -667,7 +668,8 @@ const KIND_ICONS = { dir: 'folder', project: 'open', dataset: 'scan', raw: 'scan
 
 function kindLabel(kind) {
   return { dir: 'Folder', project: 'Project', dataset: 'Dataset', raw: 'Raw data',
-    tiff: 'TIFF', dicom: 'DICOM', gzipped_xml: 'Gzipped XML', mesh: 'CAD model', file: 'File' }[kind] ?? kind;
+    tiff: 'TIFF', png: 'PNG', dicom: 'DICOM', metaimage: 'MetaImage', nrrd: 'NRRD', hdf5: 'HDF5',
+    gzipped_xml: 'Gzipped XML', mesh: 'CAD model', file: 'File' }[kind] ?? kind;
 }
 
 function browserFinish(entry) {
@@ -726,7 +728,8 @@ function setupBrowser() {
 // and the analyses that suit it.
 
 /// Entry kinds the scan browser offers.
-const SCAN_KINDS = ['dataset', 'raw', 'tiff', 'dicom', 'gzipped_xml', 'project', 'mesh', 'file'];
+const SCAN_KINDS = ['dataset', 'raw', 'tiff', 'png', 'dicom', 'metaimage', 'nrrd', 'hdf5',
+  'gzipped_xml', 'project', 'mesh', 'file'];
 
 const FROM_LABELS = {
   sidecar: 'from the sidecar file',
@@ -807,8 +810,12 @@ function scanCheckCard(inspected) {
     : found.voxel_size_mm;
   const pitch = el('input', { type: 'number', min: 0, step: 'any', placeholder: '1',
     value: from.voxel_size === 'assumed' ? '' : (pitchValue ?? '') });
-  const bits = found.sample_type ? (found.sample_type === 'uint8' ? '8 bit' : '16 bit') +
-    (found.sample_type === 'uint16' ? ', ' + found.byte_order + ' endian' : '') +
+  const sampleLabel = { uint8: '8 bit', uint16: '16 bit', int8: '8 bit signed',
+    int16: '16 bit signed', uint32: '32 bit', int32: '32 bit signed', float32: '32 bit float',
+    float64: '64 bit float' };
+  const bits = found.sample_type ? (sampleLabel[found.sample_type] ?? found.sample_type) +
+    (found.byte_order && !found.sample_type.endsWith('8') ? ', ' + found.byte_order + ' endian'
+      : '') +
     (found.header_bytes ? ', header of ' + formatNumber(found.header_bytes) + ' bytes' : '')
     : found.bits ? found.bits + ' bit' + (found.float ? ' float' : '') : null;
   const rows = [
@@ -1018,7 +1025,8 @@ function buildForm(schema, initial = {}, skip = ['inputs'], only = null) {
           type: 'button',
           onclick: async () => {
             const chosen = await browse({ title: LABELS[name] ?? name,
-              kinds: ['file', 'raw', 'mesh', 'tiff', 'dicom', 'gzipped_xml'] });
+              kinds: ['file', 'raw', 'mesh', 'tiff', 'png', 'dicom', 'metaimage', 'nrrd',
+                'hdf5', 'gzipped_xml'] });
             if (chosen) input.value = chosen.path;
           },
         }, '…'));

@@ -108,6 +108,8 @@ bool naturalLess(const std::string& a, const std::string& b) {
   return a.size() - i < b.size() - j;
 }
 
+bool looksLikeLabelFolder(const std::string& folder) { return looksLikeLabels(folder); }
+
 bool containsTiff(const std::filesystem::path& dir, int depth) {
   constexpr int kLookedAt = 64;
   int looked_at = 0;

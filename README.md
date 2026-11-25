@@ -22,7 +22,8 @@ Status: early development. The latest release is
 ## What it does
 
 - **Import** raw volumes (with vendor headers, or none: size and type are read from the name or
-  the grey values), TIFF and DICOM stacks, also in ZIP archives, and DICONDE. Scans of hundreds of
+  the grey values; also signed, 32-bit and float samples), TIFF, PNG and DICOM stacks, also in ZIP
+  archives, MetaImage, NRRD, HDF5/NeXus and DICONDE. Scans of hundreds of
   GB are streamed out of core within a memory budget; an interrupted import resumes.
 - **Porosity** with pores and loosened microstructure, evaluated per inspection zone after
   BDG P 202 or with the porosity key of the drawing after BDG P 203, in an inspection report.
@@ -59,7 +60,7 @@ vs-report scan.vsieve --order examples/inspection_order.json --out scan.report
 | Tool | Does |
 |---|---|
 | `vs-gui` | browser UI: open a scan, analyses beside slice and 3D view with layers, undo; `--mcp` serves it to AI assistants |
-| `vs-sieve` | raw volume, TIFF or DICOM stack → sparse bricked dataset, streamed, out of core |
+| `vs-sieve` | raw, MetaImage, NRRD or HDF5 volume, TIFF, PNG or DICOM stack → sparse bricked dataset, streamed, out of core |
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
 | `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
@@ -80,7 +81,7 @@ Every tool takes `--memory`, `--cache` and `--threads` and explains itself with 
 | Page | Contents |
 |---|---|
 | [Quickstart](docs/quickstart.md) | from download to a report with an AI assistant, on sample data |
-| [Importing scans](docs/import.md) | the bricked dataset, raw, TIFF, DICOM and DICONDE input, the first look, reading datasets from C++ |
+| [Importing scans](docs/import.md) | the bricked dataset, raw, TIFF, MetaImage, NRRD, PNG, HDF5, DICOM and DICONDE input, the first look, reading datasets from C++ |
 | [Analyses](docs/analyses.md) | surface, nominal-actual, wall thickness, porosity, dimensional measurement, battery cells, materials, denoising, beam hardening, fibres, regions |
 | [Inspection report](docs/report.md) | orders, acceptance limits after BDG P 202 and P 203, templates |
 | [Browser UI](docs/gui.md) | opening a scan, the workspace and its layers, slice and 3D view, objects and alignment |

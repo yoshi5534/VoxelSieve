@@ -86,6 +86,10 @@ class TiffStackSource final : public VolumeSource {
 /// bounded number of entries, so that browsing stays fast on huge directories.
 [[nodiscard]] bool containsTiff(const std::filesystem::path& dir, int depth = 1);
 
+/// Whether a folder name looks like a label or mask volume rather than grey values (label, mask,
+/// target, seg, gt, annotation).
+[[nodiscard]] bool looksLikeLabelFolder(const std::string& folder);
+
 /// Natural order of names: digit runs compare by value.
 [[nodiscard]] bool naturalLess(const std::string& a, const std::string& b);
 

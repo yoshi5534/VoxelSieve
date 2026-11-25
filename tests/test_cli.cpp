@@ -214,7 +214,8 @@ TEST(CliTest, EveryImportTakesTheSieveParameters) {
   OperationRegistry registry;
   registerBuiltinOperations(registry);
   const nlohmann::json parameters = sieveParameters();
-  for (const char* id : {"import_raw", "import_tiff", "import_dicom", "import_gzipped_xml"}) {
+  for (const char* id : {"import_raw", "import_tiff", "import_dicom", "import_gzipped_xml",
+                         "import_header_volume", "import_png", "import_hdf5"}) {
     const nlohmann::json& properties = registry.find(id)->info().parameters.at("properties");
     for (const auto& [name, parameter] : parameters.items()) {
       EXPECT_EQ(properties.at(name), parameter) << id << " " << name;
