@@ -12,34 +12,83 @@ On top of it, it finds pores and loosened microstructure and writes an inspectio
 | ![Section through the axis of a cast bell housing, enlarged: a zone of loosened microstructure and a shrinkage cavity in the engine flange](docs/images/ct-slice.png) | ![Bell housing projected along its axis in grey, pores in red and loosened zones in yellow](docs/images/porosity-projection.png) | ![Evaluation table of the inspection report with three inspection zones](docs/images/report-evaluation.png) |
 | Section through a synthetic scan of a bell housing: a loosened zone and a shrinkage cavity in the engine flange | `vs-porosity`: pores in red, loosened zones in yellow | `vs-report`: evaluation per inspection zone (BDG P 202 and P 203 schemes) |
 
-All images of the porosity analysis come from one synthetic scan of the sample bell housing,
-765 × 765 × 380 voxels of 0.1 mm (445 MB), with the shrinkage cavities and loosened zones where a
-casting solidifies last: `vs-synth --part bellhousing --voxel-size 0.1 --hot-spots --lunker 12
---lunker-radius 0.9 --lunker-spread 0.6 --loosening 3 --loosening-radius 1.5 --noise 500
---cupping 0.08 --blur 0.07 --seed 12`. Every lunker volume is found within 2 % of the ground
-truth (the smallest, 0.06 mm³, within 4 %), the zones deep in the flanges within 2 % and those
-just below the surface within 10 %, and the part volume within 0.02 %.
+The images come from a synthetic scan of a cast bell housing whose defects are known, so every
+result is checked against the ground truth ([how it is made](docs/synthetic.md#the-bell-housing-of-the-readme)).
 
-Status: early development, latest release 0.7.0 (see [CHANGELOG.md](CHANGELOG.md)). New here?
-The [quickstart](docs/quickstart.md) takes you from download to a porosity report with an AI
-assistant, using sample data. The tools:
+Status: early development. The latest release is
+[0.7.0](https://github.com/yoshi5534/VoxelSieve/releases/latest); what has changed since is under
+"Unreleased" in the [changelog](CHANGELOG.md). Website: https://yoshi5534.github.io/VoxelSieve/
+
+## What it does
+
+- **Import** raw volumes (with vendor headers, or none: size and type are read from the name or
+  the grey values), TIFF and DICOM stacks, also in ZIP archives, and DICONDE. Scans of hundreds of
+  GB are streamed out of core within a memory budget; an interrupted import resumes.
+- **Porosity** with pores and loosened microstructure, evaluated per inspection zone after
+  BDG P 202 or with the porosity key of the drawing after BDG P 203, in an inspection report.
+- **Geometry**: nominal-actual comparison with the CAD model (also non-rigid), wall thickness,
+  dimensional measurement with datums and tolerances, and first article reports.
+- **More**: material segmentation (by grey value or a learned model), denoising, beam hardening
+  correction, fibre orientation of composites, battery cell inspection, regions of a scan.
+- **Browser UI**: open a scan in one step, a workspace with layers for slice and 3D view, colour
+  maps, lighting, looks and video export, undo and redo for every step.
+- **AI assistants**: an MCP server, so an assistant such as Claude runs the analyses on your
+  computer; a [Claude Code plugin](https://github.com/yoshi5534/voxelsieve-plugin) adds skills
+  for the common inspections.
+- **Python**: numpy access to datasets of any size and every operation (`import voxelsieve`).
+
+![The analysis workspace of the browser UI: layers, the 3D view with the pores of a cast housing and the porosity result](docs/images/workspace.png)
+
+## Get started
+
+Download a package from the [latest release](https://github.com/yoshi5534/VoxelSieve/releases/latest):
+an MCP bundle (`.mcpb`) for Claude Desktop, or an archive with all tools for Linux (x64), Windows
+(x64) and macOS (Apple silicon). The Docker image is `ghcr.io/yoshi5534/voxelsieve`, and Python
+wheels are attached to the release. The [quickstart](docs/quickstart.md) takes you from download
+to a porosity report and a CAD comparison on sample data in about ten minutes.
+
+```sh
+vs-gui                                    # browser UI at http://localhost:8410
+vs-gui --mcp ~/scans                      # MCP server for an AI assistant, data in ~/scans
+vs-sieve scan.raw --out scan.vsieve       # import on the command line
+vs-report scan.vsieve --order examples/inspection_order.json --out scan.report
+```
+
+## Tools
 
 | Tool | Does |
 |---|---|
-| `vs-sieve` | raw volume (with vendor header) or TIFF stack → sparse bricked dataset, streamed, out of core |
+| `vs-gui` | browser UI: open a scan, analyses beside slice and 3D view with layers, undo; `--mcp` serves it to AI assistants |
+| `vs-sieve` | raw volume, TIFF or DICOM stack → sparse bricked dataset, streamed, out of core |
 | `vs-porosity` | pores and loosened zones → JSON, projection images, VDB for Blender or Houdini |
-| `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
-| `vs-segment` | dataset → material classes by grey value or a learned model (`--model`), scored against labels |
-| `vs-denoise` | dataset → denoised dataset (non-local means or a learned model); `--benchmark` compares them |
-| `vs-beam-hardening` | dataset → dataset without cupping and streaks from beam hardening; `--measure` the cupping |
-| `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
-| `vs-thickness` | dataset → wall thickness at every surface point (ray or sphere), thin and thick regions, coloured PLY; `--volume-map` the thickness of every material voxel |
-| `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series; `--info` shows one |
 | `vs-report` | porosity analysis + acceptance limits → inspection report (HTML, print to PDF) |
+| `vs-surface` | dataset → surface as a compact distance mask, mesh or VDB level set |
+| `vs-compare` | surface + CAD model (STL) → aligned nominal-actual deviation, statistics, coloured PLY |
+| `vs-thickness` | dataset → wall thickness on the surface (ray or sphere) and inside the part, thin and thick regions |
+| `vs-segment` | dataset → material classes by grey value or a learned model, scored against labels |
+| `vs-denoise` | dataset → denoised dataset (non-local means or a learned model) |
+| `vs-beam-hardening` | dataset → dataset without cupping and streaks from beam hardening |
 | `vs-battery` | battery cell → housing, electrode layers, anode overhang, particles, voids, report |
-| `vs-gui` | browser UI: open a scan, analyses beside slice and 3D view with layers, undo; `--mcp` serves it to AI systems |
+| `vs-diconde` | dataset + pores + materials + inspection order → DICONDE series |
 | `vs-synth` | STL mesh → synthetic CT scan with defects, noise and artefacts, plus ground truth |
 | `vs-phantom` | simple box phantom with analytic ground truth |
+
+Every tool takes `--memory`, `--cache` and `--threads` and explains itself with `--help`.
+
+## Documentation
+
+| Page | Contents |
+|---|---|
+| [Quickstart](docs/quickstart.md) | from download to a report with an AI assistant, on sample data |
+| [Importing scans](docs/import.md) | the bricked dataset, raw, TIFF, DICOM and DICONDE input, the first look, reading datasets from C++ |
+| [Analyses](docs/analyses.md) | surface, nominal-actual, wall thickness, porosity, dimensional measurement, battery cells, materials, denoising, beam hardening, fibres, regions |
+| [Inspection report](docs/report.md) | orders, acceptance limits after BDG P 202 and P 203, templates |
+| [Browser UI](docs/gui.md) | opening a scan, the workspace and its layers, slice and 3D view, objects and alignment |
+| [AI assistants over MCP](docs/mcp.md) | packages, registering the server, tools, resources and prompts |
+| [Python](docs/python.md) | the `voxelsieve` package |
+| [Projects, operations and plugins](docs/library.md) | the C++ library, projects with undo, writing a plugin |
+| [Synthetic scans](docs/synthetic.md) | test scans with defects and ground truth |
+| [Architecture decisions](docs/adr) | why things are the way they are |
 
 ## Build
 
@@ -52,746 +101,15 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 ./build/release/apps/vs-phantom/vs-phantom --out phantom --dims 256
 ```
 
-This writes `phantom.raw` (uint16, little endian, x fastest) and `phantom.json` with the format
-description and the analytic ground truth (pores, wall thickness, material volume).
-
 The first configure builds OpenVDB, Boost and TBB from source, which takes a while; vcpkg keeps
-the result in its binary cache for later builds. A build directory configured before the switch to
-vcpkg does not pick up its toolchain; configure it again with `--fresh`
-(`cmake --preset release --fresh`).
+the result in its binary cache for later builds. A build directory configured before the switch
+to vcpkg needs `cmake --preset release --fresh`.
 
 On Windows (x64, the MSVC 2022 build tools with the C++ workload, from a Developer PowerShell
 with Git Bash on the PATH) and macOS (Apple silicon, Xcode command line tools plus
 `brew install ninja autoconf autoconf-archive automake libtool pkg-config`), use the preset
 `windows` or `macos` instead of `release`. On Windows the programs land in `build/windows/bin`.
-
-## Sieve a volume
-
-VoxelSieve writes either a bricked dataset (any size, streamed) or a single `.vdb` grid (small
-volumes, in memory).
-
-### Bricked dataset for large scans
-
-```sh
-./build/release/apps/vs-sieve/vs-sieve scan.raw --out scan.vsieve
-```
-
-`scan.vsieve/` holds `index.json`, `overview.vdb` (the whole volume in one grid of at most 256³
-voxels) and `level0/`, `level1/`, … with one VDB file per 256³ brick. Bricks that contain only
-outside air are not written. The input is memory-mapped and processed in two streaming passes, so
-the scan does not need to fit in RAM. `--phantom N` sieves a computed N³ phantom instead of a file.
-
-Raw files from CT systems usually start with a proprietary header. VoxelSieve skips it: given the
-dimensions, everything in the file beyond the voxel data is taken as the header, and the detected
-size is printed. Use `--header <bytes>` when the file also has a footer, `--type uint8` for 8-bit
-data and `--big-endian` for big-endian 16-bit samples. Check the printed header size: wrong
-dimensions that are too small also leave extra bytes and would be misread as a header.
-
-| Input | Raw size | Dataset | Time | Peak memory |
-|---|---|---|---|---|
-| 1024³ raw file (mmap) | 2 GB | 776 MB | 6.1 s | 2.5 GB, of which ~2 GB reclaimable mapped input pages |
-| 1024³ computed phantom | (2 GB) | 776 MB | 35.5 s | 0.46 GB |
-| 2048³ computed phantom | (16 GB) | 5.8 GB | 345 s | 0.87 GB |
-
-The computed phantom is slower because every voxel is evaluated twice; its memory figure shows the
-sieve's own footprint without mapped input pages.
-
-Programs read a dataset through `voxelsieve::Dataset`, which loads bricks on demand into an LRU
-cache with a memory budget:
-
-```cpp
-const auto dataset = voxelsieve::Dataset::open("scan.vsieve", /*cache_bytes=*/4ULL << 30U);
-std::optional<float> value = dataset.sample(0, {512, 400, 300});  // nullopt for removed air
-std::vector<float> slab(512 * 512 * 16);
-dataset.readRegion(0, {{0, 0, 300}, {512, 512, 316}}, slab);      // across brick boundaries
-dataset.forEachGrid(1, [](const auto& brick, const auto& grid) { /* parallel, uint16/uint8/float */ });
-```
-
-### TIFF stacks
-
-```sh
-./build/release/apps/vs-sieve/vs-sieve slices/ --out scan.vsieve --voxel-size 0.05
-./build/release/apps/vs-sieve/vs-sieve scan.zip --out scan.vsieve        # read without extracting
-./build/release/apps/vs-sieve/vs-sieve scan.zip --folder target --threshold 0.5 --out labels.vsieve
-./build/release/apps/vs-sieve/vs-sieve recon.zip --value-range -0.05,0.3 --out scan.vsieve  # float
-./build/release/apps/vs-sieve/vs-sieve pipe.zip --air-from xy --out pipe.vsieve  # cut at both ends
-```
-
-A directory of slices, a multi-page TIFF or a ZIP archive of either is read directly
-(`voxelsieve::TiffStackSource`, ADR 0011). Slices are sorted by name with numbers by value
-(`slice2` before `slice10`). Supported are classic TIFF and BigTIFF, strips and tiles,
-uncompressed, LZW, Deflate and PackBits, with or without horizontal predictor, and unsigned 8 or 16
-bit samples; 32-bit samples are accepted as long as they fit into 16 bits (label volumes). Float
-slices (32 or 64 bit, also with the floating-point predictor) are mapped linearly onto grey values
-0 to 65535 over a value range, given with `--value-range` or estimated from 33 slices; the
-mapping is printed and recorded in the dataset's `index.json` (`value = offset + scale * grey`),
-and values outside the range are clipped and counted (ADR 0015). Colour and signed images are
-refused. When the first and last slice cut through the part (a pipe, a drill core), `--air-from
-xy` lets outside air in only from the sides, so the inside of the part is kept (ADR 0003). When
-the input holds several folders of slices, the grey values are taken, not a folder named like labels or masks (`label*`, `mask*`,
-`seg*`, `gt`, `target`); the others are printed and can be chosen with `--folder`. The voxel size
-comes from an OME-XML image description (`PhysicalSizeX`, `Y`, `Z`), a centimetre resolution, an
-inch resolution that is not a printing default such as 72 or 300 dpi, or a key=value image
-description (including its slice `spacing`), otherwise 1 mm is assumed and printed; set it with
-`--voxel-size`. In the GUI this is the operation `import_tiff`.
-For a dataset, the slices are first decoded once, on all cores, into a copy of 2 bytes per
-voxel: as many slices as fit into the memory budget (`--memory`) and the free memory stay in
-memory, the others go to a temporary raw file in the output directory (elsewhere with
-`--staging-dir`), which is removed at the end;
-`--no-staging` reads the slices directly, which is much slower for large stacks.
-
-### DICOM stacks
-
-```sh
-./build/release/apps/vs-sieve/vs-sieve dicom/ --out scan.vsieve          # a directory of slices
-./build/release/apps/vs-sieve/vs-sieve dicom.zip --out scan.vsieve       # the same in a ZIP archive
-```
-
-A directory of DICOM slices, or a ZIP archive of them (read without extracting it, each entry
-checked against its CRC), is read with DCMTK (`voxelsieve::DicomStackSource`, ADR 0019):
-uncompressed or RLE, with or without preamble, sorted along the slice normal by their position.
-Voxel size and pose come from the files. Signed samples are shifted by 32768 and, with the
-rescale slope and intercept, recorded as the value mapping, so no value is lost. When a directory
-holds several series, the largest is read and the others are printed. In the GUI this is the
-operation `import_dicom`. When the slices are thinner than their spacing, or much farther apart
-than the pixels, the import summary warns (`warnings`), and `interpolate_slices` (all imports)
-fills the gaps with slices interpolated between the measured ones.
-
-### DICONDE
-
-```sh
-./build/release/apps/vs-diconde/vs-diconde scan.vsieve --porosity scan.porosity \
-  --materials scan.materials --order examples/inspection_order.json --out scan.diconde
-./build/release/apps/vs-diconde/vs-diconde --info scan.diconde/volume
-```
-
-DICONDE (ASTM E2339) is DICOM for nondestructive evaluation (ADR 0024). VoxelSieve writes a
-dataset as a series of CT images, one file per slice, with the exact grey values, the voxel size
-and the position of the object; removed outside air gets the air level. The inspection order
-becomes the component (part, serial number, drawing, material), the inspection (laboratory,
-customer, report and order number, inspector, the evaluation against the acceptance limits) and
-the scan settings. Pores and loosened zones become indications with their position, volume and
-size, and a material segmentation a second, derived series of labels in the same coordinates.
-DICONDE files are read like other DICOM slices (`vs-sieve`, `import_dicom`), and the import
-reports their component and indications. In the GUI this is the operation `export_diconde`.
-
-### First look while importing, also from a network share
-
-```sh
-./build/release/apps/vs-sieve/vs-sieve /mnt/ct-share/part.zip --out part.vsieve --preview first.png
-```
-
-Before the passes, the import reads 64 whole slices spread evenly over the volume and shows them
-at once: the central sections normal to z, y and x, averaged in-plane to at most 1024 voxels per
-edge and 32 million voxels in all, and the histogram of those slices with the estimated threshold
-(ADR 0020). While a staged import copies the rest, the preview gets sharper: it reads the other
-preview slices coarse to fine, three times as many in each round, and shows a new preview after
-every round, the last with the histogram of the whole volume. Slices are what every
-input stores together (a file of a stack, a contiguous part of a raw file), so this is one
-request per slice, also over SMB. The import goes on without reading them again: stacks and
-files on a network share are copied once, slice by slice, to a local staging file, and the
-preview's slices are copied first. Local raw files are read directly and get only the first
-look; their import is limited by the passes, not by reading. Raw files on SMB or NFS shares and mapped network drives are
-detected and staged too, instead of being read twice in small pieces. In the GUI the preview
-appears in the progress bar of every import and stays with the step (`preview.png`); AI
-assistants get it with `import_preview`.
-
-gzip-compressed raw files (`scan.raw.gz` next to `scan.json`) are read too, with `vs-sieve`,
-`import_raw` and the GUI's file browser. gzip can only be read forward, so such a file is
-decompressed once, in slice order, into the staging file; its preview comes at the end of that
-pass. Give `--header` when the uncompressed data has a header.
-
-### Single grid
-
-```sh
-./build/release/apps/vs-sieve/vs-sieve phantom.raw --out phantom.vdb
-```
-
-Dimensions and voxel size are read from `phantom.json`, or given with `--dims X Y Z` and
-`--voxel-size MM`. Voxels need not be cubes (ADR 0012): `--voxel-size 0.33,0.33,0.6` gives the
-edge along x, y and z, and `--slice-thickness 0.4` records slices thinner than their spacing
-(a gap between slices). All measurements, VDB transforms, images and viewers use the pitch per
-axis. The air/material threshold is estimated from the histogram unless `--threshold` is set:
-the valley between the air peak and the next material, so light materials in a scan of several
-count as material (Otsu's split when there is only one); `--margin` controls how many voxels of air stay around the part. `--dense` writes every
-voxel without sieving, as a baseline. Grey values keep the input's 16 or 8 bits (ADR 0021); with
-`--value-type float` the `.vdb` and every brick of a dataset open directly in Blender or Houdini,
-which read only OpenVDB's standard grid types.
-
-Phantom benchmark (hollow box with pores filling about a quarter of the volume, noise σ = 500,
-4 cores):
-
-| Volume | Raw | Dense VDB | Sieved VDB | Active voxels | Sieve time |
-|---|---|---|---|---|---|
-| 256³ | 32 MB | 43.6 MB | 11.8 MB | 27 % | 0.03 s |
-| 512³ | 256 MB | 348.9 MB | 85.9 MB | 26 % | 0.23 s |
-
-The table was measured with grey values stored as 32-bit float (ADR 0002), which is why the dense
-baseline is larger than the raw file. Since ADR 0021 grids keep the input's 16 bits: a dense VDB
-of the 256³ phantom takes 115 % of the raw file instead of 140 %.
-
-Design decisions are recorded in [docs/adr](docs/adr).
-
-## Synthetic scans from STL
-
-`vs-synth` turns a closed STL mesh (in mm) into a raw CT volume with artificial defects, noise and
-artefacts, plus a JSON sidecar with the ground truth. It is the test bed for defect analyses.
-
-```sh
-./build/release/apps/vs-synth/vs-synth part.stl --out part --voxel-size 0.05 \
-    --lunker 5 --loosening 2 --noise 500 --cupping 0.1 --rings 8
-./build/release/apps/vs-sieve/vs-sieve part.raw --out part.vsieve
-```
-
-- `--lunker N`: shrinkage cavities, irregular unions of overlapping spheres.
-- `--loosening N`: zones of loosened microstructure (Gefügeauflockerung), many small pores near or
-  below the voxel size up to `--loosening-porosity` (default 5 %).
-- `--noise`, `--cupping` (beam hardening), `--rings` (ring artefacts around the z axis).
-- `--blur MM`: unsharpness of the imaging chain, a Gaussian point spread function with this sigma.
-- `--hot-spots` places lunkers and loosened zones in the thickest sections, where a casting
-  solidifies last, instead of anywhere with room; `--lunker-spread F` varies the lunker sizes down
-  to (1 - F) times `--lunker-radius`.
-- `--box X Y Z` uses a box instead of an STL file; `--part housing|bracket|hub|bellhousing` uses a
-  sample casting with walls, ribs, bosses, bores and fillets (`--scale`, `--stl` writes its mesh).
-
-![Sample parts: gearbox housing, angle bracket, wheel hub and bell housing](docs/images/sample-parts.png)
-
-`part.json` lists every defect with its position, size and void volume, and the total porosity.
-The grey values carry the void volume exactly, even for pores much smaller than a voxel (see
-`docs/adr/0005-synthetic-scans-from-meshes.md`). The scan is computed on demand and streamed to
-disk: 1040 × 840 × 640 voxels (1.1 GB) with 15 defects take 41 s on 4 cores.
-
-## Surface
-
-`vs-surface` locates the surface of the part (ISO 50 % by default) and stores it as a voxel mask
-with 4 bits per voxel that encode the signed distance to the surface in steps of 1/7 voxel within
-±1 voxel; everything farther is just "material" or "air". Only 8³ blocks that touch the surface
-are stored, zstd-compressed per brick, so the file grows with the surface area, not with the scan:
-
-```sh
-./build/release/apps/vs-synth/vs-synth --part housing --voxel-size 0.1 --blur 0.05 --out housing
-./build/release/apps/vs-sieve/vs-sieve housing.raw --out housing.vsieve
-./build/release/apps/vs-surface/vs-surface housing.vsieve --out housing.vss --stl housing.stl
-```
-
-The housing above (520 × 400 × 220 voxels) gives a 156 kB file, 588 : 1 against the 16-bit raw
-volume, and its triangulated surface lies 0.033 voxels (RMS) from the analytic surface.
-`voxelsieve::SurfaceMask` reads codes and distances of single voxels or regions, and converts to a
-VDB level set or a mesh; `--vdb` exports the level set for Blender or Houdini. The GUI runs it
-as the operation "Surface" and shows the middle slices of the mask. Format and measurements:
-`docs/adr/0009-surface-distance-mask.md`.
-
-![Surface operation in the GUI](docs/images/surface-operation.png)
-
-## Nominal-actual comparison
-
-`vs-compare` compares the surface of a scan with the CAD model of the part (STL in mm). It aligns
-the CAD model to the scan and measures the signed deviation of every surface point: positive where
-the part has more material than nominal, negative where material is missing.
-
-```sh
-./build/release/apps/vs-compare/vs-compare housing.vss housing-cad.stl --out housing.compare \
-    --tolerance 0.1
-```
-
-- **Alignment:** by default the principal axes of both surfaces give the coarse alignment, and a
-  robust best fit (point-to-plane ICP) refines it. The CAD model may lie anywhere and in any
-  orientation. `--align refine` starts the best fit from `--initial`, and `--align none` uses
-  `--initial` as it is, for example when the CAD model is already in scan coordinates.
-- **Outputs:**
-  - `compare.json`: the transform, the fit, the mean, RMS, extremes and percentiles, the area in
-    and out of tolerance, and a histogram.
-  - `deviation.ply`: the scanned surface with the deviation and a colour per vertex.
-  - `deviation_view_1.png`, `deviation_view_2.png`: shaded views from above and from below.
-  - `cad_aligned.stl` with `--aligned-stl`: the CAD model moved into scan coordinates.
-- **Internal voids:** surfaces of closed internal voids (pores) are left out by default; they
-  belong to the porosity analysis.
-- **Flexible parts:** `--non-rigid` bends the scanned surface onto the CAD model after the rigid
-  alignment, for parts that do not keep their nominal shape in the scanner (thin sheet metal,
-  plastic, rubber). The bending is elastic and smooth: thin sections bend easily, thick ones and
-  the size of the part hardly, and nothing shorter than the control point spacing
-  (`--non-rigid-spacing`) is bent away, so dents, bumps and wrong wall thicknesses stay
-  deviations. The deviation is then measured on the bent surface; `deviation.ply` and
-  `displacement_view_[12].png` show how far every point was moved, and `compare.json` keeps the
-  figures of the rigid alignment alone for comparison
-  (`docs/adr/0022-non-rigid-registration.md`).
-
-On synthetic castings the fit finds the pose of the CAD model to 0.15 voxels, and it measures a
-0.4 mm dent to 0.02 mm. The GUI runs the comparison as the operation "Nominal-actual comparison"
-and shows the coloured surface in the 3D view as "Nominal-actual deviation". Method and decisions:
-`docs/adr/0010-nominal-actual-comparison.md`.
-
-![Deviation of a warped housing with a dent from its CAD model](docs/images/nominal-actual.png)
-
-## Wall thickness
-
-`vs-thickness` measures how thick the wall is at every point of the part's surface, without a
-CAD model, and finds the regions thinner or thicker than the drawing allows:
-
-```sh
-./build/release/apps/vs-thickness/vs-thickness housing.vsieve --out housing.thickness \
-    --min-wall 2.5 --max-wall 8
-```
-
-- **Methods:** `--method ray` (default) follows the inward normal through the grey values to the
-  opposite face of the wall, to a fraction of a voxel, as a calliper would. A ray that leaves the
-  wall through an edge or along a rib, where the face it reaches does not lie within the search
-  angle (`--search-angle`, default 30°), leaves the point unmeasured rather than reporting a length
-  that is not a wall. `--method sphere` takes the diameter of the largest sphere inside the
-  material that touches the point: defined everywhere, also at ribs and in corners, but small at
-  convex edges by definition.
-- **Pores** thin the wall they lie in: their surfaces limit the rays and spheres, but only the
-  outer skin gets values (`--all-surfaces` measures the pore surfaces too).
-- **Outputs:**
-  - `wall_thickness.json`: area-weighted statistics (minimum, mean, percentiles, histogram), the
-    share of the surface measured, and the thin and thick regions with area, extreme value and
-    location.
-  - `thickness.ply`: the surface in mm with the thickness and a colour per vertex.
-  - `thickness_view_1.png`, `thickness_view_2.png`: views from above and from below, red for
-    thin over yellow and green to blue for thick walls, magenta below the minimum, violet above
-    the maximum and grey where no wall up to `--max-thickness` was found.
-- **Large scans:** only the surface mesh is held in memory (`--max-triangles`); the grey values
-  are read along the rays through the brick cache.
-- **Against the CAD model:** `--nominal part.compare` (the output of `vs-compare`) also measures
-  the nominal thickness of the aligned CAD model at every point, by the same method, and the
-  deviation of the actual thickness from it: walls that came out thinner or thicker than designed,
-  such as both walls around a shifted core. `thickness.ply` gets `nominal` and `deviation` per
-  vertex, `thickness_deviation_view_[12].png` show it.
-- **Inside the part:** `--volume-map` also writes the local thickness of every material voxel
-  (the largest sphere inside the material that contains it) as the dataset `thickness_map/`,
-  with statistics, regions beyond the limits and slices through the thickest spot. It finds
-  material accumulations such as hot spots where a wall meets a flange, which the surface does
-  not show. Material thicker than `--map-max-thickness` (default: the smallest extent of the
-  part, at most 64 voxels) gets that value. Convex edges count to the wall they bound.
-
-The GUI runs it as the operation "Wall thickness" and shows the coloured surface in the 3D view
-as "Wall thickness" (after a nominal-actual comparison also against the nominal thickness) and
-the thickness map as an overlay of the slice view; the report adds a wall thickness section (see
-below). Method and decisions:
-`docs/adr/0030-wall-thickness.md`.
-
-![Wall thickness of a cast housing, walls below 2.5 mm in magenta](docs/images/wall-thickness.png)
-
-## Porosity analysis
-
-`vs-porosity` finds internal pores and zones of loosened microstructure in a sieved dataset:
-
-```sh
-./build/release/apps/vs-porosity/vs-porosity part.vsieve --out part.porosity
-```
-
-- `porosity.json`: part volume, porosity, and every pore and zone with centre, bounds and void
-  volume.
-- `projection_x.png`, `projection_y.png`, `projection_z.png`: the part as a grey thickness image,
-  pores in red, zones in yellow.
-- `porosity.vdb`: grids `pores` and `zones` in the dataset's world space, to view next to the part
-  in Blender or Houdini.
-
-Pore volumes come from the grey values, so partially filled edge voxels count with their fraction.
-Zones are 8³ blocks whose grey value lies clearly below the material level at the same depth below
-the surface, so cupping from beam hardening is not reported as porosity (see
-`docs/adr/0006-porosity-analysis.md`). On an 830 MB synthetic scan (1025 × 775 × 525 voxels,
-6 lunkers, 3 loosened zones, noise and 10 % cupping) every lunker is within 2 % of its true volume,
-every zone within 2 %, and the total porosity within 1 %; the analysis takes about 30 s on 4
-cores. Voxels within 3 voxels of the outside air are left out of the zone detection, so oblique
-faces, fillets and bores, whose partial-volume edge cuts through the blocks, are not taken for
-loosened material.
-`PorosityOptions` and the `--min-pore`, `--zone-sigma` and `--zone-min` options set the detection
-limits.
-
-## Inspection report
-
-`vs-report` runs the porosity analysis, evaluates it against the acceptance limits of an
-inspection order and writes a test report as one self-contained HTML file (print to PDF from the
-browser):
-
-```sh
-./build/release/apps/vs-report/vs-report part.vsieve --order examples/inspection_order.json \
-    --out part.report
-```
-
-The report is structured after the report contents of ISO/IEC 17025 (7.8) and the CT test
-report of ISO 15708-3: order, part, method, scan settings, analysis parameters and
-detection limits, results with projection images and pore list, evaluation and approval. The
-inspection order (`examples/inspection_order.json`) supplies what the scan cannot know, such as
-the customer, the part number or the tube voltage; missing mandatory fields are marked
-"not given" in the report and printed as warnings.
-
-Acceptance follows the schemes of BDG P 202 and BDG P 203: per inspection zone optional limits on
-the largest pore extent, the number of pores above a size, the porosity, and whether loosened
-microstructure is allowed (P 202), and on the porosity of the whole part (PG), of the zone (PROI)
-and of a reference volume placed where the porosity is highest (PV), on pore volume, enclosing and
-equivalent diameter, sphericity, compactness, the gap between pores and the distance to the
-surface, with pores to disregard (P 203). A zone takes the porosity key as written on the drawing
-(`"porosity_key": "BDG P203 - PV7/ Øp3/ UØp0,3"`) or the same limits as fields. The limits
-come from the drawing or the customer.
-
-The sections of an order that hold limits (`acceptance`, `wall_thickness`, `fibres`, `battery`)
-take only the keys that are evaluated: a misspelt limit such as `max_pore_size` is an error that
-names `max_pore_size_mm`, not a limit that is silently left out, and so is a zone without any
-limit. The other sections describe the inspection for the report and may hold anything a template
-shows. `docs/schema/inspection_order.schema.json` lists every key with its meaning and
-`docs/schema/inspection_plan.schema.json` those of the plan of a dimensional measurement; an
-editor that knows JSON Schema completes and checks the files with them.
-
-A zone is the whole part or a region: the union of boxes, spheres, cylinders and closed meshes
-(STL), minus excluded ones. In the GUI a region can name a mesh object of the project, such as a
-region drawn on the CAD model, and follows its pose; `inspection_regions` shows the regions as
-objects in the views. `examples/inspection_order_p203.json` uses all of it (ADR 0032):
-
-```json
-{ "name": "Zone A (sealing face, machined)",
-  "porosity_key": "BDG P203 - Z3/ Øp0,5/ da0,3/ UØp0,2",
-  "region": { "include": [{ "box_mm": [[0, 0, 4], [8, 7, 6]] }],
-              "exclude": [{ "cylinder": { "from_mm": [4, 3.5, 3], "to_mm": [4, 3.5, 6],
-                                          "radius_mm": 0.8 } }] } }
-```
-
-With `--surface part.vss` (from `vs-surface`) the report shows the part and its pores in 3D: the
-part as glass with pores in red and loosened zones in amber, true to scale. With
-`--comparison part.compare` (from `vs-compare`) it adds the nominal-actual comparison: the key
-figures, the coloured deviation from above and from below, and the histogram of the deviation.
-With `--wall-thickness part.thickness` (from `vs-thickness`) it adds the wall thickness:
-statistics, coloured views, histogram and the thin and thick regions. A `wall_thickness` section
-in the order sets the limits, and `max_area_below_min_mm2` tolerates small thin spots such as
-sharp edges instead of judging the single thinnest point. When the analysis wrote a thickness
-map (`--volume-map`), the report shows it too, and `max_mm` also judges the thickest spot inside
-the part. With a CAD model (`--nominal`), `nominal_tolerance_mm` judges the deviation from the
-nominal thickness, and `max_area_outside_nominal_mm2` tolerates small areas beyond it:
-
-```json
-"wall_thickness": { "min_mm": 2.5, "max_mm": 8.0, "max_area_below_min_mm2": 5.0,
-                    "nominal_tolerance_mm": 0.4, "max_area_outside_nominal_mm2": 5.0 }
-```
-
-In the GUI, the report step takes the latest surface, comparison and wall thickness of the
-project when there are any. The views are rendered on the CPU (`voxelsieve/render.hpp`), so no GPU is needed.
-
-For fibre composites and other parts of several materials, the report step in the GUI also takes
-the material segmentation (materials with grey values, volume and share, slices coloured by
-material) and the fibre orientation (fibre families with direction, share and spread, slices
-coloured by direction). A `fibres` section in the order sets requirements per fibre family, each
-compared with the measured family closest to its nominal direction:
-
-```json
-"fibres": { "families": [
-  { "name": "Warp", "direction": [0, 0, 1], "tolerance_deg": 5,
-    "min_share_percent": 40, "max_share_percent": 60 } ] }
-```
-
-![3D views of the part and of its pores in the inspection report](docs/images/report-part-views.png)
-
-![Nominal-actual comparison in the inspection report: key figures, coloured views and histogram](docs/images/report-comparison.png)
-
-The layout is a template: `vs-report --print-template > my_template.html` prints the built-in one,
-`--template my_template.html` uses your own. Templates use a Mustache subset (`{{name}}`,
-`{{#list}}...{{/list}}`, `{{^name}}...{{/name}}`); `report.json` in the output shows all available
-data. See `docs/adr/0007-inspection-report.md`.
-
-## Dimensional measurement and first article report
-
-The operation `measure_dimensions` measures the characteristics of a drawing on the scanned
-surface, with the CAD model placed by a nominal-actual comparison (`compare_cad` or
-`compare_objects`). An inspection plan in the coordinates of the CAD model (`examples/first_article_plan.json`) names
-the elements by a point on them: planes, cylinders, spheres and points are found on the CAD
-model, fitted to the scanned surface by least squares, and the part is aligned on its datums
-(3-2-1, RPS) or kept at the best fit. Characteristics are sizes (diameter, radius, distance,
-angle, coordinate), form (flatness, cylindricity, sphericity), orientation (parallelism,
-perpendicularity), position, profile and the deviation of a point, each with its balloon number,
-nominal value and tolerance. The GUI method `cad_features` lists the regular geometry of a CAD
-model with a picture, so that a plan can be written without a CAD system.
-
-`first_article_report` writes the first article inspection report: a cover sheet (supplier,
-customer, part, drawing and revision, reason for the submission, from
-`examples/first_article_order.json`), the decision, the list of characteristics with nominal
-value, tolerance, actual value and result, views of the CAD model with the characteristic numbers
-as balloons in red and green, the measured elements and, when the project has them, the
-nominal-actual comparison and the porosity with its acceptance limits. Like the test report it is
-one HTML file from a replaceable template (`vs-report --print-first-article-template`), plus
-`report.json` and `characteristics.csv`. Fits are least squares, not minimum zone; see
-`docs/adr/0027-dimensional-measurement.md` for the method and its limits.
-
-![First article inspection report of the sample hub: characteristics and ballooned views](docs/images/first-article-report.png)
-
-## Battery cells
-
-`vs-battery` (operation `battery_inspection`) inspects a lithium-ion cell, cylindrical (wound
-electrodes in a can) or stacked (pouch, prismatic): diameter, out-of-roundness, dents and wall of
-the housing per cross-section, the core, the number and pitch of the electrode layers and gaps
-between them, the anode overhang at every edge of the electrode stack layer by layer, the
-unevenness of the electrode edges, and metal particles and gas voids between the layers. With
-`--order examples/battery_order.json` (operation `battery_report`) it writes a test report that
-assesses the cell against the requirements of the order: overhang, layer count, dimensions,
-roundness, wall, gaps, particles and voids.
-
-```sh
-vs-battery --cell cylindrical --out cell --extension 3 1 0.35 40 100   # synthetic cell, defect
-vs-sieve cell.raw --out cell.vsieve
-vs-battery cell.vsieve --out cell_result --order examples/battery_order.json
-```
-
-The synthetic cell's fourth cathode turn sticks out at the top over 60°; the report finds it in
-that layer and angle:
-
-![Anode overhang per edge in the battery cell report, with the section of the smallest overhang](docs/images/battery-report.png)
-
-Cylindrical cells given as section images instead of a volume are inspected as well: a folder
-or ZIP archive with a folder per cell holding `axial_images/<angle>.png` (longitudinal sections
-through the axis, the right half at the angle, the left half opposite, the top row at the high
-end) and `radial_images/<position mm>.png` (cross-sections). Housing and layers come from the
-cross-sections, the overhang from both halves of every longitudinal section, particles and voids
-from all images (operation `battery_images`). Without `--image-cell`, every cell is inspected
-and `cells.csv` summarises them:
-
-```sh
-vs-battery --images scans.zip --list-cells
-vs-battery --images scans.zip --out results --order examples/battery_order.json
-```
-
-The pixel size follows from the positions of the cross-sections over the height of the
-longitudinal sections unless `--pixel-size` gives it.
-
-The cell axis or stack normal must lie along a volume axis. See
-`docs/adr/0029-battery-cell-inspection.md` for the method and its limits.
-
-## Projects, operations and plugins
-
-The library records work as a project: a directory with `project.json` and one directory per step.
-Each step stores its operation, parameters, inputs, outputs and messages; undo and redo move a
-cursor over the steps, and a new step after an undo discards the undone ones. Operations never
-change their inputs.
-
-```cpp
-voxelsieve::OperationRegistry registry;
-voxelsieve::registerBuiltinOperations(registry);   // open_dataset, import_raw, import_tiff, porosity, …
-registry.loadPlugins("plugins");                    // every *.so (*.dll) in the directory
-auto project = voxelsieve::Project::create("casting.vsproj", "Casting 4711");
-project.run(registry, "import_raw", {{"path", "scan.raw"}});
-project.run(registry, "porosity");                  // input: the latest dataset
-project.run(registry, "report", {{"order_path", "examples/inspection_order.json"}});
-project.undo();
-```
-
-A plugin is a shared library that exports `voxelsieve_plugin_api_version()`,
-`voxelsieve_plugin_build()` and `voxelsieve_register_operations()`;
-`examples/plugins/histogram` is a complete one. The release packages hold the headers and a CMake
-package, so a plugin builds against an installed VoxelSieve:
-
-```cmake
-find_package(VoxelSieve REQUIRED)        # with -DCMAKE_PREFIX_PATH=<unpacked package>
-add_library(my_plugin MODULE my_plugin.cpp)
-target_link_libraries(my_plugin PRIVATE VoxelSieve::voxelsieve)
-```
-
-The interface is C++, so the plugin needs the standard library, OpenVDB and nlohmann/json of the
-VoxelSieve that loads it. `voxelsieve_plugin_build()` returns `VOXELSIEVE_PLUGIN_BUILD`, which
-names them; a plugin whose text differs is not loaded, and the message shows both. See
-`docs/adr/0008-gui-projects-operations-ui.md`.
-
-## Python
-
-The `voxelsieve` package reads datasets of any size as numpy arrays, writes numpy volumes (also a
-`numpy.memmap` of a raw file) as datasets, runs your own numpy or SciPy code brick by brick on
-scans larger than memory, and runs every operation as a step of a project:
-
-```python
-import voxelsieve as vs
-
-ds = vs.Dataset.open("scan.vsieve")
-slab = ds[400:410]                       # (z, y, x) numpy array; only the bricks it touches load
-project = vs.Project.create("casting.vsproj", "Casting 4711")
-project.run("open_dataset", path=ds.path)
-print(project.run("porosity").summary)
-```
-
-Install with `pip install .` from a checkout (with `VCPKG_ROOT` set as for the build). See
-[docs/python.md](docs/python.md) and `docs/adr/0031-python-package.md`.
-
-## GUI
-
-`vs-gui` starts the GUI and prints its address, by default http://localhost:8410. "Open a
-scan …" is all a first look takes: VoxelSieve finds out what the file is (raw, TIFF, DICOM or a
-dataset; a raw file without a sidecar is read from its name or its grey values), creates a
-project next to the scan, imports it and shows the part in 3D, with the analyses that suit it
-beside the view (porosity, wall thickness, materials, comparison with a CAD model next to the
-scan, battery cells, fibre composites, beam hardening), each started with one click (ADR 0039).
-Detected or assumed values, such as a missing voxel size, are shown for a check first.
-
-The analysis is one workspace (ADR 0040): objects and layers on the left, the view in the
-middle, the analyses in groups (prepare, segment, defects, geometry, reports and export) and the
-history of all results on the right. Every result becomes a layer: the grey values are drawn as
-a solid surface, translucent or as maximum intensity projection; one colouring at a time
-(materials, nominal-actual deviation, wall thickness) colours the part; pores, loosened zones
-and other objects are overlays to switch on and off. The report is the last stage. Every step appears in the protocol with its
-parameters and results and can be undone (Ctrl+Z) and redone; the project is saved after each
-step. Plugins appear next to the built-in operations.
-
-![GUI with protocol and porosity result](docs/images/gui.png)
-
-The view shows slices along x, y or z. It loads only the tiles on screen, from the
-resolution level that matches the zoom, so it stays fast on scans of hundreds of GB. Wheel zooms,
-dragging pans, the arrow keys (or Shift and the wheel) step through slices; pores are tinted red
-and loosened zones yellow, and a click on a pore in the list jumps to it.
-
-![Slice view zoomed onto the engine flange of the bell housing: a shrinkage cavity in red next to a loosened zone in yellow](docs/images/slice-view.png)
-
-The 3D view ray-casts a coarse level of the dataset (at most 256 voxels per axis) in the browser:
-"Surface" shades the part surface at a threshold dragged in the histogram, "Transfer function"
-composites colour and opacity per grey value, and "Maximum intensity projection" shows the densest value
-along each ray. The transfer function is edited on the histogram: click adds a control point,
-drag moves it, double click removes it; each point has its own colour, or a colour map colours
-every grey value between two markers dragged on the strip under the histogram. Sixteen maps
-(neutral, perceptual such as Viridis, Inferno and Cividis, material looks such as Gold, Jade and
-Ice, Turbo, a diverging map and an own gradient) can be reversed, and presets start from typical
-settings; "Edges only" leaves surfaces and pore walls and clears the inside. Pores, zones and the
-materials of a segmentation have their own colours (with palettes and, translucent, an opacity
-per material), and a cut along x opens the part. The background can be a soft light, a gradient
-or a plain colour.
-
-The light has presets (headlight, studio, top light, dramatic, back light, flat) or is set by
-hand: direction of the key light, which follows the camera or stays in the scene, fill and rim
-light, ambient light, highlights, soft shadows and ambient occlusion (ADR 0043). "Looks" set
-curve, colours, light and background in one click: studio, clay, glass, gold, X-ray and glow.
-"Record video" makes a video of the view as MP4 (WebM in Firefox) up to 3840 × 2160: a
-turntable, a swing, an orbit, a sweep of the cut into the part, a zoom or a flight through the
-saved views. The browser encodes it; nothing is installed for it. Drag turns the part,
-right or shift drag moves it, the wheel zooms. Close up, the view loads the part nearest the
-camera again at the level a pixel there needs (`/api/volume` with a region) and fades it in over
-the coarse volume, so the resolution grows where you look.
-
-"Extracted surface" shows only the surface from a run of the operation "Surface", as a
-triangle mesh at full resolution rather than the coarse level. Flat regions get larger triangles,
-and a surface that would exceed the triangle budget (`GET /api/surface?max_triangles=`, default
-1.5 million) is resampled at twice the voxel size until it fits. The cut along x opens it too.
-
-![Extracted surface of the housing sample part in the 3D view](docs/images/surface-view.png)
-
-When a volume is loaded, the view suggests two or three renderings from its histogram, each with a
-small picture: the density spread of the material, densities below the material (pores,
-loosened structure) and further peaks such as inclusions, or else the part as a solid body.
-
-![3D view with pores and loosened zones inside the translucent bell housing](docs/images/volume-view.png)
-
-The project remembers how it was shown: stage, slice, zoom and window, camera, transfer function,
-colours and background come back when it is opened again. "Save view" keeps the current
-view under a name with a picture in the project (`views/<id>.png`); a click on it shows it again,
-and "Export image" downloads the picture. Views are presentation, not processing, so they are
-not steps and undo leaves them alone.
-
-![Saved views above the 3D view](docs/images/saved-views.png)
-
-A project can hold several objects: scans and CAD models (STL) in one global coordinate system,
-each with its pose (ADR 0018). The view "Objects" shows them where they lie, each in its colour.
-They are aligned by steps that apply in order: "Move" by hand, "Align by point pairs" with points
-clicked on both objects, and "Best fit of the surfaces" (from where they lie, or from the
-principal axes for objects far apart). "Nominal-actual comparison" then measures a scan against a
-CAD model or another scan where both lie; its result shows in the 3D view and the report like that
-of `compare_cad`. Over MCP, `view_objects` renders the scene as a picture, with `materials` each
-material of a segmented volume as a surface in its colour. The slice view shows
-the other objects in the slice of the shown volume: other scans blended in their colour or as a
-checkerboard, CAD models as their cut lines.
-
-When a scan shows more than the part, such as the holder it stands in, "Isolate part"
-(`isolate_part`) writes a dataset without voxels outside a region (a box in voxels) and without
-every object but the largest ones, so segmentation, porosity and volumes see the part alone (ADR
-0026). Objects that touch are separated by eroding them apart and growing them back
-(`separate_voxels`), and cut planes and a cylinder cut away what a box cannot. The material
-segmentation finds the number of materials itself with `materials` 0, one per peak of the
-histogram or per shoulder and tail a Gaussian mixture finds, which the method `histogram` shows
-with its suggestion and the share of voxels at class boundaries; `view_slice` with
-`preview_thresholds` previews the classes. "Material meshes" (`material_meshes`) exports the
-surface of each material as an STL and adds it as an object in the material's colour. "Measure
-objects" (`measure_objects`) measures each connected object of a material, or the enclosed air
-(material 0, such as a swim bladder or a cavity): volume, surface area, centroid, bounding box
-and lengths along its principal axes and along a given axis, as a table (`objects.csv`).
-
-![Scan and CAD model before alignment, with picked point pairs](docs/images/objects-view.png)
-
-![A second scan, turned by 4°, blended over the slice, and the CAD model as its cut line](docs/images/slice-objects.png)
-
-```sh
-vs-gui --project /data/casting.vsproj --plugins build/release/plugins
-```
-
-The server listens on 127.0.0.1 only. The address it prints carries an access token that changes
-with every start; requests without it are refused. The connection is not encrypted, so do not
-expose the server to a network.
-
-## AI systems: MCP
-
-`vs-gui --mcp` serves the GUI over the Model Context Protocol (stdio), so an AI assistant can
-drive VoxelSieve: create or open a project, run operations, undo and redo, and read results. It
-runs on your machine: scans stay where they are, and the assistant only receives results such as
-pore lists, measurements, slice images and reports.
-
-**Install.** Every [release](https://github.com/yoshi5534/VoxelSieve/releases) has packages for
-Linux (x64), Windows (x64) and macOS (Apple silicon), built from the same sources:
-
-- `voxelsieve-<version>-<platform>.mcpb`: an MCP bundle. Open it with Claude Desktop (double-click it, or
-  drag it onto the Extensions page of the settings) and choose the directories with your scans.
-- `voxelsieve-<version>-<platform>.tar.gz` / `.zip`: all tools with their libraries. Unpack it
-  anywhere; nothing else needs to be installed.
-- `voxelsieve-<version>-samples.zip`: a synthetic scan of a cast housing with its CAD model,
-  inspection order and the ground truth of its defects, for the [quickstart](docs/quickstart.md).
-- `ghcr.io/yoshi5534/voxelsieve`: a Docker image built from the Linux package with
-  `packaging/Dockerfile`: the browser UI by default, MCP with `--mcp` (see the
-  [quickstart](docs/quickstart.md#docker)).
-
-The packages are not signed yet. On macOS, clear the download flag once with
-`xattr -dr com.apple.quarantine voxelsieve-*`; on Windows, SmartScreen may ask for confirmation.
-The Linux build needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40).
-
-**Register** the unpacked server with any MCP client as a stdio server. Directories after the
-options are the only places VoxelSieve reads data from and keeps projects in:
-
-```sh
-claude mcp add voxelsieve -- /opt/voxelsieve/bin/vs-gui --mcp /data/scans   # Claude Code
-```
-
-```json
-{"mcpServers": {"voxelsieve": {"command": "/opt/voxelsieve/bin/vs-gui",
-                               "args": ["--mcp", "/data/scans"]}}}
-```
-
-The server keeps the project used last and opens it again at its next start (unless
-`--project` names another or `--no-reopen` is given), so a client that starts a new server for
-every chat finds its project open.
-
-Then ask, for example: "Import /data/scans/housing.raw, analyse the porosity and write an
-inspection report with the example order", or "Show me slice 400 of the latest dataset with the
-pores". A client can cancel a running import or analysis; it stops at its next progress report.
-Imports and analyses of large scans can take longer than a client waits for one call: with
-`background: true` a `run_<operation>` tool returns at once, `wait` follows the operation (up to
-50 s per call) and gives its step when it is done, and `cancel` stops it. `pipeline` runs several
-operations one after the other in one call, for example import, `isolate_part`,
-`segment_materials` and `material_meshes`.
-
-Tools: `project_create`, `project_open`, `project_status` (the steps in brief; `step` gives one
-in full), `project_save_as`, `undo`, `redo`,
-`objects`, `results`, `object_select`, `dataset_info`, `histogram` (grey values with the
-threshold and a suggested number of materials), `cad_features` (planes, cylinders and spheres of
-a CAD model with a picture, for inspection plans), `view_slice` (a slice as an image, with pores and
-zones), `view_objects` (also in the colours of the materials), `import_preview`, `step_telemetry`, `list_files`, `read_file`
-(text files, and PNG pictures as images), `browse`, `wait`, `cancel`, `pipeline` and one `run_<operation>` per
-operation, including plugins (`--plugins <dir>` or `VOXELSIEVE_PLUGIN_PATH`). To keep the choice
-small for a model, the methods that keep the browser UI's saved views (`view_set`, `view_save`,
-`view_list`, `view_image`, `view_rename`, `view_delete`), `list_operations` (tools/list already
-describes every operation) and `object_add` (the same as `run_open_dataset` and `run_add_mesh`)
-are left out unless `--tools all` is given. Tools carry annotations, so a client
-knows which only read (`readOnlyHint`) and which delete something (`destructiveHint`). Parameter
-schemas come from the operations, errors come back as tool errors with the reason, and long
-operations report progress.
-
-Resources: the result files of the project's steps (`report.html`, `report.json`,
-`porosity.json`, the projection pictures, comparison and measurement results) are listed as
-`voxelsieve://step/<id>/<output>/<file>`, so a client can attach them to the conversation.
-Datasets are never sent over the protocol, only their metadata and these results.
-
-Prompts: `porosity_check` (porosity against an inspection order, with report),
-`compare_with_cad` (nominal-actual comparison), `wall_thickness_check` (walls against the minimum
-of the drawing), `first_article_inspection` (characteristics of a drawing measured on the scan,
-with the first article report) and `first_look` (size, voxel size, three slices) walk a model
-through the usual inspections.
+The Python package builds with `pip install .` ([docs/python.md](docs/python.md)).
 
 ## Contributing
 
