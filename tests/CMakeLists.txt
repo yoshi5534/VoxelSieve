@@ -278,6 +278,8 @@ if(NODE_EXECUTABLE)
   add_test(NAME ui_viewer COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/viewer_test.cjs)
   add_test(NAME ui_tiles COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/tiles_test.cjs)
   add_test(NAME ui_volume COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/volume_test.cjs)
+  add_test(NAME ui_lighting COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/lighting_test.cjs)
+  add_test(NAME ui_video COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ui/video_test.cjs)
   # The inspection of the sample part in a browser, as a user clicks through it (ADR 0038). Runs
   # where node finds playwright or playwright-core (NODE_PATH) at configure time.
   execute_process(COMMAND ${NODE_EXECUTABLE} -e
