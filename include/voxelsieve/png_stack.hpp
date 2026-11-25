@@ -14,7 +14,7 @@
 
 namespace voxelsieve {
 
-/// PNG image stacks as volume source (ADR 0043): a directory of slices or a ZIP archive of
+/// PNG image stacks as volume source (ADR 0044): a directory of slices or a ZIP archive of
 /// them, read without extracting it, decoded with libpng. Slices are sorted by name with numbers
 /// compared by value, as TIFF stacks (ADR 0011). 8- and 16-bit grey images keep their values;
 /// colour images are converted to grey. PNG files give no voxel size that CT software writes

@@ -53,6 +53,35 @@
 </section>
 
 <section id="new" class="wrap">
+  <h2>Coming in the next release</h2>
+  <p class="meta">On the main branch, not yet in a release package.</p>
+  <ul class="news">
+    <li><strong>Open a scan in one step</strong>: the browser UI finds out what the file is,
+      creates a project next to it, imports it without a form and shows the part in 3D, with the
+      analyses that suit the scan beside it, each one click away. Raw files need no sidecar: size,
+      sample type and header come from the name or the grey values.</li>
+    <li><strong>One workspace for the analysis</strong>: objects and layers on the left, slice or
+      3D view in the middle, the analyses in groups on the right with their key figures as tiles.
+      Grey values, one colouring (materials, deviation, wall thickness) and overlays such as pores
+      and loosened zones are layers of both views.</li>
+    <li><strong>Regions of a scan</strong>: draw boxes, spheres and cylinders in the slice view or
+      take the inside of a CAD model, save them under a name and run porosity and wall thickness
+      in them; inspection zones of an order can name them.</li>
+    <li><strong>Colours, light and video in 3D</strong>: sixteen colour maps on the histogram,
+      lighting presets with shadows and ambient occlusion, one-click looks (studio, clay, glass,
+      gold, X-ray, glow) and turntable, orbit, cut sweep or fly-through videos up to 4K, encoded
+      by the browser.</li>
+    <li><strong>More scan formats</strong>: MetaImage (.mhd, .mha) and NRRD (.nhdr, .nrrd) with
+      their spacing and position, HDF5 and NeXus volumes from synchrotron and tomography
+      pipelines, PNG slice stacks, and raw files of signed, 32-bit and float samples. All of them
+      open with one click.</li>
+    <li><strong>Safer projects and imports</strong>: an interrupted import resumes from its
+      journal, a project is open in one program at a time, TIFF imports hold their staging copy
+      in memory as far as it fits, and inspection orders reject keys that nothing reads.</li>
+  </ul>
+  <p>Details are under "Unreleased" in the
+    <a href="https://github.com/yoshi5534/VoxelSieve/blob/main/CHANGELOG.md">changelog</a>.</p>
+
   <h2>New in 0.7.0</h2>
   <ul class="news">
     <li><strong>Python package</strong> with numpy access to datasets and every operation, with
@@ -80,9 +109,11 @@
   <div class="cards">
     <article>
       <h3>Sieve</h3>
-      <p>Raw volumes (with vendor headers), TIFF and DICOM stacks, also inside ZIP archives,
+      <p>Raw volumes (with vendor headers), TIFF, PNG and DICOM stacks, also inside ZIP archives,
+        MetaImage, NRRD and HDF5 files
         become a bricked VDB dataset with a first look within seconds. Bricks with only outside
-        air are not written. Grey values stay lossless; DICONDE goes in and out.</p>
+        air are not written. Grey values stay lossless; DICONDE goes in and out. An interrupted
+        import resumes where it stopped.</p>
     </article>
     <article>
       <h3>Porosity</h3>
@@ -149,8 +180,9 @@
     <article>
       <h3>GUI</h3>
       <p>A browser UI with slice and 3D views that load only what is on screen, down to the finest
-        level within a VRAM budget, a wizard, undo and redo, saved views and several objects in
-        one coordinate system.</p>
+        level within a VRAM budget, undo and redo for every step, saved views and several objects
+        in one coordinate system. On main: one-click opening, a workspace with layers and regions,
+        colour maps, lighting and video export.</p>
     </article>
     <article>
       <h3>Learned segmentation</h3>
@@ -192,9 +224,14 @@
     <figcaption>3D view: pores and loosened zones inside the translucent part.</figcaption>
   </figure>
   <figure class="wide">
-    <img src="images/gui.png" width="1280" height="892" loading="lazy"
-         alt="GUI in the browser with the step protocol and a porosity result">
-    <figcaption>The GUI: every step in the protocol, with undo and redo.</figcaption>
+    <img src="images/workspace.png" width="1500" height="1000" loading="lazy"
+         alt="The analysis workspace of the browser UI: layers on the left, the 3D view with the pores of a cast housing, the analyses with the porosity result on the right">
+    <figcaption>The analysis workspace: layers, view and analyses side by side (next release).</figcaption>
+  </figure>
+  <figure class="wide">
+    <img src="images/looks.png" width="924" height="600" loading="lazy"
+         alt="The same cast housing in six looks of the 3D view: studio, clay, glass, gold, X-ray and glow">
+    <figcaption>Looks of the 3D view: studio, clay, glass, gold, X-ray and glow (next release).</figcaption>
   </figure>
   <figure class="wide">
     <img src="images/slice-view.png" width="1400" height="900" loading="lazy"

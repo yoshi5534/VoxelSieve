@@ -54,11 +54,11 @@ from the file size and skipped; use --header when the file also has a footer. A 
 raw file (<name>.raw.gz with <name>.json) is decompressed once, in slice order, into the staging
 file; give --header when it has a header. Signed, 32-bit and float samples (--type) are read:
 signed ones shifted into the unsigned range, 32-bit and float ones mapped onto 16-bit grey values
-over --value-range (docs/adr/0040).
+over --value-range (docs/adr/0044).
 
 Also reads MetaImage (.mhd, .mha) and NRRD (.nhdr, .nrrd) files, whose header gives the layout,
 the spacing and the data files, PNG stacks (a directory or ZIP archive of slices), and volumes
-in HDF5 files (.h5, .nxs; the largest three-dimensional dataset, or --dataset; docs/adr/0041).
+in HDF5 files (.h5, .nxs; the largest three-dimensional dataset, or --dataset; docs/adr/0045).
 
 Also reads TIFF stacks: a directory of slices, a multi-page TIFF or a ZIP archive of either,
 without extracting it. Slices are sorted by name, numbers by value. The voxel size comes from

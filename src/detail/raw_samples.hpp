@@ -1,6 +1,6 @@
 #pragma once
 
-// How the samples of a raw file become 16-bit grey values (ADR 0043): shared by the raw sources
+// How the samples of a raw file become 16-bit grey values (ADR 0044): shared by the raw sources
 // and the HDF5 reader.
 
 #include <algorithm>
@@ -71,7 +71,7 @@ void convertTyped(const unsigned char* samples, std::size_t count, bool swap, bo
   }
 }
 
-/// How the samples of a raw file become 16-bit grey values (ADR 0043), and the count of values
+/// How the samples of a raw file become 16-bit grey values (ADR 0044), and the count of values
 /// that were clipped.
 struct RawSamples {
   RawSampleType type = RawSampleType::kUInt16;

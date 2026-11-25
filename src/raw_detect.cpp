@@ -26,7 +26,7 @@ namespace {
 struct NameHints {
   std::optional<std::array<std::int64_t, 3>> dims;
   std::optional<SampleType> sample_type;
-  /// 32-bit and float samples (ADR 0043); sample_type is then unset.
+  /// 32-bit and float samples (ADR 0044); sample_type is then unset.
   std::optional<RawSampleType> wide_type;
   bool big_endian = false;
   std::optional<double> voxel_size_mm;

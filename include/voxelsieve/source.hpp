@@ -134,7 +134,7 @@ class InterpolatedSource final : public VolumeSource {
   std::int64_t factor_;
 };
 
-/// Type of the samples in a raw file (ADR 0043). Unsigned 8 and 16 bit are the grey values
+/// Type of the samples in a raw file (ADR 0044). Unsigned 8 and 16 bit are the grey values
 /// themselves; signed samples are shifted into the unsigned range (int8 by 128, int16 by 32768),
 /// which keeps them exactly; 32-bit integers that lie within 0..65535 are kept as they are, and
 /// wider ones and floats are mapped linearly onto 0..65535 over a value range. The mapping is
@@ -178,7 +178,7 @@ struct RawLayout {
   /// Bytes before the voxel data. When unset, everything in the file beyond the voxel data is
   /// taken to be a header at the start (the common case for proprietary CT raw files).
   std::optional<std::uint64_t> header_bytes;
-  /// The samples of the file when they are not unsigned 8 or 16 bit (ADR 0043); `sample_type`
+  /// The samples of the file when they are not unsigned 8 or 16 bit (ADR 0044); `sample_type`
   /// then gives nothing. See storedSampleType.
   std::optional<RawSampleType> stored_type;
   /// 32-bit and float samples: the values mapped to grey 0 and 65535. Unset: estimated from 33

@@ -1,9 +1,9 @@
 // The inspection of the sample part (docs/quickstart.md) in a browser, as a user clicks through
 // it: opening the scan (a project next to it, the import, the 3D view and the suggested
 // analyses), the porosity analysis, the report, a region with the porosity in it, the slice and
-// the 3D view, a raw file without a sidecar, undo and redo. The scan is synthetic, so the answers
-// are known: three shrinkage cavities and one zone of loosened microstructure. Nothing else
-// clicks through resources/ui.
+// the 3D view with a look and a short video of it, a raw file without a sidecar, undo and redo.
+// The scan is synthetic, so the answers are known: three shrinkage cavities and one zone of
+// loosened microstructure. Nothing else clicks through resources/ui.
 //
 //   node smoke_test.cjs <vs-gui> <vs-synth> <inspection_order.json> <work dir>
 //
@@ -183,6 +183,27 @@ async function walk(page, address, work) {
   await stage.locator('.layer', { hasText: 'Grey values' }).click();
   await stage.locator('select[title="How the grey values are drawn"]').selectOption('0');
   await expectPicture(page, stage.locator('canvas:not(.transfer)').first(), 'the 3D view');
+
+  // 5b. A look in one click (ADR 0043), and a short video of it, downloaded.
+  // The video settings are read when the view is drawn anew, as the look does.
+  await page.evaluate(() => localStorage.setItem('voxelsieve.video',
+    JSON.stringify({ motion: 'turntable', seconds: 0.5, fps: 8, size: 'view' })));
+  const view3d = stage.locator('canvas:not(.transfer)').first();
+  const plain = await view3d.screenshot();
+  await stage.locator('.looks button[data-look="gold"]').click();
+  let changed = false;
+  for (let attempt = 0; attempt < 60 && !changed; attempt += 1) {
+    await page.waitForTimeout(500);
+    changed = !(await view3d.screenshot()).equals(plain);
+  }
+  expect(changed, 'the look "Gold" changes the picture');
+  const download = page.waitForEvent('download', { timeout: 600000 });
+  await stage.getByRole('button', { name: 'Record video' }).click();
+  const video = await download;
+  const videoFile = path.join(work, 'video-' + video.suggestedFilename());
+  await video.saveAs(videoFile);
+  expect(/\.(mp4|webm)$/.test(videoFile) && fs.statSync(videoFile).size > 1000,
+    'the video is downloaded: ' + videoFile);
 
   // 6. A raw file without a sidecar: its layout is detected and shown for a check.
   await page.locator('.stages button[data-stage="dataset"]').click();

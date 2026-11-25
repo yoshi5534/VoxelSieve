@@ -28,6 +28,8 @@ voxelsieve_embed(VOXELSIEVE_UI_ORBIT ${VOXELSIEVE_UI_DIR}/orbit.js)
 voxelsieve_embed(VOXELSIEVE_UI_BRICKS ${VOXELSIEVE_UI_DIR}/bricks.js)
 voxelsieve_embed(VOXELSIEVE_UI_REGIONS ${VOXELSIEVE_UI_DIR}/regions.js)
 voxelsieve_embed(VOXELSIEVE_UI_ICONS ${VOXELSIEVE_UI_DIR}/icons.js)
+voxelsieve_embed(VOXELSIEVE_UI_LIGHTING ${VOXELSIEVE_UI_DIR}/lighting.js)
+voxelsieve_embed(VOXELSIEVE_UI_VIDEO ${VOXELSIEVE_UI_DIR}/video.js)
 configure_file(ui_resources.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/ui_resources.cpp @ONLY)
 
 add_library(voxelsieve SHARED

@@ -3,27 +3,75 @@
 // and a few presets and colour maps. Runs in the browser and, for its tests, in node.
 'use strict';
 
-/// Colour maps as stops [t, r, g, b] with t in 0..1 and colours in 0..255.
+/// Colour maps as stops [t, r, g, b] with t in 0..1 and colours in 0..255, in groups for the
+/// picker. The perceptual maps follow the published scales of the same names (samples of them).
+/// `eigen` is the user's own gradient; its stops come with the transfer function.
 const COLOR_MAPS = {
-  grau: { name: 'Grey', stops: [[0, 40, 40, 40], [1, 235, 235, 235]] },
-  stahl: { name: 'Steel', stops: [[0, 70, 90, 120], [0.5, 150, 170, 195], [1, 225, 232, 240]] },
-  viridis: { name: 'Viridis', stops: [[0, 68, 1, 84], [0.25, 59, 82, 139], [0.5, 33, 145, 140],
-    [0.75, 94, 201, 98], [1, 253, 231, 37]] },
-  heiss: { name: 'Ember', stops: [[0, 90, 0, 0], [0.4, 220, 40, 0], [0.75, 255, 190, 0],
-    [1, 255, 255, 220]] },
-  kupfer: { name: 'Copper', stops: [[0, 60, 30, 15], [0.6, 200, 120, 70], [1, 255, 205, 150]] },
+  grau: { name: 'Grey', group: 'Neutral', stops: [[0, 40, 40, 40], [1, 235, 235, 235]] },
+  stahl: { name: 'Steel', group: 'Neutral',
+    stops: [[0, 70, 90, 120], [0.5, 150, 170, 195], [1, 225, 232, 240]] },
+  knochen: { name: 'Bone', group: 'Neutral', stops: [[0, 0, 0, 0], [0.375, 84, 84, 116],
+    [0.75, 169, 200, 200], [1, 255, 255, 255]] },
+  viridis: { name: 'Viridis', group: 'Perceptual', stops: [[0, 68, 1, 84], [0.25, 59, 82, 139],
+    [0.5, 33, 145, 140], [0.75, 94, 201, 98], [1, 253, 231, 37]] },
+  inferno: { name: 'Inferno', group: 'Perceptual', stops: [[0, 0, 0, 4], [0.125, 31, 12, 72],
+    [0.25, 85, 15, 109], [0.375, 136, 34, 106], [0.5, 186, 54, 85], [0.625, 227, 89, 51],
+    [0.75, 249, 140, 10], [0.875, 249, 201, 50], [1, 252, 255, 164]] },
+  magma: { name: 'Magma', group: 'Perceptual', stops: [[0, 0, 0, 4], [0.125, 28, 16, 68],
+    [0.25, 79, 18, 123], [0.375, 129, 37, 129], [0.5, 181, 54, 122], [0.625, 229, 80, 100],
+    [0.75, 251, 135, 97], [0.875, 254, 194, 135], [1, 252, 253, 191]] },
+  plasma: { name: 'Plasma', group: 'Perceptual', stops: [[0, 13, 8, 135], [0.125, 65, 4, 157],
+    [0.25, 106, 0, 168], [0.375, 143, 13, 164], [0.5, 177, 42, 144], [0.625, 204, 71, 120],
+    [0.75, 225, 100, 98], [0.875, 246, 141, 70], [1, 240, 249, 33]] },
+  cividis: { name: 'Cividis', group: 'Perceptual', stops: [[0, 0, 34, 78], [0.25, 61, 77, 110],
+    [0.5, 124, 123, 120], [0.75, 188, 175, 111], [1, 254, 232, 56]] },
+  kupfer: { name: 'Copper', group: 'Material', stops: [[0, 60, 30, 15], [0.6, 200, 120, 70],
+    [1, 255, 205, 150]] },
+  gold: { name: 'Gold', group: 'Material', stops: [[0, 40, 20, 0], [0.35, 140, 90, 20],
+    [0.7, 220, 170, 60], [1, 255, 235, 160]] },
+  jade: { name: 'Jade', group: 'Material', stops: [[0, 5, 30, 25], [0.35, 20, 110, 90],
+    [0.7, 90, 190, 150], [1, 210, 245, 220]] },
+  eis: { name: 'Ice', group: 'Material', stops: [[0, 4, 6, 19], [0.25, 40, 60, 120],
+    [0.5, 70, 140, 200], [0.75, 160, 215, 235], [1, 240, 250, 255]] },
+  heiss: { name: 'Ember', group: 'Material', stops: [[0, 90, 0, 0], [0.4, 220, 40, 0],
+    [0.75, 255, 190, 0], [1, 255, 255, 220]] },
+  turbo: { name: 'Turbo', group: 'Rainbow and diverging', stops: [[0, 48, 18, 59],
+    [0.1, 70, 98, 216], [0.2, 54, 170, 249], [0.3, 26, 228, 182], [0.4, 114, 254, 94],
+    [0.5, 164, 252, 60], [0.6, 225, 221, 55], [0.7, 254, 165, 49], [0.8, 241, 99, 27],
+    [0.9, 194, 36, 3], [1, 122, 4, 3]] },
+  kaltwarm: { name: 'Cool to warm', group: 'Rainbow and diverging', stops: [[0, 59, 76, 192],
+    [0.25, 141, 176, 254], [0.5, 221, 221, 221], [0.75, 244, 154, 123], [1, 180, 4, 38]] },
+  eigen: { name: 'Own gradient', group: 'Own', stops: [[0, 20, 40, 90], [0.5, 230, 120, 40],
+    [1, 255, 245, 220]] },
 };
 
-/// Colour of a colour map at t in 0..1.
-function colorMapAt(name, t) {
-  const stops = (COLOR_MAPS[name] ?? COLOR_MAPS.grau).stops;
+/// Stops of a colour map; `custom` replaces those of the own gradient, `reverse` turns the map
+/// round.
+function colorStops(name, { reverse = false, custom = null } = {}) {
+  let stops = (COLOR_MAPS[name] ?? COLOR_MAPS.grau).stops;
+  if (name === 'eigen' && custom?.length >= 2) {
+    stops = custom.map((stop) => [...stop]).sort((a, b) => a[0] - b[0]);
+  }
+  return reverse ? stops.map(([t, ...c]) => [1 - t, ...c]).reverse() : stops;
+}
+
+/// Colour of a colour map at t in 0..1; `options` as for colorStops.
+function colorMapAt(name, t, options = {}) {
+  const stops = colorStops(name, options);
   const x = Math.min(Math.max(t, 0), 1);
   let i = 0;
   while (i < stops.length - 2 && x > stops[i + 1][0]) i += 1;
   const [t0, ...c0] = stops[i];
   const [t1, ...c1] = stops[i + 1];
-  const f = t1 > t0 ? (x - t0) / (t1 - t0) : 0;
+  const f = t1 > t0 ? Math.min(Math.max((x - t0) / (t1 - t0), 0), 1) : 0;
   return c0.map((c, k) => Math.round(c + (c1[k] - c) * f));
+}
+
+/// CSS linear-gradient of a colour map, for the swatches of the picker.
+function colorMapGradient(name, options = {}) {
+  const stops = colorStops(name, options);
+  return 'linear-gradient(to right, ' + stops.map(([t, r, g, b]) =>
+    `rgb(${r}, ${g}, ${b}) ${(t * 100).toFixed(1)}%`).join(', ') + ')';
 }
 
 /// 256 RGBA entries (bytes) interpolated linearly between the control points, which are sorted by
@@ -46,11 +94,39 @@ function lookupTable(points) {
 }
 
 /// Recolours the points with a colour map spread over their x range.
-function applyColorMap(points, name) {
+function applyColorMap(points, name, options = {}) {
   const low = points[0].x;
   const high = points[points.length - 1].x;
   return points.map((p) => ({ ...p,
-    color: colorMapAt(name, high > low ? (p.x - low) / (high - low) : 0) }));
+    color: colorMapAt(name, high > low ? (p.x - low) / (high - low) : 0, options) }));
+}
+
+/// The grey values (x in 0..1) from the first to the last point with an opacity above zero, where
+/// a colour map shows best: below and above it nothing is seen. [0, 1] when nothing is.
+function visibleRange(points) {
+  const shown = points.map((p, i) => (p.a > 0 || points[i - 1]?.a > 0 || points[i + 1]?.a > 0
+    ? p.x : null)).filter((x) => x !== null);
+  if (!shown.length) return [0, 1];
+  const low = Math.min(...shown);
+  const high = Math.max(...shown);
+  return high - low >= 1 / 255 ? [low, high] : [0, 1];
+}
+
+/// 256 RGBA entries (bytes) of a transfer function {points, colorSource, colorMap, reverse,
+/// colorRange, customStops}: the opacity from the points; the colour from the points too
+/// (colorSource 'points'), or from the colour map at every grey value (colorSource 'map'),
+/// spread over colorRange [low, high] (default the visible range of the points). A map has all
+/// its colours this way, however few points the curve has.
+function transferTable(transfer) {
+  const table = lookupTable(transfer.points);
+  if (transfer.colorSource !== 'map') return table;
+  const [low, high] = transfer.colorRange ?? visibleRange(transfer.points);
+  const options = { reverse: Boolean(transfer.reverse), custom: transfer.customStops ?? null };
+  for (let i = 0; i < 256; i += 1) {
+    const t = high > low ? (i / 255 - low) / (high - low) : 0;
+    table.set(colorMapAt(transfer.colorMap, t, options), i * 4);
+  }
+  return table;
 }
 
 const TRANSFER_PRESETS = {
@@ -58,6 +134,8 @@ const TRANSFER_PRESETS = {
   dichte: 'Density in colour',
   rand: 'Surface layers and pore walls',
   massiv: 'Part solid',
+  glas: 'Glass: the surface faint, inside clear',
+  innen: 'Dense inside, surface faint',
 };
 
 /// Control points of a preset for a volume whose air/material threshold is at `threshold`.
@@ -74,6 +152,12 @@ function transferPreset(name, threshold) {
     case 'massiv':
       return applyColorMap([point(0, 0), point(t - 0.02, 0), point(t + 0.02, 1), point(1, 1)],
         'stahl');
+    case 'glas':
+      return applyColorMap([point(0, 0), point(t - 0.03, 0), point(t + 0.01, 0.6),
+        point(t + 0.08, 0.15), point(1, 0.2)], 'eis');
+    case 'innen':
+      return applyColorMap([point(0, 0), point(t - 0.02, 0), point(t + 0.03, 0.04),
+        point(t + 0.6 * (1 - t), 0.1), point(1, 0.35)], 'inferno');
     default:
       return applyColorMap([point(0, 0), point(t - 0.04, 0), point(t + 0.06, 0.12),
         point(1, 0.2)], 'stahl');
@@ -346,6 +430,19 @@ function snapToValley(histogram, x, radius = 10) {
 const MATERIAL_PALETTE = [[66, 146, 198], [230, 126, 34], [46, 160, 67], [196, 60, 80],
   [142, 99, 190], [214, 190, 40], [23, 170, 170], [140, 110, 80]];
 
+/// Palettes that colour all materials at once; the first is the default one.
+const MATERIAL_PALETTES = {
+  standard: { name: 'Standard', colors: MATERIAL_PALETTE },
+  kraeftig: { name: 'Vivid', colors: [[0, 114, 255], [255, 87, 34], [0, 200, 83], [233, 30, 99],
+    [156, 39, 176], [255, 193, 7], [0, 188, 212], [121, 85, 72]] },
+  pastell: { name: 'Pastel', colors: [[150, 190, 230], [250, 190, 150], [170, 220, 170],
+    [235, 160, 175], [200, 175, 225], [245, 225, 140], [150, 215, 215], [205, 185, 165]] },
+  metalle: { name: 'Metals', colors: [[200, 205, 212], [184, 115, 51], [212, 175, 55],
+    [140, 146, 153], [176, 141, 87], [229, 228, 226], [95, 99, 104], [183, 110, 121]] },
+  farbenblind: { name: 'Colour-blind safe', colors: [[0, 114, 178], [230, 159, 0],
+    [0, 158, 115], [204, 121, 167], [86, 180, 233], [213, 94, 0], [240, 228, 66], [0, 0, 0]] },
+};
+
 /// Materials starting at the air threshold `air` (x in 0..1), split into `classes` by
 /// multi-level Otsu. The material with most voxels is shown faint, the others strong, so the
 /// 3D preview looks through the base material at the inclusions in it.
@@ -388,6 +485,12 @@ class TransferEditor {
     this.selected = -1;
     this.hover = null;
     this.label = (x) => (x * 255).toFixed(0);
+    // The colours and opacities the curve stands for (the transfer function's table).
+    this.tableOf = () => lookupTable(this.points);
+    // Where a colour map is spread, [low, high] in x, when the colours come from it; its ends
+    // are dragged on the colour strip under the histogram.
+    this.colorRange = null;
+    this.onRange = () => {};    // colorRange dragged
     this.onChange = () => {};   // points or threshold changed
     this.onSelect = () => {};   // selection or hover changed
     this.attach();
@@ -416,11 +519,21 @@ class TransferEditor {
     this.onSelect();
   }
 
-  // Layout: plot area inside the canvas, in CSS pixels.
+  // Layout: plot area inside the canvas, in CSS pixels, with the colour strip under it.
   area() {
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
-    return { left: 8, top: 8, width: Math.max(width - 16, 1), height: Math.max(height - 32, 1) };
+    const r = { left: 8, top: 8, width: Math.max(width - 16, 1), height: Math.max(height - 44, 1) };
+    r.strip = r.top + r.height + 3;
+    return r;
+  }
+
+  /// Whether a canvas position is on the colour strip, where the ends of the colour range are
+  /// dragged.
+  onStrip(py) {
+    const r = this.area();
+    return this.mode === 'curve' && this.colorRange !== null && py >= r.strip - 3 &&
+      py <= r.strip + 14;
   }
 
   toCanvas(x, a) {
@@ -509,10 +622,15 @@ class TransferEditor {
         this.onSelect();
         return;
       }
+      if (this.onStrip(at.py)) {
+        const [low, high] = this.colorRange;
+        drag = { end: Math.abs(at.x - low) <= Math.abs(at.x - high) ? 0 : 1 };
+        return;
+      }
       let index = this.pointAt(at.px, at.py);
       if (index < 0) {
         // A new point on the curve's colour at that grey value.
-        const table = lookupTable(this.points);
+        const table = this.tableOf();
         const i = Math.round(at.x * 255) * 4;
         const point = { x: at.x, a: at.a, color: [table[i], table[i + 1], table[i + 2]] };
         index = this.points.findIndex((p) => p.x > at.x);
@@ -529,6 +647,13 @@ class TransferEditor {
       if (drag?.boundary !== undefined) {
         this.moveBoundary(drag.boundary, at.x);
         this.changed();
+      } else if (drag?.end !== undefined) {
+        const range = [...this.colorRange];
+        range[drag.end] = drag.end === 0 ? Math.min(at.x, range[1] - 1 / 255)
+          : Math.max(at.x, range[0] + 1 / 255);
+        this.colorRange = range;
+        this.draw();
+        this.onRange(range);
       } else if (drag?.threshold) {
         this.threshold = at.x;
         this.changed();
@@ -632,8 +757,28 @@ class TransferEditor {
         }
       });
     } else if (this.mode === 'curve') {
-      // Area under the curve in the colour of the transfer function.
-      const table = lookupTable(this.points);
+      // Area under the curve in the colour of the transfer function, and every colour of it on
+      // the strip below, with the ends of the colour map's range.
+      const table = this.tableOf();
+      for (let i = 0; i < 256; i += 1) {
+        g.fillStyle = `rgb(${table[i * 4]},${table[i * 4 + 1]},${table[i * 4 + 2]})`;
+        g.fillRect(r.left + i * bar, r.strip, Math.ceil(bar), 8);
+      }
+      if (this.colorRange) {
+        this.colorRange.forEach((x) => {
+          const [cx] = this.toCanvas(x, 0);
+          g.fillStyle = '#fff';
+          g.strokeStyle = '#111';
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(cx, r.strip + 6);
+          g.lineTo(cx - 5, r.strip + 14);
+          g.lineTo(cx + 5, r.strip + 14);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        });
+      }
       for (let i = 0; i < 256; i += 1) {
         const a = table[i * 4 + 3] / 255;
         if (a <= 0) continue;
@@ -652,7 +797,10 @@ class TransferEditor {
         const [cx, cy] = this.toCanvas(p.x, p.a);
         g.beginPath();
         g.arc(cx, cy, i === this.selected ? 6 : 4.5, 0, 2 * Math.PI);
-        g.fillStyle = hexColor(p.color);
+        // With a colour map the point shows the colour the map gives its grey value.
+        const k = Math.round(p.x * 255) * 4;
+        g.fillStyle = this.colorRange ? `rgb(${table[k]},${table[k + 1]},${table[k + 2]})`
+          : hexColor(p.color);
         g.fill();
         g.lineWidth = i === this.selected ? 2.5 : 1.5;
         g.strokeStyle = i === this.selected ? '#4fa3ff' : '#fff';
@@ -692,13 +840,17 @@ class TransferEditor {
 }
 
 if (typeof window !== 'undefined') {
-  Object.assign(window, { COLOR_MAPS, MATERIAL_PALETTE, TRANSFER_PRESETS, TransferEditor,
-    applyColorMap, colorMapAt, hexColor, lookupTable, materialAt, materialCounts, materialTable,
+  Object.assign(window, { COLOR_MAPS, MATERIAL_PALETTE, MATERIAL_PALETTES, TRANSFER_PRESETS,
+    TransferEditor,
+    applyColorMap, colorMapAt, colorMapGradient, colorStops, hexColor, lookupTable,
+    transferTable, visibleRange, materialAt, materialCounts, materialTable,
     multiOtsuBins, parseHexColor, snapToValley, suggestMaterials, suggestTransfers,
     transferPreset });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { COLOR_MAPS, MATERIAL_PALETTE, applyColorMap, colorMapAt, hexColor,
+  module.exports = { COLOR_MAPS, MATERIAL_PALETTE, MATERIAL_PALETTES, applyColorMap, colorMapAt,
+    colorMapGradient,
+    colorStops, transferTable, visibleRange, hexColor,
     histogramPeaks, lookupTable, materialAt, materialCounts, materialTable, multiOtsuBins,
     otsuThreshold, parseHexColor, snapToValley, suggestMaterials, suggestTransfers,
     transferPreset };
