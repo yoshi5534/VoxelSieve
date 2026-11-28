@@ -73,3 +73,20 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   }
 }
 console.log('lighting tests passed');
+
+// The graphics card of the 3D view: the browser's unmasked renderer, named short.
+{
+  const { graphicsRenderer, shortRendererName } = require(path.join(__dirname,
+    '../../resources/ui/orbit.js'));
+  assert.equal(shortRendererName('ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU (0x00002560) ' +
+    'Direct3D11 vs_5_0 ps_5_0, D3D11)'), 'NVIDIA GeForce RTX 3060 Laptop GPU');
+  assert.equal(shortRendererName('ANGLE (Intel, Intel(R) Arc(TM) Graphics (0x00007D55) ' +
+    'Direct3D11 vs_5_0 ps_5_0, D3D11)'), 'Intel(R) Arc(TM) Graphics');
+  assert.equal(shortRendererName('Apple M2'), 'Apple M2');
+  assert.equal(shortRendererName(null), null);
+  const gl = (extension) => ({ RENDERER: 1, getExtension: () => extension,
+    getParameter: (p) => (p === 2 ? 'unmasked' : p === 1 ? 'WebKit WebGL' : null) });
+  assert.equal(graphicsRenderer(gl({ UNMASKED_RENDERER_WEBGL: 2 })), 'unmasked');
+  assert.equal(graphicsRenderer(gl(null)), 'WebKit WebGL');
+  assert.equal(graphicsRenderer(null), null);
+}

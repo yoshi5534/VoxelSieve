@@ -3504,6 +3504,10 @@ function renderVolumeView(panel, dataset, ctx) {
   }
   ctx.properties.objects = [el('p', { className: 'hint' }, 'Other volumes and CAD models show ' +
     'in the slice view and in the Objects view.')];
+  const graphicsCard = el('span', { className: 'group graphics-card',
+    title: 'The graphics card the browser renders the 3D view on. To use another one, choose ' +
+      'it for the browser in the graphics settings of the operating system or of the card\'s ' +
+      'driver and restart the browser.' }, 'Graphics card ', el('b', {}, '…'));
   const video = videoControls(volume, () => (state.status.saved_views ?? [])
     .map((view) => view.state?.volume).filter((v) => v && v.key === volume.volume?.key),
   () => state.status.name ?? 'voxelsieve');
@@ -3512,7 +3516,7 @@ function renderVolumeView(panel, dataset, ctx) {
     el('details', { className: 'view-settings' }, el('summary', {}, 'View settings'),
       el('div', { className: 'viewer-tools' },
         el('div', { className: 'group' }, 'Background', backgroundStyle, backgroundColors),
-        el('label', { className: 'group' }, 'VRAM', vram, 'MB')))),
+        el('label', { className: 'group' }, 'VRAM', vram, 'MB'), graphicsCard))),
   canvas, video.progress, legend, status, looksRow, suggestionRow,
   transferEditor);
   applyMode();
@@ -3522,6 +3526,9 @@ function renderVolumeView(panel, dataset, ctx) {
     status.textContent = error.message;
     return;
   }
+  const renderer = graphicsRenderer(volume.gl);
+  graphicsCard.lastChild.textContent = shortRendererName(renderer) ?? 'not named by the browser';
+  if (renderer) graphicsCard.title = renderer + '\n\n' + graphicsCard.title;
   const regions = shownRegions(dataset, () => render());
   datasetInfo(dataset.step.id).then((info) => {
     volume.setRegions(regionsInVoxels(regions, voxelPitch(info.voxel_size_mm)));
