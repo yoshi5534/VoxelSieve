@@ -77,9 +77,10 @@ function attachOrbitInput(canvas, view, options = {}) {
 }
 
 /// The WebGL2 context of a canvas. `setup(gl)` creates everything the view needs on it, now and
-/// again after a context loss; `lost()` drops what belonged to the old context.
+/// again after a context loss; `lost()` drops what belonged to the old context. It asks for the
+/// faster of two graphics cards; the browser and the operating system decide whether it gets it.
 function attachContext(canvas, setup, lost) {
-  const gl = canvas.getContext('webgl2');
+  const gl = canvas.getContext('webgl2', { powerPreference: 'high-performance' });
   if (!gl) {
     throw new Error('The 3D view needs WebGL2, which this browser has turned off. Try Edge or ' +
       'Chrome; in Firefox set webgl.force-enabled to true in about:config, or update the ' +
@@ -93,6 +94,28 @@ function attachContext(canvas, setup, lost) {
   canvas.addEventListener('webglcontextrestored', () => setup(gl));
   setup(gl);
   return gl;
+}
+
+/// The graphics card a WebGL context renders on, as the browser names it (for example
+/// "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 ...)"), or null when the browser does not tell.
+function graphicsRenderer(gl) {
+  if (!gl) return null;
+  const debug = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
+    : gl.getParameter(gl.RENDERER);
+  return typeof name === 'string' && name ? name : null;
+}
+
+/// A short name of a renderer string: the card inside "ANGLE (vendor, card, driver)", without
+/// the Direct3D and driver details.
+function shortRendererName(renderer) {
+  if (!renderer) return null;
+  const angle = /^ANGLE \((.*)\)$/.exec(renderer.trim());
+  if (!angle) return renderer.trim();
+  const parts = angle[1].split(',').map((part) => part.trim());
+  const card = (parts[1] ?? parts[0]).replace(/\s*\((0x[0-9A-Fa-f]+)\)/g, '')
+    .replace(/\s+(Direct3D|D3D|OpenGL|Vulkan|Metal)\w*(\s.*)?$/i, '').trim();
+  return card || renderer.trim();
 }
 
 function compileProgram(gl, vertex, fragment) {
@@ -125,8 +148,9 @@ function orbitCross(a, b) {
 }
 
 if (typeof window !== 'undefined') {
-  Object.assign(window, { orbitCamera, attachOrbitInput, attachContext, compileProgram });
+  Object.assign(window, { orbitCamera, attachOrbitInput, attachContext, compileProgram,
+    graphicsRenderer, shortRendererName });
 }
 if (typeof module !== 'undefined') {
-  module.exports = { orbitCamera };
+  module.exports = { orbitCamera, graphicsRenderer, shortRendererName };
 }

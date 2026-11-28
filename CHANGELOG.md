@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Faster graphics card for the 3D view**: the 3D views ask the browser for the high-performance
+  graphics card of computers with two, and "View settings" names the card the view renders on,
+  so a view left on the integrated graphics shows.
+
 - **HDF5 and NeXus volumes** (ADR 0045): reconstructions in HDF5 files (`.h5`, `.hdf5`, `.nxs`)
   are imported with the HDF5 library, the largest volume or the one named by `dataset`, with the
   voxel size from the dataset's attributes where it has them (operation `import_hdf5`,
